@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""
+s4：站点流域匹配脚本（并行版）
+
+流程：
+  1. 读取 s3_collected_stations.csv（列：path, source, lat, lon, resolution）
+  2. 以行号（0 起）作为 station_id
+  3. 将站点按经度排序后分块，多进程并行追溯上游流域
+     （按经度分块使同一 worker 内的站点集中在同一 pfaf 区，减少重复 I/O）
+  4. 汇总结果，输出 basin CSV 和可选 GPKG，供 s5_basin_merge.py 使用
+
+输入：
+  scripts_basin_test/output/s3_collected_stations.csv（s3 输出）
+
+输出：
+  scripts_basin_test/output/s4_upstream_basins.csv   ← s5_basin_merge 的默认输入
+  scripts_basin_test/output/s4_upstream_basins.gpkg  ← 可选几何文件
+
+环境变量：
+  OUTPUT_R_ROOT  — 覆盖 Output_r 根目录（跨机器迁移时使用）
+  MERIT_DIR      — MERIT Hydro 数据集根目录
+                   默认为 Output_r/../../MERIT_Hydro_v07_Basins_v01_bugfix1
+                   （即与 sediment_wzx_1111 同级的目录）
+"""
+
+import logging
+import multiprocessing as mp
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import psutil
+from tqdm import tqdm
+
+# ── 路径设置 ────────────────────────────────────────────────────────────────
+from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG
+
+SCRIPT_DIR    = Path(__file__).resolve().parent
+OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)   # Output_r，支持 OUTPUT_R_ROOT 环境变量覆盖
+
+# MERIT Hydro 数据目录：优先环境变量，默认为 sediment_wzx_1111 同级目录
+MERIT_DIR  = Path(os.environ.get(
+    "MERIT_DIR",
+    str(OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1")
+))
+S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
+OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
+OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
+OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
+
+LOG_LEVEL  = "INFO"
+SAVE_GPKG  = True
+N_WORKERS  = 24
+BATCH_SIZE = 50    # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
+
+
+# ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
+def _get_memory_info():
+    """获取当前进程及所有子进程的内存使用信息（MB）。"""
+    proc = psutil.Process(os.getpid())
+    main_rss = proc.memory_info().rss / (1024 * 1024)
+    children = proc.children(recursive=True)
+    children_rss = sum(c.memory_info().rss for c in children) / (1024 * 1024)
+    total = main_rss + children_rss
+    return main_rss, children_rss, total
+
+
+# 进程间共享计数器，用于精确追踪每个站点的进度
+_shared_counter = None
+
+
+def _init_worker(counter):
+    """worker 初始化函数，设置共享计数器。"""
+    global _shared_counter
+    _shared_counter = counter
+
+
+def _trace_chunk(args):
+    """单个 worker：为一批站点追溯流域，返回 result dict 列表。
+
+    args = (merit_dir_str, chunk)
+    chunk: list of (station_id, lon, lat)
+    几何对象（shapely）可直接跨进程传递。
+    """
+    import gc
+
+    merit_dir_str, chunk = args
+
+    import warnings
+    warnings.filterwarnings("ignore", message=".*geographic CRS.*")
+
+    # 每个 worker 进程内部独立初始化日志（避免多进程日志混乱）
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s | %(levelname)s | worker | %(message)s",
+    )
+
+    # 将 basin_tracer.py 所在目录加入 path
+    sys.path.insert(0, str(Path(merit_dir_str).parent))
+    from basin_tracer import UpstreamBasinTracer  # noqa: E402
+
+    tracer = UpstreamBasinTracer(merit_dir_str)
+    results = []
+    for station_id, lon, lat in chunk:
+        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None)
+        results.append(
+            {
+                "station_id":         station_id,
+                "lon":                lon,
+                "lat":                lat,
+                "basin_id":           basin_result["basin_id"],
+                "basin_area":         basin_result["basin_area"],
+                "match_quality":      basin_result["match_quality"],
+                "area_error":         basin_result["area_error"],
+                "uparea_merit":       basin_result["uparea_merit"],
+                "pfaf_code":          basin_result["pfaf_code"],
+                "method":             basin_result["method"],
+                "n_upstream_reaches": basin_result["n_upstream_reaches"],
+                "geometry":           basin_result["geometry"],
+            }
+        )
+        # 更新共享计数器（每完成一个站点 +1）
+        if _shared_counter is not None:
+            with _shared_counter.get_lock():
+                _shared_counter.value += 1
+
+    # 显式释放 tracer 及其缓存的栅格/矢量数据
+    del tracer
+    gc.collect()
+
+    return results
+
+
+def main():
+    logging.basicConfig(
+        level=getattr(logging, LOG_LEVEL),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+    logger = logging.getLogger(__name__)
+
+    # ── 1. 检查路径 ──────────────────────────────────────────────────────────
+    if not S3_CSV.is_file():
+        logger.error("s3 CSV not found: %s", S3_CSV)
+        return 1
+    if not MERIT_DIR.is_dir():
+        logger.error("MERIT dir not found: %s", MERIT_DIR)
+        return 1
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── 2. 读取 s3 站点 ──────────────────────────────────────────────────────
+    stations = pd.read_csv(S3_CSV)
+    stations = stations.reset_index(drop=True)
+    stations.insert(0, "station_id", stations.index)
+    stations = stations.dropna(subset=["lon", "lat"]).copy()
+
+    # ✅ 先加这行测试，跑通后删掉
+    # stations = stations.head(50)   # 只取前50个站点验证
+
+    n_total = len(stations)
+    logger.info("Loaded %d stations", n_total)
+
+    # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
+    stations_sorted = stations.sort_values("lon").reset_index(drop=True)
+    tuples = list(zip(
+        stations_sorted["station_id"].astype(int),
+        stations_sorted["lon"].astype(float),
+        stations_sorted["lat"].astype(float),
+    ))
+
+    chunk_size = BATCH_SIZE
+    chunks = [tuples[i: i + chunk_size] for i in range(0, len(tuples), chunk_size)]
+    actual_workers = min(N_WORKERS, len(chunks))
+    logger.info("Splitting into %d batches (size=%d) for %d workers", len(chunks), chunk_size, actual_workers)
+
+    # ── 4. 并行追溯 ──────────────────────────────────────────────────────────
+    args_list = [(str(MERIT_DIR), chunk) for chunk in chunks]
+
+    # 共享计数器：跨进程追踪已完成的站点数
+    counter = mp.Value("i", 0)
+
+    all_rows = []
+    pbar = tqdm(total=n_total, desc="追溯流域", unit="站点",
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+
+    # 内存监控间隔（秒）
+    MEM_LOG_INTERVAL = 30
+    last_mem_log = time.time()
+    peak_total_mb = 0.0
+
+    with mp.Pool(processes=actual_workers,
+                 initializer=_init_worker, initargs=(counter,),
+                 maxtasksperchild=10) as pool:
+        async_results = pool.imap_unordered(_trace_chunk, args_list)
+        chunks_done = 0
+        while chunks_done < len(args_list):
+            # 非阻塞方式等待下一个 chunk 完成，同时持续刷新进度条
+            try:
+                chunk_results = async_results.__next__()  # 阻塞至下一个 chunk 完成
+            except StopIteration:
+                break
+            all_rows.extend(chunk_results)
+            chunks_done += 1
+
+            # 用共享计数器更新进度条（精确到站点级别）
+            with counter.get_lock():
+                done_count = counter.value
+            pbar.n = done_count
+            pbar.refresh()
+
+            # 定期输出内存信息
+            now = time.time()
+            if now - last_mem_log >= MEM_LOG_INTERVAL or chunks_done == len(args_list):
+                main_mb, children_mb, total_mb = _get_memory_info()
+                peak_total_mb = max(peak_total_mb, total_mb)
+                logger.info(
+                    "内存监控 | 主进程: %.1f MB | 子进程合计: %.1f MB | "
+                    "总计: %.1f MB | 峰值: %.1f MB | 进度: %d/%d 站点",
+                    main_mb, children_mb, total_mb, peak_total_mb, done_count, n_total,
+                )
+                last_mem_log = now
+
+    pbar.n = n_total
+    pbar.refresh()
+    pbar.close()
+
+    # 按原始 station_id 排序，保证输出行序与 s3 CSV 一致
+    all_rows.sort(key=lambda r: r["station_id"])
+
+    # 最终内存报告
+    main_mb, children_mb, total_mb = _get_memory_info()
+    peak_total_mb = max(peak_total_mb, total_mb)
+    logger.info("All %d stations processed", len(all_rows))
+    logger.info("最终内存: %.1f MB | 运行峰值: %.1f MB", total_mb, peak_total_mb)
+
+    # ── 5. 输出 CSV ──────────────────────────────────────────────────────────
+    result_df = pd.DataFrame(all_rows)
+    csv_df = result_df.drop(columns=["geometry"])
+    csv_df.to_csv(OUT_CSV, index=False)
+    logger.info("Saved basin CSV -> %s", OUT_CSV)
+
+    # ── 6. 输出 GPKG（可选）─────────────────────────────────────────────────
+    if SAVE_GPKG:
+        try:
+            import geopandas as gpd
+            gdf = gpd.GeoDataFrame(result_df, geometry="geometry", crs="EPSG:4326")
+            gdf.to_file(OUT_GPKG, driver="GPKG")
+            logger.info("Saved basin GPKG -> %s", OUT_GPKG)
+        except Exception as e:
+            logger.warning("GPKG save failed (skipping): %s", e)
+
+    logger.info("Done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
