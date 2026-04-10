@@ -72,6 +72,9 @@ CSV 列说明：
   - detected_frequency    : 根据时间轴间隔检测出的频率
                            取值为 hourly / daily / monthly / quarterly / annual / irregular /
                            single_point / no_time_var / error:...
+  - temporal_semantics   : 在 detected_frequency 基础上进一步解释出的时间语义
+                           取值为 daily / monthly / annual / climatology / quarterly /
+                           single_point / irregular / no_time_var / error / other
   - single_point_interpretation : 仅当 detected_frequency 为 single_point 时有内容
                            可能为 long_term_average_YYYY_YYYY、single_point_time_...、
                            single_point_likely_climatology_year_YYYY 等，用于判断是否长时间历史平均
@@ -101,7 +104,7 @@ WORKERS = None
 _verify_dir = SCRIPT_DIR / "01_verify_reorganize"
 if str(_verify_dir) not in sys.path:
     sys.path.insert(0, str(_verify_dir))
-from time_resolution import classify_frequency
+from time_resolution import classify_frequency, infer_temporal_semantics
 
 
 def get_resolution_from_path(filepath, root_dir):
@@ -434,12 +437,16 @@ def main():
             filepath, detected_freq, single_point_interpretation = fut.result()
             path_resolution = get_resolution_from_path(filepath, root_dir)
             consistent = is_consistent(path_resolution, detected_freq)
+            temporal_semantics = infer_temporal_semantics(
+                detected_freq, single_point_interpretation
+            )
             rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
             results.append({
                 "path": filepath,
                 "rel_path": str(rel_path),
                 "path_resolution": path_resolution or "(none)",
                 "detected_frequency": detected_freq,
+                "temporal_semantics": temporal_semantics,
                 "single_point_interpretation": single_point_interpretation if single_point_interpretation else "",
                 "consistent": consistent,
             })
@@ -483,6 +490,9 @@ def main():
     print(df["path_resolution"].value_counts())
     print("\n=== 检测频率统计 ===")
     print(df["detected_frequency"].value_counts())
+    if "temporal_semantics" in df.columns:
+        print("\n=== 时间语义统计 ===")
+        print(df["temporal_semantics"].value_counts())
     if "single_point_interpretation" in df.columns and df["single_point_interpretation"].str.len().gt(0).any():
         interp_counts = df[df["single_point_interpretation"].str.len() > 0]["single_point_interpretation"].value_counts()
         print("\n=== single_point 解释统计 ===")

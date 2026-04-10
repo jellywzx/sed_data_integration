@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
 步骤 s6（出图）公共模块：路径常量与从 s6_basin_merged_all.nc 加载站点统计。
 供 plot/ 下所有 plot_merged_stations_*.py 复用。
 
@@ -11,18 +10,6 @@
 """
 
 import sys
-=======
-步骤 s6（出图）公共模块：路径常量与从 s8_merged_all.nc / s6_plot_stats.csv 加载站点统计。
-供 plot/plot_merged_stations_*.py 与 s6_plot_merged_nc_stations.py 复用。
-
-默认路径（步骤对应，均位于 output/ 下无子文件夹）：
-  DEFAULT_NC：output/s8_merged_all.nc（步骤 8 输出）
-  DEFAULT_INPUT_DIR：output（含 s4_clustered_stations.csv，用于按来源出图）
-  DEFAULT_OUT_DIR：output（出图输出，文件名为 s6_plot_*.png / s6_plot_*.csv）
-"""
-
-import csv
->>>>>>> 6296cf2afe3b4a9aa5abe5540ed519e1eeb66538
 from pathlib import Path
 
 import numpy as np

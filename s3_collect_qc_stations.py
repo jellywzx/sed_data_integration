@@ -7,8 +7,8 @@
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution）
-resolution 来自路径第一级：daily, monthly, annually_climatology。供步骤 s4 聚类使用。
+    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id）
+resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
 根目录说明：
   - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
@@ -26,7 +26,7 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, get_output_r_root
+from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root
 
 try:
     import netCDF4 as nc4
@@ -38,6 +38,9 @@ except ImportError:
 LAT_NAMES = ["lat", "latitude", "Latitude"]
 LON_NAMES = ["lon", "longitude", "Longitude"]
 FILL = -9999.0
+_STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
+_RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
+_STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
 
 
 def _get_scalar(var):
@@ -81,17 +84,36 @@ def get_lat_lon_from_nc(path):
         return None, None
 
 
+def get_station_meta_from_nc(path):
+    """从 nc 全局属性读取站点名/河流名/原始站点编号。"""
+    if not HAS_NC:
+        return "", "", ""
+    try:
+        with nc4.Dataset(path, "r") as nc:
+            def _get_attr(keys):
+                for key in keys:
+                    val = getattr(nc, key, None)
+                    if val is not None and str(val).strip():
+                        return str(val).strip()[:256]
+                return ""
+            return (
+                _get_attr(_STATION_NAME_KEYS),
+                _get_attr(_RIVER_NAME_KEYS),
+                _get_attr(_STATION_ID_KEYS),
+            )
+    except Exception:
+        return "", "", ""
+
+
 def get_resolution_from_path(path, root_dir):
-    """从路径第一级目录解析时间分辨率：daily, monthly, annually_climatology, other。"""
+    """从路径第一级目录解析时间分辨率。"""
     try:
         rel = Path(path).relative_to(Path(root_dir))
         parts = rel.parts
         if parts:
             res = parts[0].strip().lower()
-            if res in ("daily", "monthly"):
+            if res in RESOLUTION_DIRS:
                 return res
-            if "annually" in res or "climatology" in res:
-                return "annually_climatology"
             return res
     except Exception:
         pass
@@ -144,11 +166,21 @@ def _collect_one_nc(path, root_dir):
         lat, lon = get_lat_lon_from_nc(path)
         if lat is None or lon is None:
             return None
+        station_name, river_name, source_station_id = get_station_meta_from_nc(path)
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
         # 存相对路径，跨平台可移植
         rel_path = str(Path(path).relative_to(root_dir))
-        return {"path": rel_path, "source": source, "lat": lat, "lon": lon, "resolution": resolution}
+        return {
+            "path": rel_path,
+            "source": source,
+            "lat": lat,
+            "lon": lon,
+            "resolution": resolution,
+            "station_name": station_name,
+            "river_name": river_name,
+            "source_station_id": source_station_id,
+        }
     except (ValueError, OSError):
         return None
 
@@ -162,7 +194,14 @@ def collect_qc_nc_stations(root_dir, workers=1):
     scan_root = root / ORGANIZED_DIR
     paths = []
     for p in scan_root.rglob("*.nc"):
+        try:
+            rel = p.relative_to(scan_root)
+        except ValueError:
+            continue
+        if not rel.parts or rel.parts[0] not in RESOLUTION_DIRS:
+            continue
         paths.append(str(p))
+    paths = sorted(paths)
     if not paths:
         return pd.DataFrame()
     root_str = str(scan_root)

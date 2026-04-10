@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
 步骤 s6 出图之一：站点时间跨度分布（全球地图 + 直方图）。
 输出：s6_plot_span_map.png、s6_plot_span_hist.png
 
 用法：
   python plot/plot_merged_stations_span.py
   python plot/plot_merged_stations_span.py --nc /path/to/s6.nc --out output/s6_plot_span
-=======
-步骤 s6 出图之一：从 s8_merged_all.nc 统计站点时间跨度，出图（地图一张、直方图一张）。
-输出：s6_plot_span_map.png、s6_plot_span_hist.png（默认在 output_bf/）。
->>>>>>> 6296cf2afe3b4a9aa5abe5540ed519e1eeb66538
 """
 
 import argparse

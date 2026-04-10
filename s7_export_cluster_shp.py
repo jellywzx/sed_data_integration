@@ -127,6 +127,7 @@ def main():
         pfaf_codes  = ds["pfaf_code"][:]    if "pfaf_code"           in ds.variables else np.full(n, -9999.0)
         n_reaches   = ds["n_upstream_reaches"][:] if "n_upstream_reaches" in ds.variables else np.full(n, -9999)
         match_qual  = ds["basin_match_quality"][:] if "basin_match_quality" in ds.variables else np.full(n, -1)
+        n_src_stn   = ds["n_source_stations_in_cluster"][:] if "n_source_stations_in_cluster" in ds.variables else np.full(n, -9999)
         stn_names   = [_safe_str(s) for s in ds["station_name"][:]]  if "station_name"   in ds.variables else [""] * n
         river_names = [_safe_str(s) for s in ds["river_name"][:]]    if "river_name"     in ds.variables else [""] * n
         src_ids     = [_safe_str(s) for s in ds["source_station_id"][:]] if "source_station_id" in ds.variables else [""] * n
@@ -145,6 +146,7 @@ def main():
     w.field("pfaf_code",   "F", size=10, decimal=1)
     w.field("n_up_reach",  "N", size=10, decimal=0)
     w.field("match_qual",  "N", size=5,  decimal=0)
+    w.field("n_src_stn",   "N", size=10, decimal=0)
     w.field("stn_name",    "C", size=80)
     w.field("river_name",  "C", size=80)
     w.field("src_stn_id",  "C", size=80)
@@ -162,6 +164,7 @@ def main():
             pfaf_code   = _safe_float(pfaf_codes[i]),
             n_up_reach  = _safe_int(n_reaches[i]),
             match_qual  = _safe_int(match_qual[i]),
+            n_src_stn   = _safe_int(n_src_stn[i]),
             stn_name    = stn_names[i],
             river_name  = river_names[i],
             src_stn_id  = src_ids[i],

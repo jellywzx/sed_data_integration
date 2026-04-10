@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
 步骤 s6 出图之一：站点记录数分布（全球地图 + 直方图）。
 输出：s6_plot_records_map.png、s6_plot_records_hist.png
 
 用法：
   python plot/plot_merged_stations_records.py
   python plot/plot_merged_stations_records.py --nc /path/to/s6.nc --out output/s6_plot_records
-=======
-步骤 s6 出图之一：从 s8_merged_all.nc 统计站点记录数，出图（地图 + 直方图）。
-输出：s6_plot_records.png（默认在 output/）；若从 NC 首次加载会同时生成 s6_plot_stats.csv。
->>>>>>> 6296cf2afe3b4a9aa5abe5540ed519e1eeb66538
 """
 
 import argparse

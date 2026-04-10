@@ -7,7 +7,8 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
 
 合并规则：
   - 同一 cluster_id 的多个站点视为同一虚拟站点；
-  - 同一 (cluster_id, resolution) 下若有多个文件，按文件顺序取第一个有值的数据；
+  - 同一 (cluster_id, resolution) 下若有多个文件，按质量分数优先选择；
+  - cluster 层与 source-station 层同时保留，避免合并后丢失原始站点信息。
 
 输入：
   - scripts_basin_test/output/s5_basin_clustered_stations.csv（s5 输出）
@@ -17,12 +18,14 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
 
 NetCDF 结构：
   n_stations   维度：唯一 cluster 数（按 cluster_id 排序后的 0-based 索引）
+  n_source_stations 维度：原始站点映射表（一个 cluster 下可有多个 source station）
   n_records    维度：所有 (cluster, resolution) 时间序列的总记录数
   lat, lon     代表站点经纬度（station_id == cluster_id 的行）
   cluster_id   n_stations 维度查找表（第 i 位 = 第 i 个虚拟站点的原始 cluster_id）
   station_index  0-based 索引（指向 n_stations 维度）
+  source_station_index n_records 维度查找表（指向 n_source_stations）
   time         days since 1970-01-01
-  resolution   0=daily, 1=monthly, 2=annually_climatology, 3=other
+  resolution   0=daily, 1=monthly, 2=annual, 3=climatology, 4=other
   Q, SSC, SSL  径流量、悬沙浓度、悬沙通量
 
 用法：
@@ -74,10 +77,16 @@ FLAG_GOOD     = 0    # flag==0 表示好数据
 FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
 
 RESOLUTION_CODES = {
-    "daily":                0,
-    "monthly":              1,
-    "annually_climatology": 2,
-    "other":                3,
+    "daily": 0,
+    "monthly": 1,
+    "annual": 2,
+    "climatology": 3,
+    "other": 4,
+    # 用户规则：季度并入 monthly，single_point 并入 daily
+    "quarterly": 1,
+    "single_point": 0,
+    # 兼容旧输出目录名
+    "annually_climatology": 3,
 }
 
 # 默认并行进程数，None = 自动取 CPU 核数，命令行 --workers 可覆盖
@@ -133,11 +142,18 @@ def _enable_script_logging():
             self._f = log_file
         def write(self, data):
             self._s.write(data)
-            self._f.write(data)
-            self._f.flush()
+            try:
+                self._f.write(data)
+                self._f.flush()
+            except (ValueError, OSError):
+                # Interpreter shutdown may close the log file before stdout flushes.
+                pass
         def flush(self):
             self._s.flush()
-            self._f.flush()
+            try:
+                self._f.flush()
+            except (ValueError, OSError):
+                pass
 
     sys.stdout = _Tee(sys.stdout, log_fp)
     atexit.register(log_fp.close)
@@ -210,6 +226,42 @@ def _read_source_meta_from_nc(path):
             )
     except Exception:
         return ("", "", "", "")
+
+
+def _clean_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    return str(value).strip()
+
+
+def _clean_coord(value):
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return round(float(value), 6)
+    except Exception:
+        return None
+
+
+def _build_source_station_key(row):
+    """为原始站点构建稳定键。
+
+    优先使用 source + source_station_id / station_name / river_name / 坐标；
+    若这些都缺失，则回退到文件名，避免把同源同坐标但无法识别的不同文件错误合并。
+    """
+    source = _clean_text(row.get("source"))
+    cluster_id = _clean_text(row.get("cluster_id"))
+    native_id = _clean_text(row.get("source_station_id"))
+    station_name = _clean_text(row.get("station_name"))
+    river_name = _clean_text(row.get("river_name"))
+    lat = _clean_coord(row.get("lat"))
+    lon = _clean_coord(row.get("lon"))
+    key = (cluster_id, source, native_id, station_name, river_name, lat, lon)
+    if native_id or station_name or river_name:
+        return key
+    return key + (Path(str(row.get("path", ""))).name,)
 
 
 # ── NC 读取 ────────────────────────────────────────────────────────────────
@@ -331,7 +383,7 @@ def load_nc_series(path):
 def build_cluster_series(cid, resolution, recs):
     """
     为单个 (cluster_id, resolution) 构建合并时间序列。
-    recs: list of (source, path)
+    recs: list of (source, path, source_station_index)
 
     合并规则（相同分辨率内）：
       - 按文件整体质量分数（flag==0 好数据占比）从高到低排序；
@@ -339,17 +391,19 @@ def build_cluster_series(cid, resolution, recs):
       - 若最高质量文件在该时间点无数据，则依次尝试次优文件。
 
     返回 (dates_arr, q_arr, ssc_arr, ssl_arr,
-           q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, quality_log)
+           q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr,
+           source_arr, source_station_idx_arr, quality_log)
     或 None。
     """
-    scored = []   # list of (quality_score, source, df)
+    scored = []   # list of (quality_score, source, source_station_index, df)
     all_dates = set()
-    for source, path in recs:
+    for source, path, source_station_index in recs:
         df = load_nc_series(path)
         if df is not None and len(df) > 0:
             score = compute_quality_score(df)
             df["_source"] = source
-            scored.append((score, source, df))
+            df["_source_station_index"] = int(source_station_index)
+            scored.append((score, source, int(source_station_index), df))
             all_dates.update(df["date"].tolist())
     if not scored:
         return None
@@ -359,14 +413,14 @@ def build_cluster_series(cid, resolution, recs):
     quality_log = None
     if len(scored) > 1:
         score_info = ", ".join(
-            "{} {:.1%}".format(src, sc) for sc, src, _ in scored
+            "{} {:.1%}".format(src, sc) for sc, src, _, _ in scored
         )
         quality_log = "  cluster {} [{}] quality order: [{}]".format(
             cid, resolution, score_info
         )
 
     # 将 date 列设为 index 以加速查找，按质量顺序排列
-    indexed = [df.set_index("date") for _, _, df in scored]
+    indexed = [df.set_index("date") for _, _, _, df in scored]
     all_dates = sorted(all_dates)
     n = len(all_dates)
 
@@ -380,6 +434,7 @@ def build_cluster_series(cid, resolution, recs):
     is_overlap_arr = np.zeros(n,    dtype=np.int8)
     source_arr   = np.empty(n,      dtype=object)
     source_arr[:] = ""
+    source_station_idx_arr = np.full(n, -1, dtype=np.int32)
 
     for i, d in enumerate(all_dates):
         # 统计在该日期有数据的来源数，>1 则标记重叠
@@ -406,10 +461,12 @@ def build_cluster_series(cid, resolution, recs):
             ssc_flag_arr[i] = int(row.get("SSC_flag", 9))
             ssl_flag_arr[i] = int(row.get("SSL_flag", 9))
             source_arr[i]   = str(row.get("_source", ""))
+            source_station_idx_arr[i] = int(row.get("_source_station_index", -1))
             break
 
     return (dates_arr, q_arr, ssc_arr, ssl_arr,
-            q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, source_arr, quality_log)
+            q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, source_arr,
+            source_station_idx_arr, quality_log)
 
 
 def _worker_build_cluster(args):
@@ -417,9 +474,12 @@ def _worker_build_cluster(args):
     result = build_cluster_series(cid, resolution, recs)
     if result is None:
         return (cid, resolution, None, None)
-    dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag, is_overlap, source_arr, quality_log = result
+    (dates_arr, q_arr, ssc_arr, ssl_arr,
+     q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
+     source_station_idx_arr, quality_log) = result
     return (cid, resolution,
-            (dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag, is_overlap, source_arr),
+            (dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag,
+             is_overlap, source_arr, source_station_idx_arr),
             quality_log)
 
 
@@ -606,10 +666,89 @@ def main():
         sum(1 for s in src_urls        if s), n_src,
     ))
 
+    # ── 2e. 构建完整的 source-station 映射表（同一 cluster 下可保留多个原始站点）────
+    for col in ("station_name", "river_name", "source_station_id"):
+        if col not in stations.columns:
+            stations[col] = ""
+        stations[col] = stations[col].fillna("").astype(str)
+
+    source_station_rows = []
+    source_station_lookup = {}
+    row_source_station_index = []
+
+    for row in stations.itertuples(index=False):
+        row_dict = {
+            "path": getattr(row, "path", ""),
+            "source": getattr(row, "source", ""),
+            "cluster_id": getattr(row, "cluster_id", -1),
+            "lat": getattr(row, "lat", np.nan),
+            "lon": getattr(row, "lon", np.nan),
+            "resolution": getattr(row, "resolution", "other"),
+            "station_name": getattr(row, "station_name", ""),
+            "river_name": getattr(row, "river_name", ""),
+            "source_station_id": getattr(row, "source_station_id", ""),
+        }
+        key = _build_source_station_key(row_dict)
+        idx = source_station_lookup.get(key)
+        if idx is None:
+            idx = len(source_station_rows)
+            source_station_lookup[key] = idx
+            source_station_rows.append(
+                {
+                    "cluster_idx": cluster_to_idx[int(row_dict["cluster_id"])],
+                    "source_idx": source_to_idx[str(row_dict["source"])],
+                    "source_name": _clean_text(row_dict["source"]),
+                    "native_id": _clean_text(row_dict["source_station_id"]),
+                    "station_name": _clean_text(row_dict["station_name"]),
+                    "river_name": _clean_text(row_dict["river_name"]),
+                    "lat": _clean_coord(row_dict["lat"]),
+                    "lon": _clean_coord(row_dict["lon"]),
+                    "paths": set(),
+                    "resolutions": set(),
+                }
+            )
+        source_station_rows[idx]["paths"].add(str(row_dict["path"]))
+        source_station_rows[idx]["resolutions"].add(str(row_dict["resolution"]))
+        row_source_station_index.append(idx)
+
+    stations["_source_station_index"] = np.asarray(row_source_station_index, dtype=np.int32)
+    n_source_stations = len(source_station_rows)
+    source_station_uids = ["SRC{:06d}".format(i) for i in range(n_source_stations)]
+    source_station_cluster_index = np.full(n_source_stations, -1, dtype=np.int32)
+    source_station_source_index = np.full(n_source_stations, -1, dtype=np.int32)
+    source_station_native_ids = [""] * n_source_stations
+    source_station_names = [""] * n_source_stations
+    source_station_rivers = [""] * n_source_stations
+    source_station_lats = np.full(n_source_stations, FILL, dtype=np.float32)
+    source_station_lons = np.full(n_source_stations, FILL, dtype=np.float32)
+    source_station_paths = [""] * n_source_stations
+    source_station_resolutions = [""] * n_source_stations
+    cluster_source_station_counts = np.zeros(n_stations, dtype=np.int32)
+
+    for idx, info in enumerate(source_station_rows):
+        source_station_cluster_index[idx] = int(info["cluster_idx"])
+        source_station_source_index[idx] = int(info["source_idx"])
+        source_station_native_ids[idx] = info["native_id"]
+        source_station_names[idx] = info["station_name"]
+        source_station_rivers[idx] = info["river_name"]
+        if info["lat"] is not None:
+            source_station_lats[idx] = info["lat"]
+        if info["lon"] is not None:
+            source_station_lons[idx] = info["lon"]
+        source_station_paths[idx] = "|".join(sorted(info["paths"]))[:2048]
+        source_station_resolutions[idx] = "|".join(sorted(info["resolutions"]))
+        cluster_source_station_counts[int(info["cluster_idx"])] += 1
+
+    print("Source-station map: {} unique source stations across {} clusters".format(
+        n_source_stations, n_stations
+    ))
+
     # ── 3. 按 (cluster_id, resolution) 分组 ── 用 groupby，避免 iterrows ──
     by_cluster_res = defaultdict(list)
     for (cid, res), grp in stations.groupby(["cluster_id", "resolution"], sort=False):
-        by_cluster_res[(int(cid), str(res))] = list(zip(grp["source"], grp["path"]))
+        by_cluster_res[(int(cid), str(res))] = list(
+            zip(grp["source"], grp["path"], grp["_source_station_index"])
+        )
 
     tasks     = [(cid, res, recs) for (cid, res), recs in by_cluster_res.items()]
     n_tasks   = len(tasks)
@@ -636,6 +775,7 @@ def main():
     parts_sslflag  = []
     parts_overlap  = []  # list of int8 arrays
     parts_source   = []  # list of object arrays (str)
+    parts_source_station_idx = []  # list of int32 arrays
     n_empty    = 0
     n_done     = 0
 
@@ -649,10 +789,12 @@ def main():
         if res is None:
             n_empty += 1
         else:
-            dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag, is_overlap, source_arr = res
+            (dates_arr, q_arr, ssc_arr, ssl_arr,
+             q_flag, ssc_flag, ssl_flag, is_overlap,
+             source_arr, source_station_idx_arr) = res
             n    = len(dates_arr)
             days = ((dates_arr - ref).total_seconds().values / 86400.0).astype(np.float64)
-            rc   = RESOLUTION_CODES.get(str(resolution).lower(), 3)
+            rc   = RESOLUTION_CODES.get(str(resolution).lower(), RESOLUTION_CODES["other"])
             idx  = cluster_to_idx[cid]
             parts_idx.append(    np.full(n, idx, dtype=np.int32))
             parts_time.append(   days)
@@ -665,6 +807,7 @@ def main():
             parts_sslflag.append(ssl_flag)
             parts_overlap.append(is_overlap)
             parts_source.append( source_arr)
+            parts_source_station_idx.append(source_station_idx_arr.astype(np.int32))
 
         total_rec = sum(len(x) for x in parts_time)
         elapsed   = (datetime.now() - t0).total_seconds()
@@ -696,10 +839,12 @@ def main():
                     _flush_result(pbar, cid, res, None, None)
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
-                     q_flag, ssc_flag, ssl_flag, is_overlap, source_arr, quality_log) = result
+                     q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
+                     source_station_idx_arr, quality_log) = result
                     _flush_result(pbar, cid, res,
                                   (dates_arr, q_arr, ssc_arr, ssl_arr,
-                                   q_flag, ssc_flag, ssl_flag, is_overlap, source_arr),
+                                   q_flag, ssc_flag, ssl_flag, is_overlap,
+                                   source_arr, source_station_idx_arr),
                                   quality_log)
 
     n_series = n_done - n_empty
@@ -723,10 +868,12 @@ def main():
     ssl_flag_arr      = np.concatenate(parts_sslflag)
     is_overlap_arr    = np.concatenate(parts_overlap)
     record_source_arr = np.concatenate(parts_source)
+    record_source_station_idx_arr = np.concatenate(parts_source_station_idx)
 
     # 释放 parts 列表
     del (parts_idx, parts_time, parts_res, parts_q, parts_ssc, parts_ssl,
-         parts_qflag, parts_sscflag, parts_sslflag, parts_overlap, parts_source)
+         parts_qflag, parts_sscflag, parts_sslflag, parts_overlap, parts_source,
+         parts_source_station_idx)
 
     n_records = len(time_arr)
     _check_memory("数组合并后")
@@ -738,6 +885,7 @@ def main():
 
     with nc4.Dataset(out_path, "w", format="NETCDF4") as nc:
         nc.createDimension("n_stations", n_stations)
+        nc.createDimension("n_source_stations", n_source_stations)
         nc.createDimension("n_records",  n_records)
         nc.createDimension("n_sources",  n_src)
 
@@ -802,6 +950,54 @@ def main():
         su_v.comment   = "lookup full metadata via n_sources dimension using source_name variable"
         su_v[:]        = np.array(cluster_sources_used, dtype=object)
 
+        nss_v = nc.createVariable("n_source_stations_in_cluster", "i4", ("n_stations",))
+        nss_v.long_name = "number of unique source stations mapped into this cluster"
+        nss_v[:] = cluster_source_station_counts
+
+        # ── n_source_stations 查找表（原始站点完整映射）───────────────────────
+        ss_uid_v = nc.createVariable("source_station_uid", str, ("n_source_stations",))
+        ss_uid_v.long_name = "stable source-station identifier used inside the merged reference dataset"
+        ss_uid_v.comment = "format: SRC + 6-digit index; use source_station_index in n_records to join"
+        ss_uid_v[:] = np.array(source_station_uids, dtype=object)
+
+        ss_cluster_v = nc.createVariable("source_station_cluster_index", "i4", ("n_source_stations",))
+        ss_cluster_v.long_name = "0-based index into n_stations dimension for the cluster containing this source station"
+        ss_cluster_v[:] = source_station_cluster_index
+
+        ss_source_v = nc.createVariable("source_station_source_index", "i4", ("n_source_stations",))
+        ss_source_v.long_name = "0-based index into n_sources dimension for the dataset owning this source station"
+        ss_source_v[:] = source_station_source_index
+
+        ss_native_v = nc.createVariable("source_station_native_id", str, ("n_source_stations",))
+        ss_native_v.long_name = "original station identifier in the native source dataset"
+        ss_native_v[:] = np.array(source_station_native_ids, dtype=object)
+
+        ss_name_v = nc.createVariable("source_station_name", str, ("n_source_stations",))
+        ss_name_v.long_name = "original station name"
+        ss_name_v[:] = np.array(source_station_names, dtype=object)
+
+        ss_river_v = nc.createVariable("source_station_river_name", str, ("n_source_stations",))
+        ss_river_v.long_name = "original river name"
+        ss_river_v[:] = np.array(source_station_rivers, dtype=object)
+
+        ss_lat_v = nc.createVariable("source_station_lat", "f4", ("n_source_stations",), fill_value=FILL)
+        ss_lat_v.long_name = "latitude of the source station"
+        ss_lat_v.units = "degrees_north"
+        ss_lat_v[:] = source_station_lats
+
+        ss_lon_v = nc.createVariable("source_station_lon", "f4", ("n_source_stations",), fill_value=FILL)
+        ss_lon_v.long_name = "longitude of the source station"
+        ss_lon_v.units = "degrees_east"
+        ss_lon_v[:] = source_station_lons
+
+        ss_path_v = nc.createVariable("source_station_paths", str, ("n_source_stations",))
+        ss_path_v.long_name = "pipe-separated list of organized NC file paths contributing to this source station"
+        ss_path_v[:] = np.array(source_station_paths, dtype=object)
+
+        ss_res_v = nc.createVariable("source_station_resolutions", str, ("n_source_stations",))
+        ss_res_v.long_name = "pipe-separated list of time types available for this source station"
+        ss_res_v[:] = np.array(source_station_resolutions, dtype=object)
+
         # ── n_sources 查找表（每个数据集一行，供引用/机构信息查询）──────────────
         sn_lk = nc.createVariable("source_name", str, ("n_sources",))
         sn_lk.long_name = "short dataset identifier (matches 'source' variable in n_records and 'sources_used' in n_stations)"
@@ -827,8 +1023,17 @@ def main():
         sid_v.long_name = "0-based index into n_stations dimension"
         sid_v[:]        = station_index_arr
 
+        ssid_v = nc.createVariable("source_station_index", "i4", ("n_records",), fill_value=-1)
+        ssid_v.long_name = "0-based index into n_source_stations dimension for the chosen source-station record"
+        ssid_v.comment = "links every merged record back to one source station in the provenance table"
+        ssid_v[:] = record_source_station_idx_arr
+
         res_v = nc.createVariable("resolution", "i1", ("n_records",))
-        res_v.long_name = "time resolution: 0=daily, 1=monthly, 2=annually_climatology, 3=other"
+        res_v.long_name = "time type code for this record"
+        res_v.flag_values = np.array([0, 1, 2, 3, 4], dtype=np.int8)
+        res_v.flag_meanings = "daily monthly annual climatology other"
+        res_v.comment = ("single_point inputs are mapped to daily, quarterly inputs are mapped to monthly; "
+                         "legacy annually_climatology inputs are mapped to climatology")
         res_v[:]        = resolution_arr
 
         t_v = nc.createVariable("time", "f8", ("n_records",))
@@ -851,7 +1056,7 @@ def main():
         ssl_v.long_name = "suspended sediment load"
         ssl_v.units     = "ton day-1"
         ssl_v.comment   = ("Daily load for daily data; representative-day load for "
-                           "monthly/annually_climatology. See 'resolution' variable.")
+                           "monthly/annual/climatology records. See 'resolution' variable.")
         ssl_v[:]        = ssl_arr
 
         _flag_kw = dict(flag_values=np.array([0, 1, 2, 3, 9], dtype=np.int8),
@@ -901,8 +1106,14 @@ def main():
                                datetime.now().isoformat(timespec="seconds"))
         nc.overlap_policy = ("Multi-source dates: source with highest flag==0 fraction selected; "
                              "is_overlap=1 marks records with competing sources")
+        nc.time_type_policy = ("Only four main time types are retained in the final product: "
+                               "daily/monthly/annual/climatology; single_point is mapped to daily, "
+                               "quarterly is mapped to monthly")
+        nc.provenance_policy = ("Each merged record links back to one source_station_index, while the full "
+                                "source-station mapping is preserved in n_source_stations")
         nc.basin_csv      = str(inp_path)
-        nc.n_source_stations = str(len(stations))
+        nc.n_input_station_rows = str(len(stations))
+        nc.n_source_stations = str(n_source_stations)
         nc.n_clusters     = str(n_stations)
         nc.created        = datetime.now().isoformat(timespec="seconds")
 

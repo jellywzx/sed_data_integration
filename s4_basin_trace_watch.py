@@ -52,9 +52,42 @@ OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
 OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
 
 LOG_LEVEL  = "INFO"
-SAVE_GPKG  = True
-N_WORKERS  = 24
-BATCH_SIZE = 50    # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
+PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
+
+
+def _env_bool(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_int(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+SAVE_GPKG = _env_bool("S4_SAVE_GPKG", True)
+RESUME    = _env_bool("S4_RESUME", True)
+N_WORKERS = _env_int("S4_N_WORKERS", 24)
+BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)  # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
+MAX_TASKS_PER_CHILD = _env_int("S4_MAXTASKSPERCHILD", 10)
+CSV_COLUMNS = [
+    "station_id",
+    "lon",
+    "lat",
+    "basin_id",
+    "basin_area",
+    "match_quality",
+    "area_error",
+    "uparea_merit",
+    "pfaf_code",
+    "method",
+    "n_upstream_reaches",
+]
+CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt"]
 
 
 # ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
@@ -134,12 +167,41 @@ def _trace_chunk(args):
     return results
 
 
+def _chunk_to_partial_df(chunk_results, include_geometry):
+    rows = []
+    for row in chunk_results:
+        out_row = {
+            "station_id": row["station_id"],
+            "lon": row["lon"],
+            "lat": row["lat"],
+            "basin_id": row["basin_id"],
+            "basin_area": row["basin_area"],
+            "match_quality": row["match_quality"],
+            "area_error": row["area_error"],
+            "uparea_merit": row["uparea_merit"],
+            "pfaf_code": row["pfaf_code"],
+            "method": row["method"],
+            "n_upstream_reaches": row["n_upstream_reaches"],
+        }
+        if include_geometry:
+            geometry = row.get("geometry")
+            out_row["geometry_wkt"] = geometry.wkt if geometry is not None else ""
+        rows.append(out_row)
+    columns = CSV_COLUMNS_WITH_GEOM if include_geometry else CSV_COLUMNS
+    return pd.DataFrame(rows, columns=columns)
+
+
 def main():
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL),
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
     logger = logging.getLogger(__name__)
+
+    logger.info(
+        "s4 config | workers=%d | batch_size=%d | resume=%s | save_gpkg=%s | maxtasksperchild=%d",
+        N_WORKERS, BATCH_SIZE, RESUME, SAVE_GPKG, MAX_TASKS_PER_CHILD,
+    )
 
     # ── 1. 检查路径 ──────────────────────────────────────────────────────────
     if not S3_CSV.is_file():
@@ -157,11 +219,25 @@ def main():
     stations.insert(0, "station_id", stations.index)
     stations = stations.dropna(subset=["lon", "lat"]).copy()
 
+    if not RESUME and PARTIAL_CSV.exists():
+        PARTIAL_CSV.unlink()
+        logger.info("Removed stale partial CSV: %s", PARTIAL_CSV)
+
+    completed_station_ids = set()
+    if RESUME and PARTIAL_CSV.is_file():
+        partial_df = pd.read_csv(PARTIAL_CSV, usecols=["station_id"])
+        completed_station_ids = set(partial_df["station_id"].dropna().astype(int).tolist())
+        logger.info("Resume mode: found %d completed stations in %s", len(completed_station_ids), PARTIAL_CSV)
+        stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
+
     # ✅ 先加这行测试，跑通后删掉
     # stations = stations.head(50)   # 只取前50个站点验证
 
-    n_total = len(stations)
-    logger.info("Loaded %d stations", n_total)
+    n_pending = len(stations)
+    n_total = len(pd.read_csv(S3_CSV).dropna(subset=["lon", "lat"]))
+    logger.info("Loaded %d stations (%d pending)", n_total, n_pending)
+    if n_pending == 0:
+        logger.info("No pending stations to process")
 
     # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
     stations_sorted = stations.sort_values("lon").reset_index(drop=True)
@@ -185,60 +261,73 @@ def main():
     all_rows = []
     pbar = tqdm(total=n_total, desc="追溯流域", unit="站点",
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+    pbar.n = len(completed_station_ids)
+    pbar.refresh()
 
     # 内存监控间隔（秒）
     MEM_LOG_INTERVAL = 30
     last_mem_log = time.time()
     peak_total_mb = 0.0
 
-    with mp.Pool(processes=actual_workers,
-                 initializer=_init_worker, initargs=(counter,),
-                 maxtasksperchild=10) as pool:
-        async_results = pool.imap_unordered(_trace_chunk, args_list)
-        chunks_done = 0
-        while chunks_done < len(args_list):
-            # 非阻塞方式等待下一个 chunk 完成，同时持续刷新进度条
-            try:
-                chunk_results = async_results.__next__()  # 阻塞至下一个 chunk 完成
-            except StopIteration:
-                break
-            all_rows.extend(chunk_results)
-            chunks_done += 1
+    with counter.get_lock():
+        counter.value = len(completed_station_ids)
 
-            # 用共享计数器更新进度条（精确到站点级别）
-            with counter.get_lock():
-                done_count = counter.value
-            pbar.n = done_count
-            pbar.refresh()
+    if args_list:
+        with mp.Pool(processes=actual_workers,
+                     initializer=_init_worker, initargs=(counter,),
+                     maxtasksperchild=MAX_TASKS_PER_CHILD) as pool:
+            async_results = pool.imap_unordered(_trace_chunk, args_list)
+            chunks_done = 0
+            while chunks_done < len(args_list):
+                try:
+                    chunk_results = async_results.__next__()
+                except StopIteration:
+                    break
 
-            # 定期输出内存信息
-            now = time.time()
-            if now - last_mem_log >= MEM_LOG_INTERVAL or chunks_done == len(args_list):
-                main_mb, children_mb, total_mb = _get_memory_info()
-                peak_total_mb = max(peak_total_mb, total_mb)
-                logger.info(
-                    "内存监控 | 主进程: %.1f MB | 子进程合计: %.1f MB | "
-                    "总计: %.1f MB | 峰值: %.1f MB | 进度: %d/%d 站点",
-                    main_mb, children_mb, total_mb, peak_total_mb, done_count, n_total,
+                chunk_df = _chunk_to_partial_df(chunk_results, include_geometry=SAVE_GPKG)
+                chunk_df.to_csv(
+                    PARTIAL_CSV,
+                    mode="a",
+                    index=False,
+                    header=not PARTIAL_CSV.exists(),
                 )
-                last_mem_log = now
 
-    pbar.n = n_total
+                chunks_done += 1
+
+                with counter.get_lock():
+                    done_count = counter.value
+                pbar.n = done_count
+                pbar.refresh()
+
+                now = time.time()
+                if now - last_mem_log >= MEM_LOG_INTERVAL or chunks_done == len(args_list):
+                    main_mb, children_mb, total_mb = _get_memory_info()
+                    peak_total_mb = max(peak_total_mb, total_mb)
+                    logger.info(
+                        "内存监控 | 主进程: %.1f MB | 子进程合计: %.1f MB | "
+                        "总计: %.1f MB | 峰值: %.1f MB | 进度: %d/%d 站点",
+                        main_mb, children_mb, total_mb, peak_total_mb, done_count, n_total,
+                    )
+                    last_mem_log = now
+
+    pbar.n = len(completed_station_ids) + n_pending
     pbar.refresh()
     pbar.close()
-
-    # 按原始 station_id 排序，保证输出行序与 s3 CSV 一致
-    all_rows.sort(key=lambda r: r["station_id"])
 
     # 最终内存报告
     main_mb, children_mb, total_mb = _get_memory_info()
     peak_total_mb = max(peak_total_mb, total_mb)
-    logger.info("All %d stations processed", len(all_rows))
+    logger.info("All %d stations processed", len(completed_station_ids) + n_pending)
     logger.info("最终内存: %.1f MB | 运行峰值: %.1f MB", total_mb, peak_total_mb)
 
     # ── 5. 输出 CSV ──────────────────────────────────────────────────────────
-    result_df = pd.DataFrame(all_rows)
-    csv_df = result_df.drop(columns=["geometry"])
+    if not PARTIAL_CSV.is_file():
+        logger.error("Partial CSV not found: %s", PARTIAL_CSV)
+        return 1
+
+    result_df = pd.read_csv(PARTIAL_CSV)
+    result_df = result_df.sort_values("station_id").drop_duplicates(subset=["station_id"], keep="last")
+    csv_df = result_df.drop(columns=["geometry_wkt"], errors="ignore")
     csv_df.to_csv(OUT_CSV, index=False)
     logger.info("Saved basin CSV -> %s", OUT_CSV)
 
@@ -246,12 +335,25 @@ def main():
     if SAVE_GPKG:
         try:
             import geopandas as gpd
-            gdf = gpd.GeoDataFrame(result_df, geometry="geometry", crs="EPSG:4326")
+            from shapely import wkt
+
+            if "geometry_wkt" not in result_df.columns:
+                raise ValueError("geometry_wkt not found in partial CSV")
+
+            gdf = gpd.GeoDataFrame(
+                result_df.drop(columns=["geometry_wkt"]),
+                geometry=result_df["geometry_wkt"].fillna("").map(
+                    lambda value: None if value == "" else wkt.loads(value)
+                ),
+                crs="EPSG:4326",
+            )
             gdf.to_file(OUT_GPKG, driver="GPKG")
             logger.info("Saved basin GPKG -> %s", OUT_GPKG)
         except Exception as e:
             logger.warning("GPKG save failed (skipping): %s", e)
 
+    PARTIAL_CSV.unlink(missing_ok=True)
+    logger.info("Removed partial CSV -> %s", PARTIAL_CSV)
     logger.info("Done.")
     return 0
 

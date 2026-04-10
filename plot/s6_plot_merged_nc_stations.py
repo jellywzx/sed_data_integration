@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
 步骤 s6（出图主入口）：一次性调用所有 plot_merged_stations_*.py 子脚本，
 生成完整的泥沙参考数据集可视化图集。
 
@@ -75,83 +74,6 @@ def _enable_logging():
 
     sys.stdout = _Tee(sys.stdout, log_fp)
     sys.stderr = _Tee(sys.stderr, log_fp)
-=======
-步骤 s6（出图）：从 s8_merged_all.nc 统计并绘图；本脚本可一次性生成全部 s6_plot_* 图。
-
-各图也可单独运行 plot/ 下脚本：
-  plot_merged_stations_records.py    -> s6_plot_records.png
-  plot_merged_stations_span.py       -> s6_plot_span_map.png, s6_plot_span_hist.png
-  plot_merged_stations_frequency.py -> s6_plot_frequency_map.png, s6_plot_frequency_hist.png
-  plot_merged_stations_sources.py   -> s6_plot_sources_map.png, s6_plot_sources_bar.png, s6_plot_sources.csv
-
-输出（步骤 6 出图）：s6_plot.png、s6_plot_span.png、s6_plot_frequency.png、s6_plot_sources.png、s6_plot_sources.csv、s6_plot_stats.csv（默认在 output/ 下，无子文件夹）。
-
-用法（在 Output_r 根目录下运行）：
-  python scripts/s6_plot_merged_nc_stations.py [--nc output/s8_merged_all.nc] [--out output/s6_plot.png]
-"""
-
-import argparse
-import csv
-from pathlib import Path
-from collections import defaultdict
-
-import numpy as np
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    HAS_MPL = True
-except ImportError:
-    HAS_MPL = False
-
-try:
-    import netCDF4 as nc4
-except ImportError:
-    nc4 = None
-
-# Output_r 根目录（脚本在 scripts/06_plot 下），默认路径基于此绝对路径
-SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_R_ROOT = SCRIPT_DIR.parent  # Output_r（脚本在 scripts/ 下）
-
-
-_LOG_TEE_ENABLED = False
-
-
-def _enable_script_logging():
-    global _LOG_TEE_ENABLED
-    if _LOG_TEE_ENABLED:
-        return
-    import atexit
-    import sys
-    from datetime import datetime
-
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
-    if log_path.exists():
-        try:
-            log_path.unlink()
-        except Exception:
-            pass
-    log_fp = open(log_path, "w", encoding="utf-8")
-    log_fp.write("\n===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
-    log_fp.flush()
-
-    class _TeeStream:
-        def __init__(self, stream, log_file):
-            self._stream = stream
-            self._log_file = log_file
-
-        def write(self, data):
-            self._stream.write(data)
-            self._log_file.write(data)
-            self._log_file.flush()
-
-        def flush(self):
-            self._stream.flush()
-            self._log_file.flush()
-
-    sys.stdout = _TeeStream(sys.stdout, log_fp)
-    sys.stderr = _TeeStream(sys.stderr, log_fp)
->>>>>>> 6296cf2afe3b4a9aa5abe5540ed519e1eeb66538
     atexit.register(log_fp.close)
     _LOG_TEE_ENABLED = True
 

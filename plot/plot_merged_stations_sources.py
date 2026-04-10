@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-<<<<<<< HEAD
 步骤 s6 出图之一：按数据来源绘图（全球地图 + 柱状图）。
 输出：s6_plot_sources_map.png、s6_plot_sources_bar.png、s6_plot_sources.csv
 
 用法：
   python plot/plot_merged_stations_sources.py
   python plot/plot_merged_stations_sources.py --nc /path/to/s6.nc --s5-csv /path/to/s5.csv
-=======
-步骤 s6 出图之一：按数据来源出图。需 s8_merged_all.nc（或 s6_plot_stats.csv）提供站点位置 + s4_clustered_stations.csv 提供 cluster_id/source。
-输出：s6_plot_sources_map.png、s6_plot_sources_bar.png、s6_plot_sources.csv（默认在 output_bf/）。
->>>>>>> 6296cf2afe3b4a9aa5abe5540ed519e1eeb66538
 """
 
 import argparse

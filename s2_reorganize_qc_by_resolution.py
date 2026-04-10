@@ -6,12 +6,10 @@
 新目录结构：
   {out_dir}/
     daily/                    # 检测为 daily 或 hourly
-    monthly/                  # 检测为 monthly
-    annually_climatology/     # 检测为 annual 或 quarterly
-    other/                    # 其余：single_point（且非 long_term_average）、irregular、no_time_var、error 等
-
-single_point 的元数据判断：若 CSV 中 single_point_interpretation 以 long_term_average_ 开头
-（由 verify_time_resolution.py 根据 nc 元数据识别为长时间历史平均），则归入 annually_climatology，否则归入 other。
+    monthly/                  # 检测为 monthly 或 quarterly
+    annual/                   # 年尺度观测
+    climatology/              # 多年平均/气候态
+    other/                    # 其余：irregular、no_time_var、error 等
 
 每个分辨率目录下不按数据集分子文件夹，文件名为全库唯一，体现「数据源」和「时间分辨率」：
   {数据源}_{分辨率}_{原文件名无后缀}.nc
@@ -50,6 +48,7 @@ from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
+    RESOLUTION_DIRS,
     get_output_r_root,
 )
 
@@ -62,17 +61,7 @@ VERIFY_CSV = S1_VERIFY_CSV
 OUT_DIR = S2_ORGANIZED_DIR
 # 并行复制时的默认线程数（I/O 为主，线程池即可）
 DEFAULT_WORKERS = 8
-
-# detected_frequency -> 新目录下的第一级目录名
-FREQ_TO_RESOLUTION = {
-    "daily": "daily",
-    "hourly": "daily",
-    "monthly": "monthly",
-    "quarterly": "annually_climatology",
-    "annual": "annually_climatology",
-}
-# 未在上述映射中的 -> "other"；single_point 在 main 中统一改归 daily
-
+LEGACY_RESOLUTION_DIRS = ("annually_climatology", "quarterly", "single_point")
 
 def get_source_from_path(path: str, root_dir: Path) -> str:
     """从相对路径解析数据源，如 daily/GloRiSe/SS/qc/xxx.nc -> GloRiSe_SS。"""
@@ -100,13 +89,19 @@ def safe_fname_part(s: str) -> str:
     return re.sub(r"[^\w\-]", "_", str(s)).strip("_") or "unknown"
 
 
-def resolution_from_detected(detected_freq: str) -> str:
-    """将 detected_frequency 映射到新目录名：daily / monthly / annually_climatology / other。"""
-    if not detected_freq or not isinstance(detected_freq, str):
+def resolution_from_semantics(temporal_semantics: str) -> str:
+    """将 s1 输出的 temporal_semantics 映射到 s2 目录名。"""
+    if not temporal_semantics or not isinstance(temporal_semantics, str):
         return "other"
-    d = detected_freq.strip().lower()
-    if d in FREQ_TO_RESOLUTION:
-        return FREQ_TO_RESOLUTION[d]
+    d = temporal_semantics.strip().lower()
+    if d == "hourly":
+        return "daily"
+    if d == "single_point":
+        return "daily"
+    if d == "quarterly":
+        return "monthly"
+    if d in RESOLUTION_DIRS:
+        return d
     return "other"
 
 
@@ -164,7 +159,7 @@ def export_other_resolution_reports(other_df: pd.DataFrame, root_dir: Path, summ
 
     if len(other_df) == 0:
         pd.DataFrame(columns=["metric", "value"]).to_csv(summary_path, index=False)
-        pd.DataFrame(columns=["path", "source", "detected_frequency", "single_point_interpretation"]).to_csv(
+        pd.DataFrame(columns=["path", "source", "detected_frequency", "temporal_semantics", "single_point_interpretation"]).to_csv(
             details_path, index=False
         )
         print("other 目录无数据，已写出空报告：")
@@ -181,6 +176,7 @@ def export_other_resolution_reports(other_df: pd.DataFrame, root_dir: Path, summ
         "path",
         "source",
         "detected_frequency",
+        "temporal_semantics",
         "single_point_interpretation",
         "rel_path",
         "path_resolution",
@@ -261,7 +257,7 @@ def main():
     ap = argparse.ArgumentParser(description="按时间分辨率校验结果将 qc 下 nc 复制到新目录（数据源_分辨率_原名）")
     ap.add_argument("--out-dir", "-o", default=OUT_DIR, help=f"新目录名（相对 Output_r），默认 {OUT_DIR}")
     ap.add_argument("--verify-csv", default=VERIFY_CSV, help=f"校验结果 CSV 路径，默认 {VERIFY_CSV}")
-    ap.add_argument("--clear", action="store_true", help="复制前清空输出目录下 daily/monthly/annually_climatology/other，避免残留旧分类文件")
+    ap.add_argument("--clear", action="store_true", help="复制前清空输出目录下各时间语义目录，避免残留旧分类文件")
     ap.add_argument("--workers", "-j", type=int, default=DEFAULT_WORKERS, metavar="N", help=f"并行复制线程数，默认 {DEFAULT_WORKERS}，设为 1 则串行")
     ap.add_argument("--other-summary-out", default=S2_OTHER_SUMMARY_CSV, help="other 分类汇总输出 CSV")
     ap.add_argument("--other-details-out", default=S2_OTHER_DETAILS_CSV, help="other 分类明细输出 CSV")
@@ -278,12 +274,18 @@ def main():
         sys.exit(1)
 
     out_base = root_dir / args.out_dir
-    for sub in ("daily", "monthly", "annually_climatology", "other"):
+    for sub in RESOLUTION_DIRS:
         (out_base / sub).mkdir(parents=True, exist_ok=True)
+    for legacy_sub in LEGACY_RESOLUTION_DIRS:
+        legacy_dir = out_base / legacy_sub
+        if legacy_dir.exists():
+            legacy_dir.mkdir(parents=True, exist_ok=True)
 
     if args.clear:
-        for sub in ("daily", "monthly", "annually_climatology", "other"):
+        for sub in RESOLUTION_DIRS + LEGACY_RESOLUTION_DIRS:
             d = out_base / sub
+            if not d.exists():
+                continue
             for f in d.iterdir():
                 if f.is_file():
                     f.unlink()
@@ -303,10 +305,13 @@ def main():
         return "qc" in parts
 
     df = df[df["path"].apply(is_qc_path)].copy()
-    df["resolution_dir"] = df["detected_frequency"].apply(resolution_from_detected)
+    if "temporal_semantics" in df.columns:
+        df["resolution_dir"] = df["temporal_semantics"].apply(resolution_from_semantics)
+    else:
+        df["resolution_dir"] = df["detected_frequency"].apply(resolution_from_semantics)
 
     # irregular 的二次判定：若时间轴表现为离散日值记录，则改归 daily
-    irregular_mask = df["detected_frequency"].astype(str).str.strip().str.lower() == "irregular"
+    irregular_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "irregular"
     irregular_idx = df[irregular_mask].index.tolist()
     n_irregular_to_daily = 0
     for idx in irregular_idx:
@@ -315,15 +320,8 @@ def main():
             df.at[idx, "resolution_dir"] = "daily"
             n_irregular_to_daily += 1
 
-    # single_point 统一视为 daily（即只有一个时间点的数据也归入 daily）
-    single_mask = df["detected_frequency"].astype(str).str.strip().str.lower() == "single_point"
-    n_single_to_daily = int(single_mask.sum())
-    if n_single_to_daily > 0:
-        df.loc[single_mask, "resolution_dir"] = "daily"
     if n_irregular_to_daily > 0:
         print(f"irregular 二次判定改归 daily: {n_irregular_to_daily} 个文件")
-    if n_single_to_daily > 0:
-        print(f"single_point 改归 daily: {n_single_to_daily} 个文件")
 
     df["source"] = df["path"].apply(lambda p: get_source_from_path(p, root_dir))
     df["stem"] = df["path"].apply(lambda p: Path(p).stem)
@@ -332,10 +330,10 @@ def main():
 
     # 已使用的文件名（不含 .nc），按 resolution 目录记录，用于生成唯一名
     used = {}
-    for r in ("daily", "monthly", "annually_climatology", "other"):
+    for r in RESOLUTION_DIRS:
         used[r] = set()
 
-    copied = {r: 0 for r in ("daily", "monthly", "annually_climatology", "other")}
+    copied = {r: 0 for r in RESOLUTION_DIRS}
     skipped = 0
     tasks = []  # (src_path, dest_path, res_dir_name)
 
@@ -377,7 +375,7 @@ def main():
 
     print(f"新目录: {out_base}")
     print(f"已处理 qc 下 nc 数量: {len(df)}（跳过不存在: {skipped}）")
-    for r in ("daily", "monthly", "annually_climatology", "other"):
+    for r in RESOLUTION_DIRS:
         print(f"  {r}: {copied[r]} 个文件")
     if errors:
         print(f"复制失败 {len(errors)} 个:")
@@ -391,7 +389,7 @@ def main():
     # other 目录的数据集构成说明
     other_df = df[df["resolution_dir"] == "other"]
     if len(other_df) > 0:
-        print("\n--- other 目录构成（未归入 daily/monthly/annually_climatology 的文件）---")
+        print("\n--- other 目录构成（未归入标准时间语义目录的文件）---")
         print("按 detected_frequency 统计:")
         for freq, cnt in other_df["detected_frequency"].value_counts().items():
             print(f"  {freq}: {cnt} 个")

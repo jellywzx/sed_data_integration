@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basin pipeline 路径配置（s1-s6 统一输出到 scripts_basin_test/output/）。
+Basin pipeline 路径配置（s1-s7 统一输出到 scripts_basin_test/output/）。
 
 所有路径均为相对于 Output_r 根目录的相对路径字符串，
 由各脚本通过 get_output_r_root() 解析为绝对路径。
@@ -14,6 +14,19 @@ from pathlib import Path
 
 # ── 统一输出目录（相对 Output_r 根目录） ──────────────────────────────────────
 PIPELINE_OUTPUT_DIR     = "scripts_basin_test/output"
+
+# ── 标准时间类型目录（s2 输出目录名）───────────────────────────────────────────
+# 说明：
+#   - 仅保留 daily / monthly / annual / climatology 四类主分辨率；
+#   - single_point 并入 daily，quarterly 并入 monthly；
+#   - other 仅用于仍无法明确分类的情况。
+RESOLUTION_DIRS = (
+    "daily",
+    "monthly",
+    "annual",
+    "climatology",
+    "other",
+)
 
 # ── s1：时间分辨率验证 ────────────────────────────────────────────────────────
 S1_VERIFY_CSV           = "scripts_basin_test/output/s1_verify_time_resolution_results.csv"
@@ -39,8 +52,20 @@ S5_BASIN_REPORT_CSV     = "scripts_basin_test/output/s5_basin_cluster_report.csv
 # ── s6：时间序列合并输出 ──────────────────────────────────────────────────────
 S6_MERGED_NC            = "scripts_basin_test/output/s6_basin_merged_all.nc"
 
-# ── s7：cluster 点 shapefile 导出 ─────────────────────────────────────────────
+# ── s7：空间文件导出 ──────────────────────────────────────────────────────────
 S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"
+S7_SOURCE_STATION_SHP   = "scripts_basin_test/output/s7_source_stations.shp"
+S7_CLUSTER_BASIN_SHP    = "scripts_basin_test/output/s7_cluster_basins.shp"
+
+# ── 向后兼容：保留旧的空间聚类主线常量，避免旧脚本 import 失败 ───────────────
+S4_CLUSTERED_CSV        = "scripts_basin_test/output/s4_clustered_stations.csv"
+S4_REPORT_CSV           = "scripts_basin_test/output/s4_merge_qc_nc_report.csv"
+S4_S5_THRESHOLD_DEG     = 0.05
+S4_S5_SOURCE_THRESHOLD_OVERRIDE_DEG = {}
+S6_OVERLAP_CSV          = "scripts_basin_test/output/s6_overlap_for_manual_choice.csv"
+S6_REPORT_CSV           = "scripts_basin_test/output/s6_merge_qc_nc_report.csv"
+S7_RESOLVED_CSV         = "scripts_basin_test/output/s7_overlap_resolved.csv"
+S8_MERGED_NC            = "scripts_basin_test/output/s8_merged_all.nc"
 
 # ── 向后兼容别名（避免修改引用了旧名称的脚本） ────────────────────────────────
 DEFAULT_BASIN_CSV       = S4_UPSTREAM_CSV
