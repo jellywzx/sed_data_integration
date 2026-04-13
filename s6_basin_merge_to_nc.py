@@ -13,6 +13,11 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
 输入：
   - scripts_basin_test/output/s5_basin_clustered_stations.csv（s5 输出）
 
+当前默认规则：
+  - climatology 不进入 basin 主线；
+  - 若输入 s5 中仍混入 climatology 行，本脚本默认会将其过滤掉；
+  - climatology 应通过独立脚本单独导出为 climatology NC。
+
 输出：
   - scripts_basin_test/output/s6_basin_merged_all.nc
 
@@ -496,6 +501,11 @@ def main():
                     help="输出 NC 路径。默认: {}".format(_DEFAULT_OUTPUT))
     ap.add_argument("--workers", "-w", type=int, default=_DEFAULT_WORKERS,
                     help="并行进程数（0 = 自动取 CPU 核数）。默认: {}".format(_DEFAULT_WORKERS))
+    ap.add_argument(
+        "--include-climatology",
+        action="store_true",
+        help="默认会过滤掉 climatology 行；如确实需要将 climatology 混入主库，可显式开启此选项",
+    )
     args = ap.parse_args()
 
     if not HAS_NC:
@@ -520,6 +530,16 @@ def main():
             return 1
 
     print("Loaded s5 stations: {} rows".format(len(stations)))
+
+    if not args.include_climatology:
+        res_lower = stations["resolution"].fillna("").astype(str).str.strip().str.lower()
+        n_clim = int((res_lower == "climatology").sum())
+        if n_clim > 0:
+            stations = stations[res_lower != "climatology"].copy()
+            print("Filtered out {} climatology rows from basin mainline input.".format(n_clim))
+        if len(stations) == 0:
+            print("Error: no non-climatology rows remain after filtering.")
+            return 1
 
     # ── 相对路径 → 绝对路径 ───────────────────────────────────────────────────
     # s3 存储相对于 output_resolution_organized/ 的相对路径（如 daily/xxx.nc）
@@ -1108,7 +1128,8 @@ def main():
                              "is_overlap=1 marks records with competing sources")
         nc.time_type_policy = ("Only four main time types are retained in the final product: "
                                "daily/monthly/annual/climatology; single_point is mapped to daily, "
-                               "quarterly is mapped to monthly")
+                               "quarterly is mapped to monthly. In the basin mainline, climatology is "
+                               "normally exported separately and therefore filtered out by default.")
         nc.provenance_policy = ("Each merged record links back to one source_station_index, while the full "
                                 "source-station mapping is preserved in n_source_stations")
         nc.basin_csv      = str(inp_path)

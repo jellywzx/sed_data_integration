@@ -7,10 +7,11 @@
 它的目标是生成一套以 `cluster` 为核心的参考数据集，包括：
 
 1. 一个压缩的总 `NetCDF` 文件
-2. 一个 `cluster` 点位 `shp`
-3. 一个原始站点点位 `shp`
-4. 一个最终 `cluster` 级流域单元 `shp`
-5. 一套用于人工检查的 `csv` 表格
+2. 一个单独的 `climatology NetCDF` 文件
+3. 一个 `cluster` 点位 `shp`
+4. 一个原始站点点位 `shp`
+5. 一个最终 `cluster` 级流域单元 `shp`
+6. 一套用于人工检查的 `csv` 表格
 
 这里的 `cluster` 不是严格意义上的“同一个物理站点”，而是：
 
@@ -56,8 +57,10 @@
 
 1. `single_point` 如果从元数据判断其实是多年平均或气候态，则归为 `climatology`
 2. `annual` 如果从元数据判断其实是多年平均或气候态，则归为 `climatology`
-3. 同一个 `cluster` 下如果同时存在 `daily / monthly / annual / climatology`，这些都要保留
-4. 它们不能混成一种普通时间序列，必须带清楚的时间类型标记
+3. `climatology` 在 `s2` 之后会被单独保留，但默认不进入 basin 主线
+4. basin 主线默认只处理非 `climatology` 的站点
+5. `climatology` 最后单独导出为一个独立 `nc`
+6. 不同时间类型不能混成一种普通时间序列，必须带清楚的时间类型标记
 
 ### 2.3 原始信息保留规则
 
@@ -175,7 +178,7 @@
 
 1. 扫描整理后的 `nc`
 2. 提取坐标、数据源、站名、河名、原始站点编号
-3. 生成站点表
+3. 生成 basin 主线使用的站点表
 
 输出：
 
@@ -184,6 +187,7 @@
 说明：
 
 1. 当前脚本会先对扫描结果排序，以提高重跑时的稳定性
+2. 当前默认会排除 `climatology`，使其不进入 basin tracing 和 basin merge
 
 ### s4_basin_trace_watch.py
 
@@ -219,12 +223,30 @@
 作用：
 
 1. 合并时间序列
-2. 生成最终压缩 `nc`
+2. 生成 basin 主线的最终压缩 `nc`
 3. 同时保留 `cluster` 层、原始站点层和观测记录层
 
 输出：
 
 1. `scripts_basin_test/output/s6_basin_merged_all.nc`
+
+说明：
+
+1. 当前默认会过滤掉 `climatology`
+2. `climatology` 应由单独脚本导出
+
+### s6_export_climatology_to_nc.py
+
+作用：
+
+1. 直接扫描 `output_resolution_organized/climatology`
+2. 不经过 basin tracing
+3. 不经过 cluster merge
+4. 将所有 climatology 站点单独导出为一个 `nc`
+
+输出：
+
+1. `scripts_basin_test/output/s6_climatology_only.nc`
 
 ### s7_export_cluster_shp.py
 
@@ -475,4 +497,4 @@
 
 ## 12. 当前有效规则一句话总结
 
-**按 90m 流域单元合并站点为 `cluster`，保留所有原始站点映射关系，最终时间分辨率只保留 `daily / monthly / annual / climatology` 四类，其中 `single_point` 归为 `daily`，`quarterly` 归为 `monthly`，并额外导出 `cluster` 点位、原始站点点位、`cluster` 级流域单元面文件，以及人工检查表。**
+**按 90m 流域单元合并站点为 `cluster`，保留所有原始站点映射关系；其中 `daily / monthly / annual` 进入 basin 主线，`climatology` 不进入流域筛选环节而是单独导出为 `nc`。时间规则上 `single_point` 归为 `daily`，`quarterly` 归为 `monthly`，并额外导出 `cluster` 点位、原始站点点位、`cluster` 级流域单元面文件，以及人工检查表。**

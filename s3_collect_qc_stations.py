@@ -10,6 +10,11 @@
     列 path, source, lat, lon, resolution, station_name, river_name, source_station_id）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
+当前默认规则：
+  - basin 主线默认不收集 climatology；
+  - climatology 文件保留在 output_resolution_organized/climatology 下，
+    供独立的 climatology NC 导出脚本使用。
+
 根目录说明：
   - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
   - 可通过环境变量 OUTPUT_R_ROOT 覆盖 Output_r 根目录。
@@ -188,10 +193,11 @@ def _collect_one_nc(path, root_dir):
 ORGANIZED_DIR = S2_ORGANIZED_DIR
 
 
-def collect_qc_nc_stations(root_dir, workers=1):
+def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None):
     """收集 root/{S2_ORGANIZED_DIR} 下全部 .nc 文件。"""
     root = Path(root_dir).resolve()
     scan_root = root / ORGANIZED_DIR
+    excluded = {str(x).strip().lower() for x in (excluded_resolutions or []) if str(x).strip()}
     paths = []
     for p in scan_root.rglob("*.nc"):
         try:
@@ -199,6 +205,8 @@ def collect_qc_nc_stations(root_dir, workers=1):
         except ValueError:
             continue
         if not rel.parts or rel.parts[0] not in RESOLUTION_DIRS:
+            continue
+        if rel.parts[0].strip().lower() in excluded:
             continue
         paths.append(str(p))
     paths = sorted(paths)
@@ -264,6 +272,11 @@ def main():
     ap.add_argument("--out", default=S3_COLLECTED_CSV, help="步骤 s3 输出 CSV 路径")
     ap.add_argument("--workers", "-j", type=int, default=0,
                     help="Parallel workers; 0=auto (cpu_count-1, max 32)")
+    ap.add_argument(
+        "--exclude-resolutions",
+        default="climatology",
+        help="逗号分隔的分辨率目录名，默认排除 climatology，使其不进入 basin 主线",
+    )
     args = ap.parse_args()
 
     if not HAS_NC:
@@ -272,9 +285,20 @@ def main():
 
     root_dir = Path(args.root).resolve()
     workers = args.workers if args.workers > 0 else min(32, max(1, (cpu_count() or 2) - 1))
+    excluded_resolutions = [
+        x.strip().lower()
+        for x in str(args.exclude_resolutions).split(",")
+        if x.strip()
+    ]
 
-    print("Collecting .nc stations from {} (workers={}) ...".format(ORGANIZED_DIR, workers))
-    stations = collect_qc_nc_stations(root_dir, workers=workers)
+    print(
+        "Collecting .nc stations from {} (workers={}, excluded={}) ...".format(
+            ORGANIZED_DIR,
+            workers,
+            ",".join(excluded_resolutions) if excluded_resolutions else "(none)",
+        )
+    )
+    stations = collect_qc_nc_stations(root_dir, workers=workers, excluded_resolutions=excluded_resolutions)
     if len(stations) == 0:
         print("No organized .nc files found with valid lat/lon.")
         return
@@ -286,7 +310,12 @@ def main():
     out_path.parent.mkdir(parents=True, exist_ok=True)
     stations.to_csv(out_path, index=False)
     print("Saved to {}.".format(out_path))
-    print("Next: run s4_cluster_qc_stations.py with input {}".format(out_path))
+    if "climatology" in excluded_resolutions:
+        print("Note: climatology files were excluded from the basin mainline collection.")
+        print("Next: run s4_basin_trace_watch.py with input {}".format(out_path))
+        print("Climatology can be exported separately with s6_export_climatology_to_nc.py")
+    else:
+        print("Next: run s4_basin_trace_watch.py with input {}".format(out_path))
 
 
 if __name__ == "__main__":

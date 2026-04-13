@@ -7,3 +7,4 @@
 __pycache__/
 *.pyc
 plot/__pycache__/
+*.pyc

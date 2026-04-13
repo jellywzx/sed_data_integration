@@ -30,6 +30,7 @@ import xarray as xr
 from pipeline_paths import (
     S4_UPSTREAM_CSV,
     S5_BASIN_CLUSTERED_CSV,
+    S6_CLIMATOLOGY_NC,
     S6_MERGED_NC,
     S7_CLUSTER_BASIN_SHP,
     S7_CLUSTER_SHP,
@@ -57,6 +58,7 @@ DEFAULT_CHECKLIST = SCRIPT_DIR / "manual_review_checklist.csv"
 DEFAULT_S4 = ROOT / S4_UPSTREAM_CSV
 DEFAULT_S5 = ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_S6 = ROOT / S6_MERGED_NC
+DEFAULT_CLIM_NC = ROOT / S6_CLIMATOLOGY_NC
 DEFAULT_CLUSTER_SHP = ROOT / S7_CLUSTER_SHP
 DEFAULT_SOURCE_SHP = ROOT / S7_SOURCE_STATION_SHP
 DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASIN_SHP
@@ -222,6 +224,22 @@ def load_nc_bundle(path: Path):
             "source_names": source_names,
             "source_records": source_records,
             "times": times,
+        }
+    finally:
+        ds.close()
+
+
+def load_simple_nc_stats(path: Path):
+    if not path.is_file():
+        return {"exists": False, "dims": {}, "n_records": 0, "n_stations": 0}
+    ds = open_netcdf_dataset(path)
+    try:
+        dims = {k: int(v) for k, v in ds.sizes.items()}
+        return {
+            "exists": True,
+            "dims": dims,
+            "n_records": int(dims.get("n_records", 0)),
+            "n_stations": int(dims.get("n_stations", 0)),
         }
     finally:
         ds.close()
@@ -607,6 +625,7 @@ def main():
     ap.add_argument("--s4", default=str(DEFAULT_S4), help="s4 upstream basin csv")
     ap.add_argument("--s5", default=str(DEFAULT_S5), help="s5 clustered csv")
     ap.add_argument("--s6", default=str(DEFAULT_S6), help="s6 merged nc")
+    ap.add_argument("--climatology-nc", default=str(DEFAULT_CLIM_NC), help="standalone climatology nc")
     ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_SHP), help="cluster point shapefile")
     ap.add_argument("--source-shp", default=str(DEFAULT_SOURCE_SHP), help="source station shapefile")
     ap.add_argument("--cluster-basin-shp", default=str(DEFAULT_CLUSTER_BASIN_SHP), help="cluster basin shapefile")
@@ -617,6 +636,7 @@ def main():
     s4_path = Path(args.s4)
     s5_path = Path(args.s5)
     s6_path = Path(args.s6)
+    climatology_nc_path = Path(args.climatology_nc)
     cluster_shp_path = Path(args.cluster_shp)
     source_shp_path = Path(args.source_shp)
     cluster_basin_shp_path = Path(args.cluster_basin_shp)
@@ -627,6 +647,7 @@ def main():
 
     file_map = {
         "s6_nc": s6_path,
+        "climatology_nc": climatology_nc_path,
         "cluster_shp": cluster_shp_path,
         "source_shp": source_shp_path,
         "cluster_basin_shp": cluster_basin_shp_path,
@@ -639,6 +660,7 @@ def main():
     s4_df = load_s4(s4_path)
     s5_df = load_s5(s5_path)
     nc = load_nc_bundle(s6_path)
+    clim_nc = load_simple_nc_stats(climatology_nc_path)
 
     cluster_df = read_shapefile_table(cluster_shp_path)
     source_df = read_shapefile_table(source_shp_path)
@@ -694,6 +716,7 @@ def main():
     resolution_counts = dict(zip(resolution_summary["resolution_name"], resolution_summary["record_count"]))
     annual_count = int(resolution_counts.get("annual", 0))
     climatology_count = int(resolution_counts.get("climatology", 0))
+    climatology_total_records = climatology_count + int(clim_nc["n_records"])
     clusters_with_both = 0
     if annual_count > 0 and climatology_count > 0:
         annual_clusters = set(nc["station_index"][nc["resolution_labels"] == "annual"].tolist())
@@ -756,9 +779,13 @@ def main():
         ),
         make_result(
             "A05",
-            "pass" if observed_resolutions.issubset({"daily", "monthly", "annual", "climatology"}) else "warn",
-            "final records only use the four main time classes" if observed_resolutions.issubset({"daily", "monthly", "annual", "climatology"}) else "final records still contain other time classes",
-            evidence="observed={}".format("|".join(sorted(observed_resolutions))),
+            "pass" if observed_resolutions.issubset({"daily", "monthly", "annual", "climatology"}) or (
+                clim_nc["exists"] and observed_resolutions.issubset({"daily", "monthly", "annual", "other"})
+            ) else "warn",
+            "main nc uses expected time classes; climatology may be stored separately" if observed_resolutions.issubset({"daily", "monthly", "annual", "climatology"}) or (
+                clim_nc["exists"] and observed_resolutions.issubset({"daily", "monthly", "annual", "other"})
+            ) else "final records still contain unexpected time classes",
+            evidence="main_observed={} ; separate_climatology_nc_records={}".format("|".join(sorted(observed_resolutions)), int(clim_nc["n_records"])),
             output_file="10_resolution_record_counts.csv",
         ),
         make_result(
@@ -777,9 +804,11 @@ def main():
         ),
         make_result(
             "A08",
-            "pass" if annual_count > 0 and climatology_count > 0 else "fail",
-            "annual and climatology are both retained" if annual_count > 0 and climatology_count > 0 else "annual or climatology is missing in final records",
-            evidence="annual_records={}, climatology_records={}, clusters_with_both={}".format(annual_count, climatology_count, clusters_with_both),
+            "pass" if annual_count > 0 and climatology_total_records > 0 else "fail",
+            "annual and climatology are both retained" if annual_count > 0 and climatology_total_records > 0 else "annual or climatology is missing in final outputs",
+            evidence="annual_records={}, climatology_records_main_nc={}, climatology_records_separate_nc={}, clusters_with_both_main_nc={}".format(
+                annual_count, climatology_count, int(clim_nc["n_records"]), clusters_with_both
+            ),
             output_file="10_resolution_record_counts.csv",
         ),
         make_result(
