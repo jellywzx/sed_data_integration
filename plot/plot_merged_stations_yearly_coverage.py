@@ -5,7 +5,7 @@
 
 展示内容：
   - 折线图：每一年中拥有至少一条有效记录（Q/SSC/SSL 任意一项非填充）的站点数
-  - 按时间分辨率（daily / monthly / annually_clim / other）分层堆叠面积图
+  - 按时间类型（daily / monthly / annual / climatology / other）分层堆叠面积图
 
 用法：
   python plot/plot_merged_stations_yearly_coverage.py
@@ -63,7 +63,7 @@ def main():
     # ── 堆叠面积图 + 总量折线 ──────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(12, 5))
 
-    res_order  = list(sorted(RES_CODES.keys()))                   # 0,1,2,3
+    res_order  = list(sorted(RES_CODES.keys()))
     labels     = [RES_CODES[k] for k in res_order]
     colors     = [RES_COLORS[k] for k in res_order]
     stack_data = np.vstack([by_res.get(RES_CODES[k], np.zeros(len(years)))

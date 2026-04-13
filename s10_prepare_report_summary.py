@@ -34,6 +34,20 @@ S7_SOURCE_SHP_DBF = ROOT / "s7_source_stations.dbf"
 S7_CLUSTER_BASIN_DBF = ROOT / "s7_cluster_basins.dbf"
 
 
+def open_netcdf_dataset(path: Path):
+    """Open NetCDF with an engine fallback that works across environments."""
+    kwargs = dict(decode_cf=False, mask_and_scale=False)
+    last_exc = None
+    for engine in (None, "netcdf4", "h5netcdf"):
+        try:
+            if engine is None:
+                return xr.open_dataset(path, **kwargs)
+            return xr.open_dataset(path, engine=engine, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
+
+
 def dbf_row_count(path):
     with path.open("rb") as fh:
         header = fh.read(32)
@@ -92,7 +106,7 @@ def build_summary():
     source_shp_count = dbf_row_count(S7_SOURCE_SHP_DBF)
     cluster_basin_count = dbf_row_count(S7_CLUSTER_BASIN_DBF)
 
-    ds = xr.open_dataset(S6_MERGED_NC, engine="h5netcdf", decode_cf=False, mask_and_scale=False)
+    ds = open_netcdf_dataset(S6_MERGED_NC)
     try:
         nc_n_records = int(ds.sizes["n_records"])
         nc_n_source_stations = int(ds.sizes["n_source_stations"])

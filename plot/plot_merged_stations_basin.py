@@ -20,7 +20,7 @@ import numpy as np
 _scripts_dir = Path(__file__).resolve().parent.parent
 if str(_scripts_dir) not in sys.path:
     sys.path.insert(0, str(_scripts_dir))
-from s6_plot_common import DEFAULT_NC, DEFAULT_OUT_DIR, FILL_F, load_basin_stats
+from s6_plot_common import DEFAULT_NC, DEFAULT_OUT_DIR, FILL_F, annotate_bars, load_basin_stats
 
 try:
     import matplotlib
@@ -56,15 +56,19 @@ _PFAF1_COLORS = [
     "#00ACC1", "#F4511E", "#E53935", "#6D4C41", "#FDD835",
 ]
 
-# 匹配质量标签（s6 写入的 i1 值：0–3 + -1）
-_QUAL_LABELS = {
-    -1: "未知 / N/A",
-     0: "精确匹配",
-     1: "面积误差 <20%",
-     2: "面积误差 20–50%",
-     3: "面积误差 >50%",
+# 匹配质量标签（与当前 s6 basin_match_quality 保持一致）
+_QUAL_DISPLAY = {
+    -1: "unknown / N.A.",
+     0: "distance only",
+     1: "area matched",
+     2: "failed",
 }
-_QUAL_COLORS = ["#BDBDBD", "#43A047", "#1E88E5", "#FFA726", "#E53935"]
+_QUAL_COLORS = {
+    -1: "#BDBDBD",
+     0: "#43A047",
+     1: "#1E88E5",
+     2: "#E53935",
+}
 
 
 def _draw_basemap(ax):
@@ -92,6 +96,7 @@ def main():
     area       = data["basin_area"]
     pfaf       = data["pfaf_code"]
     match_qual = data["match_quality"]
+    qual_label_map = data.get("match_quality_labels", {})
     n_stat     = data["n_stations"]
 
     thr = FILL_F * 0.5
@@ -181,7 +186,7 @@ def main():
         colors3 = [_PFAF1_COLORS[(d - 1) % len(_PFAF1_COLORS)] for d, _ in counts_by_region]
         bars3   = ax3.bar(range(len(counts_by_region)), vals,
                           color=colors3, edgecolor="white", alpha=0.9)
-        ax3.bar_label(bars3, fontsize=9, padding=2)
+        annotate_bars(ax3, bars3, fontsize=9, padding=2)
         ax3.set_xticks(range(len(counts_by_region)))
         ax3.set_xticklabels(xlabels, rotation=0, ha="center", fontsize=9)
         ax3.set_ylabel("Number of stations")
@@ -197,18 +202,24 @@ def main():
     # ── 图3：流域匹配质量 ─────────────────────────────────────────────────────
     out_qual = out_prefix.parent / (out_prefix.name + "_quality.png")
     qual_int = match_qual.astype(int)
-    qual_keys = sorted(_QUAL_LABELS.keys())
+    qual_keys = sorted(set(list(_QUAL_DISPLAY.keys()) + qual_int.tolist()))
     qual_counts = [(q, int((qual_int == q).sum())) for q in qual_keys]
     qual_counts = [(q, c) for q, c in qual_counts if c > 0]
 
     if qual_counts:
         fig4, ax4 = plt.subplots(figsize=(8, 4))
-        xlabels4 = [_QUAL_LABELS[q] for q, _ in qual_counts]
+        xlabels4 = []
+        for q, _ in qual_counts:
+            raw_label = qual_label_map.get(q, "")
+            if raw_label:
+                xlabels4.append(raw_label.replace("_", " "))
+            else:
+                xlabels4.append(_QUAL_DISPLAY.get(q, str(q)))
         vals4    = [c for _, c in qual_counts]
-        colors4  = [_QUAL_COLORS[qual_keys.index(q)] for q, _ in qual_counts]
+        colors4  = [_QUAL_COLORS.get(q, "#9E9E9E") for q, _ in qual_counts]
         bars4    = ax4.bar(range(len(qual_counts)), vals4,
                            color=colors4, edgecolor="white", alpha=0.9)
-        ax4.bar_label(bars4, fontsize=9, padding=2)
+        annotate_bars(ax4, bars4, fontsize=9, padding=2)
         ax4.set_xticks(range(len(qual_counts)))
         ax4.set_xticklabels(xlabels4, rotation=15, ha="right", fontsize=9)
         ax4.set_ylabel("Number of stations")

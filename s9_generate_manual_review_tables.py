@@ -58,6 +58,25 @@ DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASIN_SHP
 DEFAULT_OUT_DIR = ROOT / "scripts_basin_test/output/manual_review"
 
 
+def open_netcdf_dataset(path: Path):
+    """
+    Open a NetCDF file with a tolerant engine fallback.
+
+    On node114 the wzx env has netCDF4 but not h5netcdf, while some other
+    environments may be the opposite. This helper keeps the script portable.
+    """
+    kwargs = dict(decode_cf=False, mask_and_scale=False)
+    last_exc = None
+    for engine in (None, "netcdf4", "h5netcdf"):
+        try:
+            if engine is None:
+                return xr.open_dataset(path, **kwargs)
+            return xr.open_dataset(path, engine=engine, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
+
+
 def _safe_text(value, maxlen=160):
     if value is None:
         return ""
@@ -190,7 +209,7 @@ def load_s5_cluster_stats(path: Path):
 
 
 def load_s6_stats(path: Path):
-    ds = xr.open_dataset(path, engine="h5netcdf", decode_cf=False, mask_and_scale=False)
+    ds = open_netcdf_dataset(path)
     try:
         dims = {k: int(v) for k, v in ds.sizes.items()}
 

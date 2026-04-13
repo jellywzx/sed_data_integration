@@ -27,7 +27,14 @@ import numpy as np
 _scripts_dir = Path(__file__).resolve().parent.parent
 if str(_scripts_dir) not in sys.path:
     sys.path.insert(0, str(_scripts_dir))
-from s6_plot_common import DEFAULT_NC, DEFAULT_OUT_DIR, load_variable_availability, RES_CODES
+from s6_plot_common import (
+    DEFAULT_NC,
+    DEFAULT_OUT_DIR,
+    RES_CODES,
+    RES_COLORS,
+    annotate_bars,
+    load_variable_availability,
+)
 
 try:
     import matplotlib
@@ -143,21 +150,22 @@ def main():
     bar_colors = [_COMBO_COLORS[c] for c in combos_with_data]
     bars = ax_l.bar(combos_with_data, bar_vals, color=bar_colors,
                     edgecolor="white", alpha=0.9)
-    ax_l.bar_label(bars, fontsize=9, padding=2)
+    annotate_bars(ax_l, bars, fontsize=9, padding=2)
+    ax_l.set_xticks(np.arange(len(combos_with_data)))
     ax_l.set_xticklabels(combos_with_data, rotation=30, ha="right", fontsize=9)
     ax_l.set_ylabel("Number of stations")
     ax_l.set_title("Variable combination  (total={:,})".format(n_stat))
 
-    # 右图：主要组合按分辨率分层柱状图
+    # 右图：主要组合按主时间类型分层柱状图
     # 只展示 Q、Q+SSC、Q+SSC+SSL 三组（最重要的三类）
     top_combos = ["Q", "Q+SSC", "Q+SSC+SSL"]
     top_combos = [c for c in top_combos if combo_counts.get(c, 0) > 0]
-    res_labels = [RES_CODES.get(k, str(k)) for k in sorted(RES_CODES)]
-    res_colors_list = ["#2196F3", "#4CAF50", "#FF9800", "#9E9E9E"]
+    res_items = [(code, RES_CODES.get(code, str(code))) for code in sorted(RES_CODES)]
+    res_colors_list = [RES_COLORS[code] for code, _ in res_items]
 
     x     = np.arange(len(top_combos))
-    width = 0.2
-    for j, (res_code, res_label) in enumerate(sorted(RES_CODES.items())):
+    width = 0.8 / max(len(res_items), 1)
+    for j, (res_code, res_label) in enumerate(res_items):
         sub_counts = []
         for c in top_combos:
             mk = (combo == c) & (res == res_code)
@@ -167,11 +175,11 @@ def main():
                      color=res_colors_list[j], edgecolor="white",
                      alpha=0.9, label=res_label)
 
-    ax_r.set_xticks(x + width * 1.5)
+    ax_r.set_xticks(x + width * (len(res_items) - 1) / 2.0)
     ax_r.set_xticklabels(top_combos, fontsize=10)
     ax_r.set_ylabel("Number of stations")
-    ax_r.set_title("Variable availability by temporal resolution")
-    ax_r.legend(title="Resolution", fontsize=9)
+    ax_r.set_title("Variable availability by dominant temporal type")
+    ax_r.legend(title="Time type", fontsize=9)
 
     plt.tight_layout()
     plt.savefig(out_bar, dpi=args.dpi, bbox_inches="tight")

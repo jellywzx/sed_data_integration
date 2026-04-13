@@ -311,7 +311,13 @@ def main():
         df["resolution_dir"] = df["detected_frequency"].apply(resolution_from_semantics)
 
     # irregular 的二次判定：若时间轴表现为离散日值记录，则改归 daily
-    irregular_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "irregular"
+    # irregular_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "irregular"
+
+    if "temporal_semantics" in df.columns:
+        irregular_mask = df["temporal_semantics"].astype(str).str.strip().str.lower() == "irregular"
+    else:
+        irregular_mask = df["detected_frequency"].astype(str).str.strip().str.lower() == "irregular"
+
     irregular_idx = df[irregular_mask].index.tolist()
     n_irregular_to_daily = 0
     for idx in irregular_idx:
