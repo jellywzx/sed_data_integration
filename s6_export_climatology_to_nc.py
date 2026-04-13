@@ -347,7 +347,7 @@ def main():
 
         series = row["series"]
         dates = pd.to_datetime(series["date"])
-        time_parts.append(((dates - ref).total_seconds().values / 86400.0).astype(np.float64))
+        time_parts.append(((dates - ref).dt.total_seconds().values / 86400.0).astype(np.float64))
         station_index_parts.append(np.full(len(series), idx, dtype=np.int32))
         q_parts.append(series["Q"].fillna(FILL).values.astype(np.float32))
         ssc_parts.append(series["SSC"].fillna(FILL).values.astype(np.float32))

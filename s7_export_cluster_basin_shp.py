@@ -29,8 +29,10 @@ import pandas as pd
 
 from pipeline_paths import (
     S4_UPSTREAM_GPKG,
+    S4_LOCAL_GPKG, 
     S5_BASIN_CLUSTERED_CSV,
     S7_CLUSTER_BASIN_SHP,
+    S7_LOCAL_BASIN_SHP,
     get_output_r_root,
 )
 
@@ -45,7 +47,9 @@ ROOT = get_output_r_root(SCRIPT_DIR)
 
 _DEFAULT_STATIONS = ROOT / S5_BASIN_CLUSTERED_CSV
 _DEFAULT_BASIN_GPKG = ROOT / S4_UPSTREAM_GPKG
+_DEFAULT_LOCAL_GPKG  = ROOT / S4_LOCAL_GPKG
 _DEFAULT_OUT = ROOT / S7_CLUSTER_BASIN_SHP
+_DEFAULT_LOCAL_OUT   = ROOT / S7_LOCAL_BASIN_SHP
 
 
 def _safe_text(value, maxlen=120):
@@ -98,6 +102,8 @@ def main():
     )
     ap.add_argument("--stations", default=str(_DEFAULT_STATIONS), help="s5 cluster CSV 路径")
     ap.add_argument("--basin-gpkg", default=str(_DEFAULT_BASIN_GPKG), help="s4 流域面 GPKG 路径")
+    ap.add_argument("--local-basin-gpkg", default=str(_DEFAULT_LOCAL_GPKG))
+    ap.add_argument("--local-out",        default=str(_DEFAULT_LOCAL_OUT))
     ap.add_argument("--out", default=str(_DEFAULT_OUT), help="输出 shapefile 路径")
     args = ap.parse_args()
 
@@ -108,6 +114,8 @@ def main():
     station_path = Path(args.stations)
     basin_gpkg = Path(args.basin_gpkg)
     out_path = Path(args.out)
+    local_basin_gpkg = Path(args.local_basin_gpkg)
+    local_out_path   = Path(args.local_out)
 
     if not station_path.is_file():
         print("Error: station CSV not found: {}".format(station_path))
@@ -191,6 +199,54 @@ def main():
     print("Wrote {} cluster basin polygons -> {}".format(n_kept, out_path))
     if n_dropped > 0:
         print("Skipped {} clusters without basin geometry".format(n_dropped))
+
+        # ── 最小单元集水区 SHP ───────────────────────────────────────────────────
+    if local_basin_gpkg.is_file():
+        local_gdf = gpd.read_file(local_basin_gpkg)
+        if "station_id" not in local_gdf.columns:
+            print("Warning: 'station_id' not found in local GPKG, skipping local SHP output")
+        else:
+            local_gdf = local_gdf.copy()
+            local_gdf["station_id"] = pd.to_numeric(local_gdf["station_id"], errors="coerce").astype("Int64")
+            local_gdf = local_gdf.dropna(subset=["station_id"]).copy()
+            local_gdf["station_id"] = local_gdf["station_id"].astype(int)
+
+            merged_local = reps.merge(
+                local_gdf[["station_id", "geometry"]],
+                on="station_id",
+                how="left",
+            )
+            n_local_total = len(merged_local)
+            merged_local = merged_local[merged_local["geometry"].notna()].copy()
+            n_local_kept = len(merged_local)
+
+            merged_local["cluster_ui"] = merged_local["cluster_id"].map(_build_cluster_uid)
+            merged_local["cluster_id"] = merged_local["cluster_id"].astype(int)
+            merged_local["basin_id"]   = pd.to_numeric(_series_or_default(merged_local, "basin_id", pd.NA), errors="coerce")
+            merged_local["basin_area"] = pd.to_numeric(_series_or_default(merged_local, "basin_area", pd.NA), errors="coerce")
+            merged_local["pfaf_code"]  = pd.to_numeric(_series_or_default(merged_local, "pfaf_code", pd.NA), errors="coerce")
+            merged_local["area_err"]   = pd.to_numeric(_series_or_default(merged_local, "area_error", pd.NA), errors="coerce")
+            merged_local["uparea"]     = pd.to_numeric(_series_or_default(merged_local, "uparea_merit", pd.NA), errors="coerce")
+            merged_local["n_up_reach"] = pd.to_numeric(_series_or_default(merged_local, "n_upstream_reaches", -9999), errors="coerce").fillna(-9999).astype(int)
+            merged_local["n_rows"]     = pd.to_numeric(_series_or_default(merged_local, "n_rows", 0), errors="coerce").fillna(0).astype(int)
+            merged_local["n_src"]      = pd.to_numeric(_series_or_default(merged_local, "n_src", 0), errors="coerce").fillna(0).astype(int)
+            merged_local["match_qual"] = _series_or_default(merged_local, "match_quality", "").map(lambda x: _safe_text(x, 40))
+            merged_local["method"]     = _series_or_default(merged_local, "method", "").map(lambda x: _safe_text(x, 40))
+            merged_local["stn_name"]   = _series_or_default(merged_local, "station_name", "").map(lambda x: _safe_text(x, 80))
+            merged_local["river_name"] = _series_or_default(merged_local, "river_name", "").map(lambda x: _safe_text(x, 80))
+            merged_local["src_stn_id"] = _series_or_default(merged_local, "source_station_id", "").map(lambda x: _safe_text(x, 80))
+
+            local_out_gdf = gpd.GeoDataFrame(merged_local[out_cols], geometry="geometry", crs=local_gdf.crs or "EPSG:4326")
+            local_out_path.parent.mkdir(parents=True, exist_ok=True)
+            local_driver = "ESRI Shapefile" if local_out_path.suffix.lower() == ".shp" else "GPKG"
+            local_out_gdf.to_file(local_out_path, driver=local_driver, encoding="UTF-8")
+            print("Wrote {} cluster local catchment polygons -> {}".format(n_local_kept, local_out_path))
+            if n_local_total - n_local_kept > 0:
+                print("Skipped {} clusters without local catchment geometry".format(n_local_total - n_local_kept))
+    else:
+        print("Warning: local catchment GPKG not found ({}), skipping".format(local_basin_gpkg))
+        print("Hint: rerun s4 to generate s4_local_catchments.gpkg")
+
     print("Join key in shapefile: cluster_ui  (matches NC 'cluster_uid')")
     return 0
 

@@ -406,6 +406,7 @@ class UpstreamBasinTracer:
         """
         result = {
             "geometry": None,
+            "geometry_local": None,
             "basin_area": np.nan,
             "basin_id": None,
             "match_quality": "failed",
@@ -429,6 +430,10 @@ class UpstreamBasinTracer:
         result["basin_area"] = reach_info["uparea"]
 
         if trace_upstream:
+
+            # 最小单元集水区（单个 COMID）
+            result["geometry_local"] = self.get_upstream_basin_polygon({reach_info["COMID"]})  # ← 新增
+
             upstream_comids = self.trace_upstream_reaches(
                 reach_info["COMID"],
                 reach_info["pfaf_code"],

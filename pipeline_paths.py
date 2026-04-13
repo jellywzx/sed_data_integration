@@ -44,6 +44,7 @@ S3_COLLECTED_CSV        = "scripts_basin_test/output/s3_collected_stations.csv"
 # ── s4：流域追踪（basin tracer） ──────────────────────────────────────────────
 S4_UPSTREAM_CSV         = "scripts_basin_test/output/s4_upstream_basins.csv"
 S4_UPSTREAM_GPKG        = "scripts_basin_test/output/s4_upstream_basins.gpkg"
+S4_LOCAL_GPKG           = "scripts_basin_test/output/s4_local_catchments.gpkg"  
 
 # ── s5：流域聚类合并 ──────────────────────────────────────────────────────────
 S5_BASIN_CLUSTERED_CSV  = "scripts_basin_test/output/s5_basin_clustered_stations.csv"
@@ -57,6 +58,7 @@ S6_CLIMATOLOGY_NC       = "scripts_basin_test/output/s6_climatology_only.nc"
 S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"
 S7_SOURCE_STATION_SHP   = "scripts_basin_test/output/s7_source_stations.shp"
 S7_CLUSTER_BASIN_SHP    = "scripts_basin_test/output/s7_cluster_basins.shp"
+S7_LOCAL_BASIN_SHP      = "scripts_basin_test/output/s7_cluster_basins_local.shp"  
 
 # ── 向后兼容：保留旧的空间聚类主线常量，避免旧脚本 import 失败 ───────────────
 S4_CLUSTERED_CSV        = "scripts_basin_test/output/s4_clustered_stations.csv"

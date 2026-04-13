@@ -36,7 +36,7 @@ import psutil
 from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
-from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG
+from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG,S4_LOCAL_GPKG
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)   # Output_r，支持 OUTPUT_R_ROOT 环境变量覆盖
@@ -50,6 +50,7 @@ S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
 OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
 OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
+OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG 
 
 LOG_LEVEL  = "INFO"
 PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
@@ -87,7 +88,7 @@ CSV_COLUMNS = [
     "method",
     "n_upstream_reaches",
 ]
-CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt"]
+CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
 
 
 # ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
@@ -153,6 +154,7 @@ def _trace_chunk(args):
                 "method":             basin_result["method"],
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
                 "geometry":           basin_result["geometry"],
+                "geometry_local": basin_result["geometry_local"],
             }
         )
         # 更新共享计数器（每完成一个站点 +1）
@@ -186,6 +188,8 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
         if include_geometry:
             geometry = row.get("geometry")
             out_row["geometry_wkt"] = geometry.wkt if geometry is not None else ""
+            geometry_local = row.get("geometry_local")                                          # ← 新增
+            out_row["geometry_local_wkt"] = geometry_local.wkt if geometry_local is not None else ""  # ← 新增
         rows.append(out_row)
     columns = CSV_COLUMNS_WITH_GEOM if include_geometry else CSV_COLUMNS
     return pd.DataFrame(rows, columns=columns)
@@ -348,6 +352,28 @@ def main():
                 crs="EPSG:4326",
             )
             gdf.to_file(OUT_GPKG, driver="GPKG")
+            # 上游流域 GPKG（原来的，改变量名）
+            base_df = result_df.drop(columns=["geometry_wkt", "geometry_local_wkt"], errors="ignore")
+            gdf_upstream = gpd.GeoDataFrame(
+                base_df.copy(),
+                geometry=result_df["geometry_wkt"].fillna("").map(
+                    lambda value: None if value == "" else wkt.loads(value)
+                ),
+                crs="EPSG:4326",
+            )
+            gdf_upstream.to_file(OUT_GPKG, driver="GPKG")
+
+            # 最小单元集水区 GPKG（新增）
+            if "geometry_local_wkt" in result_df.columns:
+                gdf_local = gpd.GeoDataFrame(
+                    base_df.copy(),
+                    geometry=result_df["geometry_local_wkt"].fillna("").map(
+                        lambda value: None if value == "" else wkt.loads(value)
+                    ),
+                    crs="EPSG:4326",
+                )
+                gdf_local.to_file(OUT_LOCAL_GPKG, driver="GPKG")
+
             logger.info("Saved basin GPKG -> %s", OUT_GPKG)
         except Exception as e:
             logger.warning("GPKG save failed (skipping): %s", e)
