@@ -392,6 +392,7 @@ class UpstreamBasinTracer:
         lon: float,
         lat: float,
         reported_area: float = None,
+        trace_upstream: bool = True,
     ) -> Dict:
         """单站完整流程：匹配河段 → 上游追溯 → 合并汇水面（失败则用面积圆缓冲兜底）。
 
@@ -427,17 +428,24 @@ class UpstreamBasinTracer:
         result["area_error"] = reach_info["area_error"]
         result["basin_area"] = reach_info["uparea"]
 
-        upstream_comids = self.trace_upstream_reaches(
-            reach_info["COMID"],
-            reach_info["pfaf_code"],
-        )
+        if trace_upstream:
+            upstream_comids = self.trace_upstream_reaches(
+                reach_info["COMID"],
+                reach_info["pfaf_code"],
+            )
+            method_ok = "upstream_traced"
+        else:
+            upstream_comids = {reach_info["COMID"]}   # 只取匹配到的这一个单元
+            method_ok = "local_catchment"
+
         result["n_upstream_reaches"] = len(upstream_comids)
 
         merged_polygon = self.get_upstream_basin_polygon(upstream_comids)
 
         if merged_polygon is not None:
             result["geometry"] = merged_polygon
-            result["method"] = "upstream_traced"
+            result["method"] = method_ok             # ← 用变量替代原来的字符串字面量
+
         else:
             # 二级汇水 shp 缺失或索引对不上时，用等面积圆近似，保证仍有返回值
             result["geometry"] = self._create_area_buffer(

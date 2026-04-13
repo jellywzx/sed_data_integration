@@ -138,7 +138,7 @@ def _trace_chunk(args):
     tracer = UpstreamBasinTracer(merit_dir_str)
     results = []
     for station_id, lon, lat in chunk:
-        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None)
+        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None, trace_upstream=False)
         results.append(
             {
                 "station_id":         station_id,
