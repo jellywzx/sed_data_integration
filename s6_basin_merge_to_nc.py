@@ -20,6 +20,7 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
 
 输出：
   - scripts_basin_test/output/s6_basin_merged_all.nc
+  - scripts_basin_test/output/s6_cluster_quality_order.csv
 
 NetCDF 结构：
   n_stations   维度：唯一 cluster 数（按 cluster_id 排序后的 0-based 索引）
@@ -52,7 +53,13 @@ import pandas as pd
 import psutil
 from tqdm import tqdm
 
-from pipeline_paths import get_output_r_root, S5_BASIN_CLUSTERED_CSV, S6_MERGED_NC, S2_ORGANIZED_DIR
+from pipeline_paths import (
+    get_output_r_root,
+    S5_BASIN_CLUSTERED_CSV,
+    S6_MERGED_NC,
+    S6_QUALITY_ORDER_CSV,
+    S2_ORGANIZED_DIR,
+)
 
 try:
     import netCDF4 as nc4
@@ -66,6 +73,7 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 
 _DEFAULT_INPUT  = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 _DEFAULT_OUTPUT = PROJECT_ROOT / S6_MERGED_NC
+_DEFAULT_QUALITY_ORDER = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 
 # output_resolution_organized/ 根目录，用于将 s3 CSV 中的相对路径还原为绝对路径
 _ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
@@ -80,6 +88,24 @@ SSC_FLAG_NAMES= ["SSC_flag", "ssc_flag", "TSS_flag", "tss_flag"]
 SSL_FLAG_NAMES= ["SSL_flag", "ssl_flag", "sediment_load_flag"]
 FLAG_GOOD     = 0    # flag==0 表示好数据
 FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
+QUALITY_ORDER_COLUMNS = [
+    "cluster_id",
+    "cluster_uid",
+    "cluster_index",
+    "resolution",
+    "quality_rank",
+    "n_candidates",
+    "is_top_ranked",
+    "source",
+    "source_station_index",
+    "source_station_uid",
+    "path",
+    "quality_score",
+    "good_flag_count",
+    "valid_flag_count",
+    "n_time_rows",
+    "n_nonempty_rows",
+]
 
 RESOLUTION_CODES = {
     "daily": 0,
@@ -295,18 +321,55 @@ def compute_quality_score(df):
     """计算 DataFrame 的质量分数：flag==0（好数据）占所有有效 flag 的比例。
     有效 flag 定义为值在 {0,1,2,3} 内（不含 9/missing）。
     """
+    return compute_quality_metrics(df)["quality_score"]
+
+
+def compute_quality_metrics(df):
     total = 0
-    good  = 0
+    good = 0
     for col in ["Q_flag", "SSC_flag", "SSL_flag"]:
         if col not in df.columns:
             continue
         flags = df[col].values.astype(np.int16)
-        valid_mask = (flags >= 0) & (flags <= 3)  # 排除 9=missing
+        valid_mask = (flags >= 0) & (flags <= 3)
         total += int(valid_mask.sum())
-        good  += int(((flags == FLAG_GOOD) & valid_mask).sum())
-    if total == 0:
-        return 0.0
-    return good / total
+        good += int(((flags == FLAG_GOOD) & valid_mask).sum())
+
+    data_cols = [col for col in ["Q", "SSC", "SSL"] if col in df.columns]
+    if data_cols:
+        nonempty_rows = int(df[data_cols].notna().any(axis=1).sum())
+    else:
+        nonempty_rows = 0
+
+    return {
+        "quality_score": (good / total) if total > 0 else 0.0,
+        "good_flag_count": good,
+        "valid_flag_count": total,
+        "n_time_rows": int(len(df)),
+        "n_nonempty_rows": nonempty_rows,
+    }
+
+
+def _write_quality_order_csv(rows, out_path, cluster_to_idx, source_station_uids):
+    if rows:
+        df = pd.DataFrame(rows)
+        df["cluster_index"] = df["cluster_id"].map(
+            lambda cid: int(cluster_to_idx.get(int(cid), -1))
+        )
+        df["cluster_uid"] = df["cluster_id"].map(
+            lambda cid: "SED{:06d}".format(int(cid))
+        )
+        df["source_station_uid"] = df["source_station_index"].map(
+            lambda idx: source_station_uids[int(idx)] if 0 <= int(idx) < len(source_station_uids) else ""
+        )
+        df = df.sort_values(["cluster_id", "resolution", "quality_rank", "source_station_index"])
+        df = df.reindex(columns=QUALITY_ORDER_COLUMNS)
+    else:
+        df = pd.DataFrame(columns=QUALITY_ORDER_COLUMNS)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(out_path, index=False)
+    return len(df)
 
 
 def load_nc_series(path):
@@ -397,35 +460,67 @@ def build_cluster_series(cid, resolution, recs):
 
     返回 (dates_arr, q_arr, ssc_arr, ssl_arr,
            q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr,
-           source_arr, source_station_idx_arr, quality_log)
+           source_arr, source_station_idx_arr, quality_rows, quality_log)
     或 None。
     """
-    scored = []   # list of (quality_score, source, source_station_index, df)
+    scored = []   # list of metadata dict with df
     all_dates = set()
     for source, path, source_station_index in recs:
         df = load_nc_series(path)
         if df is not None and len(df) > 0:
-            score = compute_quality_score(df)
+            metrics = compute_quality_metrics(df)
             df["_source"] = source
             df["_source_station_index"] = int(source_station_index)
-            scored.append((score, source, int(source_station_index), df))
+            scored.append(
+                {
+                    "quality_score": metrics["quality_score"],
+                    "source": str(source),
+                    "source_station_index": int(source_station_index),
+                    "path": str(path),
+                    "good_flag_count": metrics["good_flag_count"],
+                    "valid_flag_count": metrics["valid_flag_count"],
+                    "n_time_rows": metrics["n_time_rows"],
+                    "n_nonempty_rows": metrics["n_nonempty_rows"],
+                    "df": df,
+                }
+            )
             all_dates.update(df["date"].tolist())
     if not scored:
         return None
 
     # 按质量分数降序排列（相同分辨率时，好数据比例高的优先）
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(key=lambda item: item["quality_score"], reverse=True)
     quality_log = None
+    quality_rows = []
+    for rank, item in enumerate(scored, start=1):
+        quality_rows.append(
+            {
+                "cluster_id": int(cid),
+                "resolution": str(resolution),
+                "quality_rank": int(rank),
+                "n_candidates": int(len(scored)),
+                "is_top_ranked": int(rank == 1),
+                "source": item["source"],
+                "source_station_index": int(item["source_station_index"]),
+                "path": item["path"],
+                "quality_score": float(item["quality_score"]),
+                "good_flag_count": int(item["good_flag_count"]),
+                "valid_flag_count": int(item["valid_flag_count"]),
+                "n_time_rows": int(item["n_time_rows"]),
+                "n_nonempty_rows": int(item["n_nonempty_rows"]),
+            }
+        )
+
     if len(scored) > 1:
         score_info = ", ".join(
-            "{} {:.1%}".format(src, sc) for sc, src, _, _ in scored
+            "{} {:.1%}".format(item["source"], item["quality_score"]) for item in scored
         )
         quality_log = "  cluster {} [{}] quality order: [{}]".format(
             cid, resolution, score_info
         )
 
     # 将 date 列设为 index 以加速查找，按质量顺序排列
-    indexed = [df.set_index("date") for _, _, _, df in scored]
+    indexed = [item["df"].set_index("date") for item in scored]
     all_dates = sorted(all_dates)
     n = len(all_dates)
 
@@ -471,21 +566,21 @@ def build_cluster_series(cid, resolution, recs):
 
     return (dates_arr, q_arr, ssc_arr, ssl_arr,
             q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, source_arr,
-            source_station_idx_arr, quality_log)
+            source_station_idx_arr, quality_rows, quality_log)
 
 
 def _worker_build_cluster(args):
     cid, resolution, recs = args
     result = build_cluster_series(cid, resolution, recs)
     if result is None:
-        return (cid, resolution, None, None)
+        return (cid, resolution, None, [], None)
     (dates_arr, q_arr, ssc_arr, ssl_arr,
      q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
-     source_station_idx_arr, quality_log) = result
+     source_station_idx_arr, quality_rows, quality_log) = result
     return (cid, resolution,
             (dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag,
              is_overlap, source_arr, source_station_idx_arr),
-            quality_log)
+            quality_rows, quality_log)
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -499,6 +594,11 @@ def main():
                     help="s5_basin_clustered_stations.csv 路径。默认: {}".format(_DEFAULT_INPUT))
     ap.add_argument("--output", "-o", default=str(_DEFAULT_OUTPUT),
                     help="输出 NC 路径。默认: {}".format(_DEFAULT_OUTPUT))
+    ap.add_argument(
+        "--quality-order-csv",
+        default=str(_DEFAULT_QUALITY_ORDER),
+        help="输出每个 cluster/resolution 候选质量排序表。默认: {}".format(_DEFAULT_QUALITY_ORDER),
+    )
     ap.add_argument("--workers", "-w", type=int, default=_DEFAULT_WORKERS,
                     help="并行进程数（0 = 自动取 CPU 核数）。默认: {}".format(_DEFAULT_WORKERS))
     ap.add_argument(
@@ -514,6 +614,7 @@ def main():
 
     inp_path = Path(args.input)
     out_path = Path(args.output)
+    quality_order_path = Path(args.quality_order_csv)
 
     if not inp_path.is_file():
         print("Error: not found: {}".format(inp_path))
@@ -796,13 +897,16 @@ def main():
     parts_overlap  = []  # list of int8 arrays
     parts_source   = []  # list of object arrays (str)
     parts_source_station_idx = []  # list of int32 arrays
+    quality_order_rows = []
     n_empty    = 0
     n_done     = 0
 
-    def _flush_result(pbar, cid, resolution, res, quality_log):
+    def _flush_result(pbar, cid, resolution, res, quality_rows, quality_log):
         """将单个任务结果展平并追加到 parts_* 列表，同时更新进度条。"""
         nonlocal n_empty, n_done
         n_done += 1
+        if quality_rows:
+            quality_order_rows.extend(quality_rows)
         # 质量排序日志通过 tqdm.write 输出，不破坏进度条
         if quality_log:
             tqdm.write(quality_log)
@@ -849,27 +953,37 @@ def main():
             futures = {ex.submit(_worker_build_cluster, t): t for t in tasks}
             with tqdm(**_pbar_fmt) as pbar:
                 for future in as_completed(futures):
-                    cid, resolution, res, quality_log = future.result()
-                    _flush_result(pbar, cid, resolution, res, quality_log)
+                    cid, resolution, res, quality_rows, quality_log = future.result()
+                    _flush_result(pbar, cid, resolution, res, quality_rows, quality_log)
     else:
         with tqdm(**_pbar_fmt) as pbar:
             for (cid, res, recs) in tasks:
                 result = build_cluster_series(cid, res, recs)
                 if result is None:
-                    _flush_result(pbar, cid, res, None, None)
+                    _flush_result(pbar, cid, res, None, [], None)
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
                      q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
-                     source_station_idx_arr, quality_log) = result
+                     source_station_idx_arr, quality_rows, quality_log) = result
                     _flush_result(pbar, cid, res,
                                   (dates_arr, q_arr, ssc_arr, ssl_arr,
                                    q_flag, ssc_flag, ssl_flag, is_overlap,
                                    source_arr, source_station_idx_arr),
-                                  quality_log)
+                                  quality_rows, quality_log)
 
     n_series = n_done - n_empty
     print("Series: {}/{} non-empty  ({} empty/missing)".format(n_series, n_tasks, n_empty))
     _check_memory("时间序列读取完成后")
+
+    quality_row_count = _write_quality_order_csv(
+        quality_order_rows,
+        quality_order_path,
+        cluster_to_idx,
+        source_station_uids,
+    )
+    print("Wrote quality order CSV: {} ({} rows)".format(
+        quality_order_path, quality_row_count
+    ))
 
     # ── 5b. 合并 parts → 最终数组 ────────────────────────────────────────
     if not parts_time:

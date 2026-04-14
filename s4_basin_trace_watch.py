@@ -139,7 +139,7 @@ def _trace_chunk(args):
     tracer = UpstreamBasinTracer(merit_dir_str)
     results = []
     for station_id, lon, lat in chunk:
-        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None, trace_upstream=False)
+        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None)
         results.append(
             {
                 "station_id":         station_id,
@@ -193,6 +193,29 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
         rows.append(out_row)
     columns = CSV_COLUMNS_WITH_GEOM if include_geometry else CSV_COLUMNS
     return pd.DataFrame(rows, columns=columns)
+
+
+def _drop_geometry_export_columns(df):
+    return df.drop(columns=["geometry_wkt", "geometry_local_wkt"], errors="ignore")
+
+
+def _write_gpkg_from_wkt(result_df, wkt_column, out_path, label, logger):
+    import geopandas as gpd
+
+    if wkt_column not in result_df.columns:
+        raise ValueError(f"{wkt_column} not found in partial CSV")
+
+    base_df = _drop_geometry_export_columns(result_df)
+    wkt_values = result_df[wkt_column].where(
+        result_df[wkt_column].notna() & result_df[wkt_column].ne(""),
+        None,
+    )
+    geometry = gpd.GeoSeries.from_wkt(wkt_values, crs="EPSG:4326")
+    gdf = gpd.GeoDataFrame(base_df.copy(), geometry=geometry, crs="EPSG:4326")
+
+    started_at = time.perf_counter()
+    gdf.to_file(out_path, driver="GPKG", engine="pyogrio")
+    logger.info("Saved %s -> %s (%.1fs)", label, out_path, time.perf_counter() - started_at)
 
 
 def main():
@@ -331,50 +354,30 @@ def main():
 
     result_df = pd.read_csv(PARTIAL_CSV)
     result_df = result_df.sort_values("station_id").drop_duplicates(subset=["station_id"], keep="last")
-    csv_df = result_df.drop(columns=["geometry_wkt"], errors="ignore")
+    csv_df = _drop_geometry_export_columns(result_df)
     csv_df.to_csv(OUT_CSV, index=False)
     logger.info("Saved basin CSV -> %s", OUT_CSV)
 
     # ── 6. 输出 GPKG（可选）─────────────────────────────────────────────────
     if SAVE_GPKG:
         try:
-            import geopandas as gpd
-            from shapely import wkt
-
-            if "geometry_wkt" not in result_df.columns:
-                raise ValueError("geometry_wkt not found in partial CSV")
-
-            gdf = gpd.GeoDataFrame(
-                result_df.drop(columns=["geometry_wkt"]),
-                geometry=result_df["geometry_wkt"].fillna("").map(
-                    lambda value: None if value == "" else wkt.loads(value)
-                ),
-                crs="EPSG:4326",
+            _write_gpkg_from_wkt(
+                result_df=result_df,
+                wkt_column="geometry_wkt",
+                out_path=OUT_GPKG,
+                label="basin GPKG",
+                logger=logger,
             )
-            gdf.to_file(OUT_GPKG, driver="GPKG")
-            # 上游流域 GPKG（原来的，改变量名）
-            base_df = result_df.drop(columns=["geometry_wkt", "geometry_local_wkt"], errors="ignore")
-            gdf_upstream = gpd.GeoDataFrame(
-                base_df.copy(),
-                geometry=result_df["geometry_wkt"].fillna("").map(
-                    lambda value: None if value == "" else wkt.loads(value)
-                ),
-                crs="EPSG:4326",
-            )
-            gdf_upstream.to_file(OUT_GPKG, driver="GPKG")
 
             # 最小单元集水区 GPKG（新增）
             if "geometry_local_wkt" in result_df.columns:
-                gdf_local = gpd.GeoDataFrame(
-                    base_df.copy(),
-                    geometry=result_df["geometry_local_wkt"].fillna("").map(
-                        lambda value: None if value == "" else wkt.loads(value)
-                    ),
-                    crs="EPSG:4326",
+                _write_gpkg_from_wkt(
+                    result_df=result_df,
+                    wkt_column="geometry_local_wkt",
+                    out_path=OUT_LOCAL_GPKG,
+                    label="local catchment GPKG",
+                    logger=logger,
                 )
-                gdf_local.to_file(OUT_LOCAL_GPKG, driver="GPKG")
-
-            logger.info("Saved basin GPKG -> %s", OUT_GPKG)
         except Exception as e:
             logger.warning("GPKG save failed (skipping): %s", e)
 

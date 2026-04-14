@@ -52,7 +52,10 @@ S5_BASIN_REPORT_CSV     = "scripts_basin_test/output/s5_basin_cluster_report.csv
 
 # ── s6：时间序列合并输出 ──────────────────────────────────────────────────────
 S6_MERGED_NC            = "scripts_basin_test/output/s6_basin_merged_all.nc"
+S6_QUALITY_ORDER_CSV    = "scripts_basin_test/output/s6_cluster_quality_order.csv"
+S6_MATRIX_DIR           = "scripts_basin_test/output/s6_matrix_by_resolution"
 S6_CLIMATOLOGY_NC       = "scripts_basin_test/output/s6_climatology_only.nc"
+S6_CLIMATOLOGY_SHP      = "scripts_basin_test/output/s6_climatology_stations.shp" 
 
 # ── s7：空间文件导出 ──────────────────────────────────────────────────────────
 S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"

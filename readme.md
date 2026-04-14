@@ -229,11 +229,25 @@
 输出：
 
 1. `scripts_basin_test/output/s6_basin_merged_all.nc`
+2. `scripts_basin_test/output/s6_cluster_quality_order.csv`
 
 说明：
 
 1. 当前默认会过滤掉 `climatology`
 2. `climatology` 应由单独脚本导出
+3. `s6_cluster_quality_order.csv` 会按 `cluster_id + resolution` 列出候选来源的质量排序、分数、rank 和路径
+
+### s6_export_resolution_matrix_ncs.py
+
+作用：
+
+1. 按 `daily / monthly / annual` 分别导出一个 `station × time` 矩阵 `nc`
+2. 在每个分辨率内部仍沿用 `s6_basin_merge_to_nc.py` 的质量排序合并规则
+3. 更适合直接查看某个时间分辨率下的二维数据矩阵
+
+输出目录：
+
+1. `scripts_basin_test/output/s6_matrix_by_resolution/`
 
 ### s6_export_climatology_to_nc.py
 
