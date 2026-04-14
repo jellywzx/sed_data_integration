@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-在保留原有 Output_r 目录结构的前提下，根据时间分辨率校验结果，
-将「所有 qc 文件夹下的 .nc」按检测到的时间分辨率复制到新目录。
+在保留原有源库不变的前提下，根据时间分辨率校验结果，
+将默认输入根目录（优先 Output_r_attr_fixed，其次 Output_r）下「所有 qc 文件夹中的 .nc」
+按检测到的时间分辨率复制到新目录。
 
 新目录结构：
   {out_dir}/
@@ -39,28 +40,33 @@ import shutil
 import sys
 import argparse
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 import pandas as pd
-import xarray as xr
 from pipeline_paths import (
     S1_VERIFY_CSV,
     S2_ORGANIZED_DIR,
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
     RESOLUTION_DIRS,
-    get_output_r_root,
+)
+from time_resolution import (
+    get_preferred_output_root,
+    should_treat_irregular_as_daily,
+    sync_temporal_resolution_attrs,
 )
 
-# 项目根 Output_r
+# 项目根默认优先使用 Output_r_attr_fixed；可通过 OUTPUT_R_ROOT 覆盖
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = get_output_r_root(SCRIPT_DIR)  # Output_r（支持 OUTPUT_R_ROOT 覆盖）
+ROOT_DIR = get_preferred_output_root(SCRIPT_DIR)
 # 校验结果 CSV（相对 ROOT_DIR）；步骤 s1 输出
 VERIFY_CSV = S1_VERIFY_CSV
 # 新目录名（相对 ROOT_DIR），仅包含 qc 下 nc 按分辨率整理后的副本
 OUT_DIR = S2_ORGANIZED_DIR
-# 并行复制时的默认线程数（I/O 为主，线程池即可）
-DEFAULT_WORKERS = 8
+# 并行执行数：
+#   - 阶段 1：ThreadPoolExecutor 并行复制
+#   - 阶段 2：ProcessPoolExecutor 并行标准化属性
+DEFAULT_WORKERS = 16
 LEGACY_RESOLUTION_DIRS = ("annually_climatology", "quarterly", "single_point")
 
 def get_source_from_path(path: str, root_dir: Path) -> str:
@@ -105,49 +111,65 @@ def resolution_from_semantics(temporal_semantics: str) -> str:
     return "other"
 
 
-def should_treat_irregular_as_daily(nc_path: Path) -> bool:
-    """
-    对 detected_frequency=irregular 的文件做二次判定：
-    若时间轴呈“离散日值记录”特征，则归入 daily。
-
-    规则：
-      1) 有可识别时间变量，且时间点 >= 1；
-      2) 所有时间都在 00:00:00（无小时/分钟/秒）；
-      3) 即使全部在每月 1 号，也按 daily 处理（按当前业务规则放宽）。
-    """
-    try:
-        with xr.open_dataset(nc_path) as ds:
-            time_candidates = ["time", "Time", "t", "datetime", "date"]
-            time_var = next((c for c in time_candidates if c in ds.variables), None)
-            if time_var is None:
-                return False
-
-            times = pd.to_datetime(ds[time_var].values, errors="coerce")
-            if getattr(times, "size", 0) < 1:
-                return False
-
-            # 去掉无法解析时间，至少保留 1 个有效点
-            ts = pd.Series(times).dropna()
-            if len(ts) < 1:
-                return False
-
-            # 要求都落在整天（00:00:00）
-            if not ((ts.dt.hour == 0) & (ts.dt.minute == 0) & (ts.dt.second == 0)).all():
-                return False
-
-            return True
-    except Exception:
-        return False
-
-
 def _copy_one(item):
-    """单次复制，供线程池调用。返回 (res_dir_name, None) 成功，(res_dir_name, (src, err)) 失败。"""
-    src_path, dest_path, res_dir_name = item
+    """单次复制，供线程池调用。返回 (res_dir_name, dest_path, err)。"""
+    src_path, dest_path, res_dir_name = item[:3]
     try:
         shutil.copy2(src_path, dest_path)
-        return (res_dir_name, None)
+        return (res_dir_name, str(dest_path), None)
     except Exception as e:
-        return (res_dir_name, (str(src_path), str(e)))
+        return (res_dir_name, None, (str(src_path), str(e)))
+
+
+def _normalize_one(item):
+    """单次同步时间分辨率属性并标准化全局属性，供进程池调用。"""
+    dest_path_str, sync_target_resolution, sync_reason = item
+    try:
+        from attr_normalizer import normalize_nc_attrs
+
+        if sync_target_resolution:
+            sync_temporal_resolution_attrs(
+                dest_path_str,
+                target_resolution=sync_target_resolution,
+                stage="s2",
+                reason=sync_reason,
+            )
+        normalize_nc_attrs(dest_path_str)
+        return (dest_path_str, None)
+    except Exception as exc:
+        return (dest_path_str, str(exc))
+
+
+def _get_s2_copy_resolution(row):
+    """返回 s2 副本应回写的时间分辨率。
+
+    仅对标准目录 daily/monthly/annual/climatology 回写；
+    other 只是收纳目录，不回写为业务分辨率。
+    """
+    resolution_dir = str(row.get("resolution_dir", "") or "").strip().lower()
+    if resolution_dir in ("daily", "monthly", "annual", "climatology"):
+        return resolution_dir
+    return ""
+
+
+def _get_s2_copy_reason(row):
+    raw_freq = str(row.get("raw_detected_frequency", row.get("detected_frequency", "")) or "").strip().lower()
+    detected_freq = str(row.get("detected_frequency", "") or "").strip().lower()
+    resolution_dir = str(row.get("resolution_dir", "") or "").strip().lower()
+
+    if raw_freq == "irregular" and resolution_dir == "daily":
+        return "s2 irregular secondary check"
+    if raw_freq == "hourly" and resolution_dir == "daily":
+        return "s2 mapped hourly to daily"
+    if raw_freq == "quarterly" and resolution_dir == "monthly":
+        return "s2 mapped quarterly to monthly"
+    if raw_freq == "single_point" and resolution_dir == "daily":
+        return "s2 mapped single_point to daily"
+    if detected_freq == "annual" and resolution_dir == "climatology":
+        return "s2 aligned annual metadata to climatology"
+    if resolution_dir:
+        return "s2 aligned organized copy to final resolution"
+    return ""
 
 
 def export_other_resolution_reports(other_df: pd.DataFrame, root_dir: Path, summary_out: str, details_out: str):
@@ -258,7 +280,14 @@ def main():
     ap.add_argument("--out-dir", "-o", default=OUT_DIR, help=f"新目录名（相对 Output_r），默认 {OUT_DIR}")
     ap.add_argument("--verify-csv", default=VERIFY_CSV, help=f"校验结果 CSV 路径，默认 {VERIFY_CSV}")
     ap.add_argument("--clear", action="store_true", help="复制前清空输出目录下各时间语义目录，避免残留旧分类文件")
-    ap.add_argument("--workers", "-j", type=int, default=DEFAULT_WORKERS, metavar="N", help=f"并行复制线程数，默认 {DEFAULT_WORKERS}，设为 1 则串行")
+    ap.add_argument(
+        "--workers",
+        "-j",
+        type=int,
+        default=DEFAULT_WORKERS,
+        metavar="N",
+        help=f"并行执行数，阶段1用于复制线程数，阶段2用于属性标准化进程数，默认 {DEFAULT_WORKERS}",
+    )
     ap.add_argument("--other-summary-out", default=S2_OTHER_SUMMARY_CSV, help="other 分类汇总输出 CSV")
     ap.add_argument("--other-details-out", default=S2_OTHER_DETAILS_CSV, help="other 分类明细输出 CSV")
     args = ap.parse_args()
@@ -320,7 +349,7 @@ def main():
 
     irregular_idx = df[irregular_mask].index.tolist()
     n_irregular_to_daily = 0
-    for idx in irregular_idx:
+    for idx in tqdm(irregular_idx, desc="判定 irregular -> daily", unit="file"):
         p = Path(df.at[idx, "path"])
         if p.is_file() and should_treat_irregular_as_daily(p):
             df.at[idx, "resolution_dir"] = "daily"
@@ -341,7 +370,7 @@ def main():
 
     copied = {r: 0 for r in RESOLUTION_DIRS}
     skipped = 0
-    tasks = []  # (src_path, dest_path, res_dir_name)
+    tasks = []  # (src_path, dest_path, res_dir_name, sync_target_resolution, sync_reason)
 
     for _, row in df.iterrows():
         src_path = Path(row["path"])
@@ -358,39 +387,96 @@ def main():
             idx += 1
         used[res_dir_name].add(base_candidate)
         dest_path = res_dir / (base_candidate + ".nc")
-        tasks.append((src_path, dest_path, res_dir_name))
+        tasks.append(
+            (
+                src_path,
+                dest_path,
+                res_dir_name,
+                _get_s2_copy_resolution(row),
+                _get_s2_copy_reason(row),
+            )
+        )
 
     workers = max(1, int(args.workers))
-    errors = []
+    copy_errors = []
+    attr_errors = []
+    normalize_tasks = []
+
+    print("\n阶段 1：并行复制")
+
     if workers == 1:
-        for item in tasks:
-            res_dir_name, err = _copy_one(item)
+        for item in tqdm(tasks, desc="复制文件", unit="file"):
+            res_dir_name, dest_path_str, err = _copy_one(item)
             if err:
-                errors.append(err)
+                copy_errors.append(err)
             else:
                 copied[res_dir_name] += 1
+                normalize_tasks.append(
+                    (
+                        dest_path_str,
+                        item[3],
+                        item[4],
+                    )
+                )
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_copy_one, item): item for item in tasks}
-            for fut in as_completed(futures):
-                res_dir_name, err = fut.result()
+            future_to_item = {}
+            for item in tasks:
+                fut = executor.submit(_copy_one, item)
+                future_to_item[fut] = item
+            for fut in tqdm(as_completed(future_to_item), total=len(future_to_item), desc="并行复制", unit="file"):
+                res_dir_name, dest_path_str, err = fut.result()
                 if err:
-                    errors.append(err)
+                    copy_errors.append(err)
                 else:
                     copied[res_dir_name] += 1
+                    item = future_to_item[fut]
+                    normalize_tasks.append(
+                        (
+                            dest_path_str,
+                            item[3],
+                            item[4],
+                        )
+                    )
 
     print(f"新目录: {out_base}")
     print(f"已处理 qc 下 nc 数量: {len(df)}（跳过不存在: {skipped}）")
     for r in RESOLUTION_DIRS:
         print(f"  {r}: {copied[r]} 个文件")
-    if errors:
-        print(f"复制失败 {len(errors)} 个:")
-        for p, e in errors[:10]:
+    if copy_errors:
+        print(f"复制失败 {len(copy_errors)} 个:")
+        for p, e in copy_errors[:10]:
             print(f"  {p} -> {e}")
-        if len(errors) > 10:
-            print(f"  ... 共 {len(errors)} 个")
+        if len(copy_errors) > 10:
+            print(f"  ... 共 {len(copy_errors)} 个")
     else:
         print("全部复制完成。")
+
+    if normalize_tasks:
+        print("\n阶段 2：并行回写副本时间分辨率属性并标准化全局属性")
+        if workers == 1:
+            for item in tqdm(normalize_tasks, desc="标准化属性", unit="file"):
+                _, err = _normalize_one(item)
+                if err:
+                    attr_errors.append((item[0], err))
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_normalize_one, item) for item in normalize_tasks]
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="并行标准化属性", unit="file"):
+                    dest_path_str, err = fut.result()
+                    if err:
+                        attr_errors.append((dest_path_str, err))
+
+        if attr_errors:
+            print(f"[s2] WARNING: 属性标准化失败 {len(attr_errors)} 个:")
+            for p, e in attr_errors[:10]:
+                print(f"  {p} -> {e}")
+            if len(attr_errors) > 10:
+                print(f"  ... 共 {len(attr_errors)} 个")
+        else:
+            print("全部文件属性标准化完成。")
+    else:
+        print("\n阶段 2：无已复制文件，跳过属性标准化。")
 
     # other 目录的数据集构成说明
     other_df = df[df["resolution_dir"] == "other"]
@@ -408,7 +494,7 @@ def main():
         print("---")
     export_other_resolution_reports(other_df, root_dir, args.other_summary_out, args.other_details_out)
 
-    sys.exit(1 if errors else 0)
+    sys.exit(1 if copy_errors else 0)
 
 
 if __name__ == "__main__":

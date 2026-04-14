@@ -26,6 +26,7 @@ import pandas as pd
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S6_CLIMATOLOGY_NC,
+    S6_CLIMATOLOGY_SHP,
     get_output_r_root,
 )
 
@@ -42,6 +43,7 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 
 DEFAULT_INPUT_DIR = (PROJECT_ROOT / S2_ORGANIZED_DIR / "climatology").resolve()
 DEFAULT_OUTPUT = PROJECT_ROOT / S6_CLIMATOLOGY_NC
+DEFAULT_OUTPUT_SHP = PROJECT_ROOT / S6_CLIMATOLOGY_SHP
 
 FILL = -9999.0
 TIME_NAMES = ["time", "Time", "t", "sample"]
@@ -292,6 +294,7 @@ def main():
     ap = argparse.ArgumentParser(description="Export climatology files to a standalone NC")
     ap.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR), help="organized climatology directory")
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT), help="output climatology nc")
+    ap.add_argument("--output-shp", default=str(DEFAULT_OUTPUT_SHP), help="output climatology point shapefile")
     args = ap.parse_args()
 
     if not HAS_NC:
@@ -300,6 +303,7 @@ def main():
 
     input_dir = Path(args.input_dir).resolve()
     output_path = Path(args.output).resolve()
+    shp_path    = Path(args.output_shp).resolve() 
     if not input_dir.is_dir():
         print("Error: climatology input dir not found: {}".format(input_dir))
         return 1
@@ -496,6 +500,47 @@ def main():
         nc.n_input_files = str(n_stations)
 
         nc.sync()
+
+    print("Wrote climatology NC: {}".format(output_path))
+    print("Stations: {}  Records: {}".format(n_stations, len(time_arr)))
+
+    # ── 输出点 SHP ───────────────────────────────────────────────────────────
+    try:
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        records = []
+        for idx in range(n_stations):
+            lat_val = float(lat_arr[idx])
+            lon_val = float(lon_arr[idx])
+            if lat_val == FILL or lon_val == FILL or np.isnan(lat_val) or np.isnan(lon_val):
+                continue
+            src_name = unique_sources[source_index_arr[idx]] if source_index_arr[idx] >= 0 else ""
+            records.append({
+                "station_ui": station_uid_arr[idx],
+                "lat":        round(lat_val, 6),
+                "lon":        round(lon_val, 6),
+                "stn_name":   station_name_arr[idx][:80],
+                "river_nm":   river_name_arr[idx][:80],
+                "native_id":  native_id_arr[idx][:80],
+                "source":     src_name[:40],
+                "geometry":   Point(lon_val, lat_val),
+            })
+
+        if records:
+            point_gdf = gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
+            shp_path.parent.mkdir(parents=True, exist_ok=True)
+            driver = "ESRI Shapefile" if shp_path.suffix.lower() == ".shp" else "GPKG"
+            point_gdf.to_file(shp_path, driver=driver, encoding="UTF-8")
+            print("Wrote climatology point SHP: {} ({} stations)".format(shp_path, len(records)))
+        else:
+            print("Warning: no valid coordinates found, skipping SHP output")
+    except ImportError:
+        print("Warning: geopandas not available, skipping SHP output")
+    except Exception as e:
+        print("Warning: SHP output failed: {}".format(e))
+
+    return 0
 
     print("Wrote climatology NC: {}".format(output_path))
     print("Stations: {}  Records: {}".format(n_stations, len(time_arr)))

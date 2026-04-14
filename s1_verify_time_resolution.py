@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-对 Output_r 下所有数据集中的 .nc 文件应用 time_resolution 分类逻辑，
+对默认输入根目录（优先 Output_r_attr_fixed，其次 Output_r）下所有数据集中的 .nc 文件应用 time_resolution 分类逻辑，
 并检查是否与路径中的分类（daily / monthly / annually_climatology）一致；
 不一致时输出报告。
 
@@ -91,11 +91,10 @@ import pandas as pd
 import xarray as xr
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from pipeline_paths import S1_VERIFY_CSV, get_output_r_root
+from pipeline_paths import S1_VERIFY_CSV
 
-# 根目录 = Output_r（脚本在 scripts/ 下，故 parent）
+# 根目录默认优先使用 Output_r_attr_fixed；可通过 OUTPUT_R_ROOT 覆盖
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = get_output_r_root(SCRIPT_DIR)
 # 结果 CSV 路径（相对 ROOT_DIR）；列说明见本文件顶部 docstring；步骤 s1 对应输出
 OUT_CSV = S1_VERIFY_CSV
 WORKERS = None
@@ -104,7 +103,15 @@ WORKERS = None
 _verify_dir = SCRIPT_DIR / "01_verify_reorganize"
 if str(_verify_dir) not in sys.path:
     sys.path.insert(0, str(_verify_dir))
-from time_resolution import classify_frequency, infer_temporal_semantics
+from time_resolution import (
+    classify_frequency,
+    get_preferred_output_root,
+    infer_temporal_semantics,
+    sync_temporal_resolution_attrs,
+)
+
+
+ROOT_DIR = get_preferred_output_root(SCRIPT_DIR)
 
 
 def get_resolution_from_path(filepath, root_dir):
@@ -326,7 +333,11 @@ def interpret_single_point_metadata(filepath):
 
 
 def detect_frequency_for_nc(filepath):
-    """对单个 nc 检测时间频率，返回 (filepath, detected_freq, single_point_interpretation)。"""
+    """对单个 nc 检测时间频率。
+
+    返回：
+      (filepath, raw_detected_freq, detected_freq, single_point_interpretation)
+    """
     try:
         with xr.open_dataset(filepath) as ds:
             time_candidates = ["time", "Time", "t", "datetime", "date"]
@@ -336,17 +347,58 @@ def detect_frequency_for_nc(filepath):
                     time_var = cand
                     break
             if time_var is None:
-                return filepath, "no_time_var", None
+                return filepath, "no_time_var", "no_time_var", None
             time_values = pd.to_datetime(ds[time_var].values)
-        freq = classify_frequency(time_values)
+        raw_freq = classify_frequency(time_values)
+        freq = raw_freq
         single_interp = None
-        if freq == "single_point":
+        if raw_freq == "single_point":
             single_interp = interpret_single_point_metadata(filepath)
             if isinstance(single_interp, (list, tuple)) and len(single_interp) == 2:
                 freq, single_interp = single_interp[0], single_interp[1]
-        return filepath, freq, single_interp
+        return filepath, raw_freq, freq, single_interp
     except Exception as e:
-        return filepath, f"error: {str(e)}", None
+        err = f"error: {str(e)}"
+        return filepath, err, err, None
+
+
+def _get_s1_attr_sync_target(raw_detected_frequency, detected_frequency, temporal_semantics, single_point_interpretation):
+    """仅对 s1 明确做出的元数据级重判回写镜像 qc 属性。"""
+    raw_freq = str(raw_detected_frequency or "").strip().lower()
+    detected = str(detected_frequency or "").strip().lower()
+    semantics = str(temporal_semantics or "").strip().lower()
+    interp = str(single_point_interpretation or "").strip().lower()
+
+    if raw_freq != "single_point":
+        return ""
+
+    if detected and detected != raw_freq:
+        return detected
+
+    if semantics == "climatology" and (
+        "long_term_average" in interp
+        or "climatology" in interp
+        or "historical" in interp
+        or "average" in interp
+        or "mean" in interp
+    ):
+        return "climatology"
+
+    return ""
+
+
+def _sync_s1_one(item):
+    filepath, target_resolution, reason = item
+    try:
+        result = sync_temporal_resolution_attrs(
+            filepath,
+            target_resolution=target_resolution,
+            stage="s1",
+            reason=reason,
+        )
+        return filepath, bool(result.get("changed")), ""
+    except Exception as exc:
+        return filepath, False, str(exc)
 
 
 PATH_TO_EXPECTED = {
@@ -434,24 +486,70 @@ def main():
     with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         futures = {executor.submit(detect_frequency_for_nc, fp): fp for fp in nc_files}
         for fut in as_completed(futures):
-            filepath, detected_freq, single_point_interpretation = fut.result()
+            filepath, raw_detected_freq, detected_freq, single_point_interpretation = fut.result()
             path_resolution = get_resolution_from_path(filepath, root_dir)
             consistent = is_consistent(path_resolution, detected_freq)
             temporal_semantics = infer_temporal_semantics(
                 detected_freq, single_point_interpretation
             )
             rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
+            attr_sync_target = _get_s1_attr_sync_target(
+                raw_detected_freq,
+                detected_freq,
+                temporal_semantics,
+                single_point_interpretation,
+            )
             results.append({
                 "path": filepath,
                 "rel_path": str(rel_path),
                 "path_resolution": path_resolution or "(none)",
+                "raw_detected_frequency": raw_detected_freq,
                 "detected_frequency": detected_freq,
                 "temporal_semantics": temporal_semantics,
                 "single_point_interpretation": single_point_interpretation if single_point_interpretation else "",
+                "attr_sync_target": attr_sync_target,
+                "attr_sync_applied": False,
+                "attr_sync_error": "",
                 "consistent": consistent,
             })
 
     df = pd.DataFrame(results)
+
+    sync_tasks = []
+    for _, row in df.iterrows():
+        target = str(row.get("attr_sync_target", "") or "").strip()
+        if not target:
+            continue
+        reason = "single_point metadata reinterpretation"
+        sync_tasks.append((str(row["path"]), target, reason))
+
+    enable_attr_sync = root_dir.name == "Output_r_attr_fixed"
+    if sync_tasks and enable_attr_sync:
+        print(f"\n开始同步 s1 重判后的 temporal_resolution 属性: {len(sync_tasks)} 个文件")
+        sync_changed = set()
+        sync_errors = {}
+        with ProcessPoolExecutor(max_workers=WORKERS) as executor:
+            futures = {executor.submit(_sync_s1_one, item): item[0] for item in sync_tasks}
+            for fut in as_completed(futures):
+                filepath, changed, err = fut.result()
+                if changed:
+                    sync_changed.add(filepath)
+                if err:
+                    sync_errors[filepath] = err
+
+        if sync_changed:
+            df.loc[df["path"].isin(sync_changed), "attr_sync_applied"] = True
+        if sync_errors:
+            for filepath, err in sync_errors.items():
+                df.loc[df["path"] == filepath, "attr_sync_error"] = err
+            print(f"s1 属性同步失败 {len(sync_errors)} 个文件")
+        else:
+            print("s1 属性同步完成。")
+    elif sync_tasks:
+        print(
+            "\n检测到 {} 个 s1 重判文件，但当前根目录不是 Output_r_attr_fixed，"
+            "默认跳过 temporal_resolution 属性回写。".format(len(sync_tasks))
+        )
 
     out_path = root_dir / OUT_CSV
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,32 @@
 
 **一个以 90m 流域单元为合并基础、同时保留原始站点映射关系的泥沙参考数据集。**
 
+### 1.1 现在推荐的发布方式
+
+当前不再建议在下面两种输出之间二选一：
+
+1. `s6_basin_merged_all.nc`
+2. `s6_matrix_by_resolution/*.nc`
+
+更推荐把它们定义为同一套参考数据集的两个层级：
+
+1. `master.nc` 层：
+   以 `s6_basin_merged_all.nc` 为基础，保留完整记录级 provenance，适合追溯和审计
+2. `timeseries matrix` 层：
+   以 `daily / monthly / annual` 三个矩阵 `nc` 为基础，适合最近站点匹配、抽取时间序列、和模型直接对比
+3. `climatology` 层：
+   以 `s6_climatology_only.nc` 为基础，独立发布，不进入 basin 主线
+
+当前目录里新增了：
+
+1. `s8_publish_reference_dataset.py`
+2. `example_reference_workflow.py`
+
+它们的用途分别是：
+
+1. 将现有主线产物整理成正式发布版 `sed_reference_release/`
+2. 演示“最近站点匹配 -> 抽时间序列 -> 可选模型对比 -> 回查 provenance”的标准使用路径
+
 ---
 
 ## 2. 核心规则
@@ -249,6 +275,18 @@
 
 1. `scripts_basin_test/output/s6_matrix_by_resolution/`
 
+### s6_summarize_matrix_ncs.py
+
+作用：
+
+1. 用 `xarray.Dataset` 风格输出矩阵版 `nc` 的可读文本摘要
+2. 为每个矩阵 `nc` 输出一个基础统计表
+3. 额外生成一个跨文件总览表，方便比较 `daily / monthly / annual`
+
+输出目录：
+
+1. `scripts_basin_test/output/s6_matrix_by_resolution/summary/`
+
 ### s6_export_climatology_to_nc.py
 
 作用：
@@ -297,6 +335,22 @@
 1. 这个文件才是最终 `cluster` 级流域单元面文件
 2. 它依赖 `s4_upstream_basins.gpkg`
 
+### s8_publish_reference_dataset.py
+
+作用：
+
+1. 将现有 `s6 / s7` 主线输出整理成用户发布版数据集
+2. 生成标准命名的 `sed_reference_*.nc`
+3. 生成 `station_catalog.csv`
+4. 生成 `source_station_catalog.csv`
+5. 生成 `source_dataset_catalog.csv`
+6. 生成 `GPKG` 空间 sidecar
+7. 生成发布版 `README.md` 和验证报告
+
+输出目录：
+
+1. `scripts_basin_test/output/sed_reference_release/`
+
 ### s9_generate_manual_review_tables.py
 
 作用：
@@ -323,11 +377,15 @@
 
 ## 5. 空间文件说明
 
+当前主线仍保留 `shp` 兼容输出，但正式发布层更推荐使用 `GPKG`。
+发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
+
 ### 5.1 cluster 点位文件
 
 文件：
 
 1. `s7_cluster_stations.shp`
+2. `sed_reference_release/sed_reference_cluster_points.gpkg`
 
 作用：
 
@@ -339,6 +397,7 @@
 文件：
 
 1. `s7_source_stations.shp`
+2. `sed_reference_release/sed_reference_source_stations.gpkg`
 
 作用：
 
@@ -350,6 +409,7 @@
 文件：
 
 1. `s7_cluster_basins.shp`
+2. `sed_reference_release/sed_reference_cluster_basins.gpkg`
 
 作用：
 
@@ -375,13 +435,33 @@
 
 `scripts_basin_test/output/`
 
-最关键的主产物是：
+如果是内部流程检查，最关键的主线产物是：
 
 1. `s5_basin_clustered_stations.csv`
 2. `s6_basin_merged_all.nc`
 3. `s7_cluster_stations.shp`
 4. `s7_source_stations.shp`
 5. `s7_cluster_basins.shp`
+
+如果是面向用户发布，当前推荐直接使用：
+
+1. `output/sed_reference_release/sed_reference_master.nc`
+2. `output/sed_reference_release/sed_reference_timeseries_daily.nc`
+3. `output/sed_reference_release/sed_reference_timeseries_monthly.nc`
+4. `output/sed_reference_release/sed_reference_timeseries_annual.nc`
+5. `output/sed_reference_release/sed_reference_climatology.nc`
+6. `output/sed_reference_release/station_catalog.csv`
+7. `output/sed_reference_release/source_station_catalog.csv`
+8. `output/sed_reference_release/sed_reference_cluster_points.gpkg`
+9. `output/sed_reference_release/README.md`
+
+这套发布层的标准使用顺序是：
+
+1. 先按模型输出时间分辨率选择对应的 matrix `nc`
+2. 用 `station_catalog.csv` 或 matrix 文件中的 `lat/lon` 找最近的 `cluster_uid`
+3. 抽出参考时间序列并与模型结果对齐
+4. 如果需要追溯来源，再去 `sed_reference_master.nc`
+5. 继续通过 `source_station_catalog.csv` 找到原始站点和原始路径
 
 人工检查相关产物是：
 
@@ -438,7 +518,8 @@
 7. `s7_export_cluster_shp.py`
 8. `s7_export_source_station_shp.py`
 9. `s7_export_cluster_basin_shp.py`
-10. `s9_generate_manual_review_tables.py`
+10. `s8_publish_reference_dataset.py`
+11. `s9_generate_manual_review_tables.py`
 
 ---
 
@@ -503,7 +584,8 @@
 5. `s5_basin_merge.py`
 6. `s6_basin_merge_to_nc.py`
 7. `s7_*`
-8. `s9_generate_manual_review_tables.py`
+8. `s8_publish_reference_dataset.py`
+9. `s9_generate_manual_review_tables.py`
 
 为准。
 

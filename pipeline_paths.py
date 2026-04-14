@@ -54,6 +54,7 @@ S5_BASIN_REPORT_CSV     = "scripts_basin_test/output/s5_basin_cluster_report.csv
 S6_MERGED_NC            = "scripts_basin_test/output/s6_basin_merged_all.nc"
 S6_QUALITY_ORDER_CSV    = "scripts_basin_test/output/s6_cluster_quality_order.csv"
 S6_MATRIX_DIR           = "scripts_basin_test/output/s6_matrix_by_resolution"
+S6_MATRIX_SUMMARY_DIR   = "scripts_basin_test/output/s6_matrix_by_resolution/summary"
 S6_CLIMATOLOGY_NC       = "scripts_basin_test/output/s6_climatology_only.nc"
 S6_CLIMATOLOGY_SHP      = "scripts_basin_test/output/s6_climatology_stations.shp" 
 
@@ -62,6 +63,23 @@ S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"
 S7_SOURCE_STATION_SHP   = "scripts_basin_test/output/s7_source_stations.shp"
 S7_CLUSTER_BASIN_SHP    = "scripts_basin_test/output/s7_cluster_basins.shp"
 S7_LOCAL_BASIN_SHP      = "scripts_basin_test/output/s7_cluster_basins_local.shp"  
+
+# ── 发布层：用户交付版参考数据集 ──────────────────────────────────────────────
+RELEASE_DATASET_DIR                 = "scripts_basin_test/output/sed_reference_release"
+RELEASE_MASTER_NC                   = "scripts_basin_test/output/sed_reference_release/sed_reference_master.nc"
+RELEASE_MATRIX_DAILY_NC             = "scripts_basin_test/output/sed_reference_release/sed_reference_timeseries_daily.nc"
+RELEASE_MATRIX_MONTHLY_NC           = "scripts_basin_test/output/sed_reference_release/sed_reference_timeseries_monthly.nc"
+RELEASE_MATRIX_ANNUAL_NC            = "scripts_basin_test/output/sed_reference_release/sed_reference_timeseries_annual.nc"
+RELEASE_CLIMATOLOGY_NC              = "scripts_basin_test/output/sed_reference_release/sed_reference_climatology.nc"
+RELEASE_STATION_CATALOG_CSV         = "scripts_basin_test/output/sed_reference_release/station_catalog.csv"
+RELEASE_SOURCE_STATION_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_station_catalog.csv"
+RELEASE_SOURCE_DATASET_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_dataset_catalog.csv"
+RELEASE_CLUSTER_POINTS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_points.gpkg"
+RELEASE_SOURCE_STATIONS_GPKG        = "scripts_basin_test/output/sed_reference_release/sed_reference_source_stations.gpkg"
+RELEASE_CLUSTER_BASINS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_basins.gpkg"
+RELEASE_README_MD                   = "scripts_basin_test/output/sed_reference_release/README.md"
+RELEASE_VALIDATION_CSV              = "scripts_basin_test/output/sed_reference_release/release_validation_report.csv"
+RELEASE_INVENTORY_CSV               = "scripts_basin_test/output/sed_reference_release/release_inventory.csv"
 
 # ── 向后兼容：保留旧的空间聚类主线常量，避免旧脚本 import 失败 ───────────────
 S4_CLUSTERED_CSV        = "scripts_basin_test/output/s4_clustered_stations.csv"

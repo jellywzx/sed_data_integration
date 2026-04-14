@@ -15,6 +15,7 @@
 
 import logging
 import os
+from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -320,10 +321,11 @@ class UpstreamBasinTracer:
             return {start_comid}
 
         upstream_comids: Set[int] = set()
-        to_process = [start_comid]
+        # deque 比 list.pop(0) 更适合 BFS 队列，尤其在大流域追溯时更稳
+        to_process = deque([start_comid])
 
         while to_process:
-            current = to_process.pop(0)
+            current = to_process.popleft()
 
             if current in upstream_comids:
                 continue
@@ -532,6 +534,7 @@ class UpstreamBasinTracer:
                 "lat": lat,
                 "reported_area": reported_area if reported_area is not None else np.nan,
                 "geometry": basin_result["geometry"],
+                "geometry_local": basin_result["geometry_local"],
                 "basin_area": basin_result["basin_area"],
                 "basin_id": basin_result["basin_id"],
                 "match_quality": basin_result["match_quality"],
@@ -596,7 +599,7 @@ def main():
     if cfg["out_csv"]:
         out_csv = Path(str(cfg["out_csv"]))
         out_csv.parent.mkdir(parents=True, exist_ok=True)
-        result_gdf.drop(columns=["geometry"]).to_csv(out_csv, index=False)
+        result_gdf.drop(columns=["geometry", "geometry_local"], errors="ignore").to_csv(out_csv, index=False)
         logger.info(f"Saved tabular summary to: {out_csv}")
 
 

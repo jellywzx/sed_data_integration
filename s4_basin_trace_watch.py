@@ -54,6 +54,7 @@ OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG
 
 LOG_LEVEL  = "INFO"
 PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
+BASIN_TRACER_DIR = SCRIPT_DIR
 
 
 def _env_bool(name, default):
@@ -115,13 +116,13 @@ def _init_worker(counter):
 def _trace_chunk(args):
     """单个 worker：为一批站点追溯流域，返回 result dict 列表。
 
-    args = (merit_dir_str, chunk)
+    args = (merit_dir_str, basin_tracer_dir_str, chunk)
     chunk: list of (station_id, lon, lat)
     几何对象（shapely）可直接跨进程传递。
     """
     import gc
 
-    merit_dir_str, chunk = args
+    merit_dir_str, basin_tracer_dir_str, chunk = args
 
     import warnings
     warnings.filterwarnings("ignore", message=".*geographic CRS.*")
@@ -132,8 +133,9 @@ def _trace_chunk(args):
         format="%(asctime)s | %(levelname)s | worker | %(message)s",
     )
 
-    # 将 basin_tracer.py 所在目录加入 path
-    sys.path.insert(0, str(Path(merit_dir_str).parent))
+    # 显式加入 basin_tracer.py 所在目录，避免在不同 multiprocessing 启动方式下导入失败
+    if basin_tracer_dir_str not in sys.path:
+        sys.path.insert(0, basin_tracer_dir_str)
     from basin_tracer import UpstreamBasinTracer  # noqa: E402
 
     tracer = UpstreamBasinTracer(merit_dir_str)
@@ -257,9 +259,6 @@ def main():
         logger.info("Resume mode: found %d completed stations in %s", len(completed_station_ids), PARTIAL_CSV)
         stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
 
-    # ✅ 先加这行测试，跑通后删掉
-    # stations = stations.head(50)   # 只取前50个站点验证
-
     n_pending = len(stations)
     n_total = len(pd.read_csv(S3_CSV).dropna(subset=["lon", "lat"]))
     logger.info("Loaded %d stations (%d pending)", n_total, n_pending)
@@ -280,7 +279,7 @@ def main():
     logger.info("Splitting into %d batches (size=%d) for %d workers", len(chunks), chunk_size, actual_workers)
 
     # ── 4. 并行追溯 ──────────────────────────────────────────────────────────
-    args_list = [(str(MERIT_DIR), chunk) for chunk in chunks]
+    args_list = [(str(MERIT_DIR), str(BASIN_TRACER_DIR), chunk) for chunk in chunks]
 
     # 共享计数器：跨进程追踪已完成的站点数
     counter = mp.Value("i", 0)
