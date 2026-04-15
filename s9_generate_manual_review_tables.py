@@ -33,9 +33,9 @@ from pipeline_paths import (
     S4_UPSTREAM_GPKG,
     S5_BASIN_CLUSTERED_CSV,
     S6_MERGED_NC,
-    S7_CLUSTER_BASIN_SHP,
+    S7_CLUSTER_BASINS_GPKG,
     S7_CLUSTER_SHP,
-    S7_SOURCE_STATION_SHP,
+    S7_SOURCE_STATIONS_GPKG,
     get_output_r_root,
 )
 
@@ -53,8 +53,8 @@ DEFAULT_S5 = ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_S6 = ROOT / S6_MERGED_NC
 DEFAULT_S4_GPKG = ROOT / S4_UPSTREAM_GPKG
 DEFAULT_CLUSTER_SHP = ROOT / S7_CLUSTER_SHP
-DEFAULT_SOURCE_SHP = ROOT / S7_SOURCE_STATION_SHP
-DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASIN_SHP
+DEFAULT_SOURCE_SHP = ROOT / S7_SOURCE_STATIONS_GPKG
+DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASINS_GPKG
 DEFAULT_OUT_DIR = ROOT / "scripts_basin_test/output/manual_review"
 
 
@@ -366,9 +366,9 @@ def main():
     ap.add_argument("--s5", default=str(DEFAULT_S5), help="s5 cluster CSV 路径")
     ap.add_argument("--s6", default=str(DEFAULT_S6), help="s6 merged nc 路径")
     ap.add_argument("--s4-gpkg", default=str(DEFAULT_S4_GPKG), help="s4 upstream gpkg 路径")
-    ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_SHP), help="cluster 点 shp 路径")
-    ap.add_argument("--source-shp", default=str(DEFAULT_SOURCE_SHP), help="source station shp 路径")
-    ap.add_argument("--cluster-basin-shp", default=str(DEFAULT_CLUSTER_BASIN_SHP), help="cluster basin shp 路径")
+    ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_SHP), help="cluster 点 shp/gpkg 路径")
+    ap.add_argument("--source-shp", default=str(DEFAULT_SOURCE_SHP), help="source station shp/gpkg 路径")
+    ap.add_argument("--cluster-basin-shp", default=str(DEFAULT_CLUSTER_BASIN_SHP), help="cluster basin shp/gpkg 路径")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="输出目录")
     ap.add_argument("--top-n", type=int, default=200, help="重点队列保留前 N 行")
     ap.add_argument("--random-n", type=int, default=100, help="随机抽样 cluster 数量")
@@ -406,9 +406,9 @@ def main():
     cluster_stats = cluster_stats.merge(nc_stats, on=["cluster_id", "cluster_uid"], how="left")
 
     extra_counts = {
-        "cluster_shp_records": _maybe_count_shapefile(cluster_shp_path),
-        "source_shp_records": _maybe_count_shapefile(source_shp_path),
-        "cluster_basin_shp_records": _maybe_count_shapefile(cluster_basin_shp_path),
+        "cluster_vector_records": _count_gpkg_features(cluster_shp_path) if cluster_shp_path.suffix.lower() == ".gpkg" else _maybe_count_shapefile(cluster_shp_path),
+        "source_vector_records": _count_gpkg_features(source_shp_path) if source_shp_path.suffix.lower() == ".gpkg" else _maybe_count_shapefile(source_shp_path),
+        "cluster_basin_vector_records": _count_gpkg_features(cluster_basin_shp_path) if cluster_basin_shp_path.suffix.lower() == ".gpkg" else _maybe_count_shapefile(cluster_basin_shp_path),
         "s4_upstream_gpkg_features": _count_gpkg_features(s4_gpkg_path),
     }
     write_linkage_summary(out_dir, s5_df, cluster_stats, nc_dims, nc_stats, extra_counts)

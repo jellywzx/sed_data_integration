@@ -97,9 +97,12 @@ def load_station_catalog(release_dir):
     return pd.read_csv(path, keep_default_na=False)
 
 
-def find_nearest_station(station_catalog, lat, lon):
+def find_nearest_station(station_catalog, lat, lon, resolution):
     work = station_catalog.copy()
+    work = work[work["resolution"].astype(str).str.strip() == str(resolution)].copy()
     work = work[np.isfinite(work["lat"]) & np.isfinite(work["lon"])].copy()
+    if len(work) == 0:
+        raise ValueError("No station_catalog rows found for resolution '{}'".format(resolution))
     distances = _haversine_km(lat, lon, work["lat"].values, work["lon"].values)
     idx = int(np.argmin(distances))
     row = work.iloc[idx].copy()
@@ -185,6 +188,9 @@ def lookup_provenance(release_dir, cluster_uid, resolution, time_value):
     master_path = Path(release_dir) / "sed_reference_master.nc"
     source_station_catalog_path = Path(release_dir) / "source_station_catalog.csv"
     source_station_catalog = pd.read_csv(source_station_catalog_path, keep_default_na=False)
+    source_station_catalog = source_station_catalog[
+        source_station_catalog["resolution"].astype(str).str.strip() == str(resolution)
+    ].copy()
 
     if not HAS_NC:
         raise RuntimeError("netCDF4 is required to read master NetCDF")
@@ -340,13 +346,15 @@ def main():
 
     release_dir = Path(args.release_dir).resolve()
     station_catalog = load_station_catalog(release_dir)
-    nearest = find_nearest_station(station_catalog, args.lat, args.lon)
+    nearest = find_nearest_station(station_catalog, args.lat, args.lon, args.resolution)
 
     print("Nearest cluster_uid: {}".format(nearest["cluster_uid"]))
+    print("Resolution: {}".format(nearest["resolution"]))
     print("Distance (km): {:.3f}".format(float(nearest["distance_km"])))
     print("Station name: {}".format(nearest.get("station_name", "")))
     print("River name: {}".format(nearest.get("river_name", "")))
-    print("Available resolutions: {}".format(nearest.get("available_resolutions", "")))
+    print("Record count: {}".format(nearest.get("record_count", "")))
+    print("Time span: {} -> {}".format(nearest.get("time_start", ""), nearest.get("time_end", "")))
 
     ref_df = extract_reference_series(
         release_dir=release_dir,

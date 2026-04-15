@@ -36,7 +36,8 @@ import psutil
 from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
-from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG,S4_LOCAL_GPKG
+from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG, S4_LOCAL_GPKG, S4_REPORTED_AREA_CHECK_CSV
+
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
 OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)   # Output_r，支持 OUTPUT_R_ROOT 环境变量覆盖
@@ -50,6 +51,7 @@ S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
 OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
 OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
+OUT_REPORTED_AREA_CSV = OUTPUT_R_ROOT / S4_REPORTED_AREA_CHECK_CSV
 OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG 
 
 LOG_LEVEL  = "INFO"
@@ -83,6 +85,7 @@ CSV_COLUMNS = [
     "basin_id",
     "basin_area",
     "match_quality",
+    "reported_area",  
     "area_error",
     "uparea_merit",
     "pfaf_code",
@@ -147,6 +150,7 @@ def _trace_chunk(args):
                 "station_id":         station_id,
                 "lon":                lon,
                 "lat":                lat,
+                "reported_area":      reported_area, 
                 "basin_id":           basin_result["basin_id"],
                 "basin_area":         basin_result["basin_area"],
                 "match_quality":      basin_result["match_quality"],
@@ -181,6 +185,7 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "basin_id": row["basin_id"],
             "basin_area": row["basin_area"],
             "match_quality": row["match_quality"],
+            "reported_area":    row.get("reported_area"),
             "area_error": row["area_error"],
             "uparea_merit": row["uparea_merit"],
             "pfaf_code": row["pfaf_code"],
@@ -267,10 +272,16 @@ def main():
 
     # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
     stations_sorted = stations.sort_values("lon").reset_index(drop=True)
+    has_reported_area = "reported_area" in stations_sorted.columns
+    reported_areas = (
+        stations_sorted["reported_area"].where(stations_sorted["reported_area"].notna(), None).tolist()
+        if has_reported_area else [None] * len(stations_sorted)
+    )
     tuples = list(zip(
         stations_sorted["station_id"].astype(int),
         stations_sorted["lon"].astype(float),
         stations_sorted["lat"].astype(float),
+        reported_areas,
     ))
 
     chunk_size = BATCH_SIZE
@@ -355,6 +366,20 @@ def main():
     result_df = result_df.sort_values("station_id").drop_duplicates(subset=["station_id"], keep="last")
     csv_df = _drop_geometry_export_columns(result_df)
     csv_df.to_csv(OUT_CSV, index=False)
+    # ── 5b. 输出 reported_area 检查 CSV ─────────────────────────────────
+    if "reported_area" in result_df.columns:
+        reported_mask = result_df["reported_area"].notna()
+        n_with_area = int(reported_mask.sum())
+        if n_with_area > 0:
+            check_cols = ["station_id", "lon", "lat", "reported_area",
+                        "uparea_merit", "area_error", "match_quality",
+                        "basin_id", "pfaf_code", "method"]
+            check_df = result_df.loc[reported_mask, [c for c in check_cols if c in result_df.columns]]
+            check_df = check_df.sort_values("station_id")
+            check_df.to_csv(OUT_REPORTED_AREA_CSV, index=False)
+            logger.info("Saved reported_area check CSV (%d stations) -> %s", n_with_area, OUT_REPORTED_AREA_CSV)
+        else:
+            logger.info("No stations with reported_area; skipping check CSV")
     logger.info("Saved basin CSV -> %s", OUT_CSV)
 
     # ── 6. 输出 GPKG（可选）─────────────────────────────────────────────────

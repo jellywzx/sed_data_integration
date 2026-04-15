@@ -11,29 +11,35 @@ query_cluster.py — 按 cluster_uid 从 s6 NC 文件中查询所有相关信息
 #  用户配置区 — 仅需修改这里
 # ══════════════════════════════════════════════════════════════════════
 
+from pathlib import Path
+
 CLUSTER_UID  = "SED000183"   # 要查询的 UID，也可填数字如 "1" 或 "42"
 
 OUTPUT_ROOT  = None          # Output_r 根目录路径；None = 自动从脚本位置推导
                              # 例: OUTPUT_ROOT = "/data/Output_r"
 
-RESOLUTION   = "all"        # 显示哪种分辨率: "all" | "daily" | "monthly" | "annual"
+RESOLUTION   = "daily"        # 显示哪种分辨率: "all" | "daily" | "monthly" | "annual"
 
 VARIABLE     = "all"        # 显示哪个变量: "all" | "Q" | "SSC" | "SSL"
 
 PREVIEW_ROWS = 20           # 时序预览行数（只显示有效数据行）；0 = 显示全部
 
-OUT_CSV      = None         # 导出完整时序到 CSV；None = 不导出
-                            # 例: OUT_CSV = "/tmp/SED000001.csv"
+OUT_CSV = None              # None = 自动根据 CLUSTER_UID 生成文件名
+OUT_TXT = None              # None = 自动根据 CLUSTER_UID 生成文件名
+
 
 ENABLE_COLOR = True         # False = 关闭颜色（在不支持 ANSI 的环境中使用）
 
 # ══════════════════════════════════════════════════════════════════════
 
 import sys
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parent))
+sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
     import netCDF4 as nc4
@@ -41,9 +47,6 @@ try:
 except ImportError:
     nc4 = None
     HAS_NC = False
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
 
 from pipeline_paths import (
     S6_MERGED_NC,
@@ -142,7 +145,7 @@ def _normalize_uid(query):
 
 # ── 路径解析 ──────────────────────────────────────────────────────────
 def _paths():
-    root = Path(OUTPUT_ROOT).expanduser().resolve() if OUTPUT_ROOT else get_output_r_root(SCRIPT_DIR)
+    root = Path(OUTPUT_ROOT).expanduser().resolve() if OUTPUT_ROOT else get_output_r_root(SCRIPT_DIR.parent)
     matrix_dir = root / S6_MATRIX_DIR
     return {
         "master": root / S6_MERGED_NC,
@@ -512,12 +515,79 @@ def _print_source_info(sources_used, source_lookup):
 #  主程序
 # ══════════════════════════════════════════════════════════════════════
 
+import re
+
+def _strip_ansi(text):
+    """去掉 ANSI 颜色码，保存纯文本"""
+    return re.sub(r"\033\[[0-9;]*m", "", text)
+
+class _Tee:
+    """同时写到终端和文件"""
+    def __init__(self, file):
+        self._file = file
+        self._stdout = sys.stdout
+    def write(self, text):
+        self._stdout.write(text)
+        self._file.write(_strip_ansi(text))
+    def flush(self):
+        self._stdout.flush()
+        self._file.flush()
+
 def main():
+    global OUT_TXT, OUT_CSV
+
+    uid = _normalize_uid(CLUSTER_UID)
+    _ensure_output_names(uid)   # 提前生成默认输出文件名
+
+    _txt_file = None
+    if OUT_TXT:
+        out_path = Path(OUT_TXT).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _txt_file = open(out_path, "w", encoding="utf-8")
+        sys.stdout = _Tee(_txt_file)
+
+    try:
+        result = _main()
+    finally:
+        if _txt_file:
+            sys.stdout = sys.stdout._stdout
+            _txt_file.close()
+            print("已保存输出到: {}".format(OUT_TXT))
+    return result
+
+def _build_source_summary(stations):
+    if not stations:
+        return {
+            "source_station_uids": "",
+            "source_station_names": "",
+            "source_station_sources": "",
+            "source_station_native_ids": "",
+        }
+
+    return {
+        "source_station_uids": " | ".join(s.get("uid", "") for s in stations),
+        "source_station_names": " | ".join(s.get("name", "") for s in stations),
+        "source_station_sources": " | ".join(s.get("source", "") for s in stations),
+        "source_station_native_ids": " | ".join(s.get("native_id", "") for s in stations),
+    }
+
+
+def _ensure_output_names(uid):
+    global OUT_CSV, OUT_TXT
+    if OUT_CSV is None:
+        OUT_CSV = str(SCRIPT_DIR / "{}.csv".format(uid))
+    if OUT_TXT is None:
+        OUT_TXT = str(SCRIPT_DIR / "{}.txt".format(uid))
+
+
+def _main():   # ← 原来 main() 的内容改名为 _main()
     if not HAS_NC:
+
         print("错误：需要安装 netCDF4 库。请运行: pip install netCDF4")
         return 1
 
     uid   = _normalize_uid(CLUSTER_UID)
+    _ensure_output_names(uid)
     paths = _paths()
 
     print(_c("\n正在查询: {}  (from {})".format(
@@ -557,6 +627,7 @@ def main():
     # ── 打印 Source Stations ────────────────────────────────────────
     source_stations = _read_source_stations(paths["master"], station_idx, meta["source_lookup"])
     _print_source_stations(source_stations)
+    source_summary = _build_source_summary(source_stations)
 
     # ── 读取时序 ────────────────────────────────────────────────────
     all_dfs   = {}
@@ -603,6 +674,8 @@ def main():
         for res, df in all_dfs.items():
             tmp = df.copy()
             tmp.insert(0, "resolution", res)
+            for key, value in source_summary.items():
+                tmp[key] = value
             frames.append(tmp)
         if frames:
             combined  = pd.concat(frames, ignore_index=True)
@@ -617,4 +690,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

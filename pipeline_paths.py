@@ -45,6 +45,7 @@ S3_COLLECTED_CSV        = "scripts_basin_test/output/s3_collected_stations.csv"
 S4_UPSTREAM_CSV         = "scripts_basin_test/output/s4_upstream_basins.csv"
 S4_UPSTREAM_GPKG        = "scripts_basin_test/output/s4_upstream_basins.gpkg"
 S4_LOCAL_GPKG           = "scripts_basin_test/output/s4_local_catchments.gpkg"  
+S4_REPORTED_AREA_CHECK_CSV = "scripts_basin_test/output/s4_reported_area_check.csv"
 
 # ── s5：流域聚类合并 ──────────────────────────────────────────────────────────
 S5_BASIN_CLUSTERED_CSV  = "scripts_basin_test/output/s5_basin_clustered_stations.csv"
@@ -60,9 +61,18 @@ S6_CLIMATOLOGY_SHP      = "scripts_basin_test/output/s6_climatology_stations.shp
 
 # ── s7：空间文件导出 ──────────────────────────────────────────────────────────
 S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"
-S7_SOURCE_STATION_SHP   = "scripts_basin_test/output/s7_source_stations.shp"
-S7_CLUSTER_BASIN_SHP    = "scripts_basin_test/output/s7_cluster_basins.shp"
-S7_LOCAL_BASIN_SHP      = "scripts_basin_test/output/s7_cluster_basins_local.shp"  
+S7_CLUSTER_POINTS_GPKG  = "scripts_basin_test/output/s7_cluster_points.gpkg"
+S7_CLUSTER_STATION_CATALOG_CSV = "scripts_basin_test/output/s7_cluster_station_catalog.csv"
+S7_CLUSTER_RESOLUTION_CATALOG_CSV = "scripts_basin_test/output/s7_cluster_resolution_catalog.csv"
+S7_SOURCE_STATIONS_GPKG = "scripts_basin_test/output/s7_source_stations.gpkg"
+S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV = "scripts_basin_test/output/s7_source_station_resolution_catalog.csv"
+S7_CLUSTER_BASINS_GPKG  = "scripts_basin_test/output/s7_cluster_basins.gpkg"
+S7_LOCAL_BASINS_GPKG    = "scripts_basin_test/output/s7_cluster_basins_local.gpkg"
+
+# Deprecated aliases kept for older imports. New standard outputs are GPKG.
+S7_SOURCE_STATION_SHP   = S7_SOURCE_STATIONS_GPKG
+S7_CLUSTER_BASIN_SHP    = S7_CLUSTER_BASINS_GPKG
+S7_LOCAL_BASIN_SHP      = S7_LOCAL_BASINS_GPKG
 
 # ── 发布层：用户交付版参考数据集 ──────────────────────────────────────────────
 RELEASE_DATASET_DIR                 = "scripts_basin_test/output/sed_reference_release"

@@ -304,36 +304,57 @@
 
 作用：
 
-1. 导出最终 `cluster` 点位 `shp`
+1. 读取 `master nc + daily/monthly/annual matrix nc`
+2. 生成 `cluster` 级空间摘要目录
+3. 导出兼容版 `cluster` 点位 `shp`
+4. 导出主 GIS 产品 `cluster` 多图层 `gpkg`
 
 输出：
 
 1. `scripts_basin_test/output/s7_cluster_stations.shp`
+2. `scripts_basin_test/output/s7_cluster_points.gpkg`
+3. `scripts_basin_test/output/s7_cluster_station_catalog.csv`
+4. `scripts_basin_test/output/s7_cluster_resolution_catalog.csv`
+
+说明：
+
+1. `s7_cluster_stations.shp` 现在是兼容摘要层，仍然一行一个 `cluster_uid`
+2. `s7_cluster_points.gpkg` 是主 GIS 产品，包含 `cluster_summary / cluster_daily / cluster_monthly / cluster_annual` 多图层
+3. `climatology` 不进入 `cluster_uid` 图层体系，继续单独发布
 
 ### s7_export_source_station_shp.py
 
 作用：
 
-1. 导出原始站点点位 `shp`
+1. 读取 `master nc`
+2. 按实际进入最终主线的 `source_station_uid + resolution` 聚合
+3. 导出多图层 `gpkg`
+4. 导出 `source station` 分辨率 catalog
 
 输出：
 
-1. `scripts_basin_test/output/s7_source_stations.shp`
+1. `scripts_basin_test/output/s7_source_stations.gpkg`
+2. `scripts_basin_test/output/s7_source_station_resolution_catalog.csv`
 
 ### s7_export_cluster_basin_shp.py
 
 作用：
 
-1. 从 `s4` 的站点级流域面和 `s5` 的 cluster 表导出最终 `cluster` 级流域单元 `shp`
+1. 从 `s5` 中为每个 `cluster_id` 选代表站点 polygon
+2. 读取 `s7_cluster_resolution_catalog.csv`
+3. 将代表 polygon 按 `cluster_uid + resolution` 展开
+4. 导出多图层 `gpkg`
 
 输出：
 
-1. `scripts_basin_test/output/s7_cluster_basins.shp`
+1. `scripts_basin_test/output/s7_cluster_basins.gpkg`
+2. `scripts_basin_test/output/s7_cluster_basins_local.gpkg`
 
 说明：
 
-1. 这个文件才是最终 `cluster` 级流域单元面文件
-2. 它依赖 `s4_upstream_basins.gpkg`
+1. `s7_cluster_basins.gpkg` 是主 polygon 产品，包含 `basin_daily / basin_monthly / basin_annual`
+2. `cluster_basin` 的标准 join key 现在是 `cluster_uid + resolution`
+3. 它仍依赖 `s4_upstream_basins.gpkg`
 
 ### s8_publish_reference_dataset.py
 
@@ -341,11 +362,12 @@
 
 1. 将现有 `s6 / s7` 主线输出整理成用户发布版数据集
 2. 生成标准命名的 `sed_reference_*.nc`
-3. 生成 `station_catalog.csv`
-4. 生成 `source_station_catalog.csv`
-5. 生成 `source_dataset_catalog.csv`
-6. 生成 `GPKG` 空间 sidecar
-7. 生成发布版 `README.md` 和验证报告
+3. 复用 `s7` 产出的 cluster/source resolution catalog
+4. 生成一行一个 `cluster_uid + resolution` 的 `station_catalog.csv`
+5. 生成一行一个 `source_station_uid + resolution` 的 `source_station_catalog.csv`
+6. 生成 `source_dataset_catalog.csv`
+7. 生成多图层 `GPKG` 空间 sidecar
+8. 生成发布版 `README.md` 和验证报告
 
 输出目录：
 
@@ -377,8 +399,8 @@
 
 ## 5. 空间文件说明
 
-当前主线仍保留 `shp` 兼容输出，但正式发布层更推荐使用 `GPKG`。
-发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
+当前主线只有 `cluster` 点位还保留一个兼容摘要 `shp`。
+正式使用时请优先使用 `GPKG`，发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
 
 ### 5.1 cluster 点位文件
 
@@ -389,32 +411,39 @@
 
 作用：
 
-1. 在 GIS 中查看合并后的 `cluster`
-2. 作为 `nc` 和空间数据之间的连接层
+1. `s7_cluster_stations.shp` 用于兼容旧的人工检查和简单联查
+2. `sed_reference_cluster_points.gpkg` 是主 GIS 产品，包含：
+3. `cluster_summary`
+4. `cluster_daily`
+5. `cluster_monthly`
+6. `cluster_annual`
+7. 作为 `nc` 和空间数据之间的多分辨率连接层
 
 ### 5.2 原始站点点位文件
 
 文件：
 
-1. `s7_source_stations.shp`
+1. `s7_source_stations.gpkg`
 2. `sed_reference_release/sed_reference_source_stations.gpkg`
 
 作用：
 
-1. 查看 `cluster` 内部包含哪些原始站点
-2. 检查合并后是否仍保留原始站点信息
+1. 查看某个 `cluster_uid + resolution` 内部有哪些原始站点参与
+2. 标准图层为 `source_daily / source_monthly / source_annual`
+3. 标准 join key 是 `source_station_uid + resolution`
 
 ### 5.3 cluster 级流域单元文件
 
 文件：
 
-1. `s7_cluster_basins.shp`
+1. `s7_cluster_basins.gpkg`
 2. `sed_reference_release/sed_reference_cluster_basins.gpkg`
 
 作用：
 
-1. 查看每个 `cluster` 对应的最终流域单元面
-2. 与 `nc` 和 `cluster` 点位文件做空间联动
+1. 查看每个 `cluster_uid + resolution` 对应的最终流域单元面
+2. 标准图层为 `basin_daily / basin_monthly / basin_annual`
+3. 与 `nc` 和 `cluster` 点位文件按复合键做空间联动
 
 ### 5.4 shapefile 字段名限制
 
@@ -440,8 +469,12 @@
 1. `s5_basin_clustered_stations.csv`
 2. `s6_basin_merged_all.nc`
 3. `s7_cluster_stations.shp`
-4. `s7_source_stations.shp`
-5. `s7_cluster_basins.shp`
+4. `s7_cluster_points.gpkg`
+5. `s7_cluster_station_catalog.csv`
+6. `s7_cluster_resolution_catalog.csv`
+7. `s7_source_stations.gpkg`
+8. `s7_source_station_resolution_catalog.csv`
+9. `s7_cluster_basins.gpkg`
 
 如果是面向用户发布，当前推荐直接使用：
 
@@ -453,15 +486,18 @@
 6. `output/sed_reference_release/station_catalog.csv`
 7. `output/sed_reference_release/source_station_catalog.csv`
 8. `output/sed_reference_release/sed_reference_cluster_points.gpkg`
-9. `output/sed_reference_release/README.md`
+9. `output/sed_reference_release/sed_reference_source_stations.gpkg`
+10. `output/sed_reference_release/sed_reference_cluster_basins.gpkg`
+11. `output/sed_reference_release/README.md`
 
 这套发布层的标准使用顺序是：
 
 1. 先按模型输出时间分辨率选择对应的 matrix `nc`
-2. 用 `station_catalog.csv` 或 matrix 文件中的 `lat/lon` 找最近的 `cluster_uid`
-3. 抽出参考时间序列并与模型结果对齐
-4. 如果需要追溯来源，再去 `sed_reference_master.nc`
-5. 继续通过 `source_station_catalog.csv` 找到原始站点和原始路径
+2. 先把 `station_catalog.csv` 过滤到对应 `resolution`
+3. 再用过滤后的 `lat/lon` 找最近的 `cluster_uid`
+4. 抽出参考时间序列并与模型结果对齐
+5. 如果需要追溯来源，再去 `sed_reference_master.nc`
+6. 继续通过 `source_station_catalog.csv` 找到同一 `resolution` 下的原始站点和原始路径
 
 人工检查相关产物是：
 
@@ -515,11 +551,13 @@
 4. `s4_basin_trace_watch.py`
 5. `s5_basin_merge.py`
 6. `s6_basin_merge_to_nc.py`
-7. `s7_export_cluster_shp.py`
-8. `s7_export_source_station_shp.py`
-9. `s7_export_cluster_basin_shp.py`
-10. `s8_publish_reference_dataset.py`
-11. `s9_generate_manual_review_tables.py`
+7. `s6_export_resolution_matrix_ncs.py`
+8. `s6_export_climatology_to_nc.py`
+9. `s7_export_cluster_shp.py`
+10. `s7_export_source_station_shp.py`
+11. `s7_export_cluster_basin_shp.py`
+12. `s8_publish_reference_dataset.py`
+13. `s9_generate_manual_review_tables.py`
 
 ---
 
@@ -558,8 +596,8 @@
 
 其中：
 
-1. `s7_export_cluster_shp.py` 和 `s7_export_source_station_shp.py` 需要 `pyshp`
-2. `s7_export_cluster_basin_shp.py` 需要 `geopandas`
+1. `s7_export_cluster_shp.py` 需要 `pyshp + geopandas`
+2. `s7_export_source_station_shp.py` 和 `s7_export_cluster_basin_shp.py` 需要 `geopandas`
 3. `s9_generate_manual_review_tables.py` 使用 `xarray` 读取 `nc`，建议环境中可用 `h5netcdf`
 
 ---

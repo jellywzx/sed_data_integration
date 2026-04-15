@@ -15,8 +15,8 @@ Outputs:
   scripts_basin_test/output/manual_review/17_basin_geometry_quality.csv
   scripts_basin_test/output/manual_review/18_provenance_path_check.csv
 
-This script reads manual_review_checklist.csv, fills in what can be checked
-automatically, and writes a separate guide for the remaining manual items.
+This version reads the new multi-layer GPKG outputs and evaluates joins by the
+composite key `cluster_uid + resolution`.
 """
 
 import argparse
@@ -27,28 +27,27 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from cluster_spatial_catalog import (
+    CLUSTER_RESOLUTIONS,
+    HAS_GPD,
+    list_gpkg_layers,
+    read_gpkg_layer,
+)
 from pipeline_paths import (
     S4_UPSTREAM_CSV,
     S5_BASIN_CLUSTERED_CSV,
     S6_CLIMATOLOGY_NC,
     S6_MERGED_NC,
-    S7_CLUSTER_BASIN_SHP,
-    S7_CLUSTER_SHP,
-    S7_SOURCE_STATION_SHP,
+    S7_CLUSTER_BASINS_GPKG,
+    S7_CLUSTER_POINTS_GPKG,
+    S7_SOURCE_STATIONS_GPKG,
     get_output_r_root,
 )
 
-try:
-    import shapefile
-    HAS_PYSHP = True
-except ImportError:
-    HAS_PYSHP = False
-
-try:
+if HAS_GPD:
     import geopandas as gpd
-    HAS_GPD = True
-except ImportError:
-    HAS_GPD = False
+else:
+    gpd = None
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -59,16 +58,16 @@ DEFAULT_S4 = ROOT / S4_UPSTREAM_CSV
 DEFAULT_S5 = ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_S6 = ROOT / S6_MERGED_NC
 DEFAULT_CLIM_NC = ROOT / S6_CLIMATOLOGY_NC
-DEFAULT_CLUSTER_SHP = ROOT / S7_CLUSTER_SHP
-DEFAULT_SOURCE_SHP = ROOT / S7_SOURCE_STATION_SHP
-DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASIN_SHP
+DEFAULT_CLUSTER_GPKG = ROOT / S7_CLUSTER_POINTS_GPKG
+DEFAULT_SOURCE_GPKG = ROOT / S7_SOURCE_STATIONS_GPKG
+DEFAULT_CLUSTER_BASIN_GPKG = ROOT / S7_CLUSTER_BASINS_GPKG
 DEFAULT_OUT_DIR = ROOT / "scripts_basin_test/output/manual_review"
 
 CORE_OUTPUT_LABELS = [
     "s6_nc",
-    "cluster_shp",
-    "source_shp",
-    "cluster_basin_shp",
+    "cluster_points_gpkg",
+    "source_stations_gpkg",
+    "cluster_basins_gpkg",
 ]
 
 
@@ -99,36 +98,63 @@ def safe_series_to_str(series: pd.Series):
     return series.fillna("").astype(str).str.strip()
 
 
-def choose_field(columns, candidates):
-    col_map = {str(c).lower(): c for c in columns}
-    for candidate in candidates:
-        key = candidate.lower()
-        if key in col_map:
-            return col_map[key]
-    for candidate in candidates:
-        key = candidate.lower()
-        for lower_name, original_name in col_map.items():
-            if lower_name.startswith(key):
-                return original_name
-    return None
+def file_info_rows(file_map):
+    rows = []
+    for label, path in file_map.items():
+        row = {
+            "dataset": label,
+            "path": str(path),
+            "exists": path.exists(),
+            "is_file": path.is_file(),
+            "size_mb": np.nan,
+            "mtime": "",
+        }
+        if path.exists():
+            stat = path.stat()
+            row["size_mb"] = round(stat.st_size / 1024 / 1024, 3)
+            row["mtime"] = pd.Timestamp(stat.st_mtime, unit="s").isoformat()
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
-def shapefile_record_count(path: Path):
-    if not path.is_file():
-        return np.nan
-    if not HAS_PYSHP:
-        return np.nan
-    reader = shapefile.Reader(str(path))
-    return len(reader)
+def _empty_gdf(columns=None):
+    columns = columns or ["geometry"]
+    if not HAS_GPD:
+        raise RuntimeError("geopandas is required for GPKG audit")
+    return gpd.GeoDataFrame({col: pd.Series(dtype=object) for col in columns}, geometry="geometry", crs="EPSG:4326")
 
 
-def read_shapefile_table(path: Path):
-    if not HAS_PYSHP:
-        raise RuntimeError("pyshp is required")
-    reader = shapefile.Reader(str(path))
-    fields = [f[0] for f in reader.fields[1:]]
-    rows = [list(rec) for rec in reader.records()]
-    return pd.DataFrame(rows, columns=fields)
+def _concat_gdfs(frames, empty_columns=None):
+    if len(frames) == 0:
+        return _empty_gdf(empty_columns or ["geometry"])
+    crs = frames[0].crs
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    return gpd.GeoDataFrame(combined, geometry="geometry", crs=crs)
+
+
+def _load_multilayer_vector(path: Path, prefix: str, include_summary=False):
+    if not HAS_GPD:
+        raise RuntimeError("geopandas is required for GPKG audit")
+    layers = set(list_gpkg_layers(path))
+    summary = _empty_gdf()
+    if include_summary and "{}_summary".format(prefix) in layers:
+        summary = read_gpkg_layer(path, "{}_summary".format(prefix))
+    frames = []
+    for resolution in CLUSTER_RESOLUTIONS:
+        layer_name = "{}_{}".format(prefix, resolution)
+        if layer_name not in layers:
+            continue
+        gdf = read_gpkg_layer(path, layer_name)
+        if "resolution" not in gdf.columns:
+            gdf = gdf.copy()
+            gdf["resolution"] = resolution
+        frames.append(gdf)
+    if prefix == "source":
+        empty_columns = ["cluster_uid", "resolution", "source_station_uid", "geometry"]
+    else:
+        empty_columns = ["cluster_uid", "resolution", "geometry"]
+    combined = _concat_gdfs(frames, empty_columns=empty_columns)
+    return summary, combined, sorted(layers)
 
 
 def load_s5(path: Path):
@@ -158,6 +184,14 @@ def load_s4(path: Path):
     return df
 
 
+def _resolution_names_from_ds(ds):
+    if "resolution" in ds.variables and "flag_meanings" in ds["resolution"].attrs:
+        names = str(ds["resolution"].attrs["flag_meanings"]).split()
+        if names:
+            return names
+    return ["daily", "monthly", "annual", "climatology", "other"]
+
+
 def load_nc_bundle(path: Path):
     ds = open_netcdf_dataset(path)
     try:
@@ -170,9 +204,7 @@ def load_nc_bundle(path: Path):
             cluster_uid = np.array(["SED{:06d}".format(int(v)) for v in cluster_id], dtype=object)
 
         resolution_codes = ds["resolution"].values.astype(np.int16)
-        resolution_names = str(ds["resolution"].attrs.get("flag_meanings", "")).split()
-        if not resolution_names:
-            resolution_names = ["daily", "monthly", "annual", "climatology", "other"]
+        resolution_names = _resolution_names_from_ds(ds)
         code_to_name = {i: name for i, name in enumerate(resolution_names)}
         resolution_labels = np.array([code_to_name.get(int(x), "unknown") for x in resolution_codes], dtype=object)
 
@@ -199,7 +231,40 @@ def load_nc_bundle(path: Path):
         source_names = np.array(decode_object_array(ds["source_name"].values), dtype=object) if "source_name" in ds.variables else np.array([], dtype=object)
         source_records = np.array(decode_object_array(ds["source"].values), dtype=object) if "source" in ds.variables else np.array([], dtype=object)
 
-        times = ds["time"].values.astype(np.float64) if "time" in ds.variables else np.array([], dtype=np.float64)
+        record_cluster_uid = cluster_uid[station_index]
+        main_mask = np.isin(resolution_labels, np.array(CLUSTER_RESOLUTIONS, dtype=object))
+
+        cluster_resolution_df = (
+            pd.DataFrame(
+                {
+                    "cluster_uid": record_cluster_uid[main_mask],
+                    "resolution": resolution_labels[main_mask],
+                }
+            )
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+
+        source_mask = main_mask & (source_station_index >= 0)
+        source_station_uid_for_records = np.array(
+            [
+                source_station_uid[idx] if 0 <= idx < len(source_station_uid) else ""
+                for idx in source_station_index[source_mask].tolist()
+            ],
+            dtype=object,
+        )
+        source_resolution_df = (
+            pd.DataFrame(
+                {
+                    "source_station_index": source_station_index[source_mask].astype(np.int64),
+                    "source_station_uid": source_station_uid_for_records,
+                    "cluster_uid": record_cluster_uid[source_mask],
+                    "resolution": resolution_labels[source_mask],
+                }
+            )
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
 
         return {
             "dims": dims,
@@ -223,7 +288,8 @@ def load_nc_bundle(path: Path):
             "ssl_flag": ssl_flag,
             "source_names": source_names,
             "source_records": source_records,
-            "times": times,
+            "cluster_resolution_df": cluster_resolution_df,
+            "source_resolution_df": source_resolution_df,
         }
     finally:
         ds.close()
@@ -243,25 +309,6 @@ def load_simple_nc_stats(path: Path):
         }
     finally:
         ds.close()
-
-
-def file_info_rows(file_map):
-    rows = []
-    for label, path in file_map.items():
-        row = {
-            "dataset": label,
-            "path": str(path),
-            "exists": path.exists(),
-            "is_file": path.is_file(),
-            "size_mb": np.nan,
-            "mtime": "",
-        }
-        if path.exists():
-            stat = path.stat()
-            row["size_mb"] = round(stat.st_size / 1024 / 1024, 3)
-            row["mtime"] = pd.Timestamp(stat.st_mtime, unit="s").isoformat()
-        rows.append(row)
-    return pd.DataFrame(rows)
 
 
 def build_resolution_summary(nc):
@@ -358,15 +405,17 @@ def build_source_coverage(s5_df, nc):
     return out.sort_values(["in_s5", "source_name"], ascending=[False, True]).reset_index(drop=True)
 
 
-def build_join_summary(nc, cluster_df, source_df, basin_df):
-    cluster_col = choose_field(cluster_df.columns, ["cluster_ui", "cluster_uid"])
-    source_cluster_col = choose_field(source_df.columns, ["cluster_ui", "cluster_uid"])
-    basin_cluster_col = choose_field(basin_df.columns, ["cluster_ui", "cluster_uid"])
+def _cluster_key_set(df):
+    if len(df) == 0:
+        return set()
+    return set(zip(safe_series_to_str(df["cluster_uid"]), safe_series_to_str(df["resolution"])))
 
-    nc_cluster_set = set(pd.Series(nc["cluster_uid"], dtype=object))
-    cluster_set = set(safe_series_to_str(cluster_df[cluster_col])) if cluster_col else set()
-    source_cluster_set = set(safe_series_to_str(source_df[source_cluster_col])) if source_cluster_col else set()
-    basin_set = set(safe_series_to_str(basin_df[basin_cluster_col])) if basin_cluster_col else set()
+
+def build_join_summary(nc, cluster_resolution_df, source_resolution_df, basin_resolution_df):
+    nc_cluster_set = _cluster_key_set(nc["cluster_resolution_df"])
+    cluster_set = _cluster_key_set(cluster_resolution_df)
+    source_cluster_set = _cluster_key_set(source_resolution_df[["cluster_uid", "resolution"]].drop_duplicates()) if len(source_resolution_df) else set()
+    basin_set = _cluster_key_set(basin_resolution_df)
 
     rows = [
         {
@@ -422,38 +471,27 @@ def build_overlap_summary(nc):
     return pd.DataFrame(rows), pd.DataFrame(flag_rows)
 
 
-def build_point_polygon_check(cluster_shp: Path, basin_shp: Path, source_shp: Path = None):
-    if not HAS_GPD:
-        return pd.DataFrame([{"status": "not_run", "note": "geopandas not installed"}]), None
-
-    cluster_gdf = gpd.read_file(cluster_shp)
-    basin_gdf = gpd.read_file(basin_shp)
-
-    cluster_col = choose_field(cluster_gdf.columns, ["cluster_ui", "cluster_uid"])
-    basin_col = choose_field(basin_gdf.columns, ["cluster_ui", "cluster_uid"])
-    if cluster_col is None or basin_col is None:
-        return pd.DataFrame([{"status": "error", "note": "cluster join field not found"}]), None
-
-    # 保留 cluster 属性列（坐标、站名、河名、source站点数量）
-    cluster_extra_cols = [c for c in ["lat", "lon", "stn_name", "river_name", "n_src_stn"]
-                          if c in cluster_gdf.columns]
-    cluster_left = cluster_gdf[[cluster_col, "geometry"] + cluster_extra_cols].rename(
-        columns={cluster_col: "cluster_uid", "geometry": "point_geom"}
-    )
-
+def build_point_polygon_check(cluster_resolution_gdf, basin_resolution_gdf, source_resolution_gdf=None):
+    cluster_left = cluster_resolution_gdf.rename(columns={"geometry": "point_geom"}).copy()
+    basin_right = basin_resolution_gdf.rename(columns={"geometry": "poly_geom"}).copy()
     merged = cluster_left.merge(
-        basin_gdf[[basin_col, "geometry"]].rename(columns={basin_col: "cluster_uid", "geometry": "poly_geom"}),
-        on="cluster_uid",
+        basin_right[["cluster_uid", "resolution", "poly_geom"]],
+        on=["cluster_uid", "resolution"],
         how="left",
     )
 
     results = []
     for row in merged.itertuples(index=False):
-        rec = {"cluster_uid": row.cluster_uid}
-        # 附带 cluster 属性
-        for col in cluster_extra_cols:
-            rec[col] = getattr(row, col, None)
-
+        rec = {
+            "cluster_uid": row.cluster_uid,
+            "resolution": row.resolution,
+        }
+        if hasattr(row, "station_name"):
+            rec["station_name"] = getattr(row, "station_name", "")
+        if hasattr(row, "river_name"):
+            rec["river_name"] = getattr(row, "river_name", "")
+        if hasattr(row, "record_count"):
+            rec["record_count"] = getattr(row, "record_count", np.nan)
         if row.poly_geom is None:
             rec.update({"relation": "missing_polygon", "distance_deg": np.nan})
         else:
@@ -465,68 +503,44 @@ def build_point_polygon_check(cluster_shp: Path, basin_shp: Path, source_shp: Pa
         results.append(rec)
 
     detail = pd.DataFrame(results)
-
-    # ── 读取并聚合 source station 信息 ──────────────────────────────────────
-    if source_shp is not None and Path(source_shp).is_file():
-        try:
-            if HAS_GPD:
-                src_gdf = gpd.read_file(source_shp)
-                src_df = pd.DataFrame({c: src_gdf[c] for c in src_gdf.columns if c != "geometry"})
-            elif HAS_PYSHP:
-                src_df = read_shapefile_table(Path(source_shp))
-            else:
-                src_df = None
-
-            if src_df is not None:
-                src_col = choose_field(src_df.columns, ["cluster_uid", "cluster_ui"])
-                if src_col is not None:
-                    src_df = src_df.rename(columns={src_col: "cluster_uid"})
-                    # 各字段聚合列映射：shapefile字段名 → 输出列名
-                    field_map = [
-                        ("src_uid",    "src_uids"),
-                        ("src_name",   "src_names"),
-                        ("src_stn_id", "src_stn_ids"),
-                        ("stn_name",   "src_stn_names"),
-                        ("river_name", "src_river_names"),
-                        ("lat",        "src_lats"),
-                        ("lon",        "src_lons"),
-                        ("resols",     "src_resols"),
-                    ]
-                    agg_cols = {}
-                    for src_field, out_col in field_map:
-                        if src_field in src_df.columns:
-                            agg_cols[out_col] = src_df.groupby("cluster_uid")[src_field].apply(
-                                lambda x: "|".join(str(v) for v in x)
-                            )
-                    if agg_cols:
-                        src_agg = pd.DataFrame(agg_cols).reset_index()
-                        detail = detail.merge(src_agg, on="cluster_uid", how="left")
-        except Exception:
-            pass  # source 信息读取失败时不影响主体结果
+    if len(detail) == 0:
+        detail = pd.DataFrame(columns=["cluster_uid", "resolution", "relation", "distance_deg"])
+    if source_resolution_gdf is not None and len(source_resolution_gdf):
+        src_df = pd.DataFrame(source_resolution_gdf.drop(columns="geometry", errors="ignore")).copy()
+        agg = (
+            src_df.groupby(["cluster_uid", "resolution"], as_index=False)
+            .agg(
+                source_station_uids=("source_station_uid", lambda x: "|".join(sorted(set(str(v) for v in x if str(v).strip())))),
+                source_names=("source_name", lambda x: "|".join(sorted(set(str(v) for v in x if str(v).strip())))),
+                source_station_names=("station_name", lambda x: "|".join(sorted(set(str(v) for v in x if str(v).strip())))),
+            )
+        )
+        detail = detail.merge(agg, on=["cluster_uid", "resolution"], how="left")
 
     summary = (
-        detail.groupby("relation", as_index=False)
+        detail.groupby(["resolution", "relation"], as_index=False)
         .size()
         .rename(columns={"size": "cluster_count"})
-        .sort_values("relation")
+        .sort_values(["resolution", "relation"])
         .reset_index(drop=True)
     )
     return summary, detail
 
 
-
-def build_basin_geometry_quality(basin_shp: Path):
-    if not HAS_GPD:
-        return pd.DataFrame([{"status": "not_run", "note": "geopandas not installed"}])
-    basin_gdf = gpd.read_file(basin_shp)
-    return pd.DataFrame(
-        [
-            {"metric": "polygon_count", "value": int(len(basin_gdf))},
-            {"metric": "empty_geometry_count", "value": int(basin_gdf.geometry.is_empty.sum())},
-            {"metric": "invalid_geometry_count", "value": int((~basin_gdf.geometry.is_valid).sum())},
-            {"metric": "null_geometry_count", "value": int(basin_gdf.geometry.isna().sum())},
-        ]
-    )
+def build_basin_geometry_quality(basin_resolution_gdf):
+    rows = []
+    all_resolutions = ["all"] + list(CLUSTER_RESOLUTIONS)
+    for resolution in all_resolutions:
+        subset = basin_resolution_gdf if resolution == "all" else basin_resolution_gdf[basin_resolution_gdf["resolution"] == resolution]
+        rows.extend(
+            [
+                {"resolution": resolution, "metric": "polygon_count", "value": int(len(subset))},
+                {"resolution": resolution, "metric": "empty_geometry_count", "value": int(subset.geometry.is_empty.sum()) if len(subset) else 0},
+                {"resolution": resolution, "metric": "invalid_geometry_count", "value": int((~subset.geometry.is_valid).sum()) if len(subset) else 0},
+                {"resolution": resolution, "metric": "null_geometry_count", "value": int(subset.geometry.isna().sum()) if len(subset) else 0},
+            ]
+        )
+    return pd.DataFrame(rows)
 
 
 def build_path_check(nc):
@@ -582,8 +596,8 @@ def build_manual_guide():
         {
             "check_id": "A12",
             "suggested_file": "16_cluster_point_polygon_check.csv",
-            "how_to_check": "先看 relation 列是否有 outside 或 missing_polygon；再在 GIS 里打开 s7_cluster_stations.shp 和 s7_cluster_basins.shp，按 cluster_ui 联查这些异常 cluster。",
-            "pass_condition": "点被对应流域面 covers，或仅极少量贴边界。",
+            "how_to_check": "先看 relation 列是否有 outside 或 missing_polygon；再在 GIS 里打开 s7_cluster_points.gpkg 和 s7_cluster_basins.gpkg，对同一个 cluster_uid + resolution 联查这些异常 key。",
+            "pass_condition": "点被对应分辨率的流域面 covers，或仅极少量贴边界。",
         },
         {
             "check_id": "A14",
@@ -592,51 +606,15 @@ def build_manual_guide():
             "pass_condition": "overlap 记录以 good/estimated 为主，没有成批 bad 记录胜出。",
         },
         {
-            "check_id": "B01",
-            "suggested_file": "03_priority_cluster_queue.csv",
-            "how_to_check": "按 n_station_rows 从大到小看 cluster，重点核对河流名、站名、点位分布和流域面是否明显不相符。",
-            "pass_condition": "大 cluster 仍然是同一流域单元下可接受的站点组，没有明显跨流域或跨河流误并。",
-        },
-        {
-            "check_id": "B02",
-            "suggested_file": "03_priority_cluster_queue.csv",
-            "how_to_check": "筛选 many_sources 的 cluster，检查是否混入明显不相关来源，尤其是名称和区域都不一致的情况。",
-            "pass_condition": "多来源 cluster 仍然集中在同一流域单元，来源组合能讲通。",
-        },
-        {
-            "check_id": "B03",
-            "suggested_file": "03_priority_cluster_queue.csv",
-            "how_to_check": "筛选 n_river_names > 1 的 cluster，在 GIS 里看这些点是否仍处于同一合理河道系统。",
-            "pass_condition": "河流名差异可解释为别名、拼写差异或支流命名差异，而不是明显错河。",
-        },
-        {
-            "check_id": "B04",
-            "suggested_file": "03_priority_cluster_queue.csv",
-            "how_to_check": "筛选 n_station_names > 1 的 cluster，抽看原始站点 shp 和 basin 面，判断是否只是不同来源命名不同。",
-            "pass_condition": "站名差异可解释，不是把无关站点并到一起。",
-        },
-        {
             "check_id": "B05",
-            "suggested_file": "17_basin_geometry_quality.csv; s7_cluster_basins.shp",
-            "how_to_check": "先看属性缺失和几何质量统计，再在 GIS 中抽样核对 basin_area、pfaf_code、match_quality 与几何大小是否一致。",
+            "suggested_file": "17_basin_geometry_quality.csv; s7_cluster_basins.gpkg",
+            "how_to_check": "先看不同分辨率图层的几何质量统计，再在 GIS 中抽样核对 basin_area、pfaf_code、match_quality 与几何大小是否一致。",
             "pass_condition": "属性无系统性缺失，几何形态与 basin_area 大体相符。",
         },
         {
-            "check_id": "C01",
-            "suggested_file": "s6_plot_stats.csv",
-            "how_to_check": "按 start/end year 或 span 排序，找异常长或异常短的 cluster，结合 source_station_paths 回看原始文件。",
-            "pass_condition": "没有明显不可能的时间范围，异常个例可解释。",
-        },
-        {
-            "check_id": "C02",
-            "suggested_file": "s6_basin_merged_all.nc",
-            "how_to_check": "抽样多时间类型 cluster，按 cluster + resolution + time 检查是否有重复记录；优先查 overlap cluster。",
-            "pass_condition": "没有明显重复写入，同一时间点不会反复出现无差别记录。",
-        },
-        {
             "check_id": "C04",
-            "suggested_file": "s7_cluster_stations.shp; s7_cluster_basins.shp",
-            "how_to_check": "在 GIS 中按全球、洲级和重点流域浏览，观察是否有大块空白或异常密集区域。",
+            "suggested_file": "s7_cluster_points.gpkg; s7_cluster_basins.gpkg",
+            "how_to_check": "在 GIS 中按 daily/monthly/annual 三个图层浏览，观察是否有大块空白或异常密集区域。",
             "pass_condition": "空间分布符合预期，不存在明显整区漏失或异常聚集。",
         },
         {
@@ -651,20 +629,15 @@ def build_manual_guide():
             "how_to_check": "反向抽样原始文件路径或 source_station_id，检查它最终进入了哪个 cluster。",
             "pass_condition": "原始文件能稳定回连到 cluster。",
         },
-        {
-            "check_id": "C07",
-            "suggested_file": "04_random_cluster_queue.csv",
-            "how_to_check": "做无偏随机抽样，避免只看异常样本；在 GIS 和 NC 中联合查看这些 cluster。",
-            "pass_condition": "随机样本整体表现正常。",
-        },
-        {
-            "check_id": "C08",
-            "suggested_file": "06_overlap_cluster_queue.csv",
-            "how_to_check": "随机抽 overlap cluster，核对来源选择是否可信、变量值是否合理。",
-            "pass_condition": "overlap 处理结果在随机样本中也可信。",
-        },
     ]
     return pd.DataFrame(rows)
+
+
+def _metric_value(df, metric, resolution="all"):
+    subset = df[(df["metric"] == metric) & (df["resolution"] == resolution)]
+    if len(subset) == 0:
+        return 0
+    return int(subset["value"].iloc[0])
 
 
 def main():
@@ -674,20 +647,23 @@ def main():
     ap.add_argument("--s5", default=str(DEFAULT_S5), help="s5 clustered csv")
     ap.add_argument("--s6", default=str(DEFAULT_S6), help="s6 merged nc")
     ap.add_argument("--climatology-nc", default=str(DEFAULT_CLIM_NC), help="standalone climatology nc")
-    ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_SHP), help="cluster point shapefile")
-    ap.add_argument("--source-shp", default=str(DEFAULT_SOURCE_SHP), help="source station shapefile")
-    ap.add_argument("--cluster-basin-shp", default=str(DEFAULT_CLUSTER_BASIN_SHP), help="cluster basin shapefile")
+    ap.add_argument("--cluster-shp", "--cluster-gpkg", dest="cluster_vector", default=str(DEFAULT_CLUSTER_GPKG), help="cluster point GPKG path")
+    ap.add_argument("--source-shp", "--source-gpkg", dest="source_vector", default=str(DEFAULT_SOURCE_GPKG), help="source station GPKG path")
+    ap.add_argument("--cluster-basin-shp", "--cluster-basin-gpkg", dest="cluster_basin_vector", default=str(DEFAULT_CLUSTER_BASIN_GPKG), help="cluster basin GPKG path")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="output directory")
     args = ap.parse_args()
+
+    if not HAS_GPD:
+        raise RuntimeError("geopandas is required for the resolution-aware checklist audit")
 
     checklist_path = Path(args.checklist)
     s4_path = Path(args.s4)
     s5_path = Path(args.s5)
     s6_path = Path(args.s6)
     climatology_nc_path = Path(args.climatology_nc)
-    cluster_shp_path = Path(args.cluster_shp)
-    source_shp_path = Path(args.source_shp)
-    cluster_basin_shp_path = Path(args.cluster_basin_shp)
+    cluster_vector_path = Path(args.cluster_vector)
+    source_vector_path = Path(args.source_vector)
+    cluster_basin_vector_path = Path(args.cluster_basin_vector)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -696,9 +672,9 @@ def main():
     file_map = {
         "s6_nc": s6_path,
         "climatology_nc": climatology_nc_path,
-        "cluster_shp": cluster_shp_path,
-        "source_shp": source_shp_path,
-        "cluster_basin_shp": cluster_basin_shp_path,
+        "cluster_points_gpkg": cluster_vector_path,
+        "source_stations_gpkg": source_vector_path,
+        "cluster_basins_gpkg": cluster_basin_vector_path,
         "s4_csv": s4_path,
         "s5_csv": s5_path,
     }
@@ -710,9 +686,13 @@ def main():
     nc = load_nc_bundle(s6_path)
     clim_nc = load_simple_nc_stats(climatology_nc_path)
 
-    cluster_df = read_shapefile_table(cluster_shp_path)
-    source_df = read_shapefile_table(source_shp_path)
-    basin_df = read_shapefile_table(cluster_basin_shp_path)
+    cluster_summary_gdf, cluster_resolution_gdf, cluster_layers = _load_multilayer_vector(cluster_vector_path, "cluster", include_summary=True)
+    _, source_resolution_gdf, source_layers = _load_multilayer_vector(source_vector_path, "source", include_summary=False)
+    _, basin_resolution_gdf, basin_layers = _load_multilayer_vector(cluster_basin_vector_path, "basin", include_summary=False)
+
+    cluster_resolution_df = pd.DataFrame(cluster_resolution_gdf.drop(columns="geometry", errors="ignore"))
+    source_resolution_df = pd.DataFrame(source_resolution_gdf.drop(columns="geometry", errors="ignore"))
+    basin_resolution_df = pd.DataFrame(basin_resolution_gdf.drop(columns="geometry", errors="ignore"))
 
     resolution_summary = build_resolution_summary(nc)
     resolution_summary.to_csv(out_dir / "10_resolution_record_counts.csv", index=False)
@@ -726,7 +706,7 @@ def main():
     source_summary = build_source_coverage(s5_df, nc)
     source_summary.to_csv(out_dir / "14_source_coverage_summary.csv", index=False)
 
-    join_summary = build_join_summary(nc, cluster_df, source_df, basin_df)
+    join_summary = build_join_summary(nc, cluster_resolution_df, source_resolution_df, basin_resolution_df)
     join_summary.to_csv(out_dir / "15_cluster_join_summary.csv", index=False)
 
     overlap_summary, overlap_flag_summary = build_overlap_summary(nc)
@@ -737,13 +717,15 @@ def main():
         overlap_combined = pd.concat([overlap_combined, overlap_flag_summary], ignore_index=True, sort=False)
     overlap_combined.to_csv(out_dir / "11_overlap_provenance_summary.csv", index=False)
 
-    point_polygon_summary, point_polygon_detail = build_point_polygon_check(cluster_shp_path, cluster_basin_shp_path, source_shp=source_shp_path)
-
+    point_polygon_summary, point_polygon_detail = build_point_polygon_check(
+        cluster_resolution_gdf,
+        basin_resolution_gdf,
+        source_resolution_gdf=source_resolution_gdf,
+    )
     point_polygon_summary.to_csv(out_dir / "16_cluster_point_polygon_check.csv", index=False)
-    if point_polygon_detail is not None:
-        point_polygon_detail.to_csv(out_dir / "16_cluster_point_polygon_detail.csv", index=False)
+    point_polygon_detail.to_csv(out_dir / "16_cluster_point_polygon_detail.csv", index=False)
 
-    basin_geometry_quality = build_basin_geometry_quality(cluster_basin_shp_path)
+    basin_geometry_quality = build_basin_geometry_quality(basin_resolution_gdf)
     basin_geometry_quality.to_csv(out_dir / "17_basin_geometry_quality.csv", index=False)
 
     path_summary, path_detail = build_path_check(nc)
@@ -753,9 +735,11 @@ def main():
     cluster_count_nc = int(nc["dims"].get("n_stations", 0))
     source_station_count_nc = int(nc["dims"].get("n_source_stations", 0))
     record_count_nc = int(nc["dims"].get("n_records", 0))
-    cluster_count_shp = int(shapefile_record_count(cluster_shp_path))
-    source_count_shp = int(shapefile_record_count(source_shp_path))
-    basin_count_shp = int(shapefile_record_count(cluster_basin_shp_path))
+    cluster_resolution_count_nc = int(len(nc["cluster_resolution_df"]))
+    source_resolution_count_nc = int(len(nc["source_resolution_df"]))
+    cluster_resolution_count_gpkg = int(len(cluster_resolution_df))
+    source_resolution_count_gpkg = int(len(source_resolution_df))
+    basin_resolution_count_gpkg = int(len(basin_resolution_df))
     s4_failed = int(s4_df["basin_id"].isna().sum())
 
     observed_resolutions = set(resolution_summary.loc[resolution_summary["record_count"] > 0, "resolution_name"].tolist())
@@ -780,15 +764,11 @@ def main():
     overlap_records = int(np.sum(nc["is_overlap"] == 1))
     overlap_missing_source_idx = int(np.sum((nc["is_overlap"] == 1) & (nc["source_station_index"] < 0)))
 
-    source_cluster_col = choose_field(source_df.columns, ["cluster_ui", "cluster_uid"])
-    source_uid_col = choose_field(source_df.columns, ["src_uid", "source_station_uid"])
-    cluster_col = choose_field(cluster_df.columns, ["cluster_ui", "cluster_uid"])
-    basin_col = choose_field(basin_df.columns, ["cluster_ui", "cluster_uid"])
-
-    cluster_set = set(safe_series_to_str(cluster_df[cluster_col])) if cluster_col else set()
-    basin_set = set(safe_series_to_str(basin_df[basin_col])) if basin_col else set()
-    source_cluster_set = set(safe_series_to_str(source_df[source_cluster_col])) if source_cluster_col else set()
-    source_uid_count = int(source_df[source_uid_col].nunique()) if source_uid_col else np.nan
+    cluster_key_set = _cluster_key_set(cluster_resolution_df)
+    basin_key_set = _cluster_key_set(basin_resolution_df)
+    source_cluster_key_set = _cluster_key_set(source_resolution_df[["cluster_uid", "resolution"]].drop_duplicates()) if len(source_resolution_df) else set()
+    nc_cluster_key_set = _cluster_key_set(nc["cluster_resolution_df"])
+    source_uid_resolution_count = int(source_resolution_df[["source_station_uid", "resolution"]].drop_duplicates().shape[0]) if len(source_resolution_df) else 0
 
     file_mtimes = dataset_summary[dataset_summary["dataset"].isin(CORE_OUTPUT_LABELS) & dataset_summary["exists"]]["mtime"]
     if len(file_mtimes):
@@ -796,6 +776,16 @@ def main():
         time_span_hours = (mtimes.max() - mtimes.min()).total_seconds() / 3600.0
     else:
         time_span_hours = np.nan
+
+    invalid_geometry_total = _metric_value(basin_geometry_quality, "invalid_geometry_count", "all")
+    empty_geometry_total = _metric_value(basin_geometry_quality, "empty_geometry_count", "all")
+
+    missing_basin_keys = len(cluster_key_set - basin_key_set)
+    missing_cluster_keys_from_nc = len(nc_cluster_key_set - cluster_key_set)
+    source_keys_not_in_cluster = len(source_cluster_key_set - cluster_key_set)
+    outside_or_missing = int(
+        point_polygon_detail["relation"].isin(["outside", "missing_polygon"]).sum()
+    ) if "relation" in point_polygon_detail.columns else 0
 
     results = [
         make_result(
@@ -814,16 +804,16 @@ def main():
         ),
         make_result(
             "A03",
-            "pass" if cluster_count_nc == cluster_count_shp == basin_count_shp else "warn",
-            "cluster counts are fully consistent" if cluster_count_nc == cluster_count_shp == basin_count_shp else "cluster basin polygons are fewer than nc/point clusters",
-            evidence="nc_n_stations={}, cluster_points={}, cluster_basins={}, s4_failed={}".format(cluster_count_nc, cluster_count_shp, basin_count_shp, s4_failed),
+            "pass" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= cluster_resolution_count_gpkg else "warn",
+            "cluster resolution counts are structurally consistent" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= cluster_resolution_count_gpkg else "cluster/basin resolution counts have gaps",
+            evidence="nc_cluster_resolution_rows={}, cluster_points_rows={}, cluster_basins_rows={}, s4_failed={}".format(cluster_resolution_count_nc, cluster_resolution_count_gpkg, basin_resolution_count_gpkg, s4_failed),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
             "A04",
-            "pass" if source_station_count_nc == source_count_shp else "fail",
-            "nc source station count matches source station shapefile" if source_station_count_nc == source_count_shp else "nc/source station shapefile count mismatch",
-            evidence="nc_n_source_stations={}, source_shp_records={}, source_uid_nunique={}".format(source_station_count_nc, source_count_shp, source_uid_count),
+            "pass" if source_resolution_count_nc == source_resolution_count_gpkg else "fail",
+            "nc source resolution rows match source station GPKG" if source_resolution_count_nc == source_resolution_count_gpkg else "nc/source station resolution counts mismatch",
+            evidence="nc_source_resolution_rows={}, source_gpkg_rows={}, source_uid_resolution_nunique={}".format(source_resolution_count_nc, source_resolution_count_gpkg, source_uid_resolution_count),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
@@ -876,21 +866,19 @@ def main():
         ),
         make_result(
             "A11",
-            "pass" if cluster_set.issubset(basin_set) else "warn",
-            "every cluster point has a basin polygon" if cluster_set.issubset(basin_set) else "some cluster points have no basin polygon",
-            evidence="missing_cluster_basins={}".format(len(cluster_set - basin_set)),
+            "pass" if cluster_key_set.issubset(basin_key_set) else "warn",
+            "every cluster resolution row has a basin polygon" if cluster_key_set.issubset(basin_key_set) else "some cluster resolution rows have no basin polygon",
+            evidence="missing_cluster_resolution_basins={}".format(missing_basin_keys),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
             "A12",
-            "pass" if point_polygon_summary.iloc[0:0].empty and False else (
-                "pass" if len(point_polygon_summary) and "outside" not in set(point_polygon_summary.get("relation", [])) and "missing_polygon" not in set(point_polygon_summary.get("relation", [])) else "warn"
-            ),
-            "cluster points are covered by their basin polygons" if len(point_polygon_summary) and "outside" not in set(point_polygon_summary.get("relation", [])) and "missing_polygon" not in set(point_polygon_summary.get("relation", [])) else "some cluster points fall outside or lack basin polygons",
-            evidence="; ".join("{}={}".format(r.relation, r.cluster_count) for r in point_polygon_summary.itertuples(index=False)) if "relation" in point_polygon_summary.columns else point_polygon_summary.to_dict(orient="records").__repr__(),
+            "pass" if outside_or_missing == 0 else "warn",
+            "cluster points are covered by their basin polygons" if outside_or_missing == 0 else "some cluster points fall outside or lack basin polygons",
+            evidence="; ".join("{}|{}={}".format(r.resolution, r.relation, r.cluster_count) for r in point_polygon_summary.itertuples(index=False)) if len(point_polygon_summary) else "no polygon check rows",
             output_file="16_cluster_point_polygon_check.csv",
             manual_required=True,
-            manual_hint="在 GIS 中优先复核 outside 和 missing_polygon 的 cluster。",
+            manual_hint="在 GIS 中优先复核 outside 和 missing_polygon 的 cluster_uid + resolution。",
         ),
         make_result(
             "A13",
@@ -910,9 +898,9 @@ def main():
         ),
         make_result(
             "B05",
-            "pass" if len(basin_geometry_quality) and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "invalid_geometry_count", "value"].iloc[0]) == 0 and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "empty_geometry_count", "value"].iloc[0]) == 0 else "warn",
-            "cluster basin geometry has no invalid or empty polygons" if len(basin_geometry_quality) and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "invalid_geometry_count", "value"].iloc[0]) == 0 and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "empty_geometry_count", "value"].iloc[0]) == 0 else "some basin polygons are invalid or empty",
-            evidence="; ".join("{}={}".format(r.metric, r.value) for r in basin_geometry_quality.itertuples(index=False) if "metric" in basin_geometry_quality.columns),
+            "pass" if invalid_geometry_total == 0 and empty_geometry_total == 0 else "warn",
+            "cluster basin geometry has no invalid or empty polygons" if invalid_geometry_total == 0 and empty_geometry_total == 0 else "some basin polygons are invalid or empty",
+            evidence="invalid_geometry_count={}, empty_geometry_count={}".format(invalid_geometry_total, empty_geometry_total),
             output_file="17_basin_geometry_quality.csv",
             manual_required=True,
             manual_hint="脚本只检查几何有效性，属性是否合理还需在 GIS 里看。",
@@ -940,23 +928,23 @@ def main():
         ),
         make_result(
             "B09",
-            "pass" if len(set(nc["cluster_uid"]) - cluster_set) == 0 and len(cluster_set - basin_set) == 0 else "warn",
-            "cluster_uid links are stable across nc, points and basins" if len(set(nc["cluster_uid"]) - cluster_set) == 0 and len(cluster_set - basin_set) == 0 else "cluster_uid join has gaps in at least one layer",
-            evidence="nc_minus_cluster_points={}, cluster_points_minus_basins={}".format(len(set(nc["cluster_uid"]) - cluster_set), len(cluster_set - basin_set)),
+            "pass" if missing_cluster_keys_from_nc == 0 and missing_basin_keys == 0 else "warn",
+            "cluster resolution joins are stable across nc, points and basins" if missing_cluster_keys_from_nc == 0 and missing_basin_keys == 0 else "cluster resolution join has gaps in at least one layer",
+            evidence="nc_minus_cluster_points={}, cluster_points_minus_basins={}".format(missing_cluster_keys_from_nc, missing_basin_keys),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
             "B10",
-            "pass" if len(source_cluster_set - cluster_set) == 0 else "fail",
-            "every source-station shp row links back to a cluster point" if len(source_cluster_set - cluster_set) == 0 else "some source station shp rows cannot link back to cluster points",
-            evidence="source_cluster_uids_not_in_cluster_points={}".format(len(source_cluster_set - cluster_set)),
+            "pass" if source_keys_not_in_cluster == 0 else "fail",
+            "every source-station GPKG row links back to a cluster point layer" if source_keys_not_in_cluster == 0 else "some source station rows cannot link back to cluster points",
+            evidence="source_cluster_resolution_keys_not_in_cluster_points={}".format(source_keys_not_in_cluster),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
             "C03",
-            "pass" if len(basin_geometry_quality) and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "invalid_geometry_count", "value"].iloc[0]) == 0 else "warn",
-            "basin polygon geometries are valid" if len(basin_geometry_quality) and int(basin_geometry_quality.loc[basin_geometry_quality["metric"] == "invalid_geometry_count", "value"].iloc[0]) == 0 else "some basin polygon geometries are invalid",
-            evidence="; ".join("{}={}".format(r.metric, r.value) for r in basin_geometry_quality.itertuples(index=False) if "metric" in basin_geometry_quality.columns),
+            "pass" if invalid_geometry_total == 0 else "warn",
+            "basin polygon geometries are valid" if invalid_geometry_total == 0 else "some basin polygon geometries are invalid",
+            evidence="invalid_geometry_count={}".format(invalid_geometry_total),
             output_file="17_basin_geometry_quality.csv",
         ),
         make_result(
@@ -995,6 +983,10 @@ def main():
     manual_guide.to_csv(out_dir / "09_manual_check_guide.csv", index=False)
 
     print("Checklist audit written to {}".format(out_dir))
+    print("Loaded GPKG layers:")
+    print("  cluster: {}".format(", ".join(cluster_layers)))
+    print("  source: {}".format(", ".join(source_layers)))
+    print("  basin: {}".format(", ".join(basin_layers)))
     print("Main outputs:")
     for name in [
         "08_checklist_auto_results.csv",
