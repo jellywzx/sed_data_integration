@@ -115,13 +115,11 @@ def _init_worker(counter):
     global _shared_counter
     _shared_counter = counter
 
-
 def _trace_chunk(args):
     """单个 worker：为一批站点追溯流域，返回 result dict 列表。
 
     args = (merit_dir_str, basin_tracer_dir_str, chunk)
-    chunk: list of (station_id, lon, lat)
-    几何对象（shapely）可直接跨进程传递。
+    chunk: list of (station_id, lon, lat, reported_area)
     """
     import gc
 
@@ -130,50 +128,47 @@ def _trace_chunk(args):
     import warnings
     warnings.filterwarnings("ignore", message=".*geographic CRS.*")
 
-    # 每个 worker 进程内部独立初始化日志（避免多进程日志混乱）
     logging.basicConfig(
         level=logging.WARNING,
         format="%(asctime)s | %(levelname)s | worker | %(message)s",
     )
 
-    # 显式加入 basin_tracer.py 所在目录，避免在不同 multiprocessing 启动方式下导入失败
     if basin_tracer_dir_str not in sys.path:
         sys.path.insert(0, basin_tracer_dir_str)
     from basin_tracer import UpstreamBasinTracer  # noqa: E402
 
     tracer = UpstreamBasinTracer(merit_dir_str)
     results = []
-    for station_id, lon, lat in chunk:
-        basin_result = tracer.get_upstream_basin(lon, lat, reported_area=None)
+
+    for station_id, lon, lat, reported_area in chunk:
+        basin_result = tracer.get_upstream_basin(
+            lon, lat, reported_area=reported_area
+        )
         results.append(
             {
-                "station_id":         station_id,
-                "lon":                lon,
-                "lat":                lat,
-                "reported_area":      reported_area, 
-                "basin_id":           basin_result["basin_id"],
-                "basin_area":         basin_result["basin_area"],
-                "match_quality":      basin_result["match_quality"],
-                "area_error":         basin_result["area_error"],
-                "uparea_merit":       basin_result["uparea_merit"],
-                "pfaf_code":          basin_result["pfaf_code"],
-                "method":             basin_result["method"],
+                "station_id": station_id,
+                "lon": lon,
+                "lat": lat,
+                "reported_area": reported_area,
+                "basin_id": basin_result["basin_id"],
+                "basin_area": basin_result["basin_area"],
+                "match_quality": basin_result["match_quality"],
+                "area_error": basin_result["area_error"],
+                "uparea_merit": basin_result["uparea_merit"],
+                "pfaf_code": basin_result["pfaf_code"],
+                "method": basin_result["method"],
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
-                "geometry":           basin_result["geometry"],
+                "geometry": basin_result["geometry"],
                 "geometry_local": basin_result["geometry_local"],
             }
         )
-        # 更新共享计数器（每完成一个站点 +1）
         if _shared_counter is not None:
             with _shared_counter.get_lock():
                 _shared_counter.value += 1
 
-    # 显式释放 tracer 及其缓存的栅格/矢量数据
     del tracer
     gc.collect()
-
     return results
-
 
 def _chunk_to_partial_df(chunk_results, include_geometry):
     rows = []
@@ -295,7 +290,6 @@ def main():
     # 共享计数器：跨进程追踪已完成的站点数
     counter = mp.Value("i", 0)
 
-    all_rows = []
     pbar = tqdm(total=n_total, desc="追溯流域", unit="站点",
                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
     pbar.n = len(completed_station_ids)

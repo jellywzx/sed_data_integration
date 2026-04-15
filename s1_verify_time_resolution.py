@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-对默认输入根目录（优先 Output_r_attr_fixed，其次 Output_r）下所有数据集中的 .nc 文件应用 time_resolution 分类逻辑，
+对默认输入根目录 Output_r 下所有数据集中的 .nc 文件应用 time_resolution 分类逻辑，
 并检查是否与路径中的分类（daily / monthly / annually_climatology）一致；
 不一致时输出报告。
 
@@ -92,27 +92,22 @@ import xarray as xr
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pipeline_paths import S1_VERIFY_CSV
+import time
+from tqdm import tqdm
+from xarray.coding.times import decode_cf_datetime
 
-# 根目录默认优先使用 Output_r_attr_fixed；可通过 OUTPUT_R_ROOT 覆盖
+# 根目录固定为脚本所在目录的上一级（即 Output_r）
 SCRIPT_DIR = Path(__file__).resolve().parent
 # 结果 CSV 路径（相对 ROOT_DIR）；列说明见本文件顶部 docstring；步骤 s1 对应输出
 OUT_CSV = S1_VERIFY_CSV
-WORKERS = None
+WORKERS = 32
 
-# 从 01_verify_reorganize 加载 time_resolution
-_verify_dir = SCRIPT_DIR / "01_verify_reorganize"
-if str(_verify_dir) not in sys.path:
-    sys.path.insert(0, str(_verify_dir))
 from time_resolution import (
     classify_frequency,
-    get_preferred_output_root,
     infer_temporal_semantics,
-    sync_temporal_resolution_attrs,
 )
 
-
-ROOT_DIR = get_preferred_output_root(SCRIPT_DIR)
-
+ROOT_DIR = SCRIPT_DIR.parent
 
 def get_resolution_from_path(filepath, root_dir):
     """从相对路径的第一级目录解析：daily, monthly, annually_climatology。"""
@@ -188,76 +183,166 @@ def _parse_span_to_dates(span_str):
     return None
 
 
-def check_single_point_temporal_resolution(filepath, single_time):
-    """
-    对 single_point 的 nc 检查源数据属性 temporal_resolution、temporal_span。
-    支持的属性名：Temporal_Resolution / temporal_resolution / time_resolution / resolution；
-                Temporal_Span / temporal_span，或 time_coverage_start + time_coverage_end。
-    - 若 temporal_resolution 为 daily 且与单时间点一致，则视为 daily，
-      返回 ("daily", "single_point_upgraded_to_daily_by_temporal_resolution")。
-    - 若 temporal_resolution 为 climatology/climatological 且（无 span 或 span 包含单点），
-      则视为 annual（气候态），返回 ("annual", "single_point_upgraded_to_annual_by_temporal_resolution_climatology")。
-    否则返回 None。
-    """
+def _first_nonempty_attr(attrs, *keys):
+    for key in keys:
+        if key not in attrs:
+            continue
+        value = attrs.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in ("none", "nan"):
+            return value
+    return None
+
+
+def _single_time_matches_span(single_time, attrs):
+    """判断 single_time 是否与 temporal_span / time_coverage 描述相符。"""
+    span_raw = _first_nonempty_attr(
+        attrs,
+        "temporal_span",
+        "Temporal_Span",
+        "measurement_period",
+    )
+    if span_raw is None:
+        start = _first_nonempty_attr(
+            attrs,
+            "time_coverage_start",
+            "data_period_start",
+            "start_date",
+        )
+        end = _first_nonempty_attr(
+            attrs,
+            "time_coverage_end",
+            "data_period_end",
+            "end_date",
+        )
+        if start and end:
+            span_raw = "{} {}".format(start, end)
+        elif start:
+            span_raw = start
+        elif end:
+            span_raw = end
+
+    if span_raw is None:
+        return True, None, None
+
+    parsed = _parse_span_to_dates(str(span_raw))
+    if not parsed:
+        return True, span_raw, None
+
     try:
-        with xr.open_dataset(filepath) as ds:
-            # 优先全局属性，再查时间变量属性（支持 Temporal_Resolution / temporal_resolution 等命名）
-            attrs = dict(ds.attrs)
-            time_candidates = ["time", "Time", "t", "datetime", "date"]
-            for c in time_candidates:
-                if c in ds.variables:
-                    for k, v in ds.variables[c].attrs.items():
-                        if k not in attrs and v is not None:
-                            attrs[k] = v
-                    break
-
-            # 兼容 Temporal_Resolution（首字母大写）与 temporal_resolution 等
-            res_raw = None
-            for key in ("Temporal_Resolution", "temporal_resolution", "time_resolution", "resolution"):
-                if key in attrs and attrs[key] is not None:
-                    res_raw = attrs[key]
-                    break
-            if res_raw is None:
-                return None
-            res = str(res_raw).strip().lower()
-
-            def span_contains_single_time():
-                span_raw = attrs.get("Temporal_Span") or attrs.get("temporal_span")
-                if span_raw is None and attrs.get("time_coverage_start") and attrs.get("time_coverage_end"):
-                    span_raw = "{} {}".format(attrs["time_coverage_start"], attrs["time_coverage_end"])
-                if span_raw is None:
-                    return True
-                parsed = _parse_span_to_dates(str(span_raw))
-                if not parsed:
-                    return True
-                start, end = parsed
-                try:
-                    st = pd.Timestamp(single_time)
-                    start = pd.Timestamp(start)
-                    end = pd.Timestamp(end)
-                    return start <= st <= end
-                except Exception:
-                    return False
-
-            # daily：与单时间点一致
-            if "daily" in res or res == "day" or re.match(r"^1\s*day", res):
-                if not span_contains_single_time():
-                    return None
-                return ("daily", "single_point_upgraded_to_daily_by_temporal_resolution")
-
-            # climatology：气候态/多年平均，视为 annual
-            if "climatology" in res or "climatological" in res:
-                if not span_contains_single_time():
-                    return None
-                return ("annual", "single_point_upgraded_to_annual_by_temporal_resolution_climatology")
-
-            return None
+        single_ts = pd.Timestamp(single_time)
+        start_ts = pd.Timestamp(parsed[0])
+        end_ts = pd.Timestamp(parsed[1])
     except Exception:
+        return False, span_raw, None
+
+    return start_ts <= single_ts <= end_ts, span_raw, (start_ts, end_ts)
+
+
+def _check_sp_resolution_from_attrs(attrs, single_time):
+    """基于 temporal_resolution 等属性对 single_point 做升级判定。"""
+    if single_time is None or not isinstance(attrs, dict):
         return None
+
+    res_raw = _first_nonempty_attr(
+        attrs,
+        "temporal_resolution",
+        "Temporal_Resolution",
+        "time_resolution",
+        "resolution",
+    )
+    if res_raw is None:
+        return None
+
+    res = str(res_raw).strip().lower()
+    span_matches, span_raw, parsed_span = _single_time_matches_span(single_time, attrs)
+
+    if "daily" in res or res == "day" or re.match(r"^1\s*day", res):
+        if not span_matches:
+            return None
+        if parsed_span is not None:
+            start_ts, end_ts = parsed_span
+            if abs(end_ts - start_ts) > pd.Timedelta(hours=36):
+                return None
+        return ("daily", "single_point_upgraded_to_daily_by_temporal_resolution")
+
+    if "climatology" in res or "climatological" in res:
+        if span_matches:
+            return ("annual", "single_point_upgraded_to_annual_by_temporal_resolution_climatology")
+        if span_raw is not None and _year_range_in_text(str(span_raw)):
+            return ("annual", "single_point_upgraded_to_annual_by_temporal_resolution_climatology")
+        return None
+
+    return None
+
+
+def _interpret_sp_from_data(single_time, global_attrs, time_attrs, bounds_data):
+    """纯数据版本：从已提取的 attrs 和 bounds 判断 single_point 元数据，无文件 I/O。"""
+    if single_time is None:
+        return "single_point_no_time_var"
+
+    # 合并 attrs（global + time var），用于 check
+    merged_attrs = dict(global_attrs)
+    for k, v in time_attrs.items():
+        if k not in merged_attrs and v is not None:
+            merged_attrs[k] = v
+
+    override = _check_sp_resolution_from_attrs(merged_attrs, single_time)
+    if override is not None:
+        return override
+
+    texts = []
+    for k, v in global_attrs.items():
+        if isinstance(v, str):
+            texts.append(v)
+    for k, v in time_attrs.items():
+        if isinstance(v, str):
+            texts.append(v)
+
+    # bounds 数据 → 年份字符串
+    if bounds_data is not None:
+        try:
+            bnds_flat = np.atleast_1d(bounds_data).flatten()
+            if len(bnds_flat) >= 2:
+                t_start = pd.to_datetime(bnds_flat[0])
+                t_end = pd.to_datetime(bnds_flat[-1])
+                if hasattr(t_start, "year") and hasattr(t_end, "year"):
+                    texts.append(f"{t_start.year}-{t_end.year}")
+        except Exception:
+            pass
+
+    t_start = global_attrs.get("time_coverage_start") or global_attrs.get("start_date")
+    t_end = global_attrs.get("time_coverage_end") or global_attrs.get("end_date")
+    if t_start and t_end:
+        try:
+            y1 = re.search(r"(\d{4})", str(t_start))
+            y2 = re.search(r"(\d{4})", str(t_end))
+            if y1 and y2:
+                texts.append(f"{y1.group(1)}-{y2.group(1)}")
+        except Exception:
+            pass
+
+    for text in texts:
+        low = text.lower()
+        if any(kw in low for kw in ("climatology", "climatological", "average", "mean", "long-term", "long term", "historical")):
+            yr = _year_range_in_text(text)
+            if yr:
+                return f"long_term_average_{yr[0]}_{yr[1]}"
+            if hasattr(single_time, "year"):
+                return f"single_point_likely_climatology_year_{single_time.year}"
+
+    for text in texts:
+        yr = _year_range_in_text(text)
+        if yr:
+            return f"long_term_average_{yr[0]}_{yr[1]}"
+
+    return f"single_point_time_{str(single_time)}"
 
 
 def interpret_single_point_metadata(filepath):
-    """当时间为单点时，从元数据识别是否为长时间历史平均，或由 temporal_resolution 判定为 daily。"""
+    """原接口保留，现在打开文件并调用无 I/O 的内部版本。"""
     try:
         with xr.open_dataset(filepath) as ds:
             time_candidates = ["time", "Time", "t", "datetime", "date"]
@@ -268,78 +353,32 @@ def interpret_single_point_metadata(filepath):
                     break
             if time_var is None:
                 return "single_point_no_time_var"
-
             t = ds[time_var]
             time_vals = np.atleast_1d(pd.to_datetime(t.values))
             if len(time_vals) != 1:
                 return "single_point"
-
             single_time = time_vals[0]
-            # 先检查源数据 temporal_resolution / temporal_span，若为 daily 且与单点一致则视为 daily
-            override = check_single_point_temporal_resolution(filepath, single_time)
-            if override is not None:
-                return override  # ("daily", "single_point_upgraded_to_daily_by_temporal_resolution")
-
-            texts = []
-
-            for k, v in ds.attrs.items():
-                if isinstance(v, str):
-                    texts.append(v)
-            for k, v in t.attrs.items():
-                if isinstance(v, str):
-                    texts.append(v)
-                elif k == "bounds" and v in ds.variables:
-                    bnds_var = ds[v]
-                    try:
-                        bnds_vals = bnds_var.values
-                        if bnds_vals is not None and bnds_vals.size >= 2:
-                            bnds_flat = np.atleast_1d(bnds_vals).flatten()
-                            if len(bnds_flat) >= 2:
-                                t_start = pd.to_datetime(bnds_flat[0])
-                                t_end = pd.to_datetime(bnds_flat[-1])
-                                if hasattr(t_start, "year") and hasattr(t_end, "year"):
-                                    texts.append(f"{t_start.year}-{t_end.year}")
-                    except Exception:
-                        pass
-
-            t_start = ds.attrs.get("time_coverage_start") or ds.attrs.get("start_date")
-            t_end = ds.attrs.get("time_coverage_end") or ds.attrs.get("end_date")
-            if t_start and t_end:
+            global_attrs = dict(ds.attrs)
+            time_attrs = dict(t.attrs)
+            bounds_data = None
+            bv = time_attrs.get("bounds")
+            if bv and bv in ds.variables:
                 try:
-                    y1 = re.search(r"(\d{4})", str(t_start))
-                    y2 = re.search(r"(\d{4})", str(t_end))
-                    if y1 and y2:
-                        texts.append(f"{y1.group(1)}-{y2.group(1)}")
+                    bounds_data = ds[bv].values
                 except Exception:
                     pass
-
-            for text in texts:
-                low = text.lower()
-                if any(kw in low for kw in ("climatology", "climatological", "average", "mean", "long-term", "long term", "historical")):
-                    yr = _year_range_in_text(text)
-                    if yr:
-                        return f"long_term_average_{yr[0]}_{yr[1]}"
-                    if hasattr(single_time, "year"):
-                        return f"single_point_likely_climatology_year_{single_time.year}"
-
-            for text in texts:
-                yr = _year_range_in_text(text)
-                if yr:
-                    return f"long_term_average_{yr[0]}_{yr[1]}"
-
-            return f"single_point_time_{str(single_time)}"
+        return _interpret_sp_from_data(single_time, global_attrs, time_attrs, bounds_data)
     except Exception as e:
         return f"single_point_interpret_error_{e}"
 
-
 def detect_frequency_for_nc(filepath):
-    """对单个 nc 检测时间频率。
+    """对单个 nc 检测时间频率。每个文件只打开一次。
 
     返回：
       (filepath, raw_detected_freq, detected_freq, single_point_interpretation)
     """
     try:
-        with xr.open_dataset(filepath) as ds:
+        with xr.open_dataset(filepath, decode_times=False) as ds:
             time_candidates = ["time", "Time", "t", "datetime", "date"]
             time_var = None
             for cand in time_candidates:
@@ -348,57 +387,53 @@ def detect_frequency_for_nc(filepath):
                     break
             if time_var is None:
                 return filepath, "no_time_var", "no_time_var", None
-            time_values = pd.to_datetime(ds[time_var].values)
+
+            t = ds[time_var]
+            time_raw = t.values
+            time_attrs = dict(t.attrs)
+            global_attrs = dict(ds.attrs)
+
+            # 提取 bounds（如有）
+            bounds_data = None
+            bv = time_attrs.get("bounds")
+            if bv and bv in ds.variables:
+                try:
+                    bounds_data = ds[bv].values
+                except Exception:
+                    pass
+
+        # 在文件关闭后解码时间（避免持续占用文件句柄）
+        try:
+            units = time_attrs.get("units", "")
+            calendar = time_attrs.get("calendar", "standard")
+            if units:
+                decoded = decode_cf_datetime(time_raw, units=units, calendar=calendar)
+                time_values = pd.DatetimeIndex(decoded)
+            else:
+                time_values = pd.to_datetime(time_raw)
+        except Exception:
+            try:
+                time_values = pd.to_datetime(time_raw)
+            except Exception as e:
+                err = f"error: time decode failed: {e}"
+                return filepath, err, err, None
+
         raw_freq = classify_frequency(time_values)
         freq = raw_freq
         single_interp = None
+
         if raw_freq == "single_point":
-            single_interp = interpret_single_point_metadata(filepath)
+            single_time = time_values[0] if len(time_values) > 0 else None
+            single_interp = _interpret_sp_from_data(
+                single_time, global_attrs, time_attrs, bounds_data
+            )
             if isinstance(single_interp, (list, tuple)) and len(single_interp) == 2:
                 freq, single_interp = single_interp[0], single_interp[1]
+
         return filepath, raw_freq, freq, single_interp
     except Exception as e:
         err = f"error: {str(e)}"
         return filepath, err, err, None
-
-
-def _get_s1_attr_sync_target(raw_detected_frequency, detected_frequency, temporal_semantics, single_point_interpretation):
-    """仅对 s1 明确做出的元数据级重判回写镜像 qc 属性。"""
-    raw_freq = str(raw_detected_frequency or "").strip().lower()
-    detected = str(detected_frequency or "").strip().lower()
-    semantics = str(temporal_semantics or "").strip().lower()
-    interp = str(single_point_interpretation or "").strip().lower()
-
-    if raw_freq != "single_point":
-        return ""
-
-    if detected and detected != raw_freq:
-        return detected
-
-    if semantics == "climatology" and (
-        "long_term_average" in interp
-        or "climatology" in interp
-        or "historical" in interp
-        or "average" in interp
-        or "mean" in interp
-    ):
-        return "climatology"
-
-    return ""
-
-
-def _sync_s1_one(item):
-    filepath, target_resolution, reason = item
-    try:
-        result = sync_temporal_resolution_attrs(
-            filepath,
-            target_resolution=target_resolution,
-            stage="s1",
-            reason=reason,
-        )
-        return filepath, bool(result.get("changed")), ""
-    except Exception as exc:
-        return filepath, False, str(exc)
 
 
 PATH_TO_EXPECTED = {
@@ -469,7 +504,7 @@ def main():
     for p in root_dir.rglob("*.nc"):
         try:
             rel = p.relative_to(root_dir)
-            if rel.parts and rel.parts[0] in ("merged_qc_output", "output", "output_resolution_organized"):
+            if rel.parts and rel.parts[0] in ("scripts_basin_test","merged_qc_output", "output", "output_resolution_organized"):
                 continue
         except ValueError:
             pass
@@ -481,75 +516,34 @@ def main():
     if not nc_files:
         print("没有找到 .nc 文件，退出。")
         return
-
+    t0 = time.time()
     results = []
     with ProcessPoolExecutor(max_workers=WORKERS) as executor:
         futures = {executor.submit(detect_frequency_for_nc, fp): fp for fp in nc_files}
-        for fut in as_completed(futures):
-            filepath, raw_detected_freq, detected_freq, single_point_interpretation = fut.result()
-            path_resolution = get_resolution_from_path(filepath, root_dir)
-            consistent = is_consistent(path_resolution, detected_freq)
-            temporal_semantics = infer_temporal_semantics(
-                detected_freq, single_point_interpretation
-            )
-            rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
-            attr_sync_target = _get_s1_attr_sync_target(
-                raw_detected_freq,
-                detected_freq,
-                temporal_semantics,
-                single_point_interpretation,
-            )
-            results.append({
-                "path": filepath,
-                "rel_path": str(rel_path),
-                "path_resolution": path_resolution or "(none)",
-                "raw_detected_frequency": raw_detected_freq,
-                "detected_frequency": detected_freq,
-                "temporal_semantics": temporal_semantics,
-                "single_point_interpretation": single_point_interpretation if single_point_interpretation else "",
-                "attr_sync_target": attr_sync_target,
-                "attr_sync_applied": False,
-                "attr_sync_error": "",
-                "consistent": consistent,
-            })
+        with tqdm(total=len(nc_files), desc="检测时间分辨率", unit="文件") as pbar:
+            for fut in as_completed(futures):
+                filepath, raw_detected_freq, detected_freq, single_point_interpretation = fut.result()
+                pbar.update(1)
+                path_resolution = get_resolution_from_path(filepath, root_dir)
+                consistent = is_consistent(path_resolution, detected_freq)
+                temporal_semantics = infer_temporal_semantics(
+                    detected_freq, single_point_interpretation
+                )
+                rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
+                results.append({
+                    "path": filepath,
+                    "rel_path": str(rel_path),
+                    "path_resolution": path_resolution or "(none)",
+                    "raw_detected_frequency": raw_detected_freq,
+                    "detected_frequency": detected_freq,
+                    "temporal_semantics": temporal_semantics,
+                    "single_point_interpretation": single_point_interpretation if single_point_interpretation else "",
+                    "consistent": consistent,
+                })
+    elapsed = time.time() - t0
+    print(f"\n扫描完成，耗时: {elapsed:.1f} 秒 ({elapsed/60:.1f} 分钟)")
 
     df = pd.DataFrame(results)
-
-    sync_tasks = []
-    for _, row in df.iterrows():
-        target = str(row.get("attr_sync_target", "") or "").strip()
-        if not target:
-            continue
-        reason = "single_point metadata reinterpretation"
-        sync_tasks.append((str(row["path"]), target, reason))
-
-    enable_attr_sync = root_dir.name == "Output_r_attr_fixed"
-    if sync_tasks and enable_attr_sync:
-        print(f"\n开始同步 s1 重判后的 temporal_resolution 属性: {len(sync_tasks)} 个文件")
-        sync_changed = set()
-        sync_errors = {}
-        with ProcessPoolExecutor(max_workers=WORKERS) as executor:
-            futures = {executor.submit(_sync_s1_one, item): item[0] for item in sync_tasks}
-            for fut in as_completed(futures):
-                filepath, changed, err = fut.result()
-                if changed:
-                    sync_changed.add(filepath)
-                if err:
-                    sync_errors[filepath] = err
-
-        if sync_changed:
-            df.loc[df["path"].isin(sync_changed), "attr_sync_applied"] = True
-        if sync_errors:
-            for filepath, err in sync_errors.items():
-                df.loc[df["path"] == filepath, "attr_sync_error"] = err
-            print(f"s1 属性同步失败 {len(sync_errors)} 个文件")
-        else:
-            print("s1 属性同步完成。")
-    elif sync_tasks:
-        print(
-            "\n检测到 {} 个 s1 重判文件，但当前根目录不是 Output_r_attr_fixed，"
-            "默认跳过 temporal_resolution 属性回写。".format(len(sync_tasks))
-        )
 
     out_path = root_dir / OUT_CSV
     out_path.parent.mkdir(parents=True, exist_ok=True)
