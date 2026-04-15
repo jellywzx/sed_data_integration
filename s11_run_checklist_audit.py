@@ -422,7 +422,7 @@ def build_overlap_summary(nc):
     return pd.DataFrame(rows), pd.DataFrame(flag_rows)
 
 
-def build_point_polygon_check(cluster_shp: Path, basin_shp: Path):
+def build_point_polygon_check(cluster_shp: Path, basin_shp: Path, source_shp: Path = None):
     if not HAS_GPD:
         return pd.DataFrame([{"status": "not_run", "note": "geopandas not installed"}]), None
 
@@ -434,7 +434,14 @@ def build_point_polygon_check(cluster_shp: Path, basin_shp: Path):
     if cluster_col is None or basin_col is None:
         return pd.DataFrame([{"status": "error", "note": "cluster join field not found"}]), None
 
-    merged = cluster_gdf[[cluster_col, "geometry"]].rename(columns={cluster_col: "cluster_uid", "geometry": "point_geom"}).merge(
+    # 保留 cluster 属性列（坐标、站名、河名、source站点数量）
+    cluster_extra_cols = [c for c in ["lat", "lon", "stn_name", "river_name", "n_src_stn"]
+                          if c in cluster_gdf.columns]
+    cluster_left = cluster_gdf[[cluster_col, "geometry"] + cluster_extra_cols].rename(
+        columns={cluster_col: "cluster_uid", "geometry": "point_geom"}
+    )
+
+    merged = cluster_left.merge(
         basin_gdf[[basin_col, "geometry"]].rename(columns={basin_col: "cluster_uid", "geometry": "poly_geom"}),
         on="cluster_uid",
         how="left",
@@ -442,21 +449,61 @@ def build_point_polygon_check(cluster_shp: Path, basin_shp: Path):
 
     results = []
     for row in merged.itertuples(index=False):
+        rec = {"cluster_uid": row.cluster_uid}
+        # 附带 cluster 属性
+        for col in cluster_extra_cols:
+            rec[col] = getattr(row, col, None)
+
         if row.poly_geom is None:
-            results.append({"cluster_uid": row.cluster_uid, "relation": "missing_polygon", "distance_deg": np.nan})
-            continue
-        covers = row.poly_geom.covers(row.point_geom)
-        if covers:
-            results.append({"cluster_uid": row.cluster_uid, "relation": "covers", "distance_deg": 0.0})
+            rec.update({"relation": "missing_polygon", "distance_deg": np.nan})
         else:
-            results.append(
-                {
-                    "cluster_uid": row.cluster_uid,
-                    "relation": "outside",
-                    "distance_deg": float(row.point_geom.distance(row.poly_geom)),
-                }
-            )
+            covers = row.poly_geom.covers(row.point_geom)
+            if covers:
+                rec.update({"relation": "covers", "distance_deg": 0.0})
+            else:
+                rec.update({"relation": "outside", "distance_deg": float(row.point_geom.distance(row.poly_geom))})
+        results.append(rec)
+
     detail = pd.DataFrame(results)
+
+    # ── 读取并聚合 source station 信息 ──────────────────────────────────────
+    if source_shp is not None and Path(source_shp).is_file():
+        try:
+            if HAS_GPD:
+                src_gdf = gpd.read_file(source_shp)
+                src_df = pd.DataFrame({c: src_gdf[c] for c in src_gdf.columns if c != "geometry"})
+            elif HAS_PYSHP:
+                src_df = read_shapefile_table(Path(source_shp))
+            else:
+                src_df = None
+
+            if src_df is not None:
+                src_col = choose_field(src_df.columns, ["cluster_uid", "cluster_ui"])
+                if src_col is not None:
+                    src_df = src_df.rename(columns={src_col: "cluster_uid"})
+                    # 各字段聚合列映射：shapefile字段名 → 输出列名
+                    field_map = [
+                        ("src_uid",    "src_uids"),
+                        ("src_name",   "src_names"),
+                        ("src_stn_id", "src_stn_ids"),
+                        ("stn_name",   "src_stn_names"),
+                        ("river_name", "src_river_names"),
+                        ("lat",        "src_lats"),
+                        ("lon",        "src_lons"),
+                        ("resols",     "src_resols"),
+                    ]
+                    agg_cols = {}
+                    for src_field, out_col in field_map:
+                        if src_field in src_df.columns:
+                            agg_cols[out_col] = src_df.groupby("cluster_uid")[src_field].apply(
+                                lambda x: "|".join(str(v) for v in x)
+                            )
+                    if agg_cols:
+                        src_agg = pd.DataFrame(agg_cols).reset_index()
+                        detail = detail.merge(src_agg, on="cluster_uid", how="left")
+        except Exception:
+            pass  # source 信息读取失败时不影响主体结果
+
     summary = (
         detail.groupby("relation", as_index=False)
         .size()
@@ -465,6 +512,7 @@ def build_point_polygon_check(cluster_shp: Path, basin_shp: Path):
         .reset_index(drop=True)
     )
     return summary, detail
+
 
 
 def build_basin_geometry_quality(basin_shp: Path):
@@ -689,7 +737,8 @@ def main():
         overlap_combined = pd.concat([overlap_combined, overlap_flag_summary], ignore_index=True, sort=False)
     overlap_combined.to_csv(out_dir / "11_overlap_provenance_summary.csv", index=False)
 
-    point_polygon_summary, point_polygon_detail = build_point_polygon_check(cluster_shp_path, cluster_basin_shp_path)
+    point_polygon_summary, point_polygon_detail = build_point_polygon_check(cluster_shp_path, cluster_basin_shp_path, source_shp=source_shp_path)
+
     point_polygon_summary.to_csv(out_dir / "16_cluster_point_polygon_check.csv", index=False)
     if point_polygon_detail is not None:
         point_polygon_detail.to_csv(out_dir / "16_cluster_point_polygon_detail.csv", index=False)
