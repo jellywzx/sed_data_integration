@@ -27,6 +27,11 @@ import pandas as pd
 import pyogrio
 from shapely.geometry import Point
 from shapely.ops import unary_union
+try:
+    from shapely import coverage_union_all as _coverage_union_all
+    _HAS_COVERAGE_UNION = True
+except ImportError:
+    _HAS_COVERAGE_UNION = False
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +68,14 @@ class UpstreamBasinTracer:
         # 内存缓存：同一区域只读一次 shp，避免批量站点时重复解析
         self._level1_rivers: Dict[str, gpd.GeoDataFrame] = {}
         self._level2_catchments: Dict[str, gpd.GeoDataFrame] = {}
+        self._level1_topology: Dict[str, Dict[int, List[int]]] = {}
         # pfaf_level_01 区号 -> (minx, miny, maxx, maxy)，用于快速判断点落在哪些一级区内
         self._region_bounds: Dict[str, tuple] = {}
 
         self._build_region_index()
+
+
+
 
     def _build_region_index(self):
         """扫描 pfaf_level_01 下标准命名的河网文件，记录每个一级区的包络矩形。
@@ -134,6 +143,17 @@ class UpstreamBasinTracer:
             gdf.sindex  # build spatial index
 
             self._level1_rivers[pfaf_code] = gdf
+            # 新增以下8行：预构建BFS拓扑字典
+            up_cols = [c for c in ["up1", "up2", "up3", "up4"] if c in gdf.columns]
+            if up_cols:
+                up_data = gdf[up_cols].to_numpy(dtype=float, na_value=0.0)
+                topo: Dict[int, List[int]] = {}
+                for i, comid in enumerate(gdf.index):
+                    ups = [int(v) for v in up_data[i] if v > 0]
+                    if ups:
+                        topo[comid] = ups
+                self._level1_topology[pfaf_code] = topo
+
             logger.info(f"Loaded {len(gdf)} river reaches for region {pfaf_code}")
             return gdf
         except Exception as e:
@@ -320,8 +340,10 @@ class UpstreamBasinTracer:
         if riv_gdf is None:
             return {start_comid}
 
+        # 在循环外取一次，避免每步都查dict
+        topo = self._level1_topology.get(pfaf_code, {})
+
         upstream_comids: Set[int] = set()
-        # deque 比 list.pop(0) 更适合 BFS 队列，尤其在大流域追溯时更稳
         to_process = deque([start_comid])
 
         while to_process:
@@ -329,18 +351,12 @@ class UpstreamBasinTracer:
 
             if current in upstream_comids:
                 continue
-            if current == 0 or pd.isna(current):
-                continue
 
             upstream_comids.add(current)
 
-            # 从当前行读取拓扑字段，将有效上游 ID 入队
-            if current in riv_gdf.index:
-                reach = riv_gdf.loc[current]
-                for up_field in ["up1", "up2", "up3", "up4"]:
-                    up_comid = reach.get(up_field, 0)
-                    if up_comid and up_comid > 0 and up_comid not in upstream_comids:
-                        to_process.append(int(up_comid))
+            for up_comid in topo.get(current, []):
+                if up_comid not in upstream_comids:
+                    to_process.append(up_comid)
 
             if len(upstream_comids) % 10000 == 0:
                 logger.info(
@@ -348,6 +364,7 @@ class UpstreamBasinTracer:
                 )
 
         return upstream_comids
+
 
     def get_upstream_basin_polygon(self, upstream_comids: Set[int]):
         """将所有上游 COMID 对应的单元汇水多边形合并为单一几何（可能为多部件）。
@@ -370,24 +387,31 @@ class UpstreamBasinTracer:
             region = str(comid)[:2]
             comids_by_region.setdefault(region, []).append(comid)
 
-        polygons = []
+        all_geoms = []
         for region, comids in comids_by_region.items():
             cat_gdf = self._load_level2_catchments(region)
             if cat_gdf is None:
                 continue
 
-            for comid in comids:
-                if comid in cat_gdf.index:
-                    polygons.append(cat_gdf.loc[comid].geometry)
+            # 向量化批量索引，替代逐个comid的Python循环
+            valid_mask = cat_gdf.index.isin(comids)
+            if valid_mask.any():
+                all_geoms.extend(cat_gdf.loc[valid_mask, "geometry"].tolist())
 
-        if not polygons:
+        if not all_geoms:
             return None
 
         try:
-            return unary_union(polygons)
+            if _HAS_COVERAGE_UNION and len(all_geoms) > 1:
+                try:
+                    return _coverage_union_all(np.array(all_geoms, dtype=object))
+                except Exception:
+                    pass
+            return unary_union(all_geoms)
         except Exception as e:
             logger.error(f"Error merging polygons: {e}")
             return None
+
 
     def get_upstream_basin(
         self,
@@ -471,6 +495,7 @@ class UpstreamBasinTracer:
     def clear_cache(self):
         """释放已缓存的一级河网与二级汇水 GeoDataFrame，批量任务分段跑时可用。"""
         self._level1_rivers.clear()
+        self._level1_topology.clear() 
         self._level2_catchments.clear()
 
     def get_upstream_basins_from_csv(
