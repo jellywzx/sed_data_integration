@@ -90,6 +90,7 @@ CSV_COLUMNS = [
     "uparea_merit",
     "pfaf_code",
     "method",
+    "distance_m",
     "n_upstream_reaches",
 ]
 CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
@@ -157,6 +158,7 @@ def _trace_chunk(args):
                 "uparea_merit": basin_result["uparea_merit"],
                 "pfaf_code": basin_result["pfaf_code"],
                 "method": basin_result["method"],
+                "distance_m": basin_result.get("distance", np.nan),
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
                 "geometry": basin_result["geometry"],
                 "geometry_local": basin_result["geometry_local"],
@@ -186,6 +188,7 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "pfaf_code": row["pfaf_code"],
             "method": row["method"],
             "n_upstream_reaches": row["n_upstream_reaches"],
+            "distance_m": row.get("distance_m", np.nan),
         }
         if include_geometry:
             geometry = row.get("geometry")
@@ -367,7 +370,7 @@ def main():
         if n_with_area > 0:
             check_cols = ["station_id", "lon", "lat", "reported_area",
                         "uparea_merit", "area_error", "match_quality",
-                        "basin_id", "pfaf_code", "method"]
+                        "basin_id", "pfaf_code", "method","distance_m"]
             check_df = result_df.loc[reported_mask, [c for c in check_cols if c in result_df.columns]]
             check_df = check_df.sort_values("station_id")
             check_df.to_csv(OUT_REPORTED_AREA_CSV, index=False)

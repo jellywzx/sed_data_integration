@@ -26,7 +26,9 @@ import numpy as np
 import pandas as pd
 import pyogrio
 from shapely.geometry import Point
-from shapely.ops import unary_union
+from shapely.ops import unary_union, transform
+from pyproj import CRS, Transformer
+
 try:
     from shapely import coverage_union_all as _coverage_union_all
     _HAS_COVERAGE_UNION = True
@@ -41,7 +43,8 @@ logger = logging.getLogger(__name__)
 # 若提供 reported_area： Merit 栅格汇水面积 uparea 与报告面积之比在此相对误差内视为“面积匹配良好”
 AREA_MATCH_TOLERANCE = 0.5  # 例如 0.5 表示允许约 ±50% 的相对偏差仍标为 area_matched
 # 以测站为中心、在 WGS84 下展平的方形搜索窗口半边长（度），用于空间索引初筛邻近河段
-SEARCH_RADIUS_DEG = 1.0
+SEARCH_RADIUS_M = 120000.0   # 120 km，可按需要调整
+SEARCH_RADIUS_DEG = 1.0      # 仅保留给 bbox 初筛用
 
 
 class UpstreamBasinTracer:
@@ -75,8 +78,6 @@ class UpstreamBasinTracer:
         self._build_region_index()
 
 
-
-
     def _build_region_index(self):
         """扫描 pfaf_level_01 下标准命名的河网文件，记录每个一级区的包络矩形。
 
@@ -103,6 +104,37 @@ class UpstreamBasinTracer:
                 logger.warning(f"Error reading bounds for {pfaf_code}: {e}")
 
         logger.info(f"Indexed {len(self._region_bounds)} pfaf_level_01 regions")
+
+    def _distance_point_to_geoms_m(self, geoms, lon: float, lat: float):
+        """将点和几何投影到局部米制 CRS 后，计算平面距离（米）。"""
+        local_crs = self._get_local_metric_crs(lon, lat)
+        transformer = Transformer.from_crs("EPSG:4326", local_crs, always_xy=True)
+
+        x0, y0 = transformer.transform(lon, lat)
+        point_proj = Point(x0, y0)
+
+        def _dist(geom):
+            if geom is None or geom.is_empty:
+                return np.nan
+            geom_proj = transform(transformer.transform, geom)
+            return geom_proj.distance(point_proj)
+
+        return geoms.apply(_dist)
+
+
+    def _get_local_metric_crs(self, lon: float, lat: float):
+        """根据站点位置选择局部米制投影。优先 UTM。"""
+        if lat >= 84:
+            return CRS.from_epsg(3413)  # Arctic Polar Stereographic
+        if lat <= -80:
+            return CRS.from_epsg(3031)  # Antarctic Polar Stereographic
+
+        zone = int((lon + 180) // 6) + 1
+        if lat >= 0:
+            epsg = 32600 + zone
+        else:
+            epsg = 32700 + zone
+        return CRS.from_epsg(epsg)
 
     def _get_pfaf_level1_codes(self, lon: float, lat: float) -> List[str]:
         """根据经纬度返回所有包络框包含该点的一级 Pfaf 区编码列表。
@@ -198,7 +230,6 @@ class UpstreamBasinTracer:
         if not pfaf_codes:
             return None
 
-        point = Point(lon, lat)
         all_candidates: List[gpd.GeoDataFrame] = []
 
         for pfaf_code in pfaf_codes:
@@ -218,8 +249,13 @@ class UpstreamBasinTracer:
                 continue
 
             candidates = riv_gdf.iloc[possible_idx].copy()
-            candidates["dist"] = candidates.geometry.distance(point)
-            candidates = candidates[candidates["dist"] < SEARCH_RADIUS_DEG]
+
+            # 先用 degree 的 bbox 做空间索引初筛
+            candidates["dist_m"] = self._distance_point_to_geoms_m(
+                candidates.geometry, lon, lat
+            )
+            candidates = candidates[candidates["dist_m"] < SEARCH_RADIUS_M]
+
 
             if len(candidates) > 0:
                 candidates["pfaf_code"] = pfaf_code
@@ -238,7 +274,7 @@ class UpstreamBasinTracer:
     def get_nearby_candidate_reaches(
         self, lon: float, lat: float
     ) -> Optional[gpd.GeoDataFrame]:
-        """返回测站附近候选河段 GeoDataFrame，供调试与可视化（列含 dist、pfaf_code 等）。"""
+        """返回测站附近候选河段 GeoDataFrame，供调试与可视化（列含 dist_m、pfaf_code 等）。"""
         return self._gather_nearby_candidate_reaches(lon, lat)
 
     def find_best_reach(
@@ -252,7 +288,7 @@ class UpstreamBasinTracer:
         步骤概要：
         1. 用一级区 bounds 筛出可能含点的区域，加载河网；
         2. 在测站周围 SEARCH_RADIUS_DEG 的包围盒内用空间索引取候选弧段；
-        3. 计算各弧段几何到测站点的欧式距离（度）；
+        3. 将候选弧段与测站点投影到局部米制 CRS，计算点到线的平面距离（米）；
         4. 若给定 reported_area：综合“面积比的对数偏差”与“归一化距离”得 score，取最小者；
            否则仅按距离最近选取。
 
@@ -288,7 +324,7 @@ class UpstreamBasinTracer:
                 np.log10(candidates["area_ratio"].clip(0.001, 1000))
             )
             # 距离项：归一化到 [0,1] 量级附近，与面积项相加形成可加性评分
-            candidates["dist_score"] = candidates["dist"] / SEARCH_RADIUS_DEG
+            candidates["dist_score"] = candidates["dist_m"] / SEARCH_RADIUS_M
             candidates["score"] = candidates["area_error"] + candidates["dist_score"]
 
             best_idx = candidates["score"].idxmin()
@@ -304,13 +340,13 @@ class UpstreamBasinTracer:
             else:
                 match_quality = "area_mismatch"
         else:
-            best_idx = candidates["dist"].idxmin()
+            best_idx = candidates["dist_m"].idxmin()
             best = candidates.loc[best_idx]
             match_quality = "distance_only"
 
         result["COMID"] = int(best["COMID"])
         result["uparea"] = float(best["uparea"])
-        result["distance"] = float(best["dist"])
+        result["distance"] = float(best["dist_m"])
         result["pfaf_code"] = best["pfaf_code"]
         result["match_quality"] = match_quality
 
@@ -439,6 +475,7 @@ class UpstreamBasinTracer:
             "area_error": np.nan,
             "uparea_merit": np.nan,
             "pfaf_code": None,
+            "distance": np.nan,
             "method": None,
             "n_upstream_reaches": 0,
         }
@@ -454,6 +491,7 @@ class UpstreamBasinTracer:
         result["uparea_merit"] = reach_info["uparea"]
         result["area_error"] = reach_info["area_error"]
         result["basin_area"] = reach_info["uparea"]
+        result["distance"] = reach_info["distance"]
 
         # ① 最小单元集水区：只取匹配 COMID 对应的 cat 多边形（来自 cat_pfaf_* 面文件）
         result["geometry_local"] = self.get_upstream_basin_polygon({reach_info["COMID"]})
@@ -480,18 +518,21 @@ class UpstreamBasinTracer:
         return result
 
     def _create_area_buffer(self, lon: float, lat: float, area_km2: float):
-        """用近似等面积的圆形缓冲代替真实流域（兜底几何）。
+        """在局部米制投影下根据面积生成圆形 buffer，再转回 WGS84。"""
+        if area_km2 is None or not np.isfinite(area_km2) or area_km2 <= 0:
+            return Point(lon, lat)
 
-        将 km² 换为半径后，按纬度折合成经度、纬度方向的度步长（约 111 km/°），
-        取平均得 buffer_deg，在测站点对 Point 做 buffer。非等面积投影下的近似。
-        """
-        radius_km = np.sqrt(area_km2 / np.pi)
-        lat_rad = np.radians(lat)
-        deg_per_km_lat = 1 / 111
-        deg_per_km_lon = 1 / (111 * np.cos(lat_rad))
-        avg_deg_per_km = (deg_per_km_lat + deg_per_km_lon) / 2
-        buffer_deg = radius_km * avg_deg_per_km
-        return Point(lon, lat).buffer(buffer_deg)
+        radius_m = np.sqrt(area_km2 * 1_000_000.0 / np.pi)
+
+        local_crs = self._get_local_metric_crs(lon, lat)
+        forward = Transformer.from_crs("EPSG:4326", local_crs, always_xy=True)
+        backward = Transformer.from_crs(local_crs, "EPSG:4326", always_xy=True)
+
+        x, y = forward.transform(lon, lat)
+        point_proj = Point(x, y)
+        buffer_proj = point_proj.buffer(radius_m)
+
+        return transform(backward.transform, buffer_proj)
 
     def clear_cache(self):
         """释放已缓存的一级河网与二级汇水 GeoDataFrame，批量任务分段跑时可用。"""
