@@ -46,6 +46,24 @@ FILL = -9999.0
 _STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
 _RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
 _STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
+# 各数据集中存储上游汇水面积的字段名（NC 变量或全局属性）
+# 优先级：先找 NC 变量，再找全局属性；全局属性按列表顺序匹配
+_AREA_VAR_NAMES = [
+    "upstream_area",   # HYBAM：直接写入 NC 变量
+    "drainage_area",
+    "basin_area",
+    "catchment_area",
+]
+_AREA_ATTR_NAMES = [
+    "Drainage area (km2)",  # ALi_De_Boer 原始列名
+    "drainage_area_km2",
+    "drainage_area",
+    "upstream_area",        # HMA 标量元数据
+    "Area",                 # Milliman 原始列名
+    "area",
+    "basin_area",
+    "catchment_area",
+]
 
 
 def _get_scalar(var):
@@ -68,6 +86,51 @@ def _get_scalar(var):
     if np.isnan(v) or v == FILL or v == -9999:
         return np.nan
     return v
+
+def get_reported_area_from_nc(path):
+    """从 NC 文件提取上游汇水面积（km²），失败返回 None。
+
+    检索顺序：
+    1. NC 变量（upstream_area / drainage_area / …）
+    2. 全局属性（Drainage area (km2) / Area / upstream_area / …）
+    3. 全局属性名中含 "area"（兜底）
+    """
+    if not HAS_NC:
+        return None
+    try:
+        with nc4.Dataset(path, "r") as nc:
+            # ── 1. 先找 NC 变量 ──────────────────────────────────────────
+            for var_name in _AREA_VAR_NAMES:
+                if var_name in nc.variables:
+                    val = _get_scalar(nc.variables[var_name][:])
+                    if val is not None and not np.isnan(val) and val > 0:
+                        return float(val)
+
+            # ── 2. 再找全局属性（按优先列表） ─────────────────────────────
+            for attr_name in _AREA_ATTR_NAMES:
+                raw = getattr(nc, attr_name, None)
+                if raw is not None:
+                    try:
+                        v = float(raw)
+                        if v > 0 and not np.isnan(v):
+                            return v
+                    except (ValueError, TypeError):
+                        pass
+
+            # ── 3. 兜底：搜索所有属性名中含 "area" 的条目 ─────────────────
+            for attr_name in nc.ncattrs():
+                if "area" in attr_name.lower() and "ratio" not in attr_name.lower():
+                    raw = getattr(nc, attr_name, None)
+                    if raw is not None:
+                        try:
+                            v = float(raw)
+                            if v > 0 and not np.isnan(v):
+                                return v
+                        except (ValueError, TypeError):
+                            pass
+    except Exception:
+        pass
+    return None
 
 
 def get_lat_lon_from_nc(path):
@@ -174,6 +237,7 @@ def _collect_one_nc(path, root_dir):
         station_name, river_name, source_station_id = get_station_meta_from_nc(path)
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
+        reported_area = get_reported_area_from_nc(path)
         # 存相对路径，跨平台可移植
         rel_path = str(Path(path).relative_to(root_dir))
         return {
@@ -185,6 +249,7 @@ def _collect_one_nc(path, root_dir):
             "station_name": station_name,
             "river_name": river_name,
             "source_station_id": source_station_id,
+            "reported_area": reported_area if reported_area is not None else float("nan"),
         }
     except (ValueError, OSError):
         return None

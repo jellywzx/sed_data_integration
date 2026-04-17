@@ -295,10 +295,11 @@ class UpstreamBasinTracer:
             best = candidates.loc[best_idx]
 
             area_ratio = best["area_ratio"]
-            # 相对报告面积在 (1±AREA_MATCH_TOLERANCE) 内视为高质量匹配
-            if 1 / (1 + AREA_MATCH_TOLERANCE) < area_ratio < (1 + AREA_MATCH_TOLERANCE):
+            log_err = abs(np.log10(area_ratio))
+
+            if log_err < 0.1:
                 match_quality = "area_matched"
-            elif 0.1 < area_ratio < 10:
+            elif log_err < 0.3:
                 match_quality = "area_approximate"
             else:
                 match_quality = "area_mismatch"
@@ -315,7 +316,7 @@ class UpstreamBasinTracer:
 
         if reported_area is not None and reported_area > 0:
             # 输出用的相对误差：(Merit − 报告) / 报告，与内部评分用的对数量纲不同
-            result["area_error"] = (best["uparea"] - reported_area) / reported_area
+            result["area_error"] = np.log10(best["uparea"] / reported_area)
 
         return result
 
