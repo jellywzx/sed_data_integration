@@ -28,6 +28,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from basin_policy import (
+    MATCH_QUALITY_CODES,
+    MATCH_QUALITY_MEANINGS,
+)
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S5_BASIN_CLUSTERED_CSV,
@@ -55,9 +59,6 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_INPUT = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_OUT_DIR = PROJECT_ROOT / S6_MATRIX_DIR
 DEFAULT_RESOLUTIONS = ("daily", "monthly", "annual")
-
-MATCH_QUALITY_CODES = {"distance_only": 0, "area_matched": 1, "failed": 2}
-MATCH_QUALITY_MEANINGS = "distance_only area_matched failed unknown"
 
 
 def _normalize_resolution(value):
@@ -89,6 +90,13 @@ def _resolve_station_path(path_value, organized_root):
     except Exception:
         pass
     return str(path)
+
+
+def _clean_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "t"}
 
 
 def _build_cluster_rep_lookup(stations):
@@ -146,6 +154,11 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
     pfaf_code_arr = np.full(n_stations, FILL, dtype=np.float32)
     n_reaches_arr = np.full(n_stations, -9999, dtype=np.int32)
     match_quality_arr = np.full(n_stations, -1, dtype=np.int8)
+    basin_distance_arr = np.full(n_stations, FILL, dtype=np.float32)
+    point_in_local_arr = np.zeros(n_stations, dtype=np.int8)
+    point_in_basin_arr = np.zeros(n_stations, dtype=np.int8)
+    basin_status_arr = ["unknown"] * n_stations
+    basin_flag_arr = ["unknown"] * n_stations
     sources_used_arr = [""] * n_stations
     n_sources_arr = np.zeros(n_stations, dtype=np.int32)
 
@@ -187,6 +200,9 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
         pfaf_code = rep_row.get("pfaf_code", np.nan)
         n_reaches = rep_row.get("n_upstream_reaches", np.nan)
         match_quality = str(rep_row.get("match_quality", "unknown") or "unknown").strip()
+        basin_distance = rep_row.get("distance_m", np.nan)
+        basin_status = str(rep_row.get("basin_status", "unknown") or "unknown").strip()
+        basin_flag = str(rep_row.get("basin_flag", "unknown") or "unknown").strip()
 
         if pd.notna(basin_area):
             basin_area_arr[idx] = float(basin_area)
@@ -195,6 +211,12 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
         if pd.notna(n_reaches):
             n_reaches_arr[idx] = int(n_reaches)
         match_quality_arr[idx] = np.int8(MATCH_QUALITY_CODES.get(match_quality, -1))
+        if pd.notna(basin_distance):
+            basin_distance_arr[idx] = float(basin_distance)
+        point_in_local_arr[idx] = np.int8(1 if _clean_bool(rep_row.get("point_in_local", False)) else 0)
+        point_in_basin_arr[idx] = np.int8(1 if _clean_bool(rep_row.get("point_in_basin", False)) else 0)
+        basin_status_arr[idx] = basin_status
+        basin_flag_arr[idx] = basin_flag
 
         sources = sorted(group["source"].astype(str).unique().tolist())
         sources_used_arr[idx] = "|".join(sources)
@@ -212,6 +234,11 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
         "pfaf_code": pfaf_code_arr,
         "n_upstream_reaches": n_reaches_arr,
         "basin_match_quality": match_quality_arr,
+        "basin_distance_m": basin_distance_arr,
+        "point_in_local": point_in_local_arr,
+        "point_in_basin": point_in_basin_arr,
+        "basin_status": basin_status_arr,
+        "basin_flag": basin_flag_arr,
         "sources_used": sources_used_arr,
         "n_sources_in_resolution": n_sources_arr,
     }
@@ -296,9 +323,34 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
 
         mq_v = nc.createVariable("basin_match_quality", "i1", ("n_stations",), fill_value=np.int8(-1), zlib=True, complevel=4)
         mq_v.long_name = "basin matching quality from basin tracer"
-        mq_v.flag_values = np.array([0, 1, 2, -1], dtype=np.int8)
+        mq_v.flag_values = np.array([0, 1, 2, 3, 4, -1], dtype=np.int8)
         mq_v.flag_meanings = MATCH_QUALITY_MEANINGS
         mq_v[:] = metadata["basin_match_quality"]
+
+        bd_v = nc.createVariable("basin_distance_m", "f4", ("n_stations",), fill_value=FILL, zlib=True, complevel=4)
+        bd_v.long_name = "distance from original station point to matched reach"
+        bd_v.units = "m"
+        bd_v[:] = metadata["basin_distance_m"]
+
+        pil_v = nc.createVariable("point_in_local", "i1", ("n_stations",), fill_value=np.int8(0), zlib=True, complevel=4)
+        pil_v.long_name = "whether the original station point is covered by the matched local catchment"
+        pil_v.flag_values = np.array([0, 1], dtype=np.int8)
+        pil_v.flag_meanings = "false true"
+        pil_v[:] = metadata["point_in_local"]
+
+        pib_v = nc.createVariable("point_in_basin", "i1", ("n_stations",), fill_value=np.int8(0), zlib=True, complevel=4)
+        pib_v.long_name = "whether the original station point is covered by the traced upstream basin"
+        pib_v.flag_values = np.array([0, 1], dtype=np.int8)
+        pib_v.flag_meanings = "false true"
+        pib_v[:] = metadata["point_in_basin"]
+
+        bs_v = nc.createVariable("basin_status", str, ("n_stations",))
+        bs_v.long_name = "release-facing basin assignment status"
+        bs_v[:] = np.asarray(metadata["basin_status"], dtype=object)
+
+        bf_v = nc.createVariable("basin_flag", str, ("n_stations",))
+        bf_v.long_name = "release-facing basin status reason flag"
+        bf_v[:] = np.asarray(metadata["basin_flag"], dtype=object)
 
         time_v = nc.createVariable("time", "f8", ("time",), zlib=True, complevel=4)
         time_v.long_name = "time"

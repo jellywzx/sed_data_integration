@@ -458,6 +458,10 @@ class UpstreamBasinTracer:
     ) -> Dict:
         """单站完整流程：匹配河段 → 上游追溯 → 合并汇水面（失败则用面积圆缓冲兜底）。
 
+        这是保留给现有调用方的一体化入口。若上游流程已经确定了
+        MERIT 河段，可直接改用 get_upstream_basin_from_reach()，避免重复
+        执行一次 find_best_reach()。
+
         Returns:
             geometry: 流域多边形或缓冲圆
             basin_area: 匹配河段的 Merit uparea（km²）
@@ -465,6 +469,29 @@ class UpstreamBasinTracer:
             match_quality / area_error / uparea_merit / pfaf_code: 与 find_best_reach 一致
             method: upstream_traced（正常）或 area_buffer_fallback（无 cat 几何时）
             n_upstream_reaches: 上游弧段数量
+        """
+        reach_info = self.find_best_reach(lon, lat, reported_area)
+        return self.get_upstream_basin_from_reach(lon, lat, reach_info)
+
+    def get_upstream_basin_from_reach(
+        self,
+        lon: float,
+        lat: float,
+        reach_info: Dict,
+    ) -> Dict:
+        """从已知 MERIT 河段直接追溯上游流域。
+
+        该入口跳过 find_best_reach()，适合那些已经在上游阶段完成了
+        GSED/站点 到 MERIT reach 映射的流程。
+
+        Args:
+            lon: 用于判定 point_in_local / point_in_basin 的锚点经度（WGS84）
+            lat: 用于判定 point_in_local / point_in_basin 的锚点纬度（WGS84）
+            reach_info: 由 find_best_reach() 产生或与之同构的字典，至少包含
+                COMID / uparea / distance / pfaf_code / match_quality / area_error
+
+        Returns:
+            与 get_upstream_basin() 相同结构的结果字典。
         """
         result = {
             "geometry": None,
@@ -478,28 +505,49 @@ class UpstreamBasinTracer:
             "distance": np.nan,
             "method": None,
             "n_upstream_reaches": 0,
+            "point_in_local": False,
+            "point_in_basin": False,
         }
 
-        reach_info = self.find_best_reach(lon, lat, reported_area)
-
-        if reach_info["COMID"] is None:
+        if not isinstance(reach_info, dict):
             return result
 
-        result["basin_id"] = reach_info["COMID"]
-        result["match_quality"] = reach_info["match_quality"]
-        result["pfaf_code"] = reach_info["pfaf_code"]
-        result["uparea_merit"] = reach_info["uparea"]
-        result["area_error"] = reach_info["area_error"]
-        result["basin_area"] = reach_info["uparea"]
-        result["distance"] = reach_info["distance"]
+        basin_id = reach_info.get("COMID")
+        pfaf_code = reach_info.get("pfaf_code")
+        if basin_id is None or not pfaf_code:
+            return result
+
+        try:
+            basin_id = int(basin_id)
+        except (TypeError, ValueError):
+            return result
+
+        def _coerce_float_or_nan(value):
+            try:
+                number = float(value)
+                return number if np.isfinite(number) else np.nan
+            except Exception:
+                return np.nan
+
+        uparea = _coerce_float_or_nan(reach_info.get("uparea"))
+        distance = _coerce_float_or_nan(reach_info.get("distance"))
+        area_error = _coerce_float_or_nan(reach_info.get("area_error"))
+
+        result["basin_id"] = basin_id
+        result["match_quality"] = str(reach_info.get("match_quality", "failed"))
+        result["pfaf_code"] = str(pfaf_code)
+        result["uparea_merit"] = uparea
+        result["area_error"] = area_error
+        result["basin_area"] = uparea
+        result["distance"] = distance
 
         # ① 最小单元集水区：只取匹配 COMID 对应的 cat 多边形（来自 cat_pfaf_* 面文件）
-        result["geometry_local"] = self.get_upstream_basin_polygon({reach_info["COMID"]})
+        result["geometry_local"] = self.get_upstream_basin_polygon({basin_id})
 
         # ② 完整上游流域：BFS 遍历所有上游 COMID（原有逻辑，完全保留）
         upstream_comids = self.trace_upstream_reaches(
-            reach_info["COMID"],
-            reach_info["pfaf_code"],
+            basin_id,
+            str(pfaf_code),
         )
         result["n_upstream_reaches"] = len(upstream_comids)
 
@@ -510,10 +558,28 @@ class UpstreamBasinTracer:
             result["method"] = "upstream_traced"
         else:
             result["geometry"] = self._create_area_buffer(
-                lon, lat, reach_info["uparea"]
+                lon, lat, uparea
             )
             result["method"] = "area_buffer_fallback"
 
+        point = None
+        if pd.notna(lon) and pd.notna(lat):
+            point = Point(lon, lat)
+
+        if (
+            point is not None
+            and result["geometry_local"] is not None
+            and not result["geometry_local"].is_empty
+        ):
+            result["point_in_local"] = result["geometry_local"].covers(point)
+
+        if (
+            point is not None
+            and result["geometry"] is not None
+            and not result["geometry"].is_empty
+            and result["method"] == "upstream_traced"
+        ):
+            result["point_in_basin"] = result["geometry"].covers(point)
 
         return result
 

@@ -33,7 +33,7 @@ def load_station_to_basin_cluster_map(basin_csv_path: Path):
     if not basin_csv_path.is_file():
         raise FileNotFoundError("Basin CSV not found: {}".format(basin_csv_path))
 
-    df = pd.read_csv(basin_csv_path, usecols=["station_id", "basin_id"])
+    df = pd.read_csv(basin_csv_path)
     if "station_id" not in df.columns or "basin_id" not in df.columns:
         raise ValueError("Basin CSV must contain columns: station_id, basin_id")
 
@@ -42,7 +42,13 @@ def load_station_to_basin_cluster_map(basin_csv_path: Path):
         return {}, {"n_station": 0, "n_success": 0, "n_basins": 0, "n_changed": 0}
 
     df["station_id"] = df["station_id"].astype(int)
-    ok = df.dropna(subset=["basin_id"]).copy()
+    if "basin_status" in df.columns:
+        ok = df[
+            df["basin_status"].fillna("").astype(str).str.strip().str.lower().eq("resolved")
+        ].copy()
+    else:
+        ok = df.copy()
+    ok = ok.dropna(subset=["basin_id"]).copy()
     ok["basin_id"] = ok["basin_id"].astype("int64")
 
     basin_to_rep = ok.groupby("basin_id")["station_id"].min().to_dict()
@@ -60,4 +66,3 @@ def load_station_to_basin_cluster_map(basin_csv_path: Path):
         "n_changed": n_changed,
     }
     return mapping, stats
-

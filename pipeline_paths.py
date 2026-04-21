@@ -60,6 +60,8 @@ S6_CLIMATOLOGY_NC       = "scripts_basin_test/output/s6_climatology_only.nc"
 S6_CLIMATOLOGY_SHP      = "scripts_basin_test/output/s6_climatology_stations.shp" 
 
 # ── s7：空间文件导出 ──────────────────────────────────────────────────────────
+# Deprecated compatibility path. The cluster summary SHP is no longer generated
+# by the s7 mainline; use S7_CLUSTER_POINTS_GPKG instead.
 S7_CLUSTER_SHP          = "scripts_basin_test/output/s7_cluster_stations.shp"
 S7_CLUSTER_POINTS_GPKG  = "scripts_basin_test/output/s7_cluster_points.gpkg"
 S7_CLUSTER_STATION_CATALOG_CSV = "scripts_basin_test/output/s7_cluster_station_catalog.csv"

@@ -416,6 +416,13 @@ def build_join_summary(nc, cluster_resolution_df, source_resolution_df, basin_re
     cluster_set = _cluster_key_set(cluster_resolution_df)
     source_cluster_set = _cluster_key_set(source_resolution_df[["cluster_uid", "resolution"]].drop_duplicates()) if len(source_resolution_df) else set()
     basin_set = _cluster_key_set(basin_resolution_df)
+    if "basin_status" in cluster_resolution_df.columns:
+        resolved_cluster_df = cluster_resolution_df[
+            safe_series_to_str(cluster_resolution_df["basin_status"]).str.lower().eq("resolved")
+        ].copy()
+    else:
+        resolved_cluster_df = cluster_resolution_df
+    resolved_cluster_set = _cluster_key_set(resolved_cluster_df)
 
     rows = [
         {
@@ -426,9 +433,9 @@ def build_join_summary(nc, cluster_resolution_df, source_resolution_df, basin_re
         },
         {
             "check_group": "cluster_points_vs_cluster_basins",
-            "left_only_count": len(cluster_set - basin_set),
+            "left_only_count": len(resolved_cluster_set - basin_set),
             "right_only_count": len(basin_set - cluster_set),
-            "intersection_count": len(cluster_set & basin_set),
+            "intersection_count": len(resolved_cluster_set & basin_set),
         },
         {
             "check_group": "source_points_vs_cluster_points",
@@ -492,9 +499,18 @@ def build_point_polygon_check(cluster_resolution_gdf, basin_resolution_gdf, sour
             rec["river_name"] = getattr(row, "river_name", "")
         if hasattr(row, "record_count"):
             rec["record_count"] = getattr(row, "record_count", np.nan)
+        basin_status = getattr(row, "basin_status", "")
+        basin_status = str(basin_status).strip().lower()
         if row.poly_geom is None:
-            rec.update({"relation": "missing_polygon", "distance_deg": np.nan})
+            if basin_status == "unresolved":
+                rec.update({"relation": "expected_unresolved_missing_polygon", "distance_deg": np.nan})
+            else:
+                rec.update({"relation": "missing_polygon", "distance_deg": np.nan})
         else:
+            if basin_status == "unresolved":
+                rec.update({"relation": "unexpected_polygon_for_unresolved", "distance_deg": np.nan})
+                results.append(rec)
+                continue
             covers = row.poly_geom.covers(row.point_geom)
             if covers:
                 rec.update({"relation": "covers", "distance_deg": 0.0})
@@ -596,8 +612,8 @@ def build_manual_guide():
         {
             "check_id": "A12",
             "suggested_file": "16_cluster_point_polygon_check.csv",
-            "how_to_check": "先看 relation 列是否有 outside 或 missing_polygon；再在 GIS 里打开 s7_cluster_points.gpkg 和 s7_cluster_basins.gpkg，对同一个 cluster_uid + resolution 联查这些异常 key。",
-            "pass_condition": "点被对应分辨率的流域面 covers，或仅极少量贴边界。",
+            "how_to_check": "先看 relation 列是否有 outside、missing_polygon 或 unexpected_polygon_for_unresolved；再在 GIS 里打开 s7_cluster_points.gpkg 和 s7_cluster_basins.gpkg，对同一个 cluster_uid + resolution 联查这些异常 key。expected_unresolved_missing_polygon 属于按设计缺失。",
+            "pass_condition": "resolved 点被对应分辨率的流域面 covers；unresolved 点缺 polygon 属于预期。",
         },
         {
             "check_id": "A14",
@@ -738,6 +754,12 @@ def main():
     cluster_resolution_count_nc = int(len(nc["cluster_resolution_df"]))
     source_resolution_count_nc = int(len(nc["source_resolution_df"]))
     cluster_resolution_count_gpkg = int(len(cluster_resolution_df))
+    if len(cluster_resolution_df) and "basin_status" in cluster_resolution_df.columns:
+        resolved_cluster_resolution_count_gpkg = int(
+            safe_series_to_str(cluster_resolution_df["basin_status"]).str.lower().eq("resolved").sum()
+        )
+    else:
+        resolved_cluster_resolution_count_gpkg = int(cluster_resolution_count_gpkg)
     source_resolution_count_gpkg = int(len(source_resolution_df))
     basin_resolution_count_gpkg = int(len(basin_resolution_df))
     s4_failed = int(s4_df["basin_id"].isna().sum())
@@ -765,6 +787,11 @@ def main():
     overlap_missing_source_idx = int(np.sum((nc["is_overlap"] == 1) & (nc["source_station_index"] < 0)))
 
     cluster_key_set = _cluster_key_set(cluster_resolution_df)
+    resolved_cluster_key_set = _cluster_key_set(
+        cluster_resolution_df[
+            safe_series_to_str(cluster_resolution_df["basin_status"]).str.lower().eq("resolved")
+        ]
+    ) if len(cluster_resolution_df) and "basin_status" in cluster_resolution_df.columns else cluster_key_set
     basin_key_set = _cluster_key_set(basin_resolution_df)
     source_cluster_key_set = _cluster_key_set(source_resolution_df[["cluster_uid", "resolution"]].drop_duplicates()) if len(source_resolution_df) else set()
     nc_cluster_key_set = _cluster_key_set(nc["cluster_resolution_df"])
@@ -780,11 +807,11 @@ def main():
     invalid_geometry_total = _metric_value(basin_geometry_quality, "invalid_geometry_count", "all")
     empty_geometry_total = _metric_value(basin_geometry_quality, "empty_geometry_count", "all")
 
-    missing_basin_keys = len(cluster_key_set - basin_key_set)
+    missing_basin_keys = len(resolved_cluster_key_set - basin_key_set)
     missing_cluster_keys_from_nc = len(nc_cluster_key_set - cluster_key_set)
     source_keys_not_in_cluster = len(source_cluster_key_set - cluster_key_set)
     outside_or_missing = int(
-        point_polygon_detail["relation"].isin(["outside", "missing_polygon"]).sum()
+        point_polygon_detail["relation"].isin(["outside", "missing_polygon", "unexpected_polygon_for_unresolved"]).sum()
     ) if "relation" in point_polygon_detail.columns else 0
 
     results = [
@@ -804,9 +831,9 @@ def main():
         ),
         make_result(
             "A03",
-            "pass" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= cluster_resolution_count_gpkg else "warn",
-            "cluster resolution counts are structurally consistent" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= cluster_resolution_count_gpkg else "cluster/basin resolution counts have gaps",
-            evidence="nc_cluster_resolution_rows={}, cluster_points_rows={}, cluster_basins_rows={}, s4_failed={}".format(cluster_resolution_count_nc, cluster_resolution_count_gpkg, basin_resolution_count_gpkg, s4_failed),
+            "pass" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= resolved_cluster_resolution_count_gpkg else "warn",
+            "cluster resolution counts are structurally consistent" if cluster_resolution_count_nc == cluster_resolution_count_gpkg and basin_resolution_count_gpkg <= resolved_cluster_resolution_count_gpkg else "cluster/basin resolution counts have gaps",
+            evidence="nc_cluster_resolution_rows={}, cluster_points_rows={}, resolved_cluster_points_rows={}, cluster_basins_rows={}, s4_failed={}".format(cluster_resolution_count_nc, cluster_resolution_count_gpkg, resolved_cluster_resolution_count_gpkg, basin_resolution_count_gpkg, s4_failed),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
@@ -866,9 +893,9 @@ def main():
         ),
         make_result(
             "A11",
-            "pass" if cluster_key_set.issubset(basin_key_set) else "warn",
-            "every cluster resolution row has a basin polygon" if cluster_key_set.issubset(basin_key_set) else "some cluster resolution rows have no basin polygon",
-            evidence="missing_cluster_resolution_basins={}".format(missing_basin_keys),
+            "pass" if resolved_cluster_key_set.issubset(basin_key_set) else "warn",
+            "every resolved cluster resolution row has a basin polygon" if resolved_cluster_key_set.issubset(basin_key_set) else "some resolved cluster resolution rows have no basin polygon",
+            evidence="missing_resolved_cluster_resolution_basins={}".format(missing_basin_keys),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(
@@ -929,8 +956,8 @@ def main():
         make_result(
             "B09",
             "pass" if missing_cluster_keys_from_nc == 0 and missing_basin_keys == 0 else "warn",
-            "cluster resolution joins are stable across nc, points and basins" if missing_cluster_keys_from_nc == 0 and missing_basin_keys == 0 else "cluster resolution join has gaps in at least one layer",
-            evidence="nc_minus_cluster_points={}, cluster_points_minus_basins={}".format(missing_cluster_keys_from_nc, missing_basin_keys),
+            "cluster resolution joins are stable across nc, points and resolved basins" if missing_cluster_keys_from_nc == 0 and missing_basin_keys == 0 else "cluster resolution join has gaps in at least one layer",
+            evidence="nc_minus_cluster_points={}, resolved_cluster_points_minus_basins={}".format(missing_cluster_keys_from_nc, missing_basin_keys),
             output_file="15_cluster_join_summary.csv",
         ),
         make_result(

@@ -29,6 +29,7 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from basin_station_merge import load_station_to_basin_cluster_map
 from pipeline_paths import (
@@ -67,6 +68,28 @@ def _build_cluster_report(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _mask_unresolved_basin_fields(df: pd.DataFrame) -> pd.DataFrame:
+    """Hide release-facing basin attributes for unresolved stations."""
+    if "basin_status" not in df.columns:
+        return df
+
+    work = df.copy()
+    unresolved = (
+        work["basin_status"].fillna("").astype(str).str.strip().str.lower() != "resolved"
+    )
+    if not unresolved.any():
+        return work
+
+    for col in ["basin_id", "basin_area", "area_error", "uparea_merit", "pfaf_code"]:
+        if col in work.columns:
+            work.loc[unresolved, col] = np.nan
+    if "n_upstream_reaches" in work.columns:
+        work.loc[unresolved, "n_upstream_reaches"] = pd.NA
+    if "method" in work.columns:
+        work.loc[unresolved, "method"] = ""
+    return work
 
 
 def main():
@@ -137,11 +160,13 @@ def main():
     BASIN_META_COLS = [
         "station_id", "basin_id", "basin_area", "match_quality",
         "area_error", "uparea_merit", "pfaf_code", "method", "n_upstream_reaches",
+        "distance_m", "point_in_local", "point_in_basin", "basin_status", "basin_flag",
     ]
     basin_df = pd.read_csv(basin_path)
     available = [c for c in BASIN_META_COLS if c in basin_df.columns]
     basin_meta = basin_df[available].drop_duplicates(subset=["station_id"])
     df = df.merge(basin_meta, on="station_id", how="left")
+    df = _mask_unresolved_basin_fields(df)
 
     n_clusters = df["cluster_id"].nunique()
     n_multi    = int((df.groupby("cluster_id")["station_id"].count() > 1).sum())

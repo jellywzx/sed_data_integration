@@ -14,6 +14,8 @@ s9：生成适合人工抽查的 CSV 表格。
   05_multi_resolution_clusters.csv
   06_overlap_cluster_queue.csv
   07_missing_basin_queue.csv
+  19_basin_distance_review_queue.csv
+  20_unresolved_basin_queue.csv
 
 目标：
 1. 先把最值得人工检查的 cluster 自动挑出来；
@@ -34,7 +36,7 @@ from pipeline_paths import (
     S5_BASIN_CLUSTERED_CSV,
     S6_MERGED_NC,
     S7_CLUSTER_BASINS_GPKG,
-    S7_CLUSTER_SHP,
+    S7_CLUSTER_POINTS_GPKG,
     S7_SOURCE_STATIONS_GPKG,
     get_output_r_root,
 )
@@ -52,7 +54,7 @@ ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_S5 = ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_S6 = ROOT / S6_MERGED_NC
 DEFAULT_S4_GPKG = ROOT / S4_UPSTREAM_GPKG
-DEFAULT_CLUSTER_SHP = ROOT / S7_CLUSTER_SHP
+DEFAULT_CLUSTER_GPKG = ROOT / S7_CLUSTER_POINTS_GPKG
 DEFAULT_SOURCE_SHP = ROOT / S7_SOURCE_STATIONS_GPKG
 DEFAULT_CLUSTER_BASIN_SHP = ROOT / S7_CLUSTER_BASINS_GPKG
 DEFAULT_OUT_DIR = ROOT / "scripts_basin_test/output/manual_review"
@@ -158,6 +160,11 @@ def load_s5_cluster_stats(path: Path):
         "uparea_merit",
         "pfaf_code",
         "method",
+        "distance_m",
+        "point_in_local",
+        "point_in_basin",
+        "basin_status",
+        "basin_flag",
         "n_upstream_reaches",
     ]
     df = pd.read_csv(path, usecols=usecols)
@@ -165,7 +172,16 @@ def load_s5_cluster_stats(path: Path):
     df["cluster_id"] = pd.to_numeric(df["cluster_id"], errors="coerce").astype("Int64")
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
     df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+    if "distance_m" in df.columns:
+        df["distance_m"] = pd.to_numeric(df["distance_m"], errors="coerce")
     df = df.dropna(subset=["cluster_id"]).copy()
+
+    rep = df.copy()
+    rep["_is_rep"] = (
+        pd.to_numeric(rep["station_id"], errors="coerce") == pd.to_numeric(rep["cluster_id"], errors="coerce")
+    ).astype(int)
+    rep = rep.sort_values(["cluster_id", "_is_rep", "station_id"], ascending=[True, False, True])
+    rep = rep.drop_duplicates(subset=["cluster_id"], keep="first").copy()
 
     grp = df.groupby("cluster_id")
 
@@ -201,10 +217,25 @@ def load_s5_cluster_stats(path: Path):
             "example_paths": _join_unique(g["path"], max_items=3, maxlen=260),
             "example_station_ids": _join_unique(g["station_id"], max_items=6),
             "example_source_station_ids": _join_unique(g["source_station_id"], max_items=6),
+            "basin_statuses": _join_unique(g["basin_status"]),
+            "basin_flags": _join_unique(g["basin_flag"]),
         })
     ).reset_index()
 
     cluster_stats = cluster_stats.merge(extra, on="cluster_id", how="left")
+    rep_cols = [
+        "cluster_id",
+        "distance_m",
+        "point_in_local",
+        "point_in_basin",
+        "basin_status",
+        "basin_flag",
+    ]
+    for col in rep_cols:
+        if col not in rep.columns:
+            rep[col] = np.nan if col == "distance_m" else ""
+    rep_subset = rep[rep_cols].copy()
+    cluster_stats = cluster_stats.merge(rep_subset, on="cluster_id", how="left")
     return df, cluster_stats.sort_values("cluster_id").reset_index(drop=True)
 
 
@@ -303,6 +334,15 @@ def build_priority_queue(cluster_stats: pd.DataFrame):
         if row.n_basin_ids >= 2:
             reasons.append("multiple_basin_ids")
             score += 5
+        if str(getattr(row, "basin_status", "")).strip().lower() != "resolved":
+            reasons.append("unresolved_basin")
+            score += 5
+        if "large_offset" in str(getattr(row, "basin_flags", "")).lower():
+            reasons.append("large_offset")
+            score += 4
+        if "area_mismatch" in str(getattr(row, "basin_flags", "")).lower():
+            reasons.append("area_mismatch")
+            score += 4
         if pd.isna(row.basin_area_min) or pd.isna(row.basin_area_max):
             reasons.append("missing_basin_area")
             score += 4
@@ -333,6 +373,32 @@ def build_priority_queue(cluster_stats: pd.DataFrame):
         ["review_score", "n_station_rows", "n_sources", "nc_overlap_records"],
         ascending=[False, False, False, False],
     ).reset_index(drop=True)
+
+
+def build_distance_review_queue(cluster_stats: pd.DataFrame, per_bin=50, seed=42):
+    work = cluster_stats.copy()
+    work["distance_m"] = pd.to_numeric(work.get("distance_m", np.nan), errors="coerce")
+    work["distance_bin"] = pd.cut(
+        work["distance_m"],
+        bins=[-np.inf, 300.0, 1000.0, np.inf],
+        labels=["<=300m", "300-1000m", ">1000m"],
+    )
+    work = work.dropna(subset=["distance_bin"]).copy()
+    if len(work) == 0:
+        return work
+
+    samples = []
+    for label in ["<=300m", "300-1000m", ">1000m"]:
+        subset = work[work["distance_bin"] == label].copy()
+        if len(subset) == 0:
+            continue
+        n_take = min(per_bin, len(subset))
+        subset = subset.sample(n_take, random_state=seed).sort_values("cluster_id")
+        subset["sample_bin"] = label
+        samples.append(subset)
+    if not samples:
+        return work.iloc[0:0].copy()
+    return pd.concat(samples, ignore_index=True, sort=False)
 
 
 def write_dataset_summary(out_dir: Path, files_info):
@@ -366,7 +432,7 @@ def main():
     ap.add_argument("--s5", default=str(DEFAULT_S5), help="s5 cluster CSV 路径")
     ap.add_argument("--s6", default=str(DEFAULT_S6), help="s6 merged nc 路径")
     ap.add_argument("--s4-gpkg", default=str(DEFAULT_S4_GPKG), help="s4 upstream gpkg 路径")
-    ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_SHP), help="cluster 点 shp/gpkg 路径")
+    ap.add_argument("--cluster-shp", default=str(DEFAULT_CLUSTER_GPKG), help="cluster 点 gpkg 路径")
     ap.add_argument("--source-shp", default=str(DEFAULT_SOURCE_SHP), help="source station shp/gpkg 路径")
     ap.add_argument("--cluster-basin-shp", default=str(DEFAULT_CLUSTER_BASIN_SHP), help="cluster basin shp/gpkg 路径")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="输出目录")
@@ -395,9 +461,9 @@ def main():
             ("s5_cluster_csv", s5_path),
             ("s6_nc", s6_path),
             ("s4_upstream_gpkg", s4_gpkg_path),
-            ("cluster_shp", cluster_shp_path),
-            ("source_station_shp", source_shp_path),
-            ("cluster_basin_shp", cluster_basin_shp_path),
+            ("cluster_points_gpkg", cluster_shp_path),
+            ("source_station_gpkg", source_shp_path),
+            ("cluster_basin_gpkg", cluster_basin_shp_path),
         ],
     )
 
@@ -442,6 +508,15 @@ def main():
     missing_basin = missing_basin.sort_values(["n_station_rows", "n_sources"], ascending=[False, False])
     missing_basin.to_csv(out_dir / "07_missing_basin_queue.csv", index=False)
 
+    distance_review = build_distance_review_queue(cluster_stats, per_bin=50, seed=args.seed)
+    distance_review.to_csv(out_dir / "19_basin_distance_review_queue.csv", index=False)
+
+    unresolved = cluster_stats[
+        cluster_stats["basin_status"].fillna("").astype(str).str.strip().str.lower() != "resolved"
+    ].copy()
+    unresolved = unresolved.sort_values(["n_station_rows", "n_sources", "cluster_id"], ascending=[False, False, True])
+    unresolved.to_csv(out_dir / "20_unresolved_basin_queue.csv", index=False)
+
     print("Manual review tables written to: {}".format(out_dir))
     print("Files:")
     for name in [
@@ -453,6 +528,8 @@ def main():
         "05_multi_resolution_clusters.csv",
         "06_overlap_cluster_queue.csv",
         "07_missing_basin_queue.csv",
+        "19_basin_distance_review_queue.csv",
+        "20_unresolved_basin_queue.csv",
     ]:
         print("  - {}".format(out_dir / name))
 

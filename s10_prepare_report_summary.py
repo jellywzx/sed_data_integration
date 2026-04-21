@@ -8,7 +8,7 @@ Outputs are written to:
 """
 
 import math
-import struct
+import sqlite3
 from pathlib import Path
 
 import matplotlib
@@ -29,9 +29,9 @@ S4_UPSTREAM = ROOT / "s4_upstream_basins.csv"
 S5_CLUSTERED = ROOT / "s5_basin_clustered_stations.csv"
 S6_MERGED_NC = ROOT / "s6_basin_merged_all.nc"
 S6_PLOT_STATS = ROOT / "s6_plot_stats.csv"
-S7_CLUSTER_SHP_DBF = ROOT / "s7_cluster_stations.dbf"
-S7_SOURCE_SHP_DBF = ROOT / "s7_source_stations.dbf"
-S7_CLUSTER_BASIN_DBF = ROOT / "s7_cluster_basins.dbf"
+S7_CLUSTER_POINTS_GPKG = ROOT / "s7_cluster_points.gpkg"
+S7_SOURCE_GPKG = ROOT / "s7_source_stations.gpkg"
+S7_CLUSTER_BASIN_GPKG = ROOT / "s7_cluster_basins.gpkg"
 
 
 def open_netcdf_dataset(path: Path):
@@ -48,10 +48,19 @@ def open_netcdf_dataset(path: Path):
     raise last_exc
 
 
-def dbf_row_count(path):
-    with path.open("rb") as fh:
-        header = fh.read(32)
-    return struct.unpack("<I", header[4:8])[0]
+def gpkg_feature_count(path: Path):
+    if not path.is_file():
+        return 0
+    with sqlite3.connect(str(path)) as conn:
+        tables = pd.read_sql_query(
+            "SELECT table_name FROM gpkg_contents WHERE data_type = 'features'",
+            conn,
+        )
+        total = 0
+        for table_name in tables["table_name"].tolist():
+            sql = 'SELECT COUNT(*) AS n FROM "{}"'.format(table_name.replace('"', '""'))
+            total += int(pd.read_sql_query(sql, conn)["n"].iloc[0])
+        return total
 
 
 def decode_object_array(values):
@@ -102,9 +111,9 @@ def build_summary():
     s4_success = int(s4["basin_id"].notna().sum())
     s4_failed = int(s4["basin_id"].isna().sum())
 
-    cluster_shp_count = dbf_row_count(S7_CLUSTER_SHP_DBF)
-    source_shp_count = dbf_row_count(S7_SOURCE_SHP_DBF)
-    cluster_basin_count = dbf_row_count(S7_CLUSTER_BASIN_DBF)
+    cluster_point_count = gpkg_feature_count(S7_CLUSTER_POINTS_GPKG)
+    source_point_count = gpkg_feature_count(S7_SOURCE_GPKG)
+    cluster_basin_count = gpkg_feature_count(S7_CLUSTER_BASIN_GPKG)
 
     ds = open_netcdf_dataset(S6_MERGED_NC)
     try:
@@ -207,7 +216,7 @@ def build_summary():
             {"stage": "s4 basin matched", "count": s4_success},
             {"stage": "s5 source rows", "count": int(len(s5))},
             {"stage": "s6 source stations", "count": nc_n_source_stations},
-            {"stage": "s7 source points", "count": source_shp_count},
+            {"stage": "s7 source points", "count": source_point_count},
         ]
     )
 
@@ -215,7 +224,7 @@ def build_summary():
         [
             {"stage": "s5 unique clusters", "count": int(s5["cluster_id"].nunique())},
             {"stage": "s6 nc stations", "count": nc_n_stations},
-            {"stage": "s7 cluster points", "count": cluster_shp_count},
+            {"stage": "s7 cluster points", "count": cluster_point_count},
             {"stage": "s7 cluster basins", "count": cluster_basin_count},
         ]
     )
@@ -313,16 +322,16 @@ def build_summary():
         },
         {
             "item": "s7_cluster_point_records",
-            "count": cluster_shp_count,
+            "count": cluster_point_count,
             "status": "ok",
-            "assessment": "Cluster point shapefile matches nc station count.",
+            "assessment": "Cluster point GPKG matches nc station count.",
             "note": "s7 cluster points == s6 n_stations",
         },
         {
             "item": "s7_source_point_records",
-            "count": source_shp_count,
+            "count": source_point_count,
             "status": "ok",
-            "assessment": "Source-station point shapefile matches nc source-station count.",
+            "assessment": "Source-station GPKG matches nc source-station count.",
             "note": "s7 source points == s6 n_source_stations",
         },
         {
@@ -353,8 +362,8 @@ def build_summary():
         "s6_n_records": nc_n_records,
         "s6_missing_source_station_records": missing_source_station_records,
         "s6_missing_source_station_fraction": missing_source_station_fraction,
-        "s7_cluster_points": cluster_shp_count,
-        "s7_source_points": source_shp_count,
+        "s7_cluster_points": cluster_point_count,
+        "s7_source_points": source_point_count,
         "s7_cluster_basins": cluster_basin_count,
     }
 

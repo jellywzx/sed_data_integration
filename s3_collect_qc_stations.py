@@ -7,7 +7,8 @@
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id）
+    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id，
+    以及可选的 source_comid/source_reach_code/source_vpu_id/source_rpu_id）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
 当前默认规则：
@@ -46,6 +47,10 @@ FILL = -9999.0
 _STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
 _RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
 _STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
+_COMID_KEYS = ["comid", "COMID"]
+_REACH_CODE_KEYS = ["reach_code", "REACHCODE", "REACHCO", "reachcode"]
+_VPU_ID_KEYS = ["vpu_id", "VPUID", "vpu"]
+_RPU_ID_KEYS = ["rpu_id", "RPUID", "rpu"]
 # 各数据集中存储上游汇水面积的字段名（NC 变量或全局属性）
 # 优先级：先找 NC 变量，再找全局属性；全局属性按列表顺序匹配
 _AREA_VAR_NAMES = [
@@ -153,9 +158,17 @@ def get_lat_lon_from_nc(path):
 
 
 def get_station_meta_from_nc(path):
-    """从 nc 全局属性读取站点名/河流名/原始站点编号。"""
+    """从 nc 全局属性读取站点级元数据。"""
     if not HAS_NC:
-        return "", "", ""
+        return {
+            "station_name": "",
+            "river_name": "",
+            "source_station_id": "",
+            "source_comid": "",
+            "source_reach_code": "",
+            "source_vpu_id": "",
+            "source_rpu_id": "",
+        }
     try:
         with nc4.Dataset(path, "r") as nc:
             def _get_attr(keys):
@@ -164,13 +177,25 @@ def get_station_meta_from_nc(path):
                     if val is not None and str(val).strip():
                         return str(val).strip()[:256]
                 return ""
-            return (
-                _get_attr(_STATION_NAME_KEYS),
-                _get_attr(_RIVER_NAME_KEYS),
-                _get_attr(_STATION_ID_KEYS),
-            )
+            return {
+                "station_name": _get_attr(_STATION_NAME_KEYS),
+                "river_name": _get_attr(_RIVER_NAME_KEYS),
+                "source_station_id": _get_attr(_STATION_ID_KEYS),
+                "source_comid": _get_attr(_COMID_KEYS),
+                "source_reach_code": _get_attr(_REACH_CODE_KEYS),
+                "source_vpu_id": _get_attr(_VPU_ID_KEYS),
+                "source_rpu_id": _get_attr(_RPU_ID_KEYS),
+            }
     except Exception:
-        return "", "", ""
+        return {
+            "station_name": "",
+            "river_name": "",
+            "source_station_id": "",
+            "source_comid": "",
+            "source_reach_code": "",
+            "source_vpu_id": "",
+            "source_rpu_id": "",
+        }
 
 
 def get_resolution_from_path(path, root_dir):
@@ -234,7 +259,7 @@ def _collect_one_nc(path, root_dir):
         lat, lon = get_lat_lon_from_nc(path)
         if lat is None or lon is None:
             return None
-        station_name, river_name, source_station_id = get_station_meta_from_nc(path)
+        station_meta = get_station_meta_from_nc(path)
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
         reported_area = get_reported_area_from_nc(path)
@@ -246,9 +271,13 @@ def _collect_one_nc(path, root_dir):
             "lat": lat,
             "lon": lon,
             "resolution": resolution,
-            "station_name": station_name,
-            "river_name": river_name,
-            "source_station_id": source_station_id,
+            "station_name": station_meta["station_name"],
+            "river_name": station_meta["river_name"],
+            "source_station_id": station_meta["source_station_id"],
+            "source_comid": station_meta["source_comid"],
+            "source_reach_code": station_meta["source_reach_code"],
+            "source_vpu_id": station_meta["source_vpu_id"],
+            "source_rpu_id": station_meta["source_rpu_id"],
             "reported_area": reported_area if reported_area is not None else float("nan"),
         }
     except (ValueError, OSError):

@@ -3,7 +3,8 @@
 s4：站点流域匹配脚本（并行版）
 
 流程：
-  1. 读取 s3_collected_stations.csv（列：path, source, lat, lon, resolution）
+  1. 读取 s3_collected_stations.csv（核心列：path, source, lat, lon, resolution；
+     可选列：reported_area 与 source_* 流域元数据）
   2. 以行号（0 起）作为 station_id
   3. 将站点按经度排序后分块，多进程并行追溯上游流域
      （按经度分块使同一 worker 内的站点集中在同一 pfaf 区，减少重复 I/O）
@@ -36,6 +37,7 @@ import psutil
 from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
+from basin_policy import classify_basin_result
 from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG, S4_LOCAL_GPKG, S4_REPORTED_AREA_CHECK_CSV
 
 
@@ -82,6 +84,13 @@ CSV_COLUMNS = [
     "station_id",
     "lon",
     "lat",
+    "source_station_name",
+    "source_river_name",
+    "source_station_id",
+    "source_comid",
+    "source_reach_code",
+    "source_vpu_id",
+    "source_rpu_id",
     "basin_id",
     "basin_area",
     "match_quality",
@@ -91,6 +100,10 @@ CSV_COLUMNS = [
     "pfaf_code",
     "method",
     "distance_m",
+    "point_in_local",
+    "point_in_basin",
+    "basin_status",
+    "basin_flag",
     "n_upstream_reaches",
 ]
 CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
@@ -120,7 +133,7 @@ def _trace_chunk(args):
     """单个 worker：为一批站点追溯流域，返回 result dict 列表。
 
     args = (merit_dir_str, basin_tracer_dir_str, chunk)
-    chunk: list of (station_id, lon, lat, reported_area)
+    chunk: list of station metadata dicts
     """
     import gc
 
@@ -141,15 +154,40 @@ def _trace_chunk(args):
     tracer = UpstreamBasinTracer(merit_dir_str)
     results = []
 
-    for station_id, lon, lat, reported_area in chunk:
+    for station in chunk:
+        station_id = int(station["station_id"])
+        lon = float(station["lon"])
+        lat = float(station["lat"])
+        reported_area = station.get("reported_area")
+        if pd.isna(reported_area):
+            reported_area = None
+
+        # RiverSed 的 source_comid/reach_code/vpu_id/rpu_id 来自 NHDPlus，
+        # 当前 tracer 工作在 MERIT-Basins 标识体系下，因此这里先保留为
+        # 下游检查/人工审核的辅助上下文，不作为 MERIT reach 的硬约束。
         basin_result = tracer.get_upstream_basin(
             lon, lat, reported_area=reported_area
+        )
+        basin_status, basin_flag = classify_basin_result(
+            basin_id=basin_result["basin_id"],
+            match_quality=basin_result["match_quality"],
+            distance_m=basin_result.get("distance", np.nan),
+            source_name=station.get("source", ""),
+            point_in_local=basin_result.get("point_in_local", False),
+            point_in_basin=basin_result.get("point_in_basin", False),
         )
         results.append(
             {
                 "station_id": station_id,
                 "lon": lon,
                 "lat": lat,
+                "source_station_name": station.get("source_station_name", ""),
+                "source_river_name": station.get("source_river_name", ""),
+                "source_station_id": station.get("source_station_id", ""),
+                "source_comid": station.get("source_comid", ""),
+                "source_reach_code": station.get("source_reach_code", ""),
+                "source_vpu_id": station.get("source_vpu_id", ""),
+                "source_rpu_id": station.get("source_rpu_id", ""),
                 "reported_area": reported_area,
                 "basin_id": basin_result["basin_id"],
                 "basin_area": basin_result["basin_area"],
@@ -159,6 +197,10 @@ def _trace_chunk(args):
                 "pfaf_code": basin_result["pfaf_code"],
                 "method": basin_result["method"],
                 "distance_m": basin_result.get("distance", np.nan),
+                "point_in_local": basin_result.get("point_in_local", False),
+                "point_in_basin": basin_result.get("point_in_basin", False),
+                "basin_status": basin_status,
+                "basin_flag": basin_flag,
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
                 "geometry": basin_result["geometry"],
                 "geometry_local": basin_result["geometry_local"],
@@ -179,6 +221,13 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "station_id": row["station_id"],
             "lon": row["lon"],
             "lat": row["lat"],
+            "source_station_name": row.get("source_station_name", ""),
+            "source_river_name": row.get("source_river_name", ""),
+            "source_station_id": row.get("source_station_id", ""),
+            "source_comid": row.get("source_comid", ""),
+            "source_reach_code": row.get("source_reach_code", ""),
+            "source_vpu_id": row.get("source_vpu_id", ""),
+            "source_rpu_id": row.get("source_rpu_id", ""),
             "basin_id": row["basin_id"],
             "basin_area": row["basin_area"],
             "match_quality": row["match_quality"],
@@ -189,6 +238,10 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "method": row["method"],
             "n_upstream_reaches": row["n_upstream_reaches"],
             "distance_m": row.get("distance_m", np.nan),
+            "point_in_local": row.get("point_in_local", False),
+            "point_in_basin": row.get("point_in_basin", False),
+            "basin_status": row.get("basin_status", ""),
+            "basin_flag": row.get("basin_flag", ""),
         }
         if include_geometry:
             geometry = row.get("geometry")
@@ -218,6 +271,7 @@ def _write_gpkg_from_wkt(result_df, wkt_column, out_path, label, logger):
     geometry = gpd.GeoSeries.from_wkt(wkt_values, crs="EPSG:4326")
     gdf = gpd.GeoDataFrame(base_df.copy(), geometry=geometry, crs="EPSG:4326")
 
+    logger.info("Writing %s -> %s (%d rows)", label, out_path, len(gdf))
     started_at = time.perf_counter()
     gdf.to_file(out_path, driver="GPKG", engine="pyogrio")
     logger.info("Saved %s -> %s (%.1fs)", label, out_path, time.perf_counter() - started_at)
@@ -270,20 +324,58 @@ def main():
 
     # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
     stations_sorted = stations.sort_values("lon").reset_index(drop=True)
-    has_reported_area = "reported_area" in stations_sorted.columns
-    reported_areas = (
-        stations_sorted["reported_area"].where(stations_sorted["reported_area"].notna(), None).tolist()
-        if has_reported_area else [None] * len(stations_sorted)
-    )
-    tuples = list(zip(
-        stations_sorted["station_id"].astype(int),
-        stations_sorted["lon"].astype(float),
-        stations_sorted["lat"].astype(float),
-        reported_areas,
-    ))
+
+    if "reported_area" not in stations_sorted.columns:
+        stations_sorted["reported_area"] = np.nan
+
+    if "source" in stations_sorted.columns:
+        stations_sorted["source"] = (
+            stations_sorted["source"].fillna("").astype(str).map(lambda x: x.strip())
+        )
+    else:
+        stations_sorted["source"] = ""
+
+    source_text_columns = {
+        "station_name": "source_station_name",
+        "river_name": "source_river_name",
+        "source_station_id": "source_station_id",
+        "source_comid": "source_comid",
+        "source_reach_code": "source_reach_code",
+        "source_vpu_id": "source_vpu_id",
+        "source_rpu_id": "source_rpu_id",
+    }
+    for input_col, output_col in source_text_columns.items():
+        if input_col in stations_sorted.columns:
+            stations_sorted[output_col] = (
+                stations_sorted[input_col]
+                .fillna("")
+                .astype(str)
+                .map(lambda x: x.strip())
+            )
+        else:
+            stations_sorted[output_col] = ""
+
+    record_columns = [
+        "station_id",
+        "lon",
+        "lat",
+        "source",
+        "reported_area",
+        "source_station_name",
+        "source_river_name",
+        "source_station_id",
+        "source_comid",
+        "source_reach_code",
+        "source_vpu_id",
+        "source_rpu_id",
+    ]
+    station_records = stations_sorted[record_columns].to_dict(orient="records")
 
     chunk_size = BATCH_SIZE
-    chunks = [tuples[i: i + chunk_size] for i in range(0, len(tuples), chunk_size)]
+    chunks = [
+        station_records[i: i + chunk_size]
+        for i in range(0, len(station_records), chunk_size)
+    ]
     actual_workers = min(N_WORKERS, len(chunks))
     logger.info("Splitting into %d batches (size=%d) for %d workers", len(chunks), chunk_size, actual_workers)
 
@@ -369,8 +461,11 @@ def main():
         n_with_area = int(reported_mask.sum())
         if n_with_area > 0:
             check_cols = ["station_id", "lon", "lat", "reported_area",
+                        "source_station_name", "source_river_name", "source_station_id",
+                        "source_comid", "source_reach_code", "source_vpu_id", "source_rpu_id",
                         "uparea_merit", "area_error", "match_quality",
-                        "basin_id", "pfaf_code", "method","distance_m"]
+                        "basin_id", "pfaf_code", "method", "distance_m", "point_in_local",
+                        "point_in_basin", "basin_status", "basin_flag"]
             check_df = result_df.loc[reported_mask, [c for c in check_cols if c in result_df.columns]]
             check_df = check_df.sort_values("station_id")
             check_df.to_csv(OUT_REPORTED_AREA_CSV, index=False)

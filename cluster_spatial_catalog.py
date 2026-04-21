@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from basin_policy import MATCH_QUALITY_CODE_TO_NAME
 
 try:
     import netCDF4 as nc4
@@ -41,13 +42,6 @@ RESOLUTION_CODE_TO_NAME = {
 }
 RESOLUTION_NAME_TO_CODE = {name: code for code, name in RESOLUTION_CODE_TO_NAME.items()}
 
-MATCH_QUALITY_CODE_TO_NAME = {
-    -1: "unknown",
-    0: "distance_only",
-    1: "area_matched",
-    2: "failed",
-}
-
 STATION_CATALOG_COLUMNS = [
     "master_station_index",
     "cluster_uid",
@@ -64,6 +58,11 @@ STATION_CATALOG_COLUMNS = [
     "n_source_stations_in_cluster",
     "basin_match_quality_code",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "daily_record_count",
     "daily_time_start",
     "daily_time_end",
@@ -96,6 +95,11 @@ RESOLUTION_CATALOG_COLUMNS = [
     "n_upstream_reaches",
     "basin_match_quality_code",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "n_source_stations_in_cluster",
 ]
 
@@ -142,6 +146,11 @@ BASIN_RESOLUTION_CATALOG_COLUMNS = [
     "n_sources",
     "n_source_stations_in_cluster",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "station_name",
     "river_name",
     "source_station_id",
@@ -159,6 +168,11 @@ SUMMARY_LAYER_COLUMNS = [
     "pfaf_code",
     "n_upstream_reaches",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "n_source_stations_in_cluster",
     "available_resolutions",
     "n_available_resolutions",
@@ -190,6 +204,11 @@ RESOLUTION_LAYER_COLUMNS = [
     "pfaf_code",
     "n_upstream_reaches",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "n_source_stations_in_cluster",
 ]
 
@@ -229,6 +248,11 @@ BASIN_LAYER_COLUMNS = [
     "n_sources",
     "n_source_stations_in_cluster",
     "basin_match_quality",
+    "basin_status",
+    "basin_flag",
+    "basin_distance_m",
+    "point_in_local",
+    "point_in_basin",
     "station_name",
     "river_name",
     "source_station_id",
@@ -389,12 +413,14 @@ def normalize_cluster_station_catalog(station_catalog):
         "n_upstream_reaches": -9999,
         "n_source_stations_in_cluster": 0,
         "basin_match_quality_code": -1,
+        "point_in_local": 0,
+        "point_in_basin": 0,
         "daily_record_count": 0,
         "monthly_record_count": 0,
         "annual_record_count": 0,
         "n_available_resolutions": 0,
     }
-    float_cols = ("lat", "lon", "basin_area", "pfaf_code")
+    float_cols = ("lat", "lon", "basin_area", "pfaf_code", "basin_distance_m")
     text_cols = (
         "cluster_uid",
         "station_name",
@@ -402,6 +428,8 @@ def normalize_cluster_station_catalog(station_catalog):
         "source_station_id",
         "sources_used",
         "basin_match_quality",
+        "basin_status",
+        "basin_flag",
         "daily_time_start",
         "daily_time_end",
         "monthly_time_start",
@@ -434,9 +462,11 @@ def normalize_cluster_resolution_catalog(resolution_catalog):
         "record_count": 0,
         "n_upstream_reaches": -9999,
         "basin_match_quality_code": -1,
+        "point_in_local": 0,
+        "point_in_basin": 0,
         "n_source_stations_in_cluster": 0,
     }
-    float_cols = ("lat", "lon", "basin_area", "pfaf_code")
+    float_cols = ("lat", "lon", "basin_area", "pfaf_code", "basin_distance_m")
     text_cols = (
         "cluster_uid",
         "resolution",
@@ -447,6 +477,8 @@ def normalize_cluster_resolution_catalog(resolution_catalog):
         "source_station_id",
         "sources_used",
         "basin_match_quality",
+        "basin_status",
+        "basin_flag",
     )
 
     for col, fill_value in int_fill_map.items():
@@ -506,8 +538,10 @@ def normalize_cluster_basin_resolution_catalog(basin_catalog):
         "n_station_rows": 0,
         "n_sources": 0,
         "n_source_stations_in_cluster": 0,
+        "point_in_local": 0,
+        "point_in_basin": 0,
     }
-    float_cols = ("basin_area", "pfaf_code", "area_error", "uparea_merit", "basin_id")
+    float_cols = ("basin_area", "pfaf_code", "area_error", "uparea_merit", "basin_id", "basin_distance_m")
     text_cols = (
         "cluster_uid",
         "resolution",
@@ -515,6 +549,8 @@ def normalize_cluster_basin_resolution_catalog(basin_catalog):
         "time_end",
         "method",
         "basin_match_quality",
+        "basin_status",
+        "basin_flag",
         "station_name",
         "river_name",
         "source_station_id",
@@ -569,6 +605,26 @@ def build_cluster_station_catalog(master_nc, matrix_paths):
                 "n_source_stations_in_cluster": _read_int_array(
                     ds,
                     "n_source_stations_in_cluster",
+                    fill_value=0,
+                    size=n_stations,
+                ),
+                "basin_status": _read_text_var(ds, "basin_status", size=n_stations),
+                "basin_flag": _read_text_var(ds, "basin_flag", size=n_stations),
+                "basin_distance_m": _read_float_array(
+                    ds,
+                    "basin_distance_m",
+                    fill_values=(-9999.0,),
+                    size=n_stations,
+                ),
+                "point_in_local": _read_int_array(
+                    ds,
+                    "point_in_local",
+                    fill_value=0,
+                    size=n_stations,
+                ),
+                "point_in_basin": _read_int_array(
+                    ds,
+                    "point_in_basin",
                     fill_value=0,
                     size=n_stations,
                 ),
@@ -987,12 +1043,83 @@ def build_cluster_basin_resolution_catalog(cluster_resolution_catalog, represent
         "method",
         "n_station_rows",
         "n_sources",
+        "basin_status",
+        "basin_flag",
+        "distance_m",
+        "point_in_local",
+        "point_in_basin",
+        "station_name",
+        "river_name",
+        "source_station_id",
     ]
     for col in keep_rep_cols:
         if col not in reps.columns:
             reps[col] = ""
 
     merged = resolution_df.merge(reps[keep_rep_cols], on="cluster_id", how="left")
+    if "basin_status_x" in merged.columns and "basin_status_y" in merged.columns:
+        merged["basin_status"] = merged["basin_status_x"].where(
+            merged["basin_status_x"].astype(str).str.strip() != "",
+            merged["basin_status_y"],
+        )
+        merged = merged.drop(columns=["basin_status_x", "basin_status_y"])
+    if "basin_flag_x" in merged.columns and "basin_flag_y" in merged.columns:
+        merged["basin_flag"] = merged["basin_flag_x"].where(
+            merged["basin_flag_x"].astype(str).str.strip() != "",
+            merged["basin_flag_y"],
+        )
+        merged = merged.drop(columns=["basin_flag_x", "basin_flag_y"])
+    if "station_name_x" in merged.columns and "station_name_y" in merged.columns:
+        merged["station_name"] = merged["station_name_x"].where(
+            merged["station_name_x"].astype(str).str.strip() != "",
+            merged["station_name_y"],
+        )
+        merged = merged.drop(columns=["station_name_x", "station_name_y"])
+    if "river_name_x" in merged.columns and "river_name_y" in merged.columns:
+        merged["river_name"] = merged["river_name_x"].where(
+            merged["river_name_x"].astype(str).str.strip() != "",
+            merged["river_name_y"],
+        )
+        merged = merged.drop(columns=["river_name_x", "river_name_y"])
+    if "source_station_id_x" in merged.columns and "source_station_id_y" in merged.columns:
+        merged["source_station_id"] = merged["source_station_id_x"].where(
+            merged["source_station_id_x"].astype(str).str.strip() != "",
+            merged["source_station_id_y"],
+        )
+        merged = merged.drop(columns=["source_station_id_x", "source_station_id_y"])
+    if "point_in_local_x" in merged.columns and "point_in_local_y" in merged.columns:
+        merged["point_in_local"] = pd.to_numeric(
+            merged["point_in_local_x"].where(
+                pd.notna(merged["point_in_local_x"]),
+                merged["point_in_local_y"],
+            ),
+            errors="coerce",
+        )
+        merged = merged.drop(columns=["point_in_local_x", "point_in_local_y"])
+    if "point_in_basin_x" in merged.columns and "point_in_basin_y" in merged.columns:
+        merged["point_in_basin"] = pd.to_numeric(
+            merged["point_in_basin_x"].where(
+                pd.notna(merged["point_in_basin_x"]),
+                merged["point_in_basin_y"],
+            ),
+            errors="coerce",
+        )
+        merged = merged.drop(columns=["point_in_basin_x", "point_in_basin_y"])
+    if "basin_distance_m" not in merged.columns and "distance_m" in merged.columns:
+        merged["basin_distance_m"] = pd.to_numeric(merged["distance_m"], errors="coerce")
+    elif "distance_m" in merged.columns:
+        merged["basin_distance_m"] = pd.to_numeric(
+            merged["basin_distance_m"].where(pd.notna(merged["basin_distance_m"]), merged["distance_m"]),
+            errors="coerce",
+        )
+    if "point_in_local" in merged.columns:
+        merged["point_in_local"] = pd.to_numeric(merged["point_in_local"], errors="coerce").fillna(0).astype(np.int64)
+    if "point_in_basin" in merged.columns:
+        merged["point_in_basin"] = pd.to_numeric(merged["point_in_basin"], errors="coerce").fillna(0).astype(np.int64)
+    if "basin_status" in merged.columns:
+        merged = merged[
+            merged["basin_status"].fillna("").astype(str).str.strip().str.lower().eq("resolved")
+        ].copy()
     merged = merged.merge(
         basin_work[["station_id", "geometry"]],
         on="station_id",

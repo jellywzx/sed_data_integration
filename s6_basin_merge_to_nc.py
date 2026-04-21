@@ -53,6 +53,10 @@ import pandas as pd
 import psutil
 from tqdm import tqdm
 
+from basin_policy import (
+    MATCH_QUALITY_CODES,
+    MATCH_QUALITY_MEANINGS,
+)
 from pipeline_paths import (
     get_output_r_root,
     S5_BASIN_CLUSTERED_CSV,
@@ -274,6 +278,15 @@ def _clean_coord(value):
         return round(float(value), 6)
     except Exception:
         return None
+
+
+def _clean_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = _clean_text(value).lower()
+    if not text:
+        return False
+    return text in {"1", "true", "yes", "y", "t"}
 
 
 def _build_source_station_key(row):
@@ -702,11 +715,15 @@ def main():
             lons[idx] = float(grp["lon"].mean())
 
     # ── 2b. 提取流域元数据（每个 cluster 代表站点的 basin 属性）────────────
-    MATCH_QUALITY_CODES = {"distance_only": 0, "area_matched": 1, "failed": 2}
     basin_areas       = np.full(n_stations, FILL,  dtype=np.float32)
     pfaf_codes        = np.full(n_stations, FILL,  dtype=np.float32)
     n_reaches_arr     = np.full(n_stations, -9999, dtype=np.int32)
     match_quality_arr = np.full(n_stations, -1,    dtype=np.int8)
+    basin_distance_arr = np.full(n_stations, FILL, dtype=np.float32)
+    point_in_local_arr = np.zeros(n_stations, dtype=np.int8)
+    point_in_basin_arr = np.zeros(n_stations, dtype=np.int8)
+    basin_status_arr = ["unknown"] * n_stations
+    basin_flag_arr = ["unknown"] * n_stations
 
     for cid, idx in cluster_to_idx.items():
         if cid in rep.index:
@@ -715,10 +732,18 @@ def main():
             pf = row.get("pfaf_code",         None)
             nr = row.get("n_upstream_reaches",None)
             mq = str(row.get("match_quality", "unknown") or "unknown").strip()
+            dist = row.get("distance_m", None)
+            basin_status = str(row.get("basin_status", "unknown") or "unknown").strip()
+            basin_flag = str(row.get("basin_flag", "unknown") or "unknown").strip()
             basin_areas[idx]       = float(ba) if ba is not None and not pd.isna(ba) else FILL
             pfaf_codes[idx]        = float(pf) if pf is not None and not pd.isna(pf) else FILL
             n_reaches_arr[idx]     = int(nr)   if nr is not None and not pd.isna(nr) else -9999
             match_quality_arr[idx] = np.int8(MATCH_QUALITY_CODES.get(mq, -1))
+            basin_distance_arr[idx] = float(dist) if dist is not None and not pd.isna(dist) else FILL
+            point_in_local_arr[idx] = np.int8(1 if _clean_bool(row.get("point_in_local", False)) else 0)
+            point_in_basin_arr[idx] = np.int8(1 if _clean_bool(row.get("point_in_basin", False)) else 0)
+            basin_status_arr[idx] = basin_status
+            basin_flag_arr[idx] = basin_flag
 
     # ── 2c. 串行读取代表站点 NC 的全局属性（station_name / river_name / source_station_id）
     # Note: HDF5 is not thread-safe; do NOT use ThreadPoolExecutor here.
@@ -1055,9 +1080,35 @@ def main():
         bm_v = nc.createVariable("basin_match_quality", "i1", ("n_stations",),
                                   fill_value=np.int8(-1))
         bm_v.long_name    = "basin matching quality from basin tracer"
-        bm_v.flag_values  = np.array([0, 1, 2, -1], dtype=np.int8)
-        bm_v.flag_meanings = "distance_only area_matched failed unknown"
+        bm_v.flag_values  = np.array([0, 1, 2, 3, 4, -1], dtype=np.int8)
+        bm_v.flag_meanings = MATCH_QUALITY_MEANINGS
         bm_v[:]           = match_quality_arr
+
+        bd_v = nc.createVariable("basin_distance_m", "f4", ("n_stations",), fill_value=FILL)
+        bd_v.long_name = "distance from original station point to matched reach"
+        bd_v.units = "m"
+        bd_v[:] = basin_distance_arr
+
+        pil_v = nc.createVariable("point_in_local", "i1", ("n_stations",), fill_value=np.int8(0))
+        pil_v.long_name = "whether the original station point is covered by the matched local catchment"
+        pil_v.flag_values = np.array([0, 1], dtype=np.int8)
+        pil_v.flag_meanings = "false true"
+        pil_v[:] = point_in_local_arr
+
+        pib_v = nc.createVariable("point_in_basin", "i1", ("n_stations",), fill_value=np.int8(0))
+        pib_v.long_name = "whether the original station point is covered by the traced upstream basin"
+        pib_v.flag_values = np.array([0, 1], dtype=np.int8)
+        pib_v.flag_meanings = "false true"
+        pib_v[:] = point_in_basin_arr
+
+        bs_v = nc.createVariable("basin_status", str, ("n_stations",))
+        bs_v.long_name = "release-facing basin assignment status"
+        bs_v.comment = "resolved stations may keep basin polygons; unresolved stations retain observations without a published basin assignment"
+        bs_v[:] = np.array(basin_status_arr, dtype=object)
+
+        bf_v = nc.createVariable("basin_flag", str, ("n_stations",))
+        bf_v.long_name = "release-facing basin status reason flag"
+        bf_v[:] = np.array(basin_flag_arr, dtype=object)
 
         sn_v = nc.createVariable("station_name", str, ("n_stations",))
         sn_v.long_name = "station name from source NC global attribute"
