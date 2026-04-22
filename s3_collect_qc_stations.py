@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
 步骤 s3：从 s2 重组目录中扫描 .nc 文件，
-读取经纬度与数据源，输出站点列表 CSV。
+读取经纬度与数据源，输出 basin 主线使用的站点列表 CSV。
 
 输入（默认）：
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id，
-    以及可选的 source_comid/source_reach_code/source_vpu_id/source_rpu_id）
+    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id, reported_area）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
 当前默认规则：
   - basin 主线默认不收集 climatology；
   - climatology 文件保留在 output_resolution_organized/climatology 下，
-    供独立的 climatology NC 导出脚本使用。
+    供独立的 climatology NC 导出脚本使用；
+  - RiverSed 在 basin 主线下只提供 lon/lat，不输出 NHDPlus reach/basin 元数据，
+    也不把源文件中的 upstream_area 作为 reported_area 传给 basin tracer。
 
 根目录说明：
   - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
@@ -47,10 +48,6 @@ FILL = -9999.0
 _STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
 _RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
 _STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
-_COMID_KEYS = ["comid", "COMID"]
-_REACH_CODE_KEYS = ["reach_code", "REACHCODE", "REACHCO", "reachcode"]
-_VPU_ID_KEYS = ["vpu_id", "VPUID", "vpu"]
-_RPU_ID_KEYS = ["rpu_id", "RPUID", "rpu"]
 # 各数据集中存储上游汇水面积的字段名（NC 变量或全局属性）
 # 优先级：先找 NC 变量，再找全局属性；全局属性按列表顺序匹配
 _AREA_VAR_NAMES = [
@@ -164,10 +161,6 @@ def get_station_meta_from_nc(path):
             "station_name": "",
             "river_name": "",
             "source_station_id": "",
-            "source_comid": "",
-            "source_reach_code": "",
-            "source_vpu_id": "",
-            "source_rpu_id": "",
         }
     try:
         with nc4.Dataset(path, "r") as nc:
@@ -181,20 +174,12 @@ def get_station_meta_from_nc(path):
                 "station_name": _get_attr(_STATION_NAME_KEYS),
                 "river_name": _get_attr(_RIVER_NAME_KEYS),
                 "source_station_id": _get_attr(_STATION_ID_KEYS),
-                "source_comid": _get_attr(_COMID_KEYS),
-                "source_reach_code": _get_attr(_REACH_CODE_KEYS),
-                "source_vpu_id": _get_attr(_VPU_ID_KEYS),
-                "source_rpu_id": _get_attr(_RPU_ID_KEYS),
             }
     except Exception:
         return {
             "station_name": "",
             "river_name": "",
             "source_station_id": "",
-            "source_comid": "",
-            "source_reach_code": "",
-            "source_vpu_id": "",
-            "source_rpu_id": "",
         }
 
 
@@ -263,6 +248,10 @@ def _collect_one_nc(path, root_dir):
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
         reported_area = get_reported_area_from_nc(path)
+        # RiverSed 在 basin 主线下只按坐标匹配 MERIT，不把其源产品自带的
+        # upstream_area 作为 reported_area，也不依赖 NHDPlus reach 元数据。
+        if source.strip().lower() == "riversed":
+            reported_area = None
         # 存相对路径，跨平台可移植
         rel_path = str(Path(path).relative_to(root_dir))
         return {
@@ -274,10 +263,6 @@ def _collect_one_nc(path, root_dir):
             "station_name": station_meta["station_name"],
             "river_name": station_meta["river_name"],
             "source_station_id": station_meta["source_station_id"],
-            "source_comid": station_meta["source_comid"],
-            "source_reach_code": station_meta["source_reach_code"],
-            "source_vpu_id": station_meta["source_vpu_id"],
-            "source_rpu_id": station_meta["source_rpu_id"],
             "reported_area": reported_area if reported_area is not None else float("nan"),
         }
     except (ValueError, OSError):
@@ -336,6 +321,8 @@ def _enable_script_logging():
     log_fp = open(log_path, "w", encoding="utf-8")
     log_fp.write("\n===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
     log_fp.flush()
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
 
     class _TeeStream:
         def __init__(self, stream, log_file):
@@ -344,16 +331,32 @@ def _enable_script_logging():
 
         def write(self, data):
             self._stream.write(data)
-            self._log_file.write(data)
-            self._log_file.flush()
+            try:
+                self._log_file.write(data)
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
 
         def flush(self):
             self._stream.flush()
-            self._log_file.flush()
+            try:
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
+
+    def _close_log_file():
+        if sys.stdout is not orig_stdout:
+            sys.stdout = orig_stdout
+        if sys.stderr is not orig_stderr:
+            sys.stderr = orig_stderr
+        try:
+            log_fp.close()
+        except (ValueError, OSError):
+            pass
 
     sys.stdout = _TeeStream(sys.stdout, log_fp)
     sys.stderr = _TeeStream(sys.stderr, log_fp)
-    atexit.register(log_fp.close)
+    atexit.register(_close_log_file)
     _LOG_TEE_ENABLED = True
 
 

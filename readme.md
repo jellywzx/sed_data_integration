@@ -308,6 +308,7 @@
 
 1. 当前脚本会先对扫描结果排序，以提高重跑时的稳定性
 2. 当前默认会排除 `climatology`，使其不进入 basin tracing 和 basin merge
+3. RiverSed 在 basin 主线下只保留 `lon/lat + 基本站点标识`，不再输出 NHDPlus 流域元数据，也不再把其 `upstream_area` 作为 `reported_area`
 
 ### s4_basin_trace_watch.py
 
@@ -328,6 +329,7 @@
 2. 它不是最终 `cluster` 级流域单元文件
 3. `s4_upstream_basins.csv` 现在会保留 `distance_m / match_quality / point_in_local / point_in_basin / basin_status / basin_flag`
 4. `s4_reported_area_check.csv` 用于单独检查 reported drainage area 与 tracer 结果的一致性
+5. RiverSed 在这一步只按坐标匹配 MERIT，不再使用其源产品自带的 `upstream_area` 或 NHDPlus reach/basin 信息
 
 ### s5_basin_merge.py
 

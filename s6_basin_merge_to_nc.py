@@ -170,6 +170,7 @@ def _enable_script_logging():
     log_fp = open(log_path, "w", encoding="utf-8")
     log_fp.write("===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
     log_fp.flush()
+    orig_stdout = sys.stdout
 
     class _Tee:
         def __init__(self, stream, log_file):
@@ -190,8 +191,18 @@ def _enable_script_logging():
             except (ValueError, OSError):
                 pass
 
-    sys.stdout = _Tee(sys.stdout, log_fp)
-    atexit.register(log_fp.close)
+    def _close_log_file():
+        try:
+            sys.stdout = orig_stdout
+        except Exception:
+            pass
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+
+    sys.stdout = _Tee(orig_stdout, log_fp)
+    atexit.register(_close_log_file)
     _LOG_TEE_ENABLED = True
 
 
