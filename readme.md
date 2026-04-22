@@ -41,11 +41,13 @@
 
 1. `s8_publish_reference_dataset.py`
 2. `example_reference_workflow.py`
+3. `second_stage_contract.md`
 
 它们的用途分别是：
 
 1. 将现有主线产物整理成正式发布版 `sed_reference_release/`
 2. 演示“最近站点匹配 -> 抽时间序列 -> 可选模型对比 -> 回查 provenance”的标准使用路径
+3. 明确第二阶段真正依赖和保留的字段 contract，以及哪些字段只是中间使用或设计上主动丢弃
 
 ---
 
@@ -87,6 +89,7 @@
 4. basin 主线默认只处理非 `climatology` 的站点
 5. `climatology` 最后单独导出为一个独立 `nc`
 6. 不同时间类型不能混成一种普通时间序列，必须带清楚的时间类型标记
+7. 第二阶段不直接信任第一阶段目录名，实际以 `s1` 输出的 `temporal_semantics` 为准
 
 ### 2.3 原始信息保留规则
 
@@ -96,6 +99,11 @@
 2. 每个原始站点来自哪个数据源
 3. 每条最终记录来自哪个原始站点
 4. 每条最终记录来自哪个原始文件
+
+补充：
+
+1. 当前更细的第二阶段字段 contract 见 `second_stage_contract.md`
+2. 文档中明确区分了“必须保留”“中间使用但最终不保留”“设计上主动丢弃”三类字段
 
 ### 2.4 多来源重叠规则
 
@@ -291,6 +299,8 @@
 
 1. `single_point -> daily`
 2. `quarterly -> monthly`
+3. 传了 `--dataset` 时，当前默认不会再清空整个 `output_resolution_organized/`
+4. 如果确实要全清，需显式传入 `--clear-all`
 
 ### s3_collect_qc_stations.py
 
@@ -308,6 +318,7 @@
 
 1. 当前脚本会先对扫描结果排序，以提高重跑时的稳定性
 2. 当前默认会排除 `climatology`，使其不进入 basin tracing 和 basin merge
+3. RiverSed 在 basin 主线下只保留 `lon/lat + 基本站点标识`，不再输出 NHDPlus 流域元数据，也不再把其 `upstream_area` 作为 `reported_area`
 
 ### s4_basin_trace_watch.py
 
@@ -328,6 +339,7 @@
 2. 它不是最终 `cluster` 级流域单元文件
 3. `s4_upstream_basins.csv` 现在会保留 `distance_m / match_quality / point_in_local / point_in_basin / basin_status / basin_flag`
 4. `s4_reported_area_check.csv` 用于单独检查 reported drainage area 与 tracer 结果的一致性
+5. RiverSed 在这一步只按坐标匹配 MERIT，不再使用其源产品自带的 `upstream_area` 或 NHDPlus reach/basin 信息
 
 ### s5_basin_merge.py
 
@@ -371,6 +383,7 @@
 1. 按 `daily / monthly / annual` 分别导出一个 `station × time` 矩阵 `nc`
 2. 在每个分辨率内部仍沿用 `s6_basin_merge_to_nc.py` 的质量排序合并规则
 3. 更适合直接查看某个时间分辨率下的二维数据矩阵
+4. 现在会额外写出 `selected_source_station_uid`，让只拿 matrix `nc` 也能直接追溯到 source station
 
 输出目录：
 
@@ -400,6 +413,13 @@
 输出：
 
 1. `scripts_basin_test/output/s6_climatology_only.nc`
+
+说明：
+
+1. 当前会保留 `station_uid` 和 `source_station_path` 作为 climatology 文件级 provenance
+2. 当前会额外写出站点级 `temporal_span`
+3. `temporal_span` 仅用于解释单个 climatology 站点对应的时间覆盖范围
+4. `temporal_span` 不是发布 contract 必填项，也不会触发 `s8` 的硬校验失败
 
 ### s7_export_cluster_shp.py
 
@@ -469,6 +489,7 @@
 6. 生成 `source_dataset_catalog.csv`
 7. 生成多图层 `GPKG` 空间 sidecar
 8. 生成发布版 `README.md` 和验证报告
+9. 发布前会额外检查 `master / matrix / climatology / catalog` 的 `resolution` 覆盖面、`record_count`、`time range` 是否一致；若发现 mixed-run 会直接报错并阻止发布
 
 输出目录：
 
@@ -581,8 +602,8 @@
 1. 先按模型输出时间分辨率选择对应的 matrix `nc`
 2. 先把 `station_catalog.csv` 过滤到对应 `resolution`
 3. 再用过滤后的 `lat/lon` 找最近的 `cluster_uid`
-4. 抽出参考时间序列并与模型结果对齐
-5. 如果需要追溯来源，再去 `sed_reference_master.nc`
+4. 抽出参考时间序列并与模型结果对齐；如需先看 cell 级 provenance，可直接读 matrix 里的 `selected_source_station_uid`
+5. 如果需要完整记录级 provenance，再去 `sed_reference_master.nc`
 6. 继续通过 `source_station_catalog.csv` 找到同一 `resolution` 下的原始站点和原始路径
 
 人工检查相关产物是：

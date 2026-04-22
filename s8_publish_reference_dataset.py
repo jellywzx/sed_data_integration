@@ -110,6 +110,10 @@ CORE_FILE_SPECS = (
     ("annual", RELEASE_MATRIX_ANNUAL_NC, "Annual station x time matrix for validation"),
     ("climatology", RELEASE_CLIMATOLOGY_NC, "Standalone climatology reference dataset"),
 )
+FULL_CHAIN_RERUN_HINT = (
+    "Likely mixed-run outputs from different pipeline executions. "
+    "Please rerun the full chain: s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8 before publishing."
+)
 
 
 def _clean_text(value):
@@ -295,6 +299,202 @@ def _find_master_record_index(master_ds, station_index, resolution_code, target_
     return None
 
 
+def _empty_core_stats():
+    return {"record_count": 0, "time_start": "", "time_end": ""}
+
+
+def _format_timestamp_text(value):
+    text = _clean_text(value)
+    if not text:
+        return ""
+    try:
+        return pd.Timestamp(text).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return text
+
+
+def _format_num_time(value, units, calendar):
+    try:
+        if value is None or not np.isfinite(float(value)):
+            return ""
+    except Exception:
+        return ""
+    try:
+        decoded = nc4.num2date(
+            float(value),
+            units,
+            calendar=calendar,
+            only_use_cftime_datetimes=False,
+        )
+    except TypeError:
+        decoded = nc4.num2date(
+            float(value),
+            units,
+            calendar=calendar,
+        )
+    return _format_timestamp_text(decoded)
+
+
+def _format_stats(stats):
+    return "records={record_count}, time_start={time_start}, time_end={time_end}".format(
+        record_count=int(stats.get("record_count", 0) or 0),
+        time_start=stats.get("time_start", "") or "(empty)",
+        time_end=stats.get("time_end", "") or "(empty)",
+    )
+
+
+def _format_coverage(summary):
+    coverage = [
+        resolution
+        for resolution in CLUSTER_RESOLUTIONS
+        if int(summary.get(resolution, {}).get("record_count", 0) or 0) > 0
+    ]
+    return "|".join(coverage) if coverage else "(none)"
+
+
+def _summarize_master_core(master_ds):
+    summary = {resolution: _empty_core_stats() for resolution in CLUSTER_RESOLUTIONS}
+    n_records = len(master_ds.dimensions.get("n_records", []))
+    if n_records <= 0 or "resolution" not in master_ds.variables or "time" not in master_ds.variables:
+        return summary
+
+    resolution_codes = _read_int_array(master_ds, "resolution", fill_value=-1, size=n_records)
+    time_nums = _read_float_array(master_ds, "time", size=n_records)
+    time_var = master_ds.variables["time"]
+    units = getattr(time_var, "units", "days since 1970-01-01")
+    calendar = getattr(time_var, "calendar", "gregorian")
+
+    for resolution in CLUSTER_RESOLUTIONS:
+        resolution_code = RESOLUTION_NAME_TO_CODE[resolution]
+        mask = resolution_codes == int(resolution_code)
+        if not mask.any():
+            continue
+        valid_times = time_nums[mask]
+        valid_times = valid_times[np.isfinite(valid_times)]
+        summary[resolution] = {
+            "record_count": int(mask.sum()),
+            "time_start": _format_num_time(valid_times.min(), units, calendar) if len(valid_times) else "",
+            "time_end": _format_num_time(valid_times.max(), units, calendar) if len(valid_times) else "",
+        }
+    return summary
+
+
+def _summarize_matrix_core(matrix_paths):
+    summary = {resolution: _empty_core_stats() for resolution in CLUSTER_RESOLUTIONS}
+    for resolution in CLUSTER_RESOLUTIONS:
+        path = Path(matrix_paths.get(resolution, ""))
+        if not path.is_file():
+            continue
+        with nc4.Dataset(path, "r") as ds:
+            n_stations = len(ds.dimensions.get("n_stations", []))
+            valid_counts = _read_int_array(
+                ds,
+                "n_valid_time_steps",
+                fill_value=0,
+                size=n_stations,
+            )
+            time_var = ds.variables.get("time")
+            time_values = np.asarray(time_var[:], dtype=np.float64).reshape(-1) if time_var is not None else np.array([], dtype=np.float64)
+            summary[resolution] = {
+                "record_count": int(valid_counts.sum()),
+                "time_start": _format_num_time(
+                    time_values[0],
+                    getattr(time_var, "units", "days since 1970-01-01"),
+                    getattr(time_var, "calendar", "gregorian"),
+                ) if len(time_values) else "",
+                "time_end": _format_num_time(
+                    time_values[-1],
+                    getattr(time_var, "units", "days since 1970-01-01"),
+                    getattr(time_var, "calendar", "gregorian"),
+                ) if len(time_values) else "",
+            }
+    return summary
+
+
+def _summarize_cluster_station_catalog_core(cluster_station_catalog):
+    summary = {resolution: _empty_core_stats() for resolution in CLUSTER_RESOLUTIONS}
+    work = normalize_cluster_station_catalog(cluster_station_catalog)
+    for resolution in CLUSTER_RESOLUTIONS:
+        count_col = "{}_record_count".format(resolution)
+        start_col = "{}_time_start".format(resolution)
+        end_col = "{}_time_end".format(resolution)
+        count_values = pd.to_numeric(work[count_col], errors="coerce").fillna(0).astype(np.int64)
+        subset = work[count_values > 0].copy()
+        if len(subset) == 0:
+            continue
+        start_times = pd.to_datetime(subset[start_col], errors="coerce")
+        end_times = pd.to_datetime(subset[end_col], errors="coerce")
+        summary[resolution] = {
+            "record_count": int(count_values[count_values > 0].sum()),
+            "time_start": _format_timestamp_text(start_times.min()) if start_times.notna().any() else "",
+            "time_end": _format_timestamp_text(end_times.max()) if end_times.notna().any() else "",
+        }
+    return summary
+
+
+def _summarize_cluster_resolution_catalog_core(cluster_resolution_catalog):
+    summary = {resolution: _empty_core_stats() for resolution in CLUSTER_RESOLUTIONS}
+    work = normalize_cluster_resolution_catalog(cluster_resolution_catalog)
+    for resolution in CLUSTER_RESOLUTIONS:
+        subset = work[work["resolution"].astype(str).str.strip().eq(resolution)].copy()
+        if len(subset) == 0:
+            continue
+        start_times = pd.to_datetime(subset["time_start"], errors="coerce")
+        end_times = pd.to_datetime(subset["time_end"], errors="coerce")
+        summary[resolution] = {
+            "record_count": int(pd.to_numeric(subset["record_count"], errors="coerce").fillna(0).sum()),
+            "time_start": _format_timestamp_text(start_times.min()) if start_times.notna().any() else "",
+            "time_end": _format_timestamp_text(end_times.max()) if end_times.notna().any() else "",
+        }
+    return summary
+
+
+def _summarize_source_station_catalog_core(source_station_catalog):
+    summary = {resolution: _empty_core_stats() for resolution in CLUSTER_RESOLUTIONS}
+    work = normalize_source_station_resolution_catalog(source_station_catalog)
+    for resolution in CLUSTER_RESOLUTIONS:
+        subset = work[work["resolution"].astype(str).str.strip().eq(resolution)].copy()
+        if len(subset) == 0:
+            continue
+        start_times = pd.to_datetime(subset["time_start"], errors="coerce")
+        end_times = pd.to_datetime(subset["time_end"], errors="coerce")
+        summary[resolution] = {
+            "record_count": int(pd.to_numeric(subset["n_records"], errors="coerce").fillna(0).sum()),
+            "time_start": _format_timestamp_text(start_times.min()) if start_times.notna().any() else "",
+            "time_end": _format_timestamp_text(end_times.max()) if end_times.notna().any() else "",
+        }
+    return summary
+
+
+def _summarize_climatology_core(climatology_nc):
+    path = Path(climatology_nc)
+    summary = {"record_count": 0, "time_start": "", "time_end": "", "resolution_codes": []}
+    if not path.is_file():
+        return summary
+    with nc4.Dataset(path, "r") as ds:
+        n_records = len(ds.dimensions.get("n_records", []))
+        summary["record_count"] = int(n_records)
+        if "resolution" in ds.variables and n_records > 0:
+            resolution_codes = np.ma.asarray(ds.variables["resolution"][:]).filled(-1)
+            summary["resolution_codes"] = sorted(set(int(value) for value in np.asarray(resolution_codes).reshape(-1).tolist()))
+        if "time" in ds.variables and n_records > 0:
+            time_var = ds.variables["time"]
+            time_values = np.asarray(time_var[:], dtype=np.float64).reshape(-1)
+            finite = time_values[np.isfinite(time_values)]
+            if len(finite):
+                summary["time_start"] = _format_num_time(
+                    finite.min(),
+                    getattr(time_var, "units", "days since 1970-01-01"),
+                    getattr(time_var, "calendar", "gregorian"),
+                )
+                summary["time_end"] = _format_num_time(
+                    finite.max(),
+                    getattr(time_var, "units", "days since 1970-01-01"),
+                    getattr(time_var, "calendar", "gregorian"),
+                )
+    return summary
+
+
 def write_release_readme(out_path):
     content = """# Sediment Reference Dataset Release
 
@@ -303,9 +503,9 @@ This directory is the user-facing release layer of the sediment reference datase
 ## Core NetCDF products
 
 - `sed_reference_master.nc`: authoritative long-table archive with full provenance.
-- `sed_reference_timeseries_daily.nc`: daily `station x time` matrix for validation.
-- `sed_reference_timeseries_monthly.nc`: monthly `station x time` matrix for validation.
-- `sed_reference_timeseries_annual.nc`: annual `station x time` matrix for validation.
+- `sed_reference_timeseries_daily.nc`: daily `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
+- `sed_reference_timeseries_monthly.nc`: monthly `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
+- `sed_reference_timeseries_annual.nc`: annual `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
 - `sed_reference_climatology.nc`: standalone climatology dataset.
 
 ## Catalogs
@@ -325,9 +525,10 @@ This directory is the user-facing release layer of the sediment reference datase
 1. Open the matrix file that matches your model output resolution.
 2. Filter `station_catalog.csv` to that resolution, then use its `lat/lon` or the matching cluster layer in `sed_reference_cluster_points.gpkg` to find the nearest `cluster_uid`.
 3. Extract the observed time series and compare it with the model time series.
-4. If you need provenance, query `sed_reference_master.nc` with `cluster_uid + time + resolution`.
-5. Use `source_station_catalog.csv` to resolve `source_station_uid`, original station metadata, and original file path.
-6. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
+4. If you need quick cell-level provenance, read `selected_source_station_uid` directly from the matrix file.
+5. If you need full record-level provenance, query `sed_reference_master.nc` with `cluster_uid + time + resolution`.
+6. Use `source_station_catalog.csv` to resolve `source_station_uid`, original station metadata, and original file path.
+7. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
 
 ## Quick example
 
@@ -353,8 +554,10 @@ python3 example_reference_workflow.py \\
 
 - `cluster_uid + resolution` is the standard GIS join key for cluster points and basins.
 - `source_station_uid + resolution` is the standard GIS join key for source points.
+- `selected_source_station_uid` is the matrix-native provenance key for each station-time cell.
 - `station_uid` is the stable key inside the climatology product only.
 - The release does not automatically aggregate daily model output to monthly or annual resolution.
+- Release validation blocks mixed-run outputs whose master / matrix / climatology / catalog time coverage or resolution coverage are inconsistent.
 """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,17 +574,131 @@ def validate_release(
     source_station_catalog,
     out_csv,
 ):
+    if nc4 is None:
+        raise RuntimeError("netCDF4 is required to validate release consistency")
     rows = []
     cluster_station_catalog = normalize_cluster_station_catalog(cluster_station_catalog)
-    station_catalog = normalize_cluster_resolution_catalog(station_catalog)
+    cluster_resolution_catalog = normalize_cluster_resolution_catalog(station_catalog)
     source_station_catalog = normalize_source_station_resolution_catalog(source_station_catalog)
 
     cluster_uid_lookup = cluster_station_catalog.set_index("cluster_uid")["master_station_index"].to_dict()
     source_key_lookup = source_station_catalog.set_index(
         ["source_station_index", "resolution"]
     )["source_station_uid"].to_dict()
+    matrix_core_summary = _summarize_matrix_core(matrix_paths)
+    cluster_station_core_summary = _summarize_cluster_station_catalog_core(cluster_station_catalog)
+    cluster_resolution_core_summary = _summarize_cluster_resolution_catalog_core(cluster_resolution_catalog)
+    source_station_core_summary = _summarize_source_station_catalog_core(source_station_catalog)
+    climatology_summary = _summarize_climatology_core(climatology_nc)
 
     with nc4.Dataset(master_nc, "r") as master_ds:
+        master_core_summary = _summarize_master_core(master_ds)
+        core_summaries = {
+            "master": master_core_summary,
+            "matrix": matrix_core_summary,
+            "cluster_station_catalog": cluster_station_core_summary,
+            "cluster_resolution_catalog": cluster_resolution_core_summary,
+            "source_station_catalog": source_station_core_summary,
+        }
+        for label, summary in core_summaries.items():
+            rows.append(
+                {
+                    "check": "core_resolution_coverage_{}".format(label),
+                    "status": "pass",
+                    "details": _format_coverage(summary),
+                }
+            )
+
+        coverage_map = dict(
+            (label, tuple(res for res in CLUSTER_RESOLUTIONS if int(summary.get(res, {}).get("record_count", 0) or 0) > 0))
+            for label, summary in core_summaries.items()
+        )
+        unique_coverages = set(coverage_map.values())
+        if len(unique_coverages) > 1:
+            rows.append(
+                {
+                    "check": "core_resolution_coverage_consistency",
+                    "status": "fail",
+                    "details": "{} coverage mismatch: {}".format(
+                        FULL_CHAIN_RERUN_HINT,
+                        "; ".join(
+                            "{}={}".format(label, "|".join(values) if values else "(none)")
+                            for label, values in coverage_map.items()
+                        ),
+                    ),
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "check": "core_resolution_coverage_consistency",
+                    "status": "pass",
+                    "details": "all core products cover {}".format(
+                        "|".join(next(iter(unique_coverages))) if unique_coverages and next(iter(unique_coverages)) else "(none)"
+                    ),
+                }
+            )
+
+        for resolution in CLUSTER_RESOLUTIONS:
+            count_map = dict(
+                (label, int(summary.get(resolution, {}).get("record_count", 0) or 0))
+                for label, summary in core_summaries.items()
+            )
+            if len(set(count_map.values())) > 1:
+                rows.append(
+                    {
+                        "check": "core_record_count_{}".format(resolution),
+                        "status": "fail",
+                        "details": "{} count mismatch for {}: {}".format(
+                            FULL_CHAIN_RERUN_HINT,
+                            resolution,
+                            "; ".join("{}={}".format(label, value) for label, value in count_map.items()),
+                        ),
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "check": "core_record_count_{}".format(resolution),
+                        "status": "pass",
+                        "details": "{}={}".format(resolution, next(iter(set(count_map.values()))) if count_map else 0),
+                    }
+                )
+
+            active_stats = dict(
+                (label, summary.get(resolution, _empty_core_stats()))
+                for label, summary in core_summaries.items()
+                if int(summary.get(resolution, {}).get("record_count", 0) or 0) > 0
+            )
+            start_map = dict((label, stats.get("time_start", "")) for label, stats in active_stats.items())
+            end_map = dict((label, stats.get("time_end", "")) for label, stats in active_stats.items())
+            if active_stats and (len(set(start_map.values())) > 1 or len(set(end_map.values())) > 1):
+                rows.append(
+                    {
+                        "check": "core_time_range_{}".format(resolution),
+                        "status": "fail",
+                        "details": "{} time-range mismatch for {}: {}".format(
+                            FULL_CHAIN_RERUN_HINT,
+                            resolution,
+                            "; ".join(
+                                "{}=({})".format(label, _format_stats(stats))
+                                for label, stats in active_stats.items()
+                            ),
+                        ),
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "check": "core_time_range_{}".format(resolution),
+                        "status": "pass",
+                        "details": "; ".join(
+                            "{}=({})".format(label, _format_stats(stats))
+                            for label, stats in active_stats.items()
+                        ) if active_stats else "no records",
+                    }
+                )
+
         master_cluster_uids = _read_text_var(master_ds, "cluster_uid", size=len(master_ds.dimensions["n_stations"]))
         master_cluster_uid_set = set(master_cluster_uids)
         master_source_station_uids = _read_text_var(
@@ -406,7 +723,16 @@ def validate_release(
                 continue
 
             with nc4.Dataset(path, "r") as ds:
-                required = {"lat", "lon", "cluster_uid", "time", "SSC", "n_valid_time_steps"}
+                required = {
+                    "lat",
+                    "lon",
+                    "cluster_uid",
+                    "time",
+                    "SSC",
+                    "n_valid_time_steps",
+                    "selected_source_index",
+                    "selected_source_station_uid",
+                }
                 missing = sorted(required - set(ds.variables))
                 if missing:
                     rows.append(
@@ -438,7 +764,7 @@ def validate_release(
                     )
                     continue
 
-                release_subset = station_catalog[station_catalog["resolution"] == resolution].copy()
+                release_subset = cluster_resolution_catalog[cluster_resolution_catalog["resolution"] == resolution].copy()
                 release_subset = release_subset[np.isfinite(release_subset["lat"]) & np.isfinite(release_subset["lon"])].copy()
                 if len(release_subset) == 0:
                     rows.append(
@@ -604,6 +930,34 @@ def validate_release(
                 "check": "source_station_catalog_lookup",
                 "status": "pass" if source_station_ok else "fail",
                 "details": detail,
+            }
+        )
+
+    rows.append(
+        {
+            "check": "climatology_record_count",
+            "status": "pass" if int(climatology_summary.get("record_count", 0) or 0) > 0 else "fail",
+            "details": _format_stats(climatology_summary),
+        }
+    )
+    resolution_codes = climatology_summary.get("resolution_codes", [])
+    if resolution_codes and set(resolution_codes) != {RESOLUTION_NAME_TO_CODE["climatology"]}:
+        rows.append(
+            {
+                "check": "climatology_resolution_codes",
+                "status": "fail",
+                "details": "{} climatology file contains unexpected resolution codes: {}".format(
+                    FULL_CHAIN_RERUN_HINT,
+                    ",".join(str(code) for code in resolution_codes),
+                ),
+            }
+        )
+    else:
+        rows.append(
+            {
+                "check": "climatology_resolution_codes",
+                "status": "pass",
+                "details": ",".join(str(code) for code in resolution_codes) if resolution_codes else "(empty)",
             }
         )
 

@@ -4,7 +4,7 @@ s4：站点流域匹配脚本（并行版）
 
 流程：
   1. 读取 s3_collected_stations.csv（核心列：path, source, lat, lon, resolution；
-     可选列：reported_area 与 source_* 流域元数据）
+     可选列：reported_area）
   2. 以行号（0 起）作为 station_id
   3. 将站点按经度排序后分块，多进程并行追溯上游流域
      （按经度分块使同一 worker 内的站点集中在同一 pfaf 区，减少重复 I/O）
@@ -22,6 +22,11 @@ s4：站点流域匹配脚本（并行版）
   MERIT_DIR      — MERIT Hydro 数据集根目录
                    默认为 Output_r/../../MERIT_Hydro_v07_Basins_v01_bugfix1
                    （即与 sediment_wzx_1111 同级的目录）
+注意：
+  - GSED 在 basin 主线下会先利用 reach geometry 的端点候选推断
+    下游 MERIT reach，然后直接复用该 reach 追溯上游流域。
+  - RiverSed 在 basin 主线下只按 lon/lat 匹配 MERIT，不再使用其源产品内的
+    upstream_area，也不再保留 NHDPlus reach/basin 辅助字段。
 """
 
 import logging
@@ -38,7 +43,19 @@ from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
 from basin_policy import classify_basin_result
-from pipeline_paths import get_output_r_root, S3_COLLECTED_CSV, S4_UPSTREAM_CSV, S4_UPSTREAM_GPKG, S4_LOCAL_GPKG, S4_REPORTED_AREA_CHECK_CSV
+from gsed_reach_hint import (
+    load_gsed_reach_metadata,
+    normalize_gsed_rid,
+    resolve_gsed_anchor,
+)
+from pipeline_paths import (
+    S3_COLLECTED_CSV,
+    S4_LOCAL_GPKG,
+    S4_REPORTED_AREA_CHECK_CSV,
+    S4_UPSTREAM_CSV,
+    S4_UPSTREAM_GPKG,
+    get_output_r_root,
+)
 
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
@@ -49,6 +66,12 @@ MERIT_DIR  = Path(os.environ.get(
     "MERIT_DIR",
     str(OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1")
 ))
+GSED_SHP = Path(
+    os.environ.get(
+        "GSED_SHP",
+        str(OUTPUT_R_ROOT.parent / "Source" / "GSED" / "GSED" / "GSED_Reach.shp"),
+    )
+)
 S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
 OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
@@ -87,10 +110,6 @@ CSV_COLUMNS = [
     "source_station_name",
     "source_river_name",
     "source_station_id",
-    "source_comid",
-    "source_reach_code",
-    "source_vpu_id",
-    "source_rpu_id",
     "basin_id",
     "basin_area",
     "match_quality",
@@ -107,6 +126,33 @@ CSV_COLUMNS = [
     "n_upstream_reaches",
 ]
 CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
+
+
+def _has_valid_reach_info(reach_info):
+    """Return True when a reach-matching result contains a usable COMID."""
+    if not isinstance(reach_info, dict):
+        return False
+    comid = reach_info.get("COMID")
+    return comid is not None and not pd.isna(comid)
+
+
+def _compute_area_error(reported_area, uparea_merit):
+    """Recompute audit-only area_error from two drainage-area values."""
+    try:
+        reported_area = float(reported_area)
+        uparea_merit = float(uparea_merit)
+    except Exception:
+        return np.nan
+
+    if (
+        not np.isfinite(reported_area)
+        or not np.isfinite(uparea_merit)
+        or reported_area <= 0
+        or uparea_merit <= 0
+    ):
+        return np.nan
+
+    return float(np.log10(uparea_merit / reported_area))
 
 
 # ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
@@ -158,21 +204,49 @@ def _trace_chunk(args):
         station_id = int(station["station_id"])
         lon = float(station["lon"])
         lat = float(station["lat"])
+        source_name = station.get("source", "")
+        source_token = str(source_name).strip().lower()
         reported_area = station.get("reported_area")
         if pd.isna(reported_area):
             reported_area = None
 
-        # RiverSed 的 source_comid/reach_code/vpu_id/rpu_id 来自 NHDPlus，
-        # 当前 tracer 工作在 MERIT-Basins 标识体系下，因此这里先保留为
-        # 下游检查/人工审核的辅助上下文，不作为 MERIT reach 的硬约束。
-        basin_result = tracer.get_upstream_basin(
-            lon, lat, reported_area=reported_area
-        )
+        basin_result = None
+        if source_token == "gsed":
+            gsed_meta = station.get("gsed_meta")
+            if isinstance(gsed_meta, dict):
+                anchor_result = resolve_gsed_anchor(
+                    tracer,
+                    gsed_meta,
+                    allow_centroid_fallback=False,
+                )
+                reach_info = anchor_result.get("reach_info")
+                if _has_valid_reach_info(reach_info):
+                    anchor_lon = anchor_result.get("longitude")
+                    anchor_lat = anchor_result.get("latitude")
+                    basin_result = tracer.get_upstream_basin_from_reach(
+                        float(anchor_lon),
+                        float(anchor_lat),
+                        reach_info,
+                    )
+
+        if basin_result is None:
+            basin_result = tracer.get_upstream_basin(
+                lon, lat, reported_area=reported_area
+            )
+
+        if source_token == "gsed":
+            area_error = _compute_area_error(
+                reported_area,
+                basin_result.get("uparea_merit"),
+            )
+            if np.isfinite(area_error):
+                basin_result["area_error"] = area_error
+
         basin_status, basin_flag = classify_basin_result(
             basin_id=basin_result["basin_id"],
             match_quality=basin_result["match_quality"],
             distance_m=basin_result.get("distance", np.nan),
-            source_name=station.get("source", ""),
+            source_name=source_name,
             point_in_local=basin_result.get("point_in_local", False),
             point_in_basin=basin_result.get("point_in_basin", False),
         )
@@ -184,10 +258,6 @@ def _trace_chunk(args):
                 "source_station_name": station.get("source_station_name", ""),
                 "source_river_name": station.get("source_river_name", ""),
                 "source_station_id": station.get("source_station_id", ""),
-                "source_comid": station.get("source_comid", ""),
-                "source_reach_code": station.get("source_reach_code", ""),
-                "source_vpu_id": station.get("source_vpu_id", ""),
-                "source_rpu_id": station.get("source_rpu_id", ""),
                 "reported_area": reported_area,
                 "basin_id": basin_result["basin_id"],
                 "basin_area": basin_result["basin_area"],
@@ -224,10 +294,6 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "source_station_name": row.get("source_station_name", ""),
             "source_river_name": row.get("source_river_name", ""),
             "source_station_id": row.get("source_station_id", ""),
-            "source_comid": row.get("source_comid", ""),
-            "source_reach_code": row.get("source_reach_code", ""),
-            "source_vpu_id": row.get("source_vpu_id", ""),
-            "source_rpu_id": row.get("source_rpu_id", ""),
             "basin_id": row["basin_id"],
             "basin_area": row["basin_area"],
             "match_quality": row["match_quality"],
@@ -335,14 +401,15 @@ def main():
     else:
         stations_sorted["source"] = ""
 
+    # 即使误用了旧版 s3 CSV，也不要让 RiverSed 的 reported_area 进入 MERIT
+    # 匹配评分；RiverSed 在 basin 主线下始终只按坐标匹配。
+    riversed_mask = stations_sorted["source"].str.lower().eq("riversed")
+    stations_sorted.loc[riversed_mask, "reported_area"] = np.nan
+
     source_text_columns = {
         "station_name": "source_station_name",
         "river_name": "source_river_name",
         "source_station_id": "source_station_id",
-        "source_comid": "source_comid",
-        "source_reach_code": "source_reach_code",
-        "source_vpu_id": "source_vpu_id",
-        "source_rpu_id": "source_rpu_id",
     }
     for input_col, output_col in source_text_columns.items():
         if input_col in stations_sorted.columns:
@@ -355,6 +422,48 @@ def main():
         else:
             stations_sorted[output_col] = ""
 
+    stations_sorted["gsed_r_id"] = ""
+    gsed_mask = stations_sorted["source"].str.lower().eq("gsed")
+    gsed_metadata = {}
+    if gsed_mask.any():
+        gsed_candidate_ids = stations_sorted["source_station_id"].where(
+            stations_sorted["source_station_id"].ne(""),
+            stations_sorted["source_station_name"],
+        )
+        stations_sorted.loc[gsed_mask, "gsed_r_id"] = gsed_candidate_ids.loc[gsed_mask]
+        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].map(normalize_gsed_rid)
+        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].fillna("")
+        target_rids = [
+            rid
+            for rid in stations_sorted.loc[gsed_mask, "gsed_r_id"].tolist()
+            if rid
+        ]
+        if target_rids:
+            if GSED_SHP.is_file():
+                try:
+                    gsed_metadata = load_gsed_reach_metadata(
+                        GSED_SHP,
+                        target_rids=target_rids,
+                    )
+                    logger.info(
+                        "Loaded GSED reach hints for %d/%d pending reaches from %s",
+                        len(gsed_metadata),
+                        len(set(target_rids)),
+                        GSED_SHP,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to load GSED reach hints from %s; "
+                        "falling back to point-based matching for GSED.",
+                        GSED_SHP,
+                    )
+            else:
+                logger.warning(
+                    "GSED shapefile not found: %s; falling back to point-based "
+                    "matching for GSED.",
+                    GSED_SHP,
+                )
+
     record_columns = [
         "station_id",
         "lon",
@@ -364,12 +473,12 @@ def main():
         "source_station_name",
         "source_river_name",
         "source_station_id",
-        "source_comid",
-        "source_reach_code",
-        "source_vpu_id",
-        "source_rpu_id",
+        "gsed_r_id",
     ]
     station_records = stations_sorted[record_columns].to_dict(orient="records")
+    for station in station_records:
+        gsed_r_id = station.get("gsed_r_id", "")
+        station["gsed_meta"] = gsed_metadata.get(gsed_r_id) if gsed_r_id else None
 
     chunk_size = BATCH_SIZE
     chunks = [
@@ -462,7 +571,6 @@ def main():
         if n_with_area > 0:
             check_cols = ["station_id", "lon", "lat", "reported_area",
                         "source_station_name", "source_river_name", "source_station_id",
-                        "source_comid", "source_reach_code", "source_vpu_id", "source_rpu_id",
                         "uparea_merit", "area_error", "match_quality",
                         "basin_id", "pfaf_code", "method", "distance_m", "point_in_local",
                         "point_in_basin", "basin_status", "basin_flag"]

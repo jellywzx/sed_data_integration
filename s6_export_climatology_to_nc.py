@@ -13,7 +13,9 @@ Design:
   - each climatology file is treated as one source station;
   - no basin screening, no cluster_id, no basin polygon linkage;
   - provenance is preserved through station_uid, source name, native station id
-    and source file path.
+    and source file path;
+  - station-level `temporal_span` is preserved as an explanatory field and is
+    not part of the release hard contract.
 """
 
 import argparse
@@ -63,6 +65,7 @@ _STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
 _SOURCE_NAME_KEYS = ["data_source_name", "Data_Source_Name"]
 _INST_KEYS = ["creator_institution", "contributor_institution", "institution"]
 _URL_KEYS = ["source_data_link", "sediment_data_source", "source_url"]
+_TEMPORAL_SPAN_KEYS = ["temporal_span", "Temporal_Span", "measurement_period"]
 
 
 def _safe_scalar(var):
@@ -91,6 +94,33 @@ def _decode_text(value, limit=512):
         return ""
     text = str(value).strip()
     return text[:limit]
+
+
+def _format_timestamp_text(value):
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return ""
+    if pd.isna(ts):
+        return ""
+    if ts.hour == 0 and ts.minute == 0 and ts.second == 0 and ts.microsecond == 0:
+        return ts.strftime("%Y-%m-%d")
+    return ts.isoformat()
+
+
+def _build_temporal_span_from_dates(dates):
+    try:
+        times = pd.to_datetime(list(dates), errors="coerce")
+    except Exception:
+        return ""
+    series = pd.Series(times).dropna()
+    if len(series) == 0:
+        return ""
+    start_text = _format_timestamp_text(series.min())
+    end_text = _format_timestamp_text(series.max())
+    if start_text and end_text and start_text != end_text:
+        return "{} to {}".format(start_text, end_text)
+    return start_text or end_text
 
 
 def _get_var(nc, names, default=np.nan):
@@ -133,11 +163,11 @@ def get_source_from_organized_path(path, root_dir):
 def read_station_meta(path):
     try:
         with nc4.Dataset(path, "r") as ds:
-            def _get_attr(keys):
+            def _get_attr(keys, limit=256):
                 for key in keys:
                     value = getattr(ds, key, None)
                     if value is not None and str(value).strip():
-                        return _decode_text(value, 256)
+                        return _decode_text(value, limit)
                 return ""
             lat_name = next((x for x in LAT_NAMES if x in ds.variables), None)
             lon_name = next((x for x in LON_NAMES if x in ds.variables), None)
@@ -149,6 +179,7 @@ def read_station_meta(path):
                 "station_name": _get_attr(_STATION_NAME_KEYS),
                 "river_name": _get_attr(_RIVER_NAME_KEYS),
                 "source_station_id": _get_attr(_STATION_ID_KEYS),
+                "temporal_span": _get_attr(_TEMPORAL_SPAN_KEYS, 128),
             }
     except Exception:
         return {
@@ -157,6 +188,7 @@ def read_station_meta(path):
             "station_name": "",
             "river_name": "",
             "source_station_id": "",
+            "temporal_span": "",
         }
 
 
@@ -272,6 +304,7 @@ def collect_climatology_files(input_dir):
         series = load_nc_series(path)
         if series is None or len(series) == 0:
             continue
+        temporal_span = station_meta["temporal_span"] or _build_temporal_span_from_dates(series["date"])
         rows.append(
             {
                 "station_uid": "CLM{:06d}".format(i),
@@ -282,6 +315,7 @@ def collect_climatology_files(input_dir):
                 "station_name": station_meta["station_name"],
                 "river_name": station_meta["river_name"],
                 "source_station_id": station_meta["source_station_id"],
+                "temporal_span": temporal_span,
                 "series": series,
             }
         )
@@ -334,6 +368,7 @@ def main():
     station_name_arr = [""] * n_stations
     river_name_arr = [""] * n_stations
     native_id_arr = [""] * n_stations
+    temporal_span_arr = [""] * n_stations
     path_arr = [""] * n_stations
     source_index_arr = np.full(n_stations, -1, dtype=np.int32)
 
@@ -342,6 +377,7 @@ def main():
         station_name_arr[idx] = _decode_text(row["station_name"], 256)
         river_name_arr[idx] = _decode_text(row["river_name"], 256)
         native_id_arr[idx] = _decode_text(row["source_station_id"], 256)
+        temporal_span_arr[idx] = _decode_text(row["temporal_span"], 128)
         path_arr[idx] = row["path"]
         source_index_arr[idx] = source_to_idx[row["source"]]
         if row["lat"] is not None:
@@ -416,6 +452,15 @@ def main():
         sid_v = nc.createVariable("source_station_id", str, ("n_stations",))
         sid_v.long_name = "native station id from source file"
         sid_v[:] = np.array(native_id_arr, dtype=object)
+
+        span_v = nc.createVariable("temporal_span", str, ("n_stations",))
+        span_v.long_name = "station-level temporal coverage summary"
+        span_v.comment = (
+            "Explanatory field copied from source climatology metadata when available; "
+            "otherwise derived from the organized source file time axis. "
+            "Not a required release-contract field."
+        )
+        span_v[:] = np.array(temporal_span_arr, dtype=object)
 
         path_v = nc.createVariable("source_station_path", str, ("n_stations",))
         path_v.long_name = "absolute path of the organized climatology nc"

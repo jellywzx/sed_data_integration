@@ -22,6 +22,9 @@
   python scripts/s2_reorganize_qc_by_resolution.py
   python scripts/s2_reorganize_qc_by_resolution.py --out-dir my_reorganized
   python scripts/s2_reorganize_qc_by_resolution.py -j 16   # 16 线程并行复制
+  python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe
+  python scripts/s2_reorganize_qc_by_resolution.py --dataset GloRiSe GloRiSe/SS
+  python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe --clear-all
 
 输入（默认）：
   - scripts/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV）
@@ -93,6 +96,65 @@ def get_source_from_path(path: str, root_dir: Path) -> str:
 def safe_fname_part(s: str) -> str:
     """文件名安全：只保留字母数字下划线横线。"""
     return re.sub(r"[^\w\-]", "_", str(s)).strip("_") or "unknown"
+
+
+def normalize_dataset_selector(value: str) -> str:
+    """标准化 --dataset 传入值，兼容大小写、逗号和简单空白差异。"""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    text = re.sub(r"\s*/\s*", "/", text)
+    text = re.sub(r"\s+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip(" _/").lower()
+
+
+def split_dataset_selectors(values) -> set:
+    """解析 --dataset 参数，支持空格分隔或逗号分隔多个数据集。"""
+    keep = set()
+    for raw in values or []:
+        for piece in str(raw).split(","):
+            norm = normalize_dataset_selector(piece)
+            if norm:
+                keep.add(norm)
+    return keep
+
+
+def get_dataset_parts_from_path(path: str, root_dir: Path):
+    """提取相对 ROOT_DIR 的数据集层级（跳过最前面的分辨率目录）。"""
+    try:
+        p = Path(path).resolve()
+        root = root_dir.resolve()
+        rel = p.relative_to(root)
+        parts = rel.parts
+        if "qc" in parts:
+            before = parts[: parts.index("qc")]
+        else:
+            before = parts[:-1]
+        if len(before) >= 2:
+            return tuple(str(x) for x in before[1:])
+        if len(before) == 1:
+            return (str(before[0]),)
+    except Exception:
+        pass
+    return tuple()
+
+
+def get_dataset_filter_aliases(path: str, root_dir: Path) -> set:
+    """生成可用于 --dataset 匹配的别名。"""
+    aliases = set()
+    source = get_source_from_path(path, root_dir)
+    if source:
+        aliases.add(normalize_dataset_selector(source))
+
+    dataset_parts = get_dataset_parts_from_path(path, root_dir)
+    if dataset_parts:
+        aliases.add(normalize_dataset_selector(dataset_parts[0]))
+        aliases.add(normalize_dataset_selector("/".join(dataset_parts)))
+        aliases.add(normalize_dataset_selector("_".join(dataset_parts)))
+
+    return {x for x in aliases if x}
 
 
 def resolution_from_semantics(temporal_semantics: str) -> str:
@@ -233,6 +295,25 @@ def export_other_resolution_reports(other_df: pd.DataFrame, root_dir: Path, summ
     print(f"  details: {details_path}")
 
 
+def clear_output_resolution_dirs(out_base: Path):
+    """清空 s2 输出目录下的已有内容，避免残留旧文件影响重跑。"""
+    cleared = []
+    for sub in RESOLUTION_DIRS + LEGACY_RESOLUTION_DIRS:
+        d = out_base / sub
+        if not d.exists():
+            continue
+        for child in d.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            except FileNotFoundError:
+                continue
+        cleared.append(d)
+    return cleared
+
+
 _LOG_TEE_ENABLED = False
 
 
@@ -253,6 +334,8 @@ def _enable_script_logging():
     log_fp = open(log_path, "w", encoding="utf-8")
     log_fp.write("\n===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
     log_fp.flush()
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
 
     class _TeeStream:
         def __init__(self, stream, log_file):
@@ -261,16 +344,32 @@ def _enable_script_logging():
 
         def write(self, data):
             self._stream.write(data)
-            self._log_file.write(data)
-            self._log_file.flush()
+            try:
+                self._log_file.write(data)
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
 
         def flush(self):
             self._stream.flush()
-            self._log_file.flush()
+            try:
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
+
+    def _close_log_file():
+        if sys.stdout is not orig_stdout:
+            sys.stdout = orig_stdout
+        if sys.stderr is not orig_stderr:
+            sys.stderr = orig_stderr
+        try:
+            log_fp.close()
+        except (ValueError, OSError):
+            pass
 
     sys.stdout = _TeeStream(sys.stdout, log_fp)
     sys.stderr = _TeeStream(sys.stderr, log_fp)
-    atexit.register(log_fp.close)
+    atexit.register(_close_log_file)
     _LOG_TEE_ENABLED = True
 
 
@@ -279,7 +378,27 @@ def main():
     ap = argparse.ArgumentParser(description="按时间分辨率校验结果将 qc 下 nc 复制到新目录（数据源_分辨率_原名）")
     ap.add_argument("--out-dir", "-o", default=OUT_DIR, help=f"新目录名（相对 Output_r），默认 {OUT_DIR}")
     ap.add_argument("--verify-csv", default=VERIFY_CSV, help=f"校验结果 CSV 路径，默认 {VERIFY_CSV}")
-    ap.add_argument("--clear", action="store_true", help="复制前清空输出目录下各时间语义目录，避免残留旧分类文件")
+    ap.add_argument(
+        "--dataset",
+        nargs="+",
+        help="只处理指定数据集，可传多个；支持 source、顶层目录名、GloRiSe/SS，也支持逗号分隔",
+    )
+    ap.set_defaults(clear_mode="auto")
+    ap.add_argument(
+        "--clear-all",
+        "--clear",
+        dest="clear_mode",
+        action="store_const",
+        const="all",
+        help="复制前清空整个输出目录下各时间语义目录。危险操作；在 --dataset 模式下也会生效。",
+    )
+    ap.add_argument(
+        "--no-clear",
+        dest="clear_mode",
+        action="store_const",
+        const="none",
+        help="跳过预清空，保留输出目录中已有文件。",
+    )
     ap.add_argument(
         "--workers",
         "-j",
@@ -302,24 +421,6 @@ def main():
         print(f"错误：未找到校验结果 {verify_path}，请先运行 s1_verify_time_resolution.py", file=sys.stderr)
         sys.exit(1)
 
-    out_base = root_dir / args.out_dir
-    for sub in RESOLUTION_DIRS:
-        (out_base / sub).mkdir(parents=True, exist_ok=True)
-    for legacy_sub in LEGACY_RESOLUTION_DIRS:
-        legacy_dir = out_base / legacy_sub
-        if legacy_dir.exists():
-            legacy_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.clear:
-        for sub in RESOLUTION_DIRS + LEGACY_RESOLUTION_DIRS:
-            d = out_base / sub
-            if not d.exists():
-                continue
-            for f in d.iterdir():
-                if f.is_file():
-                    f.unlink()
-            print(f"已清空: {d}")
-
     df = pd.read_csv(verify_path)
     for col in ("path", "detected_frequency"):
         if col not in df.columns:
@@ -334,6 +435,37 @@ def main():
         return "qc" in parts
 
     df = df[df["path"].apply(is_qc_path)].copy()
+    df["source"] = df["path"].apply(lambda p: get_source_from_path(p, root_dir))
+
+    if args.dataset:
+        keep = split_dataset_selectors(args.dataset)
+        if not keep:
+            print("错误：--dataset 未解析出有效的数据集名称。", file=sys.stderr)
+            sys.exit(1)
+
+        dataset_aliases = df["path"].apply(lambda p: get_dataset_filter_aliases(p, root_dir))
+        mask = dataset_aliases.apply(lambda aliases: bool(aliases & keep))
+        df = df[mask].copy()
+
+        print("按数据集筛选：{}".format(", ".join(sorted(keep))))
+        print(f"命中的 qc 文件数：{len(df)}")
+
+        if len(df) == 0:
+            available_aliases = sorted(alias for alias in dataset_aliases.explode().dropna().astype(str).unique())
+            preview = ", ".join(available_aliases[:20]) if available_aliases else "(无可用数据集)"
+            print(
+                "错误：--dataset 未匹配到任何 qc 文件。可尝试传入顶层目录名、source，或类似 GloRiSe/SS 的写法。",
+                file=sys.stderr,
+            )
+            print(f"可用筛选名示例：{preview}", file=sys.stderr)
+            sys.exit(1)
+
+        matched_sources = sorted(df["source"].dropna().astype(str).unique())
+        preview = ", ".join(matched_sources[:20])
+        print(f"命中的 source：{preview}")
+        if len(matched_sources) > 20:
+            print(f"  ... 共 {len(matched_sources)} 个 source")
+
     if "temporal_semantics" in df.columns:
         df["resolution_dir"] = df["temporal_semantics"].apply(resolution_from_semantics)
     else:
@@ -358,7 +490,39 @@ def main():
     if n_irregular_to_daily > 0:
         print(f"irregular 二次判定改归 daily: {n_irregular_to_daily} 个文件")
 
-    df["source"] = df["path"].apply(lambda p: get_source_from_path(p, root_dir))
+    out_base = root_dir / args.out_dir
+    for sub in RESOLUTION_DIRS:
+        (out_base / sub).mkdir(parents=True, exist_ok=True)
+    for legacy_sub in LEGACY_RESOLUTION_DIRS:
+        legacy_dir = out_base / legacy_sub
+        if legacy_dir.exists():
+            legacy_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_mode = bool(args.dataset)
+    if args.clear_mode == "all":
+        should_clear = True
+    elif args.clear_mode == "none":
+        should_clear = False
+    else:
+        should_clear = not dataset_mode
+
+    if dataset_mode and args.clear_mode == "auto":
+        print("检测到 --dataset：默认跳过预清空输出目录；如确实需要全量清空，请显式传入 --clear-all。")
+
+    if should_clear:
+        cleared_dirs = clear_output_resolution_dirs(out_base)
+        if cleared_dirs:
+            print("运行前已清空输出目录：")
+            for d in cleared_dirs:
+                print(f"  {d}")
+        else:
+            print("运行前清空输出目录：未发现可清理内容")
+    else:
+        if args.clear_mode == "none":
+            print("已跳过预清空输出目录（--no-clear）")
+        else:
+            print("已跳过预清空输出目录（auto 模式）")
+
     df["stem"] = df["path"].apply(lambda p: Path(p).stem)
     df["safe_source"] = df["source"].apply(safe_fname_part)
     df["safe_stem"] = df["stem"].apply(safe_fname_part)

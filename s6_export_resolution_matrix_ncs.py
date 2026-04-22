@@ -16,7 +16,9 @@ Design:
     (cluster_id, resolution);
   - write one file per resolution;
   - store Q / SSC / SSL and flags as 2D (n_stations, n_time) matrices;
-  - preserve cluster-level basin metadata and a compact source lookup table.
+  - preserve cluster-level basin metadata and a compact source lookup table;
+  - expose `selected_source_station_uid` so each matrix cell can be traced back
+    to one source station without opening master.nc.
 """
 
 import argparse
@@ -42,6 +44,8 @@ from s6_basin_merge_to_nc import (
     FILL,
     HAS_NC,
     RESOLUTION_CODES,
+    _build_source_station_key,
+    _summarize_unit_issues,
     _read_source_meta_from_nc,
     _read_station_meta_from_nc,
     build_cluster_series,
@@ -244,7 +248,44 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
     }
 
 
-def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup, series_results):
+def _build_source_station_uid_lookup(stations_all):
+    work = stations_all.copy()
+    for col in ("station_name", "river_name", "source_station_id"):
+        if col not in work.columns:
+            work[col] = ""
+        work[col] = work[col].fillna("").astype(str)
+
+    work = work[work["resolution_norm"].astype(str).str.strip().ne("climatology")].copy()
+    key_to_index = {}
+    row_to_source_station_index = {}
+
+    for row in work.itertuples(index=False):
+        row_dict = {
+            "path": getattr(row, "path", ""),
+            "source": getattr(row, "source", ""),
+            "cluster_id": getattr(row, "cluster_id", -1),
+            "lat": getattr(row, "lat", np.nan),
+            "lon": getattr(row, "lon", np.nan),
+            "resolution": getattr(row, "resolution", "other"),
+            "station_name": getattr(row, "station_name", ""),
+            "river_name": getattr(row, "river_name", ""),
+            "source_station_id": getattr(row, "source_station_id", ""),
+        }
+        key = _build_source_station_key(row_dict)
+        source_station_index = key_to_index.get(key)
+        if source_station_index is None:
+            source_station_index = len(key_to_index)
+            key_to_index[key] = source_station_index
+        row_to_source_station_index[int(getattr(row, "_input_row_index"))] = int(source_station_index)
+
+    index_to_uid = {
+        int(source_station_index): "SRC{:06d}".format(int(source_station_index))
+        for source_station_index in range(len(key_to_index))
+    }
+    return row_to_source_station_index, index_to_uid
+
+
+def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup, series_results, source_station_uid_lookup):
     all_dates = sorted(
         {
             pd.Timestamp(date).date()
@@ -415,13 +456,32 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         src_v = nc.createVariable("selected_source_index", "i4", ("n_stations", "time"), fill_value=-1, zlib=True, complevel=4, chunksizes=chunks)
         src_v.long_name = "0-based index into n_sources dimension for the chosen source"
 
+        ssuid_v = nc.createVariable("selected_source_station_uid", str, ("n_stations", "time"))
+        ssuid_v.long_name = "stable source-station identifier for the chosen record"
+        ssuid_v.comment = (
+            "format SRC######; cell-level provenance key for the selected source station. "
+            "Allows matrix-only users to trace each exported value back to one source station "
+            "without consulting master.nc."
+        )
+
         count_v = nc.createVariable("n_valid_time_steps", "i4", ("n_stations",), zlib=True, complevel=4)
         count_v.long_name = "number of time steps with at least one non-missing value"
         valid_counts = np.zeros(n_stations, dtype=np.int32)
 
         for station_idx, cid in enumerate(cluster_ids):
             result = series_results[cid]
-            dates_arr, q_arr, ssc_arr, ssl_arr, q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, source_arr, _ = result
+            (
+                dates_arr,
+                q_arr,
+                ssc_arr,
+                ssl_arr,
+                q_flag_arr,
+                ssc_flag_arr,
+                ssl_flag_arr,
+                is_overlap_arr,
+                source_arr,
+                source_station_idx_arr,
+            ) = result
 
             q_row = np.full(n_time, FILL, dtype=np.float32)
             ssc_row = np.full(n_time, FILL, dtype=np.float32)
@@ -431,6 +491,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             sslf_row = np.full(n_time, 9, dtype=np.int8)
             ov_row = np.zeros(n_time, dtype=np.int8)
             src_row = np.full(n_time, -1, dtype=np.int32)
+            ssuid_row = np.full(n_time, "", dtype=object)
 
             for i, date in enumerate(pd.to_datetime(dates_arr).date):
                 col = date_to_idx[date]
@@ -443,6 +504,9 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                 ov_row[col] = is_overlap_arr[i]
                 source_name = str(source_arr[i] or "")
                 src_row[col] = source_lookup["to_idx"].get(source_name, -1)
+                source_station_index = int(source_station_idx_arr[i]) if np.isfinite(source_station_idx_arr[i]) else -1
+                if source_station_index >= 0:
+                    ssuid_row[col] = source_station_uid_lookup.get(source_station_index, "")
 
             valid_counts[station_idx] = int(
                 np.count_nonzero((q_row != FILL) | (ssc_row != FILL) | (ssl_row != FILL))
@@ -455,6 +519,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             sslf_v[station_idx, :] = sslf_row
             ov_v[station_idx, :] = ov_row
             src_v[station_idx, :] = src_row
+            ssuid_v[station_idx, :] = np.asarray(ssuid_row, dtype=object)
 
         count_v[:] = valid_counts
 
@@ -471,6 +536,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nc.time_type = resolution
         nc.time_type_code = str(RESOLUTION_CODES.get(resolution, RESOLUTION_CODES["other"]))
         nc.matrix_layout = "rows are stations (clusters), columns are time steps shared within one resolution"
+        nc.provenance_key = "selected_source_station_uid"
         nc.n_clusters = str(n_stations)
         nc.n_time_steps = str(n_time)
 
@@ -480,11 +546,12 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
 def _collect_resolution_series(resolution, resolution_df, workers):
     tasks = []
     for cid, group in resolution_df.groupby("cluster_id", sort=True):
-        recs = list(zip(group["source"], group["path"], group["row_uid"]))
+        recs = list(zip(group["source"], group["path"], group["source_station_global_index"]))
         tasks.append((int(cid), resolution, recs))
 
     series_results = {}
     quality_messages = 0
+    unit_issue_rows = []
     use_parallel = workers > 1 and len(tasks) > 1
 
     if use_parallel:
@@ -494,6 +561,10 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                 for future in as_completed(futures):
                     cid, _, result = future.result()
                     if result is not None:
+                        if len(result) == 2 and result[0] is None:
+                            unit_issue_rows.extend(result[1])
+                            pbar.update(1)
+                            continue
                         (
                             dates_arr,
                             q_arr,
@@ -507,6 +578,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                             source_station_idx_arr,
                             quality_rows,
                             quality_log,
+                            unit_issues,
                         ) = result
                         series_results[cid] = (
                             dates_arr,
@@ -520,6 +592,8 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                             source_arr,
                             source_station_idx_arr,
                         )
+                        if unit_issues:
+                            unit_issue_rows.extend(unit_issues)
                         if quality_log:
                             quality_messages += 1
                             tqdm.write(quality_log)
@@ -529,6 +603,10 @@ def _collect_resolution_series(resolution, resolution_df, workers):
             for task in tasks:
                 cid, _, result = _worker_build_cluster(task)
                 if result is not None:
+                    if len(result) == 2 and result[0] is None:
+                        unit_issue_rows.extend(result[1])
+                        pbar.update(1)
+                        continue
                     (
                         dates_arr,
                         q_arr,
@@ -542,6 +620,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                         source_station_idx_arr,
                         quality_rows,
                         quality_log,
+                        unit_issues,
                     ) = result
                     series_results[cid] = (
                         dates_arr,
@@ -555,12 +634,14 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                         source_arr,
                         source_station_idx_arr,
                     )
+                    if unit_issues:
+                        unit_issue_rows.extend(unit_issues)
                     if quality_log:
                         quality_messages += 1
                         tqdm.write(quality_log)
                 pbar.update(1)
 
-    return series_results, quality_messages
+    return series_results, quality_messages, unit_issue_rows
 
 
 def main():
@@ -604,8 +685,10 @@ def main():
             return 1
 
     stations_all = stations_all.copy()
+    stations_all["_input_row_index"] = np.arange(len(stations_all), dtype=np.int32)
     stations_all["resolution_norm"] = stations_all["resolution"].map(_normalize_resolution)
     stations_all["path"] = stations_all["path"].apply(lambda p: _resolve_station_path(p, organized_root))
+    row_to_source_station_index, source_station_uid_lookup = _build_source_station_uid_lookup(stations_all)
 
     stations = stations_all.copy()
     stations["resolution_norm"] = stations["resolution"].map(_normalize_resolution)
@@ -616,7 +699,9 @@ def main():
         print("Error: no valid rows remain after resolution/path filtering.")
         return 1
 
-    stations["row_uid"] = np.arange(len(stations), dtype=np.int32)
+    stations["source_station_global_index"] = stations["_input_row_index"].map(
+        lambda idx: row_to_source_station_index.get(int(idx), -1)
+    ).astype(np.int32)
     cluster_rep_lookup = _build_cluster_rep_lookup(stations_all)
 
     print("Input rows after filtering: {}".format(len(stations)))
@@ -635,8 +720,13 @@ def main():
             resolution_df["cluster_id"].nunique(),
         ))
         source_lookup = _build_source_lookup(resolution_df)
-        series_results, quality_messages = _collect_resolution_series(
+        series_results, quality_messages, unit_issue_rows = _collect_resolution_series(
             resolution, resolution_df, max(1, int(args.workers))
+        )
+        _summarize_unit_issues(
+            unit_issue_rows,
+            strict_mode=False,
+            label="{} matrix input unit validation".format(resolution),
         )
         if not series_results:
             print("Skip {}: no non-empty merged series".format(resolution))
@@ -645,7 +735,15 @@ def main():
         cluster_ids = sorted(series_results.keys())
         metadata = _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df)
         out_path = out_dir / "s6_basin_matrix_{}.nc".format(resolution)
-        _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup, series_results)
+        _write_matrix_nc(
+            out_path,
+            resolution,
+            cluster_ids,
+            metadata,
+            source_lookup,
+            series_results,
+            source_station_uid_lookup,
+        )
         total_points = sum(len(result[0]) for result in series_results.values())
         print(
             "Wrote {} | stations={} | time_steps={} | merged_points={} | quality_logs={}".format(

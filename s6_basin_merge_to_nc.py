@@ -17,6 +17,8 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
   - climatology 不进入 basin 主线；
   - 若输入 s5 中仍混入 climatology 行，本脚本默认会将其过滤掉；
   - climatology 应通过独立脚本单独导出为 climatology NC。
+  - 默认会校验输入 Q/SSC/SSL 的 units；若缺失或不在白名单中会记 warning，
+    `--strict-units` 下则直接报错停止写出。
 
 输出：
   - scripts_basin_test/output/s6_basin_merged_all.nc
@@ -43,7 +45,7 @@ import os
 import argparse
 import atexit
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -92,6 +94,18 @@ SSC_FLAG_NAMES= ["SSC_flag", "ssc_flag", "TSS_flag", "tss_flag"]
 SSL_FLAG_NAMES= ["SSL_flag", "ssl_flag", "sediment_load_flag"]
 FLAG_GOOD     = 0    # flag==0 表示好数据
 FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
+STRICT_UNIT_CHECK = False
+UNIT_SUMMARY_MAX_EXAMPLES = 12
+UNIT_WHITELISTS = {
+    "Q": frozenset(["m3 s-1", "m^3 s-1", "m3/s", "m^3/s"]),
+    "SSC": frozenset(["mg l-1", "mg/l"]),
+    "SSL": frozenset(["ton day-1", "ton/day-1", "ton/day", "ton d-1", "t day-1", "t/day"]),
+}
+UNIT_VAR_SPECS = (
+    ("Q", Q_NAMES),
+    ("SSC", SSC_NAMES),
+    ("SSL", SSL_NAMES),
+)
 QUALITY_ORDER_COLUMNS = [
     "cluster_id",
     "cluster_uid",
@@ -128,6 +142,15 @@ RESOLUTION_CODES = {
 _DEFAULT_WORKERS = 24
 
 _PROC = psutil.Process(os.getpid())
+
+
+class UnitValidationError(ValueError):
+    """Raised when a source variable unit fails validation in strict mode."""
+
+    def __init__(self, issues):
+        self.issues = list(issues or [])
+        message = self.issues[0]["message"] if self.issues else "unit validation failed"
+        super(UnitValidationError, self).__init__(message)
 
 
 # ── 内存工具 ───────────────────────────────────────────────────────────────
@@ -170,6 +193,7 @@ def _enable_script_logging():
     log_fp = open(log_path, "w", encoding="utf-8")
     log_fp.write("===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
     log_fp.flush()
+    orig_stdout = sys.stdout
 
     class _Tee:
         def __init__(self, stream, log_file):
@@ -190,8 +214,18 @@ def _enable_script_logging():
             except (ValueError, OSError):
                 pass
 
-    sys.stdout = _Tee(sys.stdout, log_fp)
-    atexit.register(log_fp.close)
+    def _close_log_file():
+        try:
+            sys.stdout = orig_stdout
+        except Exception:
+            pass
+        try:
+            log_fp.close()
+        except Exception:
+            pass
+
+    sys.stdout = _Tee(orig_stdout, log_fp)
+    atexit.register(_close_log_file)
     _LOG_TEE_ENABLED = True
 
 
@@ -287,6 +321,137 @@ def _clean_bool(value):
     if not text:
         return False
     return text in {"1", "true", "yes", "y", "t"}
+
+
+def _normalize_units_text(value):
+    text = _clean_text(value).lower()
+    if not text:
+        return ""
+    replacements = {
+        "㎥": "m3",
+        "m³": "m3",
+        "−": "-",
+        "–": "-",
+        "_": " ",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = text.replace("per", "/")
+    text = " ".join(text.split())
+    return text
+
+
+def _build_unit_issue(path, canonical_name, var_name, units_raw, accepted_units, reason, strict):
+    normalized_units = _normalize_units_text(units_raw)
+    shown_units = normalized_units or _clean_text(units_raw)
+    if not shown_units:
+        shown_units = "(missing)"
+    severity = "error" if strict else "warning"
+    message = (
+        "[units:{}] {} variable '{}' in {} uses units '{}' (accepted: {})".format(
+            severity,
+            canonical_name,
+            var_name,
+            path,
+            shown_units,
+            ", ".join(sorted(accepted_units)),
+        )
+    )
+    if reason:
+        message = "{} [{}]".format(message, reason)
+    return {
+        "path": str(path),
+        "canonical_name": str(canonical_name),
+        "var_name": str(var_name),
+        "units": shown_units,
+        "accepted_units": tuple(sorted(accepted_units)),
+        "reason": str(reason or ""),
+        "severity": severity,
+        "message": message,
+    }
+
+
+def _validate_present_variable_units(nc, path, strict=False):
+    issues = []
+    for canonical_name, aliases in UNIT_VAR_SPECS:
+        var_name = next((name for name in aliases if name in nc.variables), None)
+        if var_name is None:
+            continue
+        units_raw = getattr(nc.variables[var_name], "units", "")
+        normalized_units = _normalize_units_text(units_raw)
+        accepted_units = UNIT_WHITELISTS[canonical_name]
+        if not normalized_units:
+            issues.append(
+                _build_unit_issue(
+                    path=path,
+                    canonical_name=canonical_name,
+                    var_name=var_name,
+                    units_raw=units_raw,
+                    accepted_units=accepted_units,
+                    reason="missing_units_attr",
+                    strict=strict,
+                )
+            )
+            continue
+        if normalized_units not in accepted_units:
+            issues.append(
+                _build_unit_issue(
+                    path=path,
+                    canonical_name=canonical_name,
+                    var_name=var_name,
+                    units_raw=units_raw,
+                    accepted_units=accepted_units,
+                    reason="unit_not_in_whitelist",
+                    strict=strict,
+                )
+            )
+    if strict and issues:
+        raise UnitValidationError(issues)
+    return issues
+
+
+def _summarize_unit_issues(unit_issues, strict_mode=False, label="Unit validation"):
+    issues = list(unit_issues or [])
+    if not issues:
+        print("{}: no unit issues found.".format(label))
+        return
+
+    severity_counter = Counter(issue.get("severity", "warning") for issue in issues)
+    reason_counter = Counter(issue.get("reason", "") for issue in issues)
+    affected_files = len(set(issue.get("path", "") for issue in issues if issue.get("path", "")))
+    print(
+        "{}: {} issues across {} files (warnings={}, errors={})".format(
+            label,
+            len(issues),
+            affected_files,
+            severity_counter.get("warning", 0),
+            severity_counter.get("error", 0),
+        )
+    )
+    if reason_counter:
+        print("  issue types: {}".format(
+            ", ".join(
+                "{}={}".format(reason or "unknown", count)
+                for reason, count in reason_counter.most_common()
+            )
+        ))
+    seen = set()
+    shown = 0
+    for issue in issues:
+        message = issue.get("message", "")
+        if not message or message in seen:
+            continue
+        print("  {}".format(message))
+        seen.add(message)
+        shown += 1
+        if shown >= UNIT_SUMMARY_MAX_EXAMPLES:
+            break
+    if len(seen) < len({issue.get("message", "") for issue in issues if issue.get("message", "")}):
+        print("  ... additional unit issues omitted from console summary; see script log for full details.")
+    if strict_mode and severity_counter.get("error", 0) > 0:
+        print(
+            "  strict unit validation is enabled; rerun after fixing source units or disable --strict-units for diagnostics only."
+        )
 
 
 def _build_source_station_key(row):
@@ -388,12 +553,17 @@ def _write_quality_order_csv(rows, out_path, cluster_to_idx, source_station_uids
 def load_nc_series(path):
     """从 NC 读取时间序列，返回 DataFrame：date, Q, SSC, SSL, Q_flag, SSC_flag, SSL_flag。"""
     if not HAS_NC:
-        return None
+        return None, []
     try:
         with nc4.Dataset(path, "r") as nc:
+            unit_issues = _validate_present_variable_units(
+                nc,
+                path=path,
+                strict=STRICT_UNIT_CHECK,
+            )
             time_var = next((x for x in TIME_NAMES if x in nc.variables), None)
             if time_var is None:
-                return None
+                return None, unit_issues
             t = nc.variables[time_var]
             t_vals   = np.asarray(t[:]).flatten()
             units    = getattr(t, "units",    "days since 1970-01-01")
@@ -430,7 +600,7 @@ def load_nc_series(path):
             ssl = _get_var(nc, SSL_NAMES)
             n   = len(dates)
             if n == 0:
-                return None
+                return None, unit_issues
 
             def pad(a, size):
                 a = np.asarray(a).flatten()
@@ -455,9 +625,11 @@ def load_nc_series(path):
             for col in ["Q", "SSC", "SSL"]:
                 df.loc[df[col] == FILL,    col] = np.nan
                 df.loc[df[col] == -9999.0, col] = np.nan
-            return df
+            return df, unit_issues
+    except UnitValidationError as exc:
+        return None, list(exc.issues)
     except Exception:
-        return None
+        return None, []
 
 
 # ── 时间序列构建（worker 函数，运行在子进程）─────────────────────────────────
@@ -478,8 +650,11 @@ def build_cluster_series(cid, resolution, recs):
     """
     scored = []   # list of metadata dict with df
     all_dates = set()
+    unit_issues = []
     for source, path, source_station_index in recs:
-        df = load_nc_series(path)
+        df, file_unit_issues = load_nc_series(path)
+        if file_unit_issues:
+            unit_issues.extend(file_unit_issues)
         if df is not None and len(df) > 0:
             metrics = compute_quality_metrics(df)
             df["_source"] = source
@@ -499,7 +674,7 @@ def build_cluster_series(cid, resolution, recs):
             )
             all_dates.update(df["date"].tolist())
     if not scored:
-        return None
+        return (None, unit_issues)
 
     # 按质量分数降序排列（相同分辨率时，好数据比例高的优先）
     scored.sort(key=lambda item: item["quality_score"], reverse=True)
@@ -577,23 +752,37 @@ def build_cluster_series(cid, resolution, recs):
             source_station_idx_arr[i] = int(row.get("_source_station_index", -1))
             break
 
-    return (dates_arr, q_arr, ssc_arr, ssl_arr,
-            q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr, source_arr,
-            source_station_idx_arr, quality_rows, quality_log)
+    return (
+        dates_arr,
+        q_arr,
+        ssc_arr,
+        ssl_arr,
+        q_flag_arr,
+        ssc_flag_arr,
+        ssl_flag_arr,
+        is_overlap_arr,
+        source_arr,
+        source_station_idx_arr,
+        quality_rows,
+        quality_log,
+        unit_issues,
+    )
 
 
 def _worker_build_cluster(args):
     cid, resolution, recs = args
     result = build_cluster_series(cid, resolution, recs)
     if result is None:
-        return (cid, resolution, None, [], None)
+        return (cid, resolution, None, [], None, [])
+    if len(result) == 2 and result[0] is None:
+        return (cid, resolution, None, [], None, list(result[1]))
     (dates_arr, q_arr, ssc_arr, ssl_arr,
      q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
-     source_station_idx_arr, quality_rows, quality_log) = result
+     source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
     return (cid, resolution,
             (dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag,
              is_overlap, source_arr, source_station_idx_arr),
-            quality_rows, quality_log)
+            quality_rows, quality_log, unit_issues)
 
 
 # ── main ───────────────────────────────────────────────────────────────────
@@ -619,7 +808,15 @@ def main():
         action="store_true",
         help="默认会过滤掉 climatology 行；如确实需要将 climatology 混入主库，可显式开启此选项",
     )
+    ap.add_argument(
+        "--strict-units",
+        action="store_true",
+        help="对输入 Q/SSC/SSL units 启用严格校验；若缺失或不在白名单中则直接失败并停止写出。",
+    )
     args = ap.parse_args()
+
+    global STRICT_UNIT_CHECK
+    STRICT_UNIT_CHECK = bool(args.strict_units)
 
     if not HAS_NC:
         print("Error: netCDF4 is required. pip install netCDF4")
@@ -923,15 +1120,18 @@ def main():
     parts_source   = []  # list of object arrays (str)
     parts_source_station_idx = []  # list of int32 arrays
     quality_order_rows = []
+    unit_issue_rows = []
     n_empty    = 0
     n_done     = 0
 
-    def _flush_result(pbar, cid, resolution, res, quality_rows, quality_log):
+    def _flush_result(pbar, cid, resolution, res, quality_rows, quality_log, unit_issues):
         """将单个任务结果展平并追加到 parts_* 列表，同时更新进度条。"""
         nonlocal n_empty, n_done
         n_done += 1
         if quality_rows:
             quality_order_rows.extend(quality_rows)
+        if unit_issues:
+            unit_issue_rows.extend(unit_issues)
         # 质量排序日志通过 tqdm.write 输出，不破坏进度条
         if quality_log:
             tqdm.write(quality_log)
@@ -978,27 +1178,40 @@ def main():
             futures = {ex.submit(_worker_build_cluster, t): t for t in tasks}
             with tqdm(**_pbar_fmt) as pbar:
                 for future in as_completed(futures):
-                    cid, resolution, res, quality_rows, quality_log = future.result()
-                    _flush_result(pbar, cid, resolution, res, quality_rows, quality_log)
+                    cid, resolution, res, quality_rows, quality_log, unit_issues = future.result()
+                    _flush_result(pbar, cid, resolution, res, quality_rows, quality_log, unit_issues)
     else:
         with tqdm(**_pbar_fmt) as pbar:
             for (cid, res, recs) in tasks:
                 result = build_cluster_series(cid, res, recs)
                 if result is None:
-                    _flush_result(pbar, cid, res, None, [], None)
+                    _flush_result(pbar, cid, res, None, [], None, [])
+                elif len(result) == 2 and result[0] is None:
+                    _flush_result(pbar, cid, res, None, [], None, list(result[1]))
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
                      q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
-                     source_station_idx_arr, quality_rows, quality_log) = result
+                     source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
                     _flush_result(pbar, cid, res,
                                   (dates_arr, q_arr, ssc_arr, ssl_arr,
                                    q_flag, ssc_flag, ssl_flag, is_overlap,
                                    source_arr, source_station_idx_arr),
-                                  quality_rows, quality_log)
+                                  quality_rows, quality_log, unit_issues)
 
     n_series = n_done - n_empty
     print("Series: {}/{} non-empty  ({} empty/missing)".format(n_series, n_tasks, n_empty))
     _check_memory("时间序列读取完成后")
+
+    _summarize_unit_issues(
+        unit_issue_rows,
+        strict_mode=STRICT_UNIT_CHECK,
+        label="Input unit validation",
+    )
+    if STRICT_UNIT_CHECK and any(issue.get("severity") == "error" for issue in unit_issue_rows):
+        print(
+            "Error: strict unit validation failed; aborting write. Please fix source units and rerun the full chain before publishing."
+        )
+        return 1
 
     quality_row_count = _write_quality_order_csv(
         quality_order_rows,

@@ -472,6 +472,8 @@ def _enable_script_logging():
     log_fp = open(log_path, "w", encoding="utf-8")
     log_fp.write("\n===== Run started {} =====\n".format(datetime.now().isoformat(timespec="seconds")))
     log_fp.flush()
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
 
     class _TeeStream:
         def __init__(self, stream, log_file):
@@ -480,16 +482,32 @@ def _enable_script_logging():
 
         def write(self, data):
             self._stream.write(data)
-            self._log_file.write(data)
-            self._log_file.flush()
+            try:
+                self._log_file.write(data)
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
 
         def flush(self):
             self._stream.flush()
-            self._log_file.flush()
+            try:
+                self._log_file.flush()
+            except (ValueError, OSError):
+                pass
+
+    def _close_log_file():
+        if sys.stdout is not orig_stdout:
+            sys.stdout = orig_stdout
+        if sys.stderr is not orig_stderr:
+            sys.stderr = orig_stderr
+        try:
+            log_fp.close()
+        except (ValueError, OSError):
+            pass
 
     sys.stdout = _TeeStream(sys.stdout, log_fp)
     sys.stderr = _TeeStream(sys.stderr, log_fp)
-    atexit.register(log_fp.close)
+    atexit.register(_close_log_file)
     _LOG_TEE_ENABLED = True
 
 

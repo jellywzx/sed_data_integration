@@ -144,8 +144,14 @@ def extract_reference_series(release_dir, resolution, cluster_uid, variable):
         flag = np.ma.asarray(ds.variables["{}_flag".format(variable)][row_idx, :]).filled(9)
         overlap = np.ma.asarray(ds.variables["is_overlap"][row_idx, :]).filled(0)
         selected_source = np.ma.asarray(ds.variables["selected_source_index"][row_idx, :]).filled(-1)
+        selected_source_station_uid = (
+            np.asarray(ds.variables["selected_source_station_uid"][row_idx, :], dtype=object).reshape(-1)
+            if "selected_source_station_uid" in ds.variables
+            else np.asarray([""] * len(selected_source), dtype=object)
+        )
         source_names = np.asarray(ds.variables["source_name"][:], dtype=object).reshape(-1)
         source_names = [_clean_text(item) for item in source_names]
+        selected_source_station_uid = [_clean_text(item) for item in selected_source_station_uid]
 
     df = pd.DataFrame(
         {
@@ -154,6 +160,7 @@ def extract_reference_series(release_dir, resolution, cluster_uid, variable):
             "reference_flag": flag.astype(np.int16),
             "is_overlap": overlap.astype(np.int16),
             "selected_source_index": selected_source.astype(np.int32),
+            "selected_source_station_uid": selected_source_station_uid,
         }
     )
     df["selected_source_name"] = df["selected_source_index"].map(
