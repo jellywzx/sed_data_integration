@@ -10,6 +10,8 @@
 
 用法（在 Output_r 根目录下运行）：
     python scripts/s1_verify_time_resolution.py
+    python scripts/s1_verify_time_resolution.py --dataset RiverSed
+    python scripts/s1_verify_time_resolution.py --dataset RiverSed --dataset GloRiC
 
 输入（默认）：
   - Output_r 下原始 .nc 数据（脚本会递归扫描）
@@ -95,6 +97,7 @@ from pipeline_paths import S1_REVIEW_OVERRIDES_CSV, S1_REVIEW_QUEUE_CSV, S1_VERI
 import time
 from tqdm import tqdm
 from xarray.coding.times import decode_cf_datetime
+import argparse
 from qc_contract import (
     TEMPORAL_RESOLUTION_ATTR_KEYS,
     TEMPORAL_SPAN_ATTR_KEYS,
@@ -117,6 +120,47 @@ WORKERS = 32
 from time_resolution import classify_frequency
 
 ROOT_DIR = SCRIPT_DIR.parent
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="检查 nc 文件时间分辨率是否与路径分类一致，支持按数据集过滤。"
+    )
+    parser.add_argument(
+        "--dataset",
+        dest="datasets",
+        action="append",
+        default=[],
+        help=(
+            "仅扫描指定数据集，可重复传入多次，例如 "
+            "--dataset RiverSed --dataset GloRiC。"
+        ),
+    )
+    return parser.parse_args()
+
+
+def _normalize_dataset_filters(datasets):
+    normalized = []
+    for item in datasets or []:
+        text = str(item).strip()
+        if text:
+            normalized.append(text.lower())
+    return sorted(set(normalized))
+
+
+def _match_dataset_filter(rel_parts, dataset_filters):
+    if len(rel_parts) < 3:
+        return False
+
+    dataset_name = str(rel_parts[1]).strip().lower()
+    folder_name = str(rel_parts[2]).strip().lower()
+
+    if folder_name != "qc":
+        return False
+
+    if not dataset_filters:
+        return True
+
+    return dataset_name in dataset_filters
 
 def get_resolution_from_path(filepath, root_dir):
     """从相对路径的第一级目录解析：daily, monthly, annually_climatology。"""
@@ -591,15 +635,11 @@ def _resolve_final_semantics(row, override):
                 "review_required": False,
                 "review_reason": "",
             }
-        hinted = metadata or "single_point"
-        reason = "single_point without clear long-term-average evidence"
-        if metadata and metadata != "climatology":
-            reason = "single_point requires manual review; metadata suggests {}".format(metadata)
         return {
-            "final_semantics": hinted,
-            "classification_basis": "single_point_pending_review",
-            "review_required": True,
-            "review_reason": reason,
+            "final_semantics": "single_point",
+            "classification_basis": "single_point_deferred_to_s2",
+            "review_required": False,
+            "review_reason": "",
         }
 
     if time_axis in ("irregular", "no_time_var", "error"):
@@ -687,6 +727,9 @@ def _enable_script_logging():
 
 
 def main():
+    args = _parse_args()
+    dataset_filters = _normalize_dataset_filters(args.datasets)
+
     _enable_script_logging()
     root_dir = Path(ROOT_DIR).resolve()
     if not root_dir.is_dir():
@@ -704,11 +747,17 @@ def main():
             rel = p.relative_to(root_dir)
             if rel.parts and rel.parts[0] in ("scripts_basin_test","merged_qc_output", "output", "output_resolution_organized"):
                 continue
+            if not _match_dataset_filter(rel.parts, dataset_filters):
+                continue
         except ValueError:
-            pass
+            continue
         nc_files.append(str(p))
 
     print(f"根目录: {root_dir}")
+    if dataset_filters:
+        print("数据集过滤: {}".format(", ".join(dataset_filters)))
+    else:
+        print("数据集过滤: (全部数据集)")
     print(f"找到 {len(nc_files)} 个 .nc 文件，开始检测时间分辨率并与路径分类比对...")
 
     if not nc_files:
