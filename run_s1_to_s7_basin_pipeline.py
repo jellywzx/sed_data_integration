@@ -134,7 +134,11 @@ def _validate_stage_range(start_at, end_at):
 
 def stage_outputs():
     return {
-        "s1": [OUTPUT_DIR / "s1_verify_time_resolution_results.csv"],
+        "s1": [
+            OUTPUT_DIR / "s1_verify_time_resolution_results.csv",
+            OUTPUT_DIR / "s1_resolution_review_queue.csv",
+            OUTPUT_DIR / "s1_resolution_review_overrides.csv",
+        ],
         "s2": [ORGANIZED_DIR],
         "s3": [OUTPUT_DIR / "s3_collected_stations.csv"],
         "s4": [
@@ -430,6 +434,19 @@ def _all_exist(paths):
     return all(path.exists() for path in paths)
 
 
+def _review_queue_count(path):
+    path = Path(path)
+    if not path.is_file():
+        return 0
+    try:
+        import pandas as pd
+
+        df = pd.read_csv(path, keep_default_na=False)
+    except Exception:
+        return 0
+    return int(len(df))
+
+
 def main():
     args = parse_args()
     python_bin = resolve_python(args.python)
@@ -536,6 +553,18 @@ def main():
                         print(missing_line, file=sys.stderr)
                         _write_log(log_fp, missing_line)
                 return 1
+
+            if stage == "s1":
+                review_queue_path = outputs["s1"][1]
+                unresolved_count = _review_queue_count(review_queue_path)
+                if unresolved_count > 0:
+                    message = (
+                        "Stage s1 produced {} unresolved review rows in {}. "
+                        "Resolve them via s1_resolution_review_overrides.csv before running s2."
+                    ).format(unresolved_count, review_queue_path)
+                    print(message, file=sys.stderr)
+                    _write_log(log_fp, message)
+                    return 1
 
             stage_elapsed = time.time() - stage_start
             summary.append((stage, "ok", stage_elapsed))

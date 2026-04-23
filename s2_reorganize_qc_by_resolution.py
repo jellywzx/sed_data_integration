@@ -47,12 +47,15 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from tqdm import tqdm
 import pandas as pd
 from pipeline_paths import (
+    S1_REVIEW_OVERRIDES_CSV,
+    S1_REVIEW_QUEUE_CSV,
     S1_VERIFY_CSV,
     S2_ORGANIZED_DIR,
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
     RESOLUTION_DIRS,
 )
+from qc_contract import ensure_stage1_alias_parity
 from time_resolution import (
     get_preferred_output_root,
     should_treat_irregular_as_daily,
@@ -64,6 +67,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = get_preferred_output_root(SCRIPT_DIR)
 # 校验结果 CSV（相对 ROOT_DIR）；步骤 s1 输出
 VERIFY_CSV = S1_VERIFY_CSV
+REVIEW_QUEUE_CSV = S1_REVIEW_QUEUE_CSV
+REVIEW_OVERRIDES_CSV = S1_REVIEW_OVERRIDES_CSV
 # 新目录名（相对 ROOT_DIR），仅包含 qc 下 nc 按分辨率整理后的副本
 OUT_DIR = S2_ORGANIZED_DIR
 # 并行执行数：
@@ -171,6 +176,22 @@ def resolution_from_semantics(temporal_semantics: str) -> str:
     if d in RESOLUTION_DIRS:
         return d
     return "other"
+
+
+def _read_review_queue(root_dir: Path):
+    review_path = root_dir / REVIEW_QUEUE_CSV
+    if not review_path.is_file():
+        return pd.DataFrame(), review_path
+    try:
+        df = pd.read_csv(review_path, keep_default_na=False)
+    except Exception as exc:
+        raise SystemExit("错误：无法读取人工审核队列 {}: {}".format(review_path, exc))
+    if len(df) == 0:
+        return df, review_path
+    if "review_required" in df.columns:
+        mask = df["review_required"].astype(str).str.strip().str.lower().isin(("1", "true", "yes"))
+        df = df[mask].copy()
+    return df, review_path
 
 
 def _copy_one(item):
@@ -416,6 +437,16 @@ def main():
         print(f"错误：根目录不存在: {root_dir}", file=sys.stderr)
         sys.exit(1)
 
+    ensure_stage1_alias_parity()
+
+    review_queue, review_path = _read_review_queue(root_dir)
+    if len(review_queue) > 0:
+        overrides_path = root_dir / REVIEW_OVERRIDES_CSV
+        print("错误：存在尚未处理的时间语义冲突，s2 已阻断。", file=sys.stderr)
+        print("请先处理人工审核队列：{}".format(review_path), file=sys.stderr)
+        print("处理后将结论写入 override 文件：{}".format(overrides_path), file=sys.stderr)
+        sys.exit(1)
+
     verify_path = root_dir / args.verify_csv
     if not verify_path.is_file():
         print(f"错误：未找到校验结果 {verify_path}，请先运行 s1_verify_time_resolution.py", file=sys.stderr)
@@ -466,7 +497,9 @@ def main():
         if len(matched_sources) > 20:
             print(f"  ... 共 {len(matched_sources)} 个 source")
 
-    if "temporal_semantics" in df.columns:
+    if "final_semantics" in df.columns:
+        df["resolution_dir"] = df["final_semantics"].apply(resolution_from_semantics)
+    elif "temporal_semantics" in df.columns:
         df["resolution_dir"] = df["temporal_semantics"].apply(resolution_from_semantics)
     else:
         df["resolution_dir"] = df["detected_frequency"].apply(resolution_from_semantics)
@@ -474,7 +507,9 @@ def main():
     # irregular 的二次判定：若时间轴表现为离散日值记录，则改归 daily
     # irregular_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "irregular"
 
-    if "temporal_semantics" in df.columns:
+    if "final_semantics" in df.columns:
+        irregular_mask = df["final_semantics"].astype(str).str.strip().str.lower() == "irregular"
+    elif "temporal_semantics" in df.columns:
         irregular_mask = df["temporal_semantics"].astype(str).str.strip().str.lower() == "irregular"
     else:
         irregular_mask = df["detected_frequency"].astype(str).str.strip().str.lower() == "irregular"

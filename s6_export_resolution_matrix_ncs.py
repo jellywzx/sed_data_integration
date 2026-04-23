@@ -44,10 +44,12 @@ from s6_basin_merge_to_nc import (
     FILL,
     HAS_NC,
     RESOLUTION_CODES,
+    STANDARD_QC_STAGE_NAMES,
     _build_source_station_key,
     _summarize_unit_issues,
     _read_source_meta_from_nc,
     _read_station_meta_from_nc,
+    append_stage_qc_variables,
     build_cluster_series,
 )
 
@@ -448,6 +450,13 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         for key, value in flag_kw.items():
             setattr(sslf_v, key, value)
 
+        stage_qc_vars = append_stage_qc_variables(
+            nc,
+            ("n_stations", "time"),
+            chunksizes=chunks,
+            zlib=True,
+            complevel=4,
+        )
         ov_v = nc.createVariable("is_overlap", "i1", ("n_stations", "time"), fill_value=np.int8(0), zlib=True, complevel=4, chunksizes=chunks)
         ov_v.long_name = "whether multiple source files competed for this station-time cell"
         ov_v.flag_values = np.array([0, 1], dtype=np.int8)
@@ -478,6 +487,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                 q_flag_arr,
                 ssc_flag_arr,
                 ssl_flag_arr,
+                stage_qc_arrs,
                 is_overlap_arr,
                 source_arr,
                 source_station_idx_arr,
@@ -489,6 +499,10 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             qf_row = np.full(n_time, 9, dtype=np.int8)
             sscf_row = np.full(n_time, 9, dtype=np.int8)
             sslf_row = np.full(n_time, 9, dtype=np.int8)
+            stage_qc_rows = dict(
+                (field_name, np.full(n_time, 9, dtype=np.int8))
+                for field_name in STANDARD_QC_STAGE_NAMES
+            )
             ov_row = np.zeros(n_time, dtype=np.int8)
             src_row = np.full(n_time, -1, dtype=np.int32)
             ssuid_row = np.full(n_time, "", dtype=object)
@@ -501,6 +515,8 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                 qf_row[col] = q_flag_arr[i]
                 sscf_row[col] = ssc_flag_arr[i]
                 sslf_row[col] = ssl_flag_arr[i]
+                for field_name in STANDARD_QC_STAGE_NAMES:
+                    stage_qc_rows[field_name][col] = stage_qc_arrs[field_name][i]
                 ov_row[col] = is_overlap_arr[i]
                 source_name = str(source_arr[i] or "")
                 src_row[col] = source_lookup["to_idx"].get(source_name, -1)
@@ -517,6 +533,8 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             qf_v[station_idx, :] = qf_row
             sscf_v[station_idx, :] = sscf_row
             sslf_v[station_idx, :] = sslf_row
+            for field_name in STANDARD_QC_STAGE_NAMES:
+                stage_qc_vars[field_name][station_idx, :] = stage_qc_rows[field_name]
             ov_v[station_idx, :] = ov_row
             src_v[station_idx, :] = src_row
             ssuid_v[station_idx, :] = np.asarray(ssuid_row, dtype=object)
@@ -537,6 +555,8 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nc.time_type_code = str(RESOLUTION_CODES.get(resolution, RESOLUTION_CODES["other"]))
         nc.matrix_layout = "rows are stations (clusters), columns are time steps shared within one resolution"
         nc.provenance_key = "selected_source_station_uid"
+        nc.classification_policy = "manual_review_on_conflict"
+        nc.qc_stage_schema_version = "1"
         nc.n_clusters = str(n_stations)
         nc.n_time_steps = str(n_time)
 
@@ -573,6 +593,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                             q_flag_arr,
                             ssc_flag_arr,
                             ssl_flag_arr,
+                            stage_qc_arrs,
                             is_overlap_arr,
                             source_arr,
                             source_station_idx_arr,
@@ -588,6 +609,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                             q_flag_arr,
                             ssc_flag_arr,
                             ssl_flag_arr,
+                            stage_qc_arrs,
                             is_overlap_arr,
                             source_arr,
                             source_station_idx_arr,
@@ -615,6 +637,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                         q_flag_arr,
                         ssc_flag_arr,
                         ssl_flag_arr,
+                        stage_qc_arrs,
                         is_overlap_arr,
                         source_arr,
                         source_station_idx_arr,
@@ -630,6 +653,7 @@ def _collect_resolution_series(resolution, resolution_df, workers):
                         q_flag_arr,
                         ssc_flag_arr,
                         ssl_flag_arr,
+                        stage_qc_arrs,
                         is_overlap_arr,
                         source_arr,
                         source_station_idx_arr,

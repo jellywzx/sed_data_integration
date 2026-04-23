@@ -31,6 +31,24 @@ from pipeline_paths import (
     S6_CLIMATOLOGY_SHP,
     get_output_r_root,
 )
+from qc_contract import (
+    FINAL_Q_FLAG_NAMES,
+    FINAL_SSC_FLAG_NAMES,
+    FINAL_SSL_FLAG_NAMES,
+    LAT_VAR_NAMES,
+    LON_VAR_NAMES,
+    Q_VAR_NAMES,
+    SOURCE_STATION_TEXT_FIELDS,
+    SSC_VAR_NAMES,
+    SSL_VAR_NAMES,
+    STANDARD_QC_STAGE_NAMES,
+    TIME_VAR_NAMES,
+    append_stage_qc_variables,
+    build_time_coverage_from_dates,
+    read_contract_metadata,
+    read_source_metadata,
+    read_standardized_qc_stage_arrays,
+)
 
 try:
     import netCDF4 as nc4
@@ -48,24 +66,14 @@ DEFAULT_OUTPUT = PROJECT_ROOT / S6_CLIMATOLOGY_NC
 DEFAULT_OUTPUT_SHP = PROJECT_ROOT / S6_CLIMATOLOGY_SHP
 
 FILL = -9999.0
-TIME_NAMES = ["time", "Time", "t", "sample"]
-Q_NAMES = ["Q", "discharge", "Discharge_m3_s", "Discharge"]
-SSC_NAMES = ["SSC", "ssc", "TSS_mg_L", "TSS"]
-SSL_NAMES = ["SSL", "sediment_load", "Sediment_load"]
-Q_FLAG_NAMES = ["Q_flag", "discharge_flag", "q_flag"]
-SSC_FLAG_NAMES = ["SSC_flag", "ssc_flag", "TSS_flag", "tss_flag"]
-SSL_FLAG_NAMES = ["SSL_flag", "ssl_flag", "sediment_load_flag"]
-LAT_NAMES = ["lat", "latitude", "Latitude"]
-LON_NAMES = ["lon", "longitude", "Longitude"]
+TIME_NAMES = TIME_VAR_NAMES
+Q_NAMES = Q_VAR_NAMES
+SSC_NAMES = SSC_VAR_NAMES
+SSL_NAMES = SSL_VAR_NAMES
+Q_FLAG_NAMES = FINAL_Q_FLAG_NAMES
+SSC_FLAG_NAMES = FINAL_SSC_FLAG_NAMES
+SSL_FLAG_NAMES = FINAL_SSL_FLAG_NAMES
 FLAG_FILL_BYTE = -127
-
-_STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
-_RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
-_STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
-_SOURCE_NAME_KEYS = ["data_source_name", "Data_Source_Name"]
-_INST_KEYS = ["creator_institution", "contributor_institution", "institution"]
-_URL_KEYS = ["source_data_link", "sediment_data_source", "source_url"]
-_TEMPORAL_SPAN_KEYS = ["temporal_span", "Temporal_Span", "measurement_period"]
 
 
 def _safe_scalar(var):
@@ -163,23 +171,21 @@ def get_source_from_organized_path(path, root_dir):
 def read_station_meta(path):
     try:
         with nc4.Dataset(path, "r") as ds:
-            def _get_attr(keys, limit=256):
-                for key in keys:
-                    value = getattr(ds, key, None)
-                    if value is not None and str(value).strip():
-                        return _decode_text(value, limit)
-                return ""
-            lat_name = next((x for x in LAT_NAMES if x in ds.variables), None)
-            lon_name = next((x for x in LON_NAMES if x in ds.variables), None)
-            lat = _safe_scalar(ds.variables[lat_name][:]) if lat_name else None
-            lon = _safe_scalar(ds.variables[lon_name][:]) if lon_name else None
+            meta = read_contract_metadata(ds)
             return {
-                "lat": lat,
-                "lon": lon,
-                "station_name": _get_attr(_STATION_NAME_KEYS),
-                "river_name": _get_attr(_RIVER_NAME_KEYS),
-                "source_station_id": _get_attr(_STATION_ID_KEYS),
-                "temporal_span": _get_attr(_TEMPORAL_SPAN_KEYS, 128),
+                "lat": meta.get("lat"),
+                "lon": meta.get("lon"),
+                "station_name": _decode_text(meta.get("station_name", ""), 256),
+                "river_name": _decode_text(meta.get("river_name", ""), 256),
+                "source_station_id": _decode_text(meta.get("source_station_id", ""), 256),
+                "temporal_span": _decode_text(meta.get("temporal_span", ""), 128),
+                "time_coverage_start": _decode_text(meta.get("time_coverage_start", ""), 128),
+                "time_coverage_end": _decode_text(meta.get("time_coverage_end", ""), 128),
+                "summary": _decode_text(meta.get("summary", ""), 2048),
+                "comment": _decode_text(meta.get("comment", ""), 2048),
+                "variables_provided": _decode_text(meta.get("variables_provided", ""), 1024),
+                "data_limitations": _decode_text(meta.get("data_limitations", ""), 2048),
+                "declared_temporal_resolution": _decode_text(meta.get("declared_temporal_resolution", ""), 128),
             }
     except Exception:
         return {
@@ -189,35 +195,25 @@ def read_station_meta(path):
             "river_name": "",
             "source_station_id": "",
             "temporal_span": "",
+            "time_coverage_start": "",
+            "time_coverage_end": "",
+            "summary": "",
+            "comment": "",
+            "variables_provided": "",
+            "data_limitations": "",
+            "declared_temporal_resolution": "",
         }
 
 
 def read_source_meta(path):
     try:
         with nc4.Dataset(path, "r") as ds:
-            attr_lower = {k.lower(): k for k in ds.ncattrs()}
-
-            def _get(keys):
-                for key in keys:
-                    original = attr_lower.get(key.lower())
-                    if original:
-                        value = _decode_text(getattr(ds, original, ""), 512)
-                        if value:
-                            return value
-                return ""
-
-            refs = []
-            for key in ds.ncattrs():
-                if key.lower().startswith("reference"):
-                    value = _decode_text(getattr(ds, key, ""), 512)
-                    if value and value not in refs:
-                        refs.append(value)
-
+            meta = read_source_metadata(ds)
             return {
-                "source_long_name": _get(_SOURCE_NAME_KEYS),
-                "institution": _get(_INST_KEYS),
-                "reference": " | ".join(refs)[:1024],
-                "source_url": _get(_URL_KEYS),
+                "source_long_name": _decode_text(meta.get("source_long_name", ""), 512),
+                "institution": _decode_text(meta.get("institution", ""), 512),
+                "reference": _decode_text(meta.get("reference", ""), 1024),
+                "source_url": _decode_text(meta.get("source_url", ""), 512),
             }
     except Exception:
         return {
@@ -273,6 +269,7 @@ def load_nc_series(path):
             q_flag = _read_flag_var(nc, Q_FLAG_NAMES, n)
             ssc_flag = _read_flag_var(nc, SSC_FLAG_NAMES, n)
             ssl_flag = _read_flag_var(nc, SSL_FLAG_NAMES, n)
+            stage_qc = read_standardized_qc_stage_arrays(nc, n)
 
             df = pd.DataFrame(
                 {
@@ -285,6 +282,8 @@ def load_nc_series(path):
                     "SSL_flag": ssl_flag,
                 }
             )
+            for field_name in STANDARD_QC_STAGE_NAMES:
+                df[field_name] = stage_qc[field_name]
             for col in ["Q", "SSC", "SSL"]:
                 df.loc[df[col] == FILL, col] = np.nan
                 df.loc[df[col] == -9999.0, col] = np.nan
@@ -305,6 +304,8 @@ def collect_climatology_files(input_dir):
         if series is None or len(series) == 0:
             continue
         temporal_span = station_meta["temporal_span"] or _build_temporal_span_from_dates(series["date"])
+        time_coverage_start = station_meta["time_coverage_start"] or _format_timestamp_text(pd.to_datetime(series["date"]).min())
+        time_coverage_end = station_meta["time_coverage_end"] or _format_timestamp_text(pd.to_datetime(series["date"]).max())
         rows.append(
             {
                 "station_uid": "CLM{:06d}".format(i),
@@ -316,6 +317,13 @@ def collect_climatology_files(input_dir):
                 "river_name": station_meta["river_name"],
                 "source_station_id": station_meta["source_station_id"],
                 "temporal_span": temporal_span,
+                "time_coverage_start": time_coverage_start,
+                "time_coverage_end": time_coverage_end,
+                "summary": station_meta["summary"],
+                "comment": station_meta["comment"],
+                "variables_provided": station_meta["variables_provided"],
+                "data_limitations": station_meta["data_limitations"],
+                "declared_temporal_resolution": station_meta["declared_temporal_resolution"],
                 "series": series,
             }
         )
@@ -369,8 +377,16 @@ def main():
     river_name_arr = [""] * n_stations
     native_id_arr = [""] * n_stations
     temporal_span_arr = [""] * n_stations
+    time_coverage_start_arr = [""] * n_stations
+    time_coverage_end_arr = [""] * n_stations
+    summary_arr = [""] * n_stations
+    comment_arr = [""] * n_stations
+    variables_provided_arr = [""] * n_stations
+    data_limitations_arr = [""] * n_stations
+    declared_temporal_resolution_arr = [""] * n_stations
     path_arr = [""] * n_stations
     source_index_arr = np.full(n_stations, -1, dtype=np.int32)
+    stage_qc_parts = dict((field_name, []) for field_name in STANDARD_QC_STAGE_NAMES)
 
     for idx, row in enumerate(station_rows):
         station_uid_arr[idx] = row["station_uid"]
@@ -378,6 +394,13 @@ def main():
         river_name_arr[idx] = _decode_text(row["river_name"], 256)
         native_id_arr[idx] = _decode_text(row["source_station_id"], 256)
         temporal_span_arr[idx] = _decode_text(row["temporal_span"], 128)
+        time_coverage_start_arr[idx] = _decode_text(row["time_coverage_start"], 128)
+        time_coverage_end_arr[idx] = _decode_text(row["time_coverage_end"], 128)
+        summary_arr[idx] = _decode_text(row["summary"], 2048)
+        comment_arr[idx] = _decode_text(row["comment"], 2048)
+        variables_provided_arr[idx] = _decode_text(row["variables_provided"], 1024)
+        data_limitations_arr[idx] = _decode_text(row["data_limitations"], 2048)
+        declared_temporal_resolution_arr[idx] = _decode_text(row["declared_temporal_resolution"], 128)
         path_arr[idx] = row["path"]
         source_index_arr[idx] = source_to_idx[row["source"]]
         if row["lat"] is not None:
@@ -395,6 +418,8 @@ def main():
         q_flag_parts.append(series["Q_flag"].values.astype(np.int8))
         ssc_flag_parts.append(series["SSC_flag"].values.astype(np.int8))
         ssl_flag_parts.append(series["SSL_flag"].values.astype(np.int8))
+        for field_name in STANDARD_QC_STAGE_NAMES:
+            stage_qc_parts[field_name].append(series[field_name].values.astype(np.int8))
         source_parts.append(np.full(len(series), row["source"], dtype=object))
 
     station_index = np.concatenate(station_index_parts)
@@ -405,6 +430,10 @@ def main():
     q_flag_arr = np.concatenate(q_flag_parts)
     ssc_flag_arr = np.concatenate(ssc_flag_parts)
     ssl_flag_arr = np.concatenate(ssl_flag_parts)
+    stage_qc_record_arrays = dict(
+        (field_name, np.concatenate(stage_qc_parts[field_name]).astype(np.int8))
+        for field_name in STANDARD_QC_STAGE_NAMES
+    )
     source_arr = np.concatenate(source_parts)
     resolution_arr = np.full(len(time_arr), 3, dtype=np.int8)
 
@@ -461,6 +490,34 @@ def main():
             "Not a required release-contract field."
         )
         span_v[:] = np.array(temporal_span_arr, dtype=object)
+
+        tcs_v = nc.createVariable("source_station_time_coverage_start", str, ("n_stations",))
+        tcs_v.long_name = "declared time coverage start for this climatology source station"
+        tcs_v[:] = np.array(time_coverage_start_arr, dtype=object)
+
+        tce_v = nc.createVariable("source_station_time_coverage_end", str, ("n_stations",))
+        tce_v.long_name = "declared time coverage end for this climatology source station"
+        tce_v[:] = np.array(time_coverage_end_arr, dtype=object)
+
+        summary_v = nc.createVariable("source_station_summary", str, ("n_stations",))
+        summary_v.long_name = "summary copied from source climatology metadata"
+        summary_v[:] = np.array(summary_arr, dtype=object)
+
+        comment_v = nc.createVariable("source_station_comment", str, ("n_stations",))
+        comment_v.long_name = "comment copied from source climatology metadata"
+        comment_v[:] = np.array(comment_arr, dtype=object)
+
+        vars_v = nc.createVariable("source_station_variables_provided", str, ("n_stations",))
+        vars_v.long_name = "variables_provided copied from source climatology metadata"
+        vars_v[:] = np.array(variables_provided_arr, dtype=object)
+
+        limits_v = nc.createVariable("source_station_data_limitations", str, ("n_stations",))
+        limits_v.long_name = "data_limitations copied from source climatology metadata"
+        limits_v[:] = np.array(data_limitations_arr, dtype=object)
+
+        declared_v = nc.createVariable("source_station_declared_temporal_resolution", str, ("n_stations",))
+        declared_v.long_name = "declared temporal_resolution copied from source climatology metadata"
+        declared_v[:] = np.array(declared_temporal_resolution_arr, dtype=object)
 
         path_v = nc.createVariable("source_station_path", str, ("n_stations",))
         path_v.long_name = "absolute path of the organized climatology nc"
@@ -532,6 +589,10 @@ def main():
             setattr(sslf_v, key, value)
         sslf_v[:] = ssl_flag_arr
 
+        stage_qc_vars = append_stage_qc_variables(nc, ("n_records",), zlib=True, complevel=4)
+        for field_name in STANDARD_QC_STAGE_NAMES:
+            stage_qc_vars[field_name][:] = stage_qc_record_arrays[field_name]
+
         rec_src_v = nc.createVariable("source", str, ("n_records",))
         rec_src_v.long_name = "source dataset name for this record"
         rec_src_v[:] = source_arr
@@ -542,6 +603,8 @@ def main():
         nc.history = "Created {} by s6_export_climatology_to_nc.py".format(datetime.now().isoformat(timespec="seconds"))
         nc.provenance_policy = "Each climatology station is one organized climatology file; source_station_path preserves file-level provenance"
         nc.time_type_policy = "All records in this file are climatology and therefore stored separately from the basin mainline"
+        nc.classification_policy = "manual_review_on_conflict"
+        nc.qc_stage_schema_version = "1"
         nc.n_input_files = str(n_stations)
 
         nc.sync()

@@ -30,6 +30,8 @@ RESOLUTION_DIRS = (
 
 # ── s1：时间分辨率验证 ────────────────────────────────────────────────────────
 S1_VERIFY_CSV           = "scripts_basin_test/output/s1_verify_time_resolution_results.csv"
+S1_REVIEW_QUEUE_CSV     = "scripts_basin_test/output/s1_resolution_review_queue.csv"
+S1_REVIEW_OVERRIDES_CSV = "scripts_basin_test/output/s1_resolution_review_overrides.csv"
 
 # ── s2：按分辨率重组 ──────────────────────────────────────────────────────────
 # 重组目录相对 Output_r 根，位于其上一级（与 Output_r 并列）

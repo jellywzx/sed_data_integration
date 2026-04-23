@@ -34,6 +34,7 @@ from multiprocessing import Pool, cpu_count
 import numpy as np
 import pandas as pd
 from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root
+from qc_contract import LAT_VAR_NAMES, LON_VAR_NAMES, read_scalar_variable, read_station_metadata
 
 try:
     import netCDF4 as nc4
@@ -41,13 +42,7 @@ try:
 except ImportError:
     HAS_NC = False
 
-
-LAT_NAMES = ["lat", "latitude", "Latitude"]
-LON_NAMES = ["lon", "longitude", "Longitude"]
 FILL = -9999.0
-_STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
-_RIVER_NAME_KEYS = ["river_name", "River_Name", "riverName", "river"]
-_STATION_ID_KEYS = ["station_id", "Station_ID", "stationID", "ID"]
 # 各数据集中存储上游汇水面积的字段名（NC 变量或全局属性）
 # 优先级：先找 NC 变量，再找全局属性；全局属性按列表顺序匹配
 _AREA_VAR_NAMES = [
@@ -141,12 +136,8 @@ def get_lat_lon_from_nc(path):
         return None, None
     try:
         with nc4.Dataset(path, "r") as nc:
-            lat_var = next((x for x in LAT_NAMES if x in nc.variables), None)
-            lon_var = next((x for x in LON_NAMES if x in nc.variables), None)
-            if lat_var is None or lon_var is None:
-                return None, None
-            lat = _get_scalar(nc.variables[lat_var][:])
-            lon = _get_scalar(nc.variables[lon_var][:])
+            lat = read_scalar_variable(nc, LAT_VAR_NAMES)
+            lon = read_scalar_variable(nc, LON_VAR_NAMES)
             if lat is None or lon is None or (np.isnan(lat) or np.isnan(lon)):
                 return None, None
             return float(lat), float(lon)
@@ -164,17 +155,7 @@ def get_station_meta_from_nc(path):
         }
     try:
         with nc4.Dataset(path, "r") as nc:
-            def _get_attr(keys):
-                for key in keys:
-                    val = getattr(nc, key, None)
-                    if val is not None and str(val).strip():
-                        return str(val).strip()[:256]
-                return ""
-            return {
-                "station_name": _get_attr(_STATION_NAME_KEYS),
-                "river_name": _get_attr(_RIVER_NAME_KEYS),
-                "source_station_id": _get_attr(_STATION_ID_KEYS),
-            }
+            return read_station_metadata(nc)
     except Exception:
         return {
             "station_name": "",
