@@ -66,6 +66,30 @@ from pipeline_paths import (
     S6_QUALITY_ORDER_CSV,
     S2_ORGANIZED_DIR,
 )
+from qc_contract import (
+    CREATOR_INSTITUTION_ATTR_KEYS,
+    DATA_LIMITATIONS_ATTR_KEYS,
+    FINAL_Q_FLAG_NAMES,
+    FINAL_SSC_FLAG_NAMES,
+    FINAL_SSL_FLAG_NAMES,
+    Q_VAR_NAMES,
+    SOURCE_NAME_ATTR_KEYS,
+    SOURCE_STATION_TEXT_FIELDS,
+    SOURCE_URL_ATTR_KEYS,
+    SSC_VAR_NAMES,
+    SSL_VAR_NAMES,
+    STANDARD_QC_STAGE_NAMES,
+    STANDARD_QC_STAGE_SPECS,
+    SUMMARY_ATTR_KEYS,
+    TIME_VAR_NAMES,
+    VARIABLES_PROVIDED_ATTR_KEYS,
+    append_stage_qc_variables,
+    build_time_coverage_from_dates,
+    read_explanatory_metadata,
+    read_source_metadata,
+    read_standardized_qc_stage_arrays,
+    read_station_metadata,
+)
 
 try:
     import netCDF4 as nc4
@@ -85,13 +109,13 @@ _DEFAULT_QUALITY_ORDER = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 _ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
 FILL = -9999.0
-TIME_NAMES    = ["time", "Time", "t", "sample"]
-Q_NAMES       = ["Q", "discharge", "Discharge_m3_s", "Discharge"]
-SSC_NAMES     = ["SSC", "ssc", "TSS_mg_L", "TSS"]
-SSL_NAMES     = ["SSL", "sediment_load", "Sediment_load"]
-Q_FLAG_NAMES  = ["Q_flag", "discharge_flag", "q_flag"]
-SSC_FLAG_NAMES= ["SSC_flag", "ssc_flag", "TSS_flag", "tss_flag"]
-SSL_FLAG_NAMES= ["SSL_flag", "ssl_flag", "sediment_load_flag"]
+TIME_NAMES    = TIME_VAR_NAMES
+Q_NAMES       = Q_VAR_NAMES
+SSC_NAMES     = SSC_VAR_NAMES
+SSL_NAMES     = SSL_VAR_NAMES
+Q_FLAG_NAMES  = FINAL_Q_FLAG_NAMES
+SSC_FLAG_NAMES= FINAL_SSC_FLAG_NAMES
+SSL_FLAG_NAMES= FINAL_SSL_FLAG_NAMES
 FLAG_GOOD     = 0    # flag==0 表示好数据
 FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
 STRICT_UNIT_CHECK = False
@@ -124,6 +148,17 @@ QUALITY_ORDER_COLUMNS = [
     "n_time_rows",
     "n_nonempty_rows",
 ]
+
+SOURCE_STATION_TEXT_LIMITS = {
+    "source_station_temporal_span": 512,
+    "source_station_time_coverage_start": 128,
+    "source_station_time_coverage_end": 128,
+    "source_station_summary": 2048,
+    "source_station_comment": 2048,
+    "source_station_variables_provided": 1024,
+    "source_station_data_limitations": 2048,
+    "source_station_declared_temporal_resolution": 256,
+}
 
 RESOLUTION_CODES = {
     "daily": 0,
@@ -229,37 +264,20 @@ def _enable_script_logging():
     _LOG_TEE_ENABLED = True
 
 
-# ── 站点元数据全局属性键（按优先级排列）──────────────────────────────────────
-_STATION_NAME_KEYS = ["station_name", "Station_Name", "stationName", "name"]
-_RIVER_NAME_KEYS   = ["river_name",   "River_Name",   "riverName",   "river"]
-_STATION_ID_KEYS   = ["station_id",   "Station_ID",   "stationID",   "ID"]
-
-
 def _read_station_meta_from_nc(path):
     """从单个 NC 文件的全局属性读取站点名/河流名/原始站点ID。
     找不到对应属性时返回空字符串；任何异常都静默处理。
     """
     try:
         with nc4.Dataset(path, "r") as ds:
-            def _get_attr(keys):
-                for k in keys:
-                    v = getattr(ds, k, None)
-                    if v is not None and str(v).strip():
-                        return str(v).strip()[:256]
-                return ""
+            meta = read_station_metadata(ds)
             return (
-                _get_attr(_STATION_NAME_KEYS),
-                _get_attr(_RIVER_NAME_KEYS),
-                _get_attr(_STATION_ID_KEYS),
+                meta["station_name"],
+                meta["river_name"],
+                meta["source_station_id"],
             )
     except Exception:
         return ("", "", "")
-
-
-# ── 数据集级元数据属性键（大小写不敏感，按优先级排列）──────────────────────────
-_SOURCE_NAME_KEYS = ["data_source_name", "Data_Source_Name"]
-_INST_KEYS        = ["creator_institution", "contributor_institution", "institution"]
-_URL_KEYS         = ["source_data_link", "sediment_data_source", "source_url"]
 
 
 def _read_source_meta_from_nc(path):
@@ -268,33 +286,94 @@ def _read_source_meta_from_nc(path):
     """
     try:
         with nc4.Dataset(path, "r") as ds:
-            attr_lower = {k.lower(): k for k in ds.ncattrs()}  # 小写→原始名 映射
-
-            def _get(keys):
-                for k in keys:
-                    orig = attr_lower.get(k.lower())
-                    if orig:
-                        v = str(getattr(ds, orig, "")).strip()
-                        if v:
-                            return v[:512]
-                return ""
-
-            # 收集所有以 "reference" 开头的属性（reference / references / reference1 / Reference 等）
-            ref_parts = []
-            for orig_key in ds.ncattrs():
-                if orig_key.lower().startswith("reference"):
-                    v = str(getattr(ds, orig_key, "")).strip()
-                    if v and v not in ref_parts:
-                        ref_parts.append(v)
-
+            meta = read_source_metadata(ds)
             return (
-                _get(_SOURCE_NAME_KEYS),        # 数据集长名
-                _get(_INST_KEYS),               # 机构
-                " | ".join(ref_parts)[:1024],   # 引用文献（合并）
-                _get(_URL_KEYS),                # 数据链接/DOI
+                meta["source_long_name"],
+                meta["institution"],
+                meta["reference"],
+                meta["source_url"],
             )
     except Exception:
         return ("", "", "", "")
+
+
+def _read_explanatory_meta_from_nc(path):
+    try:
+        with nc4.Dataset(path, "r") as ds:
+            meta = read_explanatory_metadata(ds)
+    except Exception:
+        meta = {}
+    return {
+        "source_station_temporal_span": _clean_text(meta.get("temporal_span", "")),
+        "source_station_time_coverage_start": _clean_text(meta.get("time_coverage_start", "")),
+        "source_station_time_coverage_end": _clean_text(meta.get("time_coverage_end", "")),
+        "source_station_summary": _clean_text(meta.get("summary", "")),
+        "source_station_comment": _clean_text(meta.get("comment", "")),
+        "source_station_variables_provided": _clean_text(meta.get("variables_provided", "")),
+        "source_station_data_limitations": _clean_text(meta.get("data_limitations", "")),
+        "source_station_declared_temporal_resolution": _clean_text(meta.get("declared_temporal_resolution", "")),
+    }
+
+
+def _new_source_station_text_aggregate():
+    agg = dict((field, []) for field in SOURCE_STATION_TEXT_FIELDS)
+    agg["_time_start_values"] = []
+    agg["_time_end_values"] = []
+    return agg
+
+
+def _append_unique_text(values, value):
+    text = _clean_text(value)
+    if text and text not in values:
+        values.append(text)
+
+
+def _parse_timestamp_text(value):
+    text = _clean_text(value)
+    if not text:
+        return None
+    try:
+        ts = pd.Timestamp(text)
+    except Exception:
+        return None
+    if pd.isna(ts):
+        return None
+    return ts
+
+
+def _merge_source_station_text_aggregate(aggregate, meta):
+    for field in SOURCE_STATION_TEXT_FIELDS:
+        _append_unique_text(aggregate[field], meta.get(field, ""))
+    start_text = meta.get("source_station_time_coverage_start", "")
+    end_text = meta.get("source_station_time_coverage_end", "")
+    start_ts = _parse_timestamp_text(start_text)
+    end_ts = _parse_timestamp_text(end_text)
+    if start_ts is not None:
+        aggregate["_time_start_values"].append(start_ts)
+    if end_ts is not None:
+        aggregate["_time_end_values"].append(end_ts)
+
+
+def _join_aggregate_text(values, field):
+    text = " | ".join(values)
+    limit = SOURCE_STATION_TEXT_LIMITS.get(field, 2048)
+    return text[:limit]
+
+
+def _finalize_source_station_text_aggregate(aggregate):
+    out = dict((field, _join_aggregate_text(aggregate[field], field)) for field in SOURCE_STATION_TEXT_FIELDS)
+    if aggregate["_time_start_values"]:
+        out["source_station_time_coverage_start"] = _clean_text(min(aggregate["_time_start_values"]).isoformat())[:128]
+    if aggregate["_time_end_values"]:
+        out["source_station_time_coverage_end"] = _clean_text(max(aggregate["_time_end_values"]).isoformat())[:128]
+    if (not out["source_station_temporal_span"]) and aggregate["_time_start_values"] and aggregate["_time_end_values"]:
+        start_text, end_text, span_text = build_time_coverage_from_dates(
+            [min(aggregate["_time_start_values"]), max(aggregate["_time_end_values"])]
+        )
+        out["source_station_time_coverage_start"] = out["source_station_time_coverage_start"] or start_text
+        out["source_station_time_coverage_end"] = out["source_station_time_coverage_end"] or end_text
+        out["source_station_temporal_span"] = span_text[: SOURCE_STATION_TEXT_LIMITS["source_station_temporal_span"]]
+    return out
 
 
 def _clean_text(value):
@@ -615,12 +694,15 @@ def load_nc_series(path):
             q_flag   = _read_flag_var(nc, Q_FLAG_NAMES,   n)
             ssc_flag = _read_flag_var(nc, SSC_FLAG_NAMES, n)
             ssl_flag = _read_flag_var(nc, SSL_FLAG_NAMES, n)
+            stage_qc = read_standardized_qc_stage_arrays(nc, n)
 
             df = pd.DataFrame({
                 "date":     dates,
                 "Q":        q,   "SSC":      ssc,   "SSL":      ssl,
                 "Q_flag":   q_flag, "SSC_flag": ssc_flag, "SSL_flag": ssl_flag,
             })
+            for field_name in STANDARD_QC_STAGE_NAMES:
+                df[field_name] = stage_qc[field_name]
             df["date"] = pd.to_datetime(df["date"]).dt.date
             for col in ["Q", "SSC", "SSL"]:
                 df.loc[df[col] == FILL,    col] = np.nan
@@ -719,6 +801,10 @@ def build_cluster_series(cid, resolution, recs):
     q_flag_arr   = np.full(n, 9,    dtype=np.int8)
     ssc_flag_arr = np.full(n, 9,    dtype=np.int8)
     ssl_flag_arr = np.full(n, 9,    dtype=np.int8)
+    stage_qc_arrays = dict(
+        (field_name, np.full(n, STANDARD_QC_STAGE_NAME_TO_SPEC[field_name]["fill_value"], dtype=np.int8))
+        for field_name in STANDARD_QC_STAGE_NAMES
+    )
     is_overlap_arr = np.zeros(n,    dtype=np.int8)
     source_arr   = np.empty(n,      dtype=object)
     source_arr[:] = ""
@@ -748,6 +834,9 @@ def build_cluster_series(cid, resolution, recs):
             q_flag_arr[i]   = int(row.get("Q_flag",   9))
             ssc_flag_arr[i] = int(row.get("SSC_flag", 9))
             ssl_flag_arr[i] = int(row.get("SSL_flag", 9))
+            for field_name in STANDARD_QC_STAGE_NAMES:
+                fill_value = STANDARD_QC_STAGE_NAME_TO_SPEC[field_name]["fill_value"]
+                stage_qc_arrays[field_name][i] = int(row.get(field_name, fill_value))
             source_arr[i]   = str(row.get("_source", ""))
             source_station_idx_arr[i] = int(row.get("_source_station_index", -1))
             break
@@ -760,6 +849,7 @@ def build_cluster_series(cid, resolution, recs):
         q_flag_arr,
         ssc_flag_arr,
         ssl_flag_arr,
+        stage_qc_arrays,
         is_overlap_arr,
         source_arr,
         source_station_idx_arr,
@@ -777,10 +867,11 @@ def _worker_build_cluster(args):
     if len(result) == 2 and result[0] is None:
         return (cid, resolution, None, [], None, list(result[1]))
     (dates_arr, q_arr, ssc_arr, ssl_arr,
-     q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
+     q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
      source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
     return (cid, resolution,
             (dates_arr, q_arr, ssc_arr, ssl_arr, q_flag, ssc_flag, ssl_flag,
+             stage_qc_arrays,
              is_overlap, source_arr, source_station_idx_arr),
             quality_rows, quality_log, unit_issues)
 
@@ -1018,6 +1109,7 @@ def main():
     source_station_rows = []
     source_station_lookup = {}
     row_source_station_index = []
+    explanatory_meta_cache = {}
 
     for row in stations.itertuples(index=False):
         row_dict = {
@@ -1031,6 +1123,9 @@ def main():
             "river_name": getattr(row, "river_name", ""),
             "source_station_id": getattr(row, "source_station_id", ""),
         }
+        path_str = str(row_dict["path"])
+        if path_str not in explanatory_meta_cache:
+            explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
         key = _build_source_station_key(row_dict)
         idx = source_station_lookup.get(key)
         if idx is None:
@@ -1048,10 +1143,15 @@ def main():
                     "lon": _clean_coord(row_dict["lon"]),
                     "paths": set(),
                     "resolutions": set(),
+                    "text_agg": _new_source_station_text_aggregate(),
                 }
             )
         source_station_rows[idx]["paths"].add(str(row_dict["path"]))
         source_station_rows[idx]["resolutions"].add(str(row_dict["resolution"]))
+        _merge_source_station_text_aggregate(
+            source_station_rows[idx]["text_agg"],
+            explanatory_meta_cache[path_str],
+        )
         row_source_station_index.append(idx)
 
     stations["_source_station_index"] = np.asarray(row_source_station_index, dtype=np.int32)
@@ -1066,6 +1166,9 @@ def main():
     source_station_lons = np.full(n_source_stations, FILL, dtype=np.float32)
     source_station_paths = [""] * n_source_stations
     source_station_resolutions = [""] * n_source_stations
+    source_station_text_arrays = dict(
+        (field_name, [""] * n_source_stations) for field_name in SOURCE_STATION_TEXT_FIELDS
+    )
     cluster_source_station_counts = np.zeros(n_stations, dtype=np.int32)
 
     for idx, info in enumerate(source_station_rows):
@@ -1080,6 +1183,9 @@ def main():
             source_station_lons[idx] = info["lon"]
         source_station_paths[idx] = "|".join(sorted(info["paths"]))[:2048]
         source_station_resolutions[idx] = "|".join(sorted(info["resolutions"]))
+        source_station_text_meta = _finalize_source_station_text_aggregate(info["text_agg"])
+        for field_name in SOURCE_STATION_TEXT_FIELDS:
+            source_station_text_arrays[field_name][idx] = source_station_text_meta.get(field_name, "")
         cluster_source_station_counts[int(info["cluster_idx"])] += 1
 
     print("Source-station map: {} unique source stations across {} clusters".format(
@@ -1116,6 +1222,7 @@ def main():
     parts_qflag    = []  # list of int8 arrays
     parts_sscflag  = []
     parts_sslflag  = []
+    parts_stage_qc = dict((field_name, []) for field_name in STANDARD_QC_STAGE_NAMES)
     parts_overlap  = []  # list of int8 arrays
     parts_source   = []  # list of object arrays (str)
     parts_source_station_idx = []  # list of int32 arrays
@@ -1139,7 +1246,7 @@ def main():
             n_empty += 1
         else:
             (dates_arr, q_arr, ssc_arr, ssl_arr,
-             q_flag, ssc_flag, ssl_flag, is_overlap,
+             q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap,
              source_arr, source_station_idx_arr) = res
             n    = len(dates_arr)
             days = ((dates_arr - ref).total_seconds().values / 86400.0).astype(np.float64)
@@ -1154,6 +1261,8 @@ def main():
             parts_qflag.append(  q_flag)
             parts_sscflag.append(ssc_flag)
             parts_sslflag.append(ssl_flag)
+            for field_name in STANDARD_QC_STAGE_NAMES:
+                parts_stage_qc[field_name].append(stage_qc_arrays[field_name].astype(np.int8))
             parts_overlap.append(is_overlap)
             parts_source.append( source_arr)
             parts_source_station_idx.append(source_station_idx_arr.astype(np.int32))
@@ -1190,11 +1299,11 @@ def main():
                     _flush_result(pbar, cid, res, None, [], None, list(result[1]))
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
-                     q_flag, ssc_flag, ssl_flag, is_overlap, source_arr,
+                     q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
                      source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
                     _flush_result(pbar, cid, res,
                                   (dates_arr, q_arr, ssc_arr, ssl_arr,
-                                   q_flag, ssc_flag, ssl_flag, is_overlap,
+                                   q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap,
                                    source_arr, source_station_idx_arr),
                                   quality_rows, quality_log, unit_issues)
 
@@ -1238,6 +1347,10 @@ def main():
     q_flag_arr        = np.concatenate(parts_qflag)
     ssc_flag_arr      = np.concatenate(parts_sscflag)
     ssl_flag_arr      = np.concatenate(parts_sslflag)
+    qc_stage_record_arrays = dict(
+        (field_name, np.concatenate(parts_stage_qc[field_name]).astype(np.int8))
+        for field_name in STANDARD_QC_STAGE_NAMES
+    )
     is_overlap_arr    = np.concatenate(parts_overlap)
     record_source_arr = np.concatenate(parts_source)
     record_source_station_idx_arr = np.concatenate(parts_source_station_idx)
@@ -1396,6 +1509,46 @@ def main():
         ss_res_v.long_name = "pipe-separated list of time types available for this source station"
         ss_res_v[:] = np.array(source_station_resolutions, dtype=object)
 
+        ss_text_attrs = {
+            "source_station_temporal_span": (
+                "source-station temporal coverage summary",
+                "pipe-separated unique source values when multiple contributing organized files disagree",
+            ),
+            "source_station_time_coverage_start": (
+                "earliest declared time coverage start across organized files for this source station",
+                "derived from declared source attributes when available",
+            ),
+            "source_station_time_coverage_end": (
+                "latest declared time coverage end across organized files for this source station",
+                "derived from declared source attributes when available",
+            ),
+            "source_station_summary": (
+                "source-station summary text copied from source metadata",
+                "pipe-separated unique values when multiple organized files disagree",
+            ),
+            "source_station_comment": (
+                "source-station comment text copied from source metadata",
+                "pipe-separated unique values when multiple organized files disagree",
+            ),
+            "source_station_variables_provided": (
+                "source-station variables_provided text copied from source metadata",
+                "pipe-separated unique values when multiple organized files disagree",
+            ),
+            "source_station_data_limitations": (
+                "source-station data_limitations text copied from source metadata",
+                "pipe-separated unique values when multiple organized files disagree",
+            ),
+            "source_station_declared_temporal_resolution": (
+                "declared temporal resolution from source metadata",
+                "pipe-separated unique values when multiple organized files disagree",
+            ),
+        }
+        for field_name in SOURCE_STATION_TEXT_FIELDS:
+            text_var = nc.createVariable(field_name, str, ("n_source_stations",))
+            text_var.long_name = ss_text_attrs[field_name][0]
+            text_var.comment = ss_text_attrs[field_name][1]
+            text_var[:] = np.array(source_station_text_arrays[field_name], dtype=object)
+
         # ── n_sources 查找表（每个数据集一行，供引用/机构信息查询）──────────────
         sn_lk = nc.createVariable("source_name", str, ("n_sources",))
         sn_lk.long_name = "short dataset identifier (matches 'source' variable in n_records and 'sources_used' in n_stations)"
@@ -1481,6 +1634,10 @@ def main():
             setattr(lf_v, k, v)
         lf_v[:]        = ssl_flag_arr
 
+        stage_qc_vars = append_stage_qc_variables(nc, ("n_records",), zlib=False, complevel=0)
+        for field_name in STANDARD_QC_STAGE_NAMES:
+            stage_qc_vars[field_name][:] = qc_stage_record_arrays[field_name]
+
         io_v = nc.createVariable("is_overlap", "i1", ("n_records",))
         io_v.long_name     = "multi-source overlap flag"
         io_v.flag_values   = np.array([0, 1], dtype=np.int8)
@@ -1510,6 +1667,8 @@ def main():
                                "normally exported separately and therefore filtered out by default.")
         nc.provenance_policy = ("Each merged record links back to one source_station_index, while the full "
                                 "source-station mapping is preserved in n_source_stations")
+        nc.classification_policy = "manual_review_on_conflict"
+        nc.qc_stage_schema_version = "1"
         nc.basin_csv      = str(inp_path)
         nc.n_input_station_rows = str(len(stations))
         nc.n_source_stations = str(n_source_stations)
