@@ -93,14 +93,14 @@ def _read_gsed_dbf_records(dbf_path):
     return records
 
 
-def _extract_polyline_representatives(record_content):
-    """Extract centroid and unique part endpoints from a polyline record."""
+def _extract_polyline_parts(record_content):
+    """Parse a PolyLine record into ordered point parts."""
     if len(record_content) < 44:
-        return None, None, []
+        return []
 
     shape_type = struct.unpack("<i", record_content[:4])[0]
     if shape_type == 0:
-        return None, None, []
+        return []
     if shape_type != 3:
         raise ValueError(f"Unsupported shapefile geometry type: {shape_type}")
 
@@ -113,7 +113,7 @@ def _extract_polyline_representatives(record_content):
     if points_end > len(record_content):
         raise ValueError("Corrupted polyline record in shapefile.")
     if num_points == 0:
-        return None, None, []
+        return []
 
     part_starts = [
         struct.unpack(
@@ -126,24 +126,39 @@ def _extract_polyline_representatives(record_content):
         part_starts = [0]
     part_starts.append(num_points)
 
-    lons = []
-    lats = []
+    points = []
     for i in range(num_points):
         x, y = struct.unpack(
             "<2d",
             record_content[points_offset + i * 16: points_offset + (i + 1) * 16],
         )
-        lons.append(x)
-        lats.append(y)
+        points.append((float(x), float(y)))
 
-    endpoint_candidates = []
-    seen = set()
+    parts = []
     for part_start, part_end in zip(part_starts[:-1], part_starts[1:]):
         if part_end <= part_start:
             continue
-        for point_idx in (part_start, part_end - 1):
-            lat = float(lats[point_idx])
-            lon = float(lons[point_idx])
+        parts.append(points[part_start:part_end])
+
+    return parts
+
+
+def _extract_polyline_representatives(record_content):
+    """Extract the polyline midpoint and unique part endpoints."""
+    parts = _extract_polyline_parts(record_content)
+    if not parts:
+        return None, None, []
+
+    endpoint_candidates = []
+    seen = set()
+    fallback_point = None
+    total_length = 0.0
+    for part_points in parts:
+        if not part_points:
+            continue
+        if fallback_point is None:
+            fallback_point = part_points[0]
+        for lon, lat in (part_points[0], part_points[-1]):
             key = (round(lat, 12), round(lon, 12))
             if key in seen:
                 continue
@@ -155,11 +170,43 @@ def _extract_polyline_representatives(record_content):
                 }
             )
 
-    return float(np.mean(lats)), float(np.mean(lons)), endpoint_candidates
+        for (lon0, lat0), (lon1, lat1) in zip(part_points[:-1], part_points[1:]):
+            total_length += float(np.hypot(lon1 - lon0, lat1 - lat0))
+
+    if fallback_point is None:
+        return None, None, endpoint_candidates
+
+    if total_length <= 0.0:
+        fallback_lon, fallback_lat = fallback_point
+        return fallback_lat, fallback_lon, endpoint_candidates
+
+    midpoint_distance = total_length / 2.0
+    traversed = 0.0
+    last_point = fallback_point
+
+    for part_points in parts:
+        if not part_points:
+            continue
+        last_point = part_points[-1]
+        for (lon0, lat0), (lon1, lat1) in zip(part_points[:-1], part_points[1:]):
+            segment_length = float(np.hypot(lon1 - lon0, lat1 - lat0))
+            if segment_length <= 0.0:
+                continue
+
+            next_traversed = traversed + segment_length
+            if next_traversed >= midpoint_distance:
+                segment_ratio = (midpoint_distance - traversed) / segment_length
+                midpoint_lon = lon0 + segment_ratio * (lon1 - lon0)
+                midpoint_lat = lat0 + segment_ratio * (lat1 - lat0)
+                return float(midpoint_lat), float(midpoint_lon), endpoint_candidates
+            traversed = next_traversed
+
+    last_lon, last_lat = last_point
+    return float(last_lat), float(last_lon), endpoint_candidates
 
 
 def load_gsed_reach_metadata(shapefile_path, target_rids=None):
-    """Load centroid and endpoint candidates for the requested GSED reaches."""
+    """Load midpoint and endpoint candidates for the requested GSED reaches."""
     shapefile_path = Path(shapefile_path)
     dbf_records = _read_gsed_dbf_records(shapefile_path.with_suffix(".dbf"))
     target_rids = (
@@ -189,7 +236,7 @@ def load_gsed_reach_metadata(shapefile_path, target_rids=None):
             if target_rids and r_id_str not in target_rids:
                 continue
 
-            centroid_lat, centroid_lon, endpoint_candidates = (
+            midpoint_lat, midpoint_lon, endpoint_candidates = (
                 _extract_polyline_representatives(content)
             )
             metadata[r_id_str] = {
@@ -204,10 +251,10 @@ def load_gsed_reach_metadata(shapefile_path, target_rids=None):
                     if dbf_row.get("Length") is not None
                     else None
                 ),
-                "latitude": centroid_lat,
-                "longitude": centroid_lon,
-                "centroid_latitude": centroid_lat,
-                "centroid_longitude": centroid_lon,
+                "latitude": midpoint_lat,
+                "longitude": midpoint_lon,
+                "midpoint_latitude": midpoint_lat,
+                "midpoint_longitude": midpoint_lon,
                 "endpoint_candidates": endpoint_candidates,
             }
 
@@ -244,8 +291,16 @@ def _safe_float(value, default=np.nan):
         return default
 
 
-def resolve_gsed_anchor(tracer, meta, allow_centroid_fallback=True):
+def resolve_gsed_anchor(
+    tracer,
+    meta,
+    allow_midpoint_fallback=True,
+    allow_centroid_fallback=None,
+):
     """Choose the downstream endpoint proxy and matched MERIT reach."""
+    if allow_centroid_fallback is not None:
+        allow_midpoint_fallback = allow_centroid_fallback
+
     endpoint_matches = []
     endpoint_candidates = meta.get("endpoint_candidates") or []
 
@@ -285,29 +340,29 @@ def resolve_gsed_anchor(tracer, meta, allow_centroid_fallback=True):
             "reach_info": best_endpoint["reach_info"],
         }
 
-    centroid_lat = meta.get("centroid_latitude", meta.get("latitude"))
-    centroid_lon = meta.get("centroid_longitude", meta.get("longitude"))
-    if not allow_centroid_fallback:
+    midpoint_lat = meta.get("midpoint_latitude", meta.get("latitude"))
+    midpoint_lon = meta.get("midpoint_longitude", meta.get("longitude"))
+    if not allow_midpoint_fallback:
         return {
             "anchor_source": "no_endpoint_match",
             "endpoint_match_count": 0,
-            "latitude": centroid_lat,
-            "longitude": centroid_lon,
+            "latitude": midpoint_lat,
+            "longitude": midpoint_lon,
             "reach_info": _empty_reach_info(),
         }
 
     reach_info = _empty_reach_info()
-    if _has_valid_coordinate_pair(centroid_lat, centroid_lon):
+    if _has_valid_coordinate_pair(midpoint_lat, midpoint_lon):
         reach_info = tracer.find_best_reach(
-            float(centroid_lon),
-            float(centroid_lat),
+            float(midpoint_lon),
+            float(midpoint_lat),
             reported_area=None,
         )
 
     return {
-        "anchor_source": "centroid_fallback",
+        "anchor_source": "midpoint_fallback",
         "endpoint_match_count": 0,
-        "latitude": centroid_lat,
-        "longitude": centroid_lon,
+        "latitude": midpoint_lat,
+        "longitude": midpoint_lon,
         "reach_info": reach_info,
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 在保留原有源库不变的前提下，根据时间分辨率校验结果，
-将默认输入根目录（优先 Output_r_attr_fixed，其次 Output_r）下「所有 qc 文件夹中的 .nc」
+将默认输入根目录 Output_r 下「所有 qc 文件夹中的 .nc」
 按检测到的时间分辨率复制到新目录。
 
 新目录结构：
@@ -22,20 +22,31 @@
   python scripts/s2_reorganize_qc_by_resolution.py
   python scripts/s2_reorganize_qc_by_resolution.py --out-dir my_reorganized
   python scripts/s2_reorganize_qc_by_resolution.py -j 16   # 16 线程并行复制
+  python scripts/s2_reorganize_qc_by_resolution.py --csv-only   # 只导出分类 CSV，不复制
   python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe
   python scripts/s2_reorganize_qc_by_resolution.py --dataset GloRiSe GloRiSe/SS
   python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe --clear-all
 
+推荐运行顺序：
+  1) 先运行 python scripts/s1_verify_time_resolution.py。
+  2) 如果 s1 提示存在人工审核队列，编辑
+     scripts_basin_test/output/s1_resolution_review_overrides.csv，填入
+     rel_path,resolved_semantics,review_note。
+  3) 重新运行 s1，直到
+     scripts_basin_test/output/s1_resolution_review_queue.csv 为空。
+  4) 再运行本脚本；若 review queue 仍非空，本脚本会阻断并退出。
+
 输入（默认）：
-  - scripts/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV）
+  - scripts_basin_test/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV）
   - Output_r 下原始 qc 目录中的 .nc
 输出（默认）：
   - ../output_resolution_organized/（步骤 s2 输出目录，来自 pipeline_paths.S2_ORGANIZED_DIR，供 s3 默认扫描）
-  - scripts/output/s2_other_resolution_summary.csv（other 分类汇总，来自 pipeline_paths.S2_OTHER_SUMMARY_CSV）
-  - scripts/output/s2_other_resolution_details.csv（other 分类明细，来自 pipeline_paths.S2_OTHER_DETAILS_CSV）
+  - scripts_basin_test/output/s2_resolution_classification_details.csv（全量最终分类明细，来自 pipeline_paths.S2_CLASSIFICATION_DETAILS_CSV）
+  - scripts_basin_test/output/s2_other_resolution_summary.csv（other 分类汇总，来自 pipeline_paths.S2_OTHER_SUMMARY_CSV）
+  - scripts_basin_test/output/s2_other_resolution_details.csv（other 分类明细，来自 pipeline_paths.S2_OTHER_DETAILS_CSV）
 
 说明：
-  - 步骤 s2 无单个 CSV 输出，结果是按分辨率整理后的目录。
+  - 步骤 s2 的主要结果是按分辨率整理后的目录，同时输出全量最终分类明细 CSV 便于查询。
 """
 
 import re
@@ -50,6 +61,7 @@ from pipeline_paths import (
     S1_REVIEW_OVERRIDES_CSV,
     S1_REVIEW_QUEUE_CSV,
     S1_VERIFY_CSV,
+    S2_CLASSIFICATION_DETAILS_CSV,
     S2_ORGANIZED_DIR,
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
@@ -57,20 +69,20 @@ from pipeline_paths import (
 )
 from qc_contract import ensure_stage1_alias_parity
 from time_resolution import (
-    get_preferred_output_root,
     should_treat_irregular_as_daily,
     sync_temporal_resolution_attrs,
 )
 
-# 项目根默认优先使用 Output_r_attr_fixed；可通过 OUTPUT_R_ROOT 覆盖
+# 项目根默认直接使用脚本上一级 Output_r
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = get_preferred_output_root(SCRIPT_DIR)
+ROOT_DIR = SCRIPT_DIR.parent
 # 校验结果 CSV（相对 ROOT_DIR）；步骤 s1 输出
 VERIFY_CSV = S1_VERIFY_CSV
 REVIEW_QUEUE_CSV = S1_REVIEW_QUEUE_CSV
 REVIEW_OVERRIDES_CSV = S1_REVIEW_OVERRIDES_CSV
 # 新目录名（相对 ROOT_DIR），仅包含 qc 下 nc 按分辨率整理后的副本
 OUT_DIR = S2_ORGANIZED_DIR
+CLASSIFICATION_DETAILS_CSV = S2_CLASSIFICATION_DETAILS_CSV
 # 并行执行数：
 #   - 阶段 1：ThreadPoolExecutor 并行复制
 #   - 阶段 2：ProcessPoolExecutor 并行标准化属性
@@ -205,11 +217,8 @@ def _copy_one(item):
 
 
 def _normalize_one(item):
-    """单次同步时间分辨率属性并标准化全局属性，供进程池调用。"""
-    dest_path_str, sync_target_resolution, sync_reason = item
+    dest_path_str, sync_target_resolution, sync_reason = item[:3]
     try:
-        from attr_normalizer import normalize_nc_attrs
-
         if sync_target_resolution:
             sync_temporal_resolution_attrs(
                 dest_path_str,
@@ -217,11 +226,9 @@ def _normalize_one(item):
                 stage="s2",
                 reason=sync_reason,
             )
-        normalize_nc_attrs(dest_path_str)
         return (dest_path_str, None)
     except Exception as exc:
         return (dest_path_str, str(exc))
-
 
 def _get_s2_copy_resolution(row):
     """返回 s2 副本应回写的时间分辨率。
@@ -253,6 +260,58 @@ def _get_s2_copy_reason(row):
     if resolution_dir:
         return "s2 aligned organized copy to final resolution"
     return ""
+
+
+def export_resolution_classification_details(classified_df: pd.DataFrame, root_dir: Path, classification_out: str):
+    """导出 s2 全量最终分类明细，便于按源文件或分类查询。"""
+    classification_path = root_dir / classification_out
+    classification_path.parent.mkdir(parents=True, exist_ok=True)
+
+    work = classified_df.copy()
+    work["source_path"] = work["path"] if "path" in work.columns else ""
+    work["final_resolution_dir"] = work["resolution_dir"] if "resolution_dir" in work.columns else ""
+
+    if "final_semantics" in work.columns:
+        work["final_temporal_semantics"] = work["final_semantics"]
+    elif "temporal_semantics" in work.columns:
+        work["final_temporal_semantics"] = work["temporal_semantics"]
+    elif "detected_frequency" in work.columns:
+        work["final_temporal_semantics"] = work["detected_frequency"]
+    else:
+        work["final_temporal_semantics"] = ""
+
+    desired_cols = [
+        "source",
+        "source_path",
+        "final_resolution_dir",
+        "final_temporal_semantics",
+        "detected_frequency",
+        "raw_detected_frequency",
+        "temporal_semantics",
+        "final_semantics",
+        "single_point_interpretation",
+        "path_resolution",
+        "consistent",
+        "rel_path",
+        "s2_copy_status",
+        "s2_attr_status",
+        "s2_filename",
+        "s2_dest_rel_path",
+        "s2_dest_path",
+        "s2_copy_error",
+        "s2_attr_error",
+    ]
+    cols = [c for c in desired_cols if c in work.columns]
+    if not cols:
+        cols = list(work.columns)
+
+    sort_cols = [c for c in ("final_resolution_dir", "source", "source_path") if c in work.columns]
+    if sort_cols:
+        work = work.sort_values(sort_cols)
+
+    work[cols].fillna("").reset_index(drop=True).to_csv(classification_path, index=False)
+    print("已导出 s2 全量最终分类明细：")
+    print(f"  details: {classification_path}")
 
 
 def export_other_resolution_reports(other_df: pd.DataFrame, root_dir: Path, summary_out: str, details_out: str):
@@ -430,6 +489,17 @@ def main():
     )
     ap.add_argument("--other-summary-out", default=S2_OTHER_SUMMARY_CSV, help="other 分类汇总输出 CSV")
     ap.add_argument("--other-details-out", default=S2_OTHER_DETAILS_CSV, help="other 分类明细输出 CSV")
+    ap.add_argument(
+        "--classification-out",
+        default=CLASSIFICATION_DETAILS_CSV,
+        help="s2 全量最终分类明细输出 CSV",
+    )
+    ap.add_argument(
+        "--csv-only",
+        "--no-copy",
+        action="store_true",
+        help="只导出最终分类 CSV 和 other 报告，不清空输出目录、不复制 nc、不回写属性；不指定时默认复制",
+    )
     args = ap.parse_args()
 
     root_dir = Path(ROOT_DIR).resolve()
@@ -526,6 +596,74 @@ def main():
         print(f"irregular 二次判定改归 daily: {n_irregular_to_daily} 个文件")
 
     out_base = root_dir / args.out_dir
+
+    df["stem"] = df["path"].apply(lambda p: Path(p).stem)
+    df["safe_source"] = df["source"].apply(safe_fname_part)
+    df["safe_stem"] = df["stem"].apply(safe_fname_part)
+    df["s2_copy_status"] = "pending"
+    df["s2_attr_status"] = ""
+    df["s2_filename"] = ""
+    df["s2_dest_rel_path"] = ""
+    df["s2_dest_path"] = ""
+    df["s2_copy_error"] = ""
+    df["s2_attr_error"] = ""
+
+    # 已使用的文件名（不含 .nc），按 resolution 目录记录，用于生成唯一名
+    used = {}
+    for r in RESOLUTION_DIRS:
+        used[r] = set()
+
+    copied = {r: 0 for r in RESOLUTION_DIRS}
+    skipped = 0
+    tasks = []  # (src_path, dest_path, res_dir_name, sync_target_resolution, sync_reason, row_index)
+
+    for row_index, row in df.iterrows():
+        src_path = Path(row["path"])
+        if not src_path.is_file():
+            skipped += 1
+            df.at[row_index, "s2_copy_status"] = "missing_source"
+            continue
+        res_dir_name = row["resolution_dir"]
+        res_dir = out_base / res_dir_name
+        base = f"{row['safe_source']}_{res_dir_name}_{row['safe_stem']}"
+        base_candidate = base
+        idx = 2
+        while base_candidate in used[res_dir_name]:
+            base_candidate = f"{base}_{idx}"
+            idx += 1
+        used[res_dir_name].add(base_candidate)
+        dest_path = res_dir / (base_candidate + ".nc")
+        dest_path_abs = dest_path.resolve()
+        out_base_abs = out_base.resolve()
+        try:
+            dest_rel_path = str(dest_path_abs.relative_to(out_base_abs))
+        except ValueError:
+            dest_rel_path = str(dest_path)
+        df.at[row_index, "s2_copy_status"] = "scheduled"
+        df.at[row_index, "s2_filename"] = dest_path.name
+        df.at[row_index, "s2_dest_rel_path"] = dest_rel_path
+        df.at[row_index, "s2_dest_path"] = str(dest_path_abs)
+        tasks.append(
+            (
+                src_path,
+                dest_path,
+                res_dir_name,
+                _get_s2_copy_resolution(row),
+                _get_s2_copy_reason(row),
+                row_index,
+            )
+        )
+
+    if args.csv_only:
+        df.loc[df["s2_copy_status"] == "scheduled", "s2_copy_status"] = "csv_only"
+        print("\nCSV-only 模式：已完成最终分类判定，将只导出 CSV，不清空输出目录、不复制 nc、不回写属性。")
+        print(f"拟输出目录: {out_base}")
+        print(f"已判定 qc 下 nc 数量: {len(df)}（源文件不存在: {skipped}）")
+        export_resolution_classification_details(df, root_dir, args.classification_out)
+        other_df = df[df["resolution_dir"] == "other"]
+        export_other_resolution_reports(other_df, root_dir, args.other_summary_out, args.other_details_out)
+        sys.exit(0)
+
     for sub in RESOLUTION_DIRS:
         (out_base / sub).mkdir(parents=True, exist_ok=True)
     for legacy_sub in LEGACY_RESOLUTION_DIRS:
@@ -558,44 +696,6 @@ def main():
         else:
             print("已跳过预清空输出目录（auto 模式）")
 
-    df["stem"] = df["path"].apply(lambda p: Path(p).stem)
-    df["safe_source"] = df["source"].apply(safe_fname_part)
-    df["safe_stem"] = df["stem"].apply(safe_fname_part)
-
-    # 已使用的文件名（不含 .nc），按 resolution 目录记录，用于生成唯一名
-    used = {}
-    for r in RESOLUTION_DIRS:
-        used[r] = set()
-
-    copied = {r: 0 for r in RESOLUTION_DIRS}
-    skipped = 0
-    tasks = []  # (src_path, dest_path, res_dir_name, sync_target_resolution, sync_reason)
-
-    for _, row in df.iterrows():
-        src_path = Path(row["path"])
-        if not src_path.is_file():
-            skipped += 1
-            continue
-        res_dir_name = row["resolution_dir"]
-        res_dir = out_base / res_dir_name
-        base = f"{row['safe_source']}_{res_dir_name}_{row['safe_stem']}"
-        base_candidate = base
-        idx = 2
-        while base_candidate in used[res_dir_name]:
-            base_candidate = f"{base}_{idx}"
-            idx += 1
-        used[res_dir_name].add(base_candidate)
-        dest_path = res_dir / (base_candidate + ".nc")
-        tasks.append(
-            (
-                src_path,
-                dest_path,
-                res_dir_name,
-                _get_s2_copy_resolution(row),
-                _get_s2_copy_reason(row),
-            )
-        )
-
     workers = max(1, int(args.workers))
     copy_errors = []
     attr_errors = []
@@ -606,15 +706,21 @@ def main():
     if workers == 1:
         for item in tqdm(tasks, desc="复制文件", unit="file"):
             res_dir_name, dest_path_str, err = _copy_one(item)
+            row_index = item[5]
             if err:
                 copy_errors.append(err)
+                df.at[row_index, "s2_copy_status"] = "copy_failed"
+                df.at[row_index, "s2_copy_error"] = err[1]
             else:
                 copied[res_dir_name] += 1
+                df.at[row_index, "s2_copy_status"] = "copied"
+                df.at[row_index, "s2_attr_status"] = "queued"
                 normalize_tasks.append(
                     (
                         dest_path_str,
                         item[3],
                         item[4],
+                        row_index,
                     )
                 )
     else:
@@ -625,16 +731,22 @@ def main():
                 future_to_item[fut] = item
             for fut in tqdm(as_completed(future_to_item), total=len(future_to_item), desc="并行复制", unit="file"):
                 res_dir_name, dest_path_str, err = fut.result()
+                item = future_to_item[fut]
+                row_index = item[5]
                 if err:
                     copy_errors.append(err)
+                    df.at[row_index, "s2_copy_status"] = "copy_failed"
+                    df.at[row_index, "s2_copy_error"] = err[1]
                 else:
                     copied[res_dir_name] += 1
-                    item = future_to_item[fut]
+                    df.at[row_index, "s2_copy_status"] = "copied"
+                    df.at[row_index, "s2_attr_status"] = "queued"
                     normalize_tasks.append(
                         (
                             dest_path_str,
                             item[3],
                             item[4],
+                            row_index,
                         )
                     )
 
@@ -656,15 +768,26 @@ def main():
         if workers == 1:
             for item in tqdm(normalize_tasks, desc="标准化属性", unit="file"):
                 _, err = _normalize_one(item)
+                row_index = item[3]
                 if err:
                     attr_errors.append((item[0], err))
+                    df.at[row_index, "s2_attr_status"] = "failed"
+                    df.at[row_index, "s2_attr_error"] = err
+                else:
+                    df.at[row_index, "s2_attr_status"] = "ok"
         else:
             with ProcessPoolExecutor(max_workers=workers) as executor:
-                futures = [executor.submit(_normalize_one, item) for item in normalize_tasks]
-                for fut in tqdm(as_completed(futures), total=len(futures), desc="并行标准化属性", unit="file"):
+                future_to_item = {executor.submit(_normalize_one, item): item for item in normalize_tasks}
+                for fut in tqdm(as_completed(future_to_item), total=len(future_to_item), desc="并行标准化属性", unit="file"):
+                    item = future_to_item[fut]
+                    row_index = item[3]
                     dest_path_str, err = fut.result()
                     if err:
                         attr_errors.append((dest_path_str, err))
+                        df.at[row_index, "s2_attr_status"] = "failed"
+                        df.at[row_index, "s2_attr_error"] = err
+                    else:
+                        df.at[row_index, "s2_attr_status"] = "ok"
 
         if attr_errors:
             print(f"[s2] WARNING: 属性标准化失败 {len(attr_errors)} 个:")
@@ -676,6 +799,8 @@ def main():
             print("全部文件属性标准化完成。")
     else:
         print("\n阶段 2：无已复制文件，跳过属性标准化。")
+
+    export_resolution_classification_details(df, root_dir, args.classification_out)
 
     # other 目录的数据集构成说明
     other_df = df[df["resolution_dir"] == "other"]

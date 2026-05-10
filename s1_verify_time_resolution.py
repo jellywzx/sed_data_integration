@@ -13,6 +13,14 @@
     python scripts/s1_verify_time_resolution.py --dataset RiverSed
     python scripts/s1_verify_time_resolution.py --dataset RiverSed --dataset GloRiC
 
+推荐运行顺序：
+  1) 先运行本脚本，生成 s1_verify_time_resolution_results.csv 和人工审核队列。
+  2) 若生成的 s1_resolution_review_queue.csv 非空，先把每条人工确认结果写入
+     s1_resolution_review_overrides.csv，字段为 rel_path,resolved_semantics,review_note。
+  3) 重新运行本脚本，让 overrides 生效并刷新 review queue。
+  4) 确认 s1_resolution_review_queue.csv 为空后，再运行
+     python scripts/s2_reorganize_qc_by_resolution.py。
+
 输入（默认）：
   - Output_r 下原始 .nc 数据（脚本会递归扫描）
 输出（默认）：
@@ -542,6 +550,38 @@ def _path_semantics(path_resolution):
     return ""
 
 
+FORCED_DAILY_SOURCES = {"riversed"}
+
+
+def _source_from_rel_path(rel_path):
+    try:
+        parts = Path(str(rel_path)).parts
+        if "qc" in parts:
+            before_qc = parts[: parts.index("qc")]
+            if len(before_qc) >= 2:
+                return str(before_qc[1]).strip()
+        if len(parts) >= 2:
+            return str(parts[1]).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _is_forced_daily_source(rel_path):
+    return _source_from_rel_path(rel_path).lower() in FORCED_DAILY_SOURCES
+
+
+def _forced_daily_record(filepath):
+    return {
+        "path": filepath,
+        "raw_detected_frequency": "daily",
+        "detected_frequency": "daily",
+        "single_point_interpretation": "",
+        "time_axis_semantics": "daily",
+        "metadata_semantics": "daily",
+    }
+
+
 def is_consistent(path_resolution, final_semantics):
     if path_resolution is None or path_resolution not in PATH_TO_EXPECTED:
         return True
@@ -551,8 +591,15 @@ def is_consistent(path_resolution, final_semantics):
         return False
     return freq in allowed
 
-
-VALID_OVERRIDE_SEMANTICS = {"daily", "monthly", "annual", "climatology", "other"}
+# 建议改成
+VALID_OVERRIDE_SEMANTICS = {
+    "daily",
+    "monthly",
+    "annual",
+    "climatology",
+    "irregular",
+    "other",
+}
 
 
 def _path_is_qc(rel_path):
@@ -643,9 +690,8 @@ def _resolve_final_semantics(row, override):
         }
 
     if time_axis in ("irregular", "no_time_var", "error"):
-        final_semantics = "other" if time_axis == "irregular" else time_axis
         return {
-            "final_semantics": final_semantics,
+            "final_semantics": time_axis,
             "classification_basis": "time_axis",
             "review_required": False,
             "review_reason": "",
@@ -664,6 +710,45 @@ def _resolve_final_semantics(row, override):
         "classification_basis": "fallback_other",
         "review_required": False,
         "review_reason": "",
+    }
+
+
+def _build_result_row(record, root_dir, overrides):
+    filepath = str(record.get("path", ""))
+    path_resolution = get_resolution_from_path(filepath, root_dir)
+    rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
+    rel_path = str(rel_path)
+
+    if _is_forced_daily_source(rel_path):
+        resolution_result = {
+            "final_semantics": "daily",
+            "classification_basis": "source_forced_daily",
+            "review_required": False,
+            "review_reason": "RiverSed source forced to daily",
+        }
+    else:
+        override = overrides.get(rel_path)
+        resolution_result = _resolve_final_semantics(record, override)
+
+    final_semantics = resolution_result["final_semantics"]
+    consistent = is_consistent(path_resolution, final_semantics)
+    return {
+        "path": filepath,
+        "rel_path": rel_path,
+        "path_resolution": path_resolution or "(none)",
+        "path_semantics": _path_semantics(path_resolution),
+        "raw_detected_frequency": record.get("raw_detected_frequency", ""),
+        "detected_frequency": record.get("detected_frequency", ""),
+        "time_axis_semantics": record.get("time_axis_semantics", ""),
+        "metadata_semantics": record.get("metadata_semantics", ""),
+        "final_semantics": final_semantics,
+        "temporal_semantics": final_semantics,
+        "classification_basis": resolution_result["classification_basis"],
+        "review_required": bool(resolution_result["review_required"]),
+        "review_reason": resolution_result["review_reason"],
+        "single_point_interpretation": record.get("single_point_interpretation", ""),
+        "is_qc_path": bool(_path_is_qc(rel_path)),
+        "consistent": consistent,
     }
 
 
@@ -765,38 +850,36 @@ def main():
         return
     t0 = time.time()
     results = []
-    with ProcessPoolExecutor(max_workers=WORKERS) as executor:
-        futures = {executor.submit(detect_frequency_for_nc, fp): fp for fp in nc_files}
-        with tqdm(total=len(nc_files), desc="检测时间分辨率", unit="文件") as pbar:
-            for fut in as_completed(futures):
-                record = fut.result()
-                pbar.update(1)
-                filepath = str(record.get("path", ""))
-                path_resolution = get_resolution_from_path(filepath, root_dir)
-                rel_path = Path(filepath).relative_to(root_dir) if filepath.startswith(str(root_dir)) else filepath
-                rel_path = str(rel_path)
-                override = overrides.get(rel_path)
-                resolution_result = _resolve_final_semantics(record, override)
-                final_semantics = resolution_result["final_semantics"]
-                consistent = is_consistent(path_resolution, final_semantics)
-                results.append({
-                    "path": filepath,
-                    "rel_path": rel_path,
-                    "path_resolution": path_resolution or "(none)",
-                    "path_semantics": _path_semantics(path_resolution),
-                    "raw_detected_frequency": record.get("raw_detected_frequency", ""),
-                    "detected_frequency": record.get("detected_frequency", ""),
-                    "time_axis_semantics": record.get("time_axis_semantics", ""),
-                    "metadata_semantics": record.get("metadata_semantics", ""),
-                    "final_semantics": final_semantics,
-                    "temporal_semantics": final_semantics,
-                    "classification_basis": resolution_result["classification_basis"],
-                    "review_required": bool(resolution_result["review_required"]),
-                    "review_reason": resolution_result["review_reason"],
-                    "single_point_interpretation": record.get("single_point_interpretation", ""),
-                    "is_qc_path": bool(_path_is_qc(rel_path)),
-                    "consistent": consistent,
-                })
+
+    forced_daily_files = []
+    files_to_detect = []
+    for fp in nc_files:
+        try:
+            rel_path = str(Path(fp).resolve().relative_to(root_dir))
+        except Exception:
+            rel_path = str(fp)
+        if _is_forced_daily_source(rel_path):
+            forced_daily_files.append(fp)
+        else:
+            files_to_detect.append(fp)
+
+    if forced_daily_files:
+        print(
+            "数据源强制 daily，跳过时间轴检测: {} 个文件 ({})".format(
+                len(forced_daily_files), ", ".join(sorted(FORCED_DAILY_SOURCES))
+            )
+        )
+        for fp in forced_daily_files:
+            results.append(_build_result_row(_forced_daily_record(fp), root_dir, overrides))
+
+    if files_to_detect:
+        with ProcessPoolExecutor(max_workers=WORKERS) as executor:
+            futures = {executor.submit(detect_frequency_for_nc, fp): fp for fp in files_to_detect}
+            with tqdm(total=len(files_to_detect), desc="检测时间分辨率", unit="文件") as pbar:
+                for fut in as_completed(futures):
+                    record = fut.result()
+                    pbar.update(1)
+                    results.append(_build_result_row(record, root_dir, overrides))
     elapsed = time.time() - t0
     print(f"\n扫描完成，耗时: {elapsed:.1f} 秒 ({elapsed/60:.1f} 分钟)")
 

@@ -36,6 +36,7 @@ S1_REVIEW_OVERRIDES_CSV = "scripts_basin_test/output/s1_resolution_review_overri
 # ── s2：按分辨率重组 ──────────────────────────────────────────────────────────
 # 重组目录相对 Output_r 根，位于其上一级（与 Output_r 并列）
 S2_ORGANIZED_DIR        = "../output_resolution_organized"
+S2_CLASSIFICATION_DETAILS_CSV = "scripts_basin_test/output/s2_resolution_classification_details.csv"
 S2_OTHER_SUMMARY_CSV    = "scripts_basin_test/output/s2_other_resolution_summary.csv"
 S2_OTHER_DETAILS_CSV    = "scripts_basin_test/output/s2_other_resolution_details.csv"
 
