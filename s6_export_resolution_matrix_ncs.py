@@ -261,7 +261,7 @@ def _build_source_station_uid_lookup(stations_all):
     key_to_index = {}
     row_to_source_station_index = {}
 
-    for row in work.itertuples(index=False):
+    for input_row_index, row in zip(work["_input_row_index"].values, work.itertuples(index=False)):
         row_dict = {
             "path": getattr(row, "path", ""),
             "source": getattr(row, "source", ""),
@@ -278,7 +278,7 @@ def _build_source_station_uid_lookup(stations_all):
         if source_station_index is None:
             source_station_index = len(key_to_index)
             key_to_index[key] = source_station_index
-        row_to_source_station_index[int(getattr(row, "_input_row_index"))] = int(source_station_index)
+        row_to_source_station_index[int(input_row_index)] = int(source_station_index)
 
     index_to_uid = {
         int(source_station_index): "SRC{:06d}".format(int(source_station_index))
