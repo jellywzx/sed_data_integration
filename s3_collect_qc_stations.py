@@ -14,8 +14,8 @@ resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
   - basin 主线默认不收集 climatology；
   - climatology 文件保留在 output_resolution_organized/climatology 下，
     供独立的 climatology NC 导出脚本使用；
-  - RiverSed 在 basin 主线下只提供 lon/lat，不输出 NHDPlus reach/basin 元数据，
-    也不把源文件中的 upstream_area 作为 reported_area 传给 basin tracer。
+  - RiverSed、GSED、Dethier 等遥感 / reach-scale 产品在 basin 主线下只提供
+    lon/lat，不把源文件中的面积信息作为 reported_area 传给 basin tracer。
 
 根目录说明：
   - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
@@ -33,6 +33,7 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
+from basin_policy import should_skip_basin_matching
 from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root
 from qc_contract import LAT_VAR_NAMES, LON_VAR_NAMES, read_scalar_variable, read_station_metadata
 
@@ -229,9 +230,8 @@ def _collect_one_nc(path, root_dir):
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
         reported_area = get_reported_area_from_nc(path)
-        # RiverSed 在 basin 主线下只按坐标匹配 MERIT，不把其源产品自带的
-        # upstream_area 作为 reported_area，也不依赖 NHDPlus reach 元数据。
-        if source.strip().lower() == "riversed":
+        # 遥感 / reach-scale 产品不参与 basin matching，不向 s4 传 reported_area。
+        if should_skip_basin_matching(source):
             reported_area = None
         # 存相对路径，跨平台可移植
         rel_path = str(Path(path).relative_to(root_dir))

@@ -23,10 +23,8 @@ s4：站点流域匹配脚本（并行版）
                    默认为 Output_r/../../MERIT_Hydro_v07_Basins_v01_bugfix1
                    （即与 sediment_wzx_1111 同级的目录）
 注意：
-  - GSED 在 basin 主线下会先利用 reach geometry 的端点候选推断
-    下游 MERIT reach，然后直接复用该 reach 追溯上游流域。
-  - RiverSed 在 basin 主线下只按 lon/lat 匹配 MERIT，不再使用其源产品内的
-    upstream_area，也不再保留 NHDPlus reach/basin 辅助字段。
+  - RiverSed、GSED、Dethier 等遥感 / reach-scale 产品不参与 MERIT 流域匹配；
+    这些观测保留在主数据中，但 basin 字段保持缺失。
 """
 
 import logging
@@ -42,12 +40,7 @@ import psutil
 from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
-from basin_policy import classify_basin_result
-from gsed_reach_hint import (
-    load_gsed_reach_metadata,
-    normalize_gsed_rid,
-    resolve_gsed_anchor,
-)
+from basin_policy import classify_basin_result, should_skip_basin_matching
 from pipeline_paths import (
     S3_COLLECTED_CSV,
     S4_LOCAL_GPKG,
@@ -66,12 +59,6 @@ MERIT_DIR  = Path(os.environ.get(
     "MERIT_DIR",
     str(OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1")
 ))
-GSED_SHP = Path(
-    os.environ.get(
-        "GSED_SHP",
-        str(OUTPUT_R_ROOT.parent / "Source" / "GSED" / "GSED" / "GSED_Reach.shp"),
-    )
-)
 S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
 OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
@@ -82,6 +69,7 @@ OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG
 LOG_LEVEL  = "INFO"
 PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
 BASIN_TRACER_DIR = SCRIPT_DIR
+NO_BASIN_MATCH_METHOD = "source_remote_sensing_no_basin_match"
 
 
 def _env_bool(name, default):
@@ -128,31 +116,32 @@ CSV_COLUMNS = [
 CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
 
 
-def _has_valid_reach_info(reach_info):
-    """Return True when a reach-matching result contains a usable COMID."""
-    if not isinstance(reach_info, dict):
-        return False
-    comid = reach_info.get("COMID")
-    return comid is not None and not pd.isna(comid)
-
-
-def _compute_area_error(reported_area, uparea_merit):
-    """Recompute audit-only area_error from two drainage-area values."""
-    try:
-        reported_area = float(reported_area)
-        uparea_merit = float(uparea_merit)
-    except Exception:
-        return np.nan
-
-    if (
-        not np.isfinite(reported_area)
-        or not np.isfinite(uparea_merit)
-        or reported_area <= 0
-        or uparea_merit <= 0
-    ):
-        return np.nan
-
-    return float(np.log10(uparea_merit / reported_area))
+def _build_no_basin_match_result(station):
+    """Build the s4 placeholder row for sources excluded from basin matching."""
+    return {
+        "station_id": int(station["station_id"]),
+        "lon": float(station["lon"]),
+        "lat": float(station["lat"]),
+        "source_station_name": station.get("source_station_name", ""),
+        "source_river_name": station.get("source_river_name", ""),
+        "source_station_id": station.get("source_station_id", ""),
+        "reported_area": None,
+        "basin_id": np.nan,
+        "basin_area": np.nan,
+        "match_quality": "failed",
+        "area_error": np.nan,
+        "uparea_merit": np.nan,
+        "pfaf_code": np.nan,
+        "method": NO_BASIN_MATCH_METHOD,
+        "distance_m": np.nan,
+        "point_in_local": False,
+        "point_in_basin": False,
+        "basin_status": "unresolved",
+        "basin_flag": "no_match",
+        "n_upstream_reaches": np.nan,
+        "geometry": None,
+        "geometry_local": None,
+    }
 
 
 # ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
@@ -205,42 +194,13 @@ def _trace_chunk(args):
         lon = float(station["lon"])
         lat = float(station["lat"])
         source_name = station.get("source", "")
-        source_token = str(source_name).strip().lower()
         reported_area = station.get("reported_area")
         if pd.isna(reported_area):
             reported_area = None
 
-        basin_result = None
-        if source_token == "gsed":
-            gsed_meta = station.get("gsed_meta")
-            if isinstance(gsed_meta, dict):
-                anchor_result = resolve_gsed_anchor(
-                    tracer,
-                    gsed_meta,
-                    allow_centroid_fallback=False,
-                )
-                reach_info = anchor_result.get("reach_info")
-                if _has_valid_reach_info(reach_info):
-                    anchor_lon = anchor_result.get("longitude")
-                    anchor_lat = anchor_result.get("latitude")
-                    basin_result = tracer.get_upstream_basin_from_reach(
-                        float(anchor_lon),
-                        float(anchor_lat),
-                        reach_info,
-                    )
-
-        if basin_result is None:
-            basin_result = tracer.get_upstream_basin(
-                lon, lat, reported_area=reported_area
-            )
-
-        if source_token == "gsed":
-            area_error = _compute_area_error(
-                reported_area,
-                basin_result.get("uparea_merit"),
-            )
-            if np.isfinite(area_error):
-                basin_result["area_error"] = area_error
+        basin_result = tracer.get_upstream_basin(
+            lon, lat, reported_area=reported_area
+        )
 
         basin_status, basin_flag = classify_basin_result(
             basin_id=basin_result["basin_id"],
@@ -359,9 +319,6 @@ def main():
     if not S3_CSV.is_file():
         logger.error("s3 CSV not found: %s", S3_CSV)
         return 1
-    if not MERIT_DIR.is_dir():
-        logger.error("MERIT dir not found: %s", MERIT_DIR)
-        return 1
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -370,41 +327,17 @@ def main():
     stations = stations.reset_index(drop=True)
     stations.insert(0, "station_id", stations.index)
     stations = stations.dropna(subset=["lon", "lat"]).copy()
+    n_total = len(stations)
 
-    if not RESUME and PARTIAL_CSV.exists():
-        PARTIAL_CSV.unlink()
-        logger.info("Removed stale partial CSV: %s", PARTIAL_CSV)
+    if "reported_area" not in stations.columns:
+        stations["reported_area"] = np.nan
 
-    completed_station_ids = set()
-    if RESUME and PARTIAL_CSV.is_file():
-        partial_df = pd.read_csv(PARTIAL_CSV, usecols=["station_id"])
-        completed_station_ids = set(partial_df["station_id"].dropna().astype(int).tolist())
-        logger.info("Resume mode: found %d completed stations in %s", len(completed_station_ids), PARTIAL_CSV)
-        stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
-
-    n_pending = len(stations)
-    n_total = len(pd.read_csv(S3_CSV).dropna(subset=["lon", "lat"]))
-    logger.info("Loaded %d stations (%d pending)", n_total, n_pending)
-    if n_pending == 0:
-        logger.info("No pending stations to process")
-
-    # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
-    stations_sorted = stations.sort_values("lon").reset_index(drop=True)
-
-    if "reported_area" not in stations_sorted.columns:
-        stations_sorted["reported_area"] = np.nan
-
-    if "source" in stations_sorted.columns:
-        stations_sorted["source"] = (
-            stations_sorted["source"].fillna("").astype(str).map(lambda x: x.strip())
+    if "source" in stations.columns:
+        stations["source"] = (
+            stations["source"].fillna("").astype(str).map(lambda x: x.strip())
         )
     else:
-        stations_sorted["source"] = ""
-
-    # 即使误用了旧版 s3 CSV，也不要让 RiverSed 的 reported_area 进入 MERIT
-    # 匹配评分；RiverSed 在 basin 主线下始终只按坐标匹配。
-    riversed_mask = stations_sorted["source"].str.lower().eq("riversed")
-    stations_sorted.loc[riversed_mask, "reported_area"] = np.nan
+        stations["source"] = ""
 
     source_text_columns = {
         "station_name": "source_station_name",
@@ -412,57 +345,58 @@ def main():
         "source_station_id": "source_station_id",
     }
     for input_col, output_col in source_text_columns.items():
-        if input_col in stations_sorted.columns:
-            stations_sorted[output_col] = (
-                stations_sorted[input_col]
+        if input_col in stations.columns:
+            stations[output_col] = (
+                stations[input_col]
                 .fillna("")
                 .astype(str)
                 .map(lambda x: x.strip())
             )
         else:
-            stations_sorted[output_col] = ""
+            stations[output_col] = ""
 
-    stations_sorted["gsed_r_id"] = ""
-    gsed_mask = stations_sorted["source"].str.lower().eq("gsed")
-    gsed_metadata = {}
-    if gsed_mask.any():
-        gsed_candidate_ids = stations_sorted["source_station_id"].where(
-            stations_sorted["source_station_id"].ne(""),
-            stations_sorted["source_station_name"],
+    no_basin_mask = stations["source"].map(should_skip_basin_matching)
+    stations.loc[no_basin_mask, "reported_area"] = np.nan
+
+    if not RESUME and PARTIAL_CSV.exists():
+        PARTIAL_CSV.unlink()
+        logger.info("Removed stale partial CSV: %s", PARTIAL_CSV)
+
+    completed_station_ids = set()
+    if RESUME and PARTIAL_CSV.is_file():
+        no_basin_station_ids = set(
+            stations.loc[no_basin_mask, "station_id"].dropna().astype(int).tolist()
         )
-        stations_sorted.loc[gsed_mask, "gsed_r_id"] = gsed_candidate_ids.loc[gsed_mask]
-        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].map(normalize_gsed_rid)
-        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].fillna("")
-        target_rids = [
-            rid
-            for rid in stations_sorted.loc[gsed_mask, "gsed_r_id"].tolist()
-            if rid
-        ]
-        if target_rids:
-            if GSED_SHP.is_file():
-                try:
-                    gsed_metadata = load_gsed_reach_metadata(
-                        GSED_SHP,
-                        target_rids=target_rids,
-                    )
+        if no_basin_station_ids:
+            partial_all = pd.read_csv(PARTIAL_CSV)
+            if "station_id" in partial_all.columns:
+                partial_station_ids = pd.to_numeric(partial_all["station_id"], errors="coerce")
+                stale_mask = partial_station_ids.isin(no_basin_station_ids)
+                n_stale = int(stale_mask.sum())
+                if n_stale:
+                    partial_all = partial_all.loc[~stale_mask].copy()
+                    if len(partial_all):
+                        partial_all.to_csv(PARTIAL_CSV, index=False)
+                    else:
+                        PARTIAL_CSV.unlink()
                     logger.info(
-                        "Loaded GSED reach hints for %d/%d pending reaches from %s",
-                        len(gsed_metadata),
-                        len(set(target_rids)),
-                        GSED_SHP,
+                        "Resume mode: removed %d stale no-basin source rows from %s",
+                        n_stale,
+                        PARTIAL_CSV,
                     )
-                except Exception:
-                    logger.exception(
-                        "Failed to load GSED reach hints from %s; "
-                        "falling back to point-based matching for GSED.",
-                        GSED_SHP,
-                    )
-            else:
-                logger.warning(
-                    "GSED shapefile not found: %s; falling back to point-based "
-                    "matching for GSED.",
-                    GSED_SHP,
-                )
+        if PARTIAL_CSV.is_file():
+            partial_df = pd.read_csv(PARTIAL_CSV, usecols=["station_id"])
+            completed_station_ids = set(partial_df["station_id"].dropna().astype(int).tolist())
+            logger.info("Resume mode: found %d completed stations in %s", len(completed_station_ids), PARTIAL_CSV)
+            stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
+
+    n_pending = len(stations)
+    logger.info("Loaded %d stations (%d pending)", n_total, n_pending)
+    if n_pending == 0:
+        logger.info("No pending stations to process")
+
+    # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
+    stations_sorted = stations.sort_values("lon").reset_index(drop=True)
 
     record_columns = [
         "station_id",
@@ -473,12 +407,16 @@ def main():
         "source_station_name",
         "source_river_name",
         "source_station_id",
-        "gsed_r_id",
     ]
-    station_records = stations_sorted[record_columns].to_dict(orient="records")
-    for station in station_records:
-        gsed_r_id = station.get("gsed_r_id", "")
-        station["gsed_meta"] = gsed_metadata.get(gsed_r_id) if gsed_r_id else None
+    pending_no_basin_mask = stations_sorted["source"].map(should_skip_basin_matching)
+    no_basin_records = stations_sorted.loc[pending_no_basin_mask, record_columns].to_dict(orient="records")
+    station_records = stations_sorted.loc[~pending_no_basin_mask, record_columns].to_dict(orient="records")
+
+    if no_basin_records:
+        logger.info(
+            "Skipping MERIT basin tracing for %d remote-sensing / reach-scale source rows",
+            len(no_basin_records),
+        )
 
     chunk_size = BATCH_SIZE
     chunks = [
@@ -487,6 +425,10 @@ def main():
     ]
     actual_workers = min(N_WORKERS, len(chunks))
     logger.info("Splitting into %d batches (size=%d) for %d workers", len(chunks), chunk_size, actual_workers)
+
+    if chunks and not MERIT_DIR.is_dir():
+        logger.error("MERIT dir not found: %s", MERIT_DIR)
+        return 1
 
     # ── 4. 并行追溯 ──────────────────────────────────────────────────────────
     args_list = [(str(MERIT_DIR), str(BASIN_TRACER_DIR), chunk) for chunk in chunks]
@@ -499,13 +441,34 @@ def main():
     pbar.n = len(completed_station_ids)
     pbar.refresh()
 
+    processed_count = len(completed_station_ids)
+    if no_basin_records:
+        no_basin_results = [
+            _build_no_basin_match_result(station)
+            for station in no_basin_records
+        ]
+        no_basin_df = _chunk_to_partial_df(no_basin_results, include_geometry=SAVE_GPKG)
+        no_basin_df.to_csv(
+            PARTIAL_CSV,
+            mode="a",
+            index=False,
+            header=not PARTIAL_CSV.exists(),
+        )
+        processed_count += len(no_basin_results)
+        pbar.n = processed_count
+        pbar.refresh()
+        logger.info(
+            "Wrote no-basin placeholder rows for %d stations",
+            len(no_basin_results),
+        )
+
     # 内存监控间隔（秒）
     MEM_LOG_INTERVAL = 30
     last_mem_log = time.time()
     peak_total_mb = 0.0
 
     with counter.get_lock():
-        counter.value = len(completed_station_ids)
+        counter.value = processed_count
 
     if args_list:
         with mp.Pool(processes=actual_workers,
