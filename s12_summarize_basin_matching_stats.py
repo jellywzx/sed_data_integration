@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from basin_policy import REACH_SCALE_POLICY_FLAG, REACH_SCALE_POLICY_SOURCES
+from basin_policy import NO_BASIN_MATCH_SOURCES, should_skip_basin_matching
 from pipeline_paths import (
     S7_CLUSTER_RESOLUTION_CATALOG_CSV,
     S7_CLUSTER_STATION_CATALOG_CSV,
@@ -32,7 +32,6 @@ STATION_CATALOG_PATH = ROOT / S7_CLUSTER_STATION_CATALOG_CSV
 RESOLUTION_CATALOG_PATH = ROOT / S7_CLUSTER_RESOLUTION_CATALOG_CSV
 SUMMARY_TXT_PATH = ROOT / "scripts_basin_test/output/s12_basin_matching_summary.txt"
 SUMMARY_CSV_PREFIX = ROOT / "scripts_basin_test/output/s12_basin_matching"
-REACH_SCALE_SOURCE_SET = frozenset(str(name).strip() for name in REACH_SCALE_POLICY_SOURCES)
 
 
 def _ensure_required_columns(df, required, label):
@@ -54,18 +53,18 @@ def _split_sources_used(value):
     return [part.strip() for part in text.split("|") if part.strip()]
 
 
-def _mark_reach_scale_sources(df):
+def _mark_no_basin_match_sources(df):
     work = df.copy()
     if "sources_used" not in work.columns:
-        work["has_reach_scale_source"] = False
-        work["reach_scale_sources_used"] = ""
+        work["has_no_basin_match_source"] = False
+        work["no_basin_match_sources_used"] = ""
         return work
 
     parsed = work["sources_used"].map(_split_sources_used)
-    work["reach_scale_sources_used"] = parsed.map(
-        lambda items: "|".join(sorted(src for src in items if src in REACH_SCALE_SOURCE_SET))
+    work["no_basin_match_sources_used"] = parsed.map(
+        lambda items: "|".join(sorted(src for src in items if should_skip_basin_matching(src)))
     )
-    work["has_reach_scale_source"] = work["reach_scale_sources_used"].astype(str).str.strip() != ""
+    work["has_no_basin_match_source"] = work["no_basin_match_sources_used"].astype(str).str.strip() != ""
     return work
 
 
@@ -120,41 +119,17 @@ def _format_count_lines(df, label_col, count_col):
     return lines
 
 
-def _override_by_source_table(df, count_name):
-    if "reach_scale_sources_used" not in df.columns:
-        return pd.DataFrame(columns=["source_name", count_name, "fraction", "percent"])
-
-    work = df.copy()
-    work = work[_clean_text(work["basin_flag"]) == REACH_SCALE_POLICY_FLAG].copy()
-    if len(work) == 0:
-        return pd.DataFrame(columns=["source_name", count_name, "fraction", "percent"])
-
-    rows = []
-    for item in work["reach_scale_sources_used"].tolist():
-        for source_name in _split_sources_used(item):
-            rows.append({"source_name": source_name})
-
-    if not rows:
-        return pd.DataFrame(columns=["source_name", count_name, "fraction", "percent"])
-
-    counts = pd.DataFrame(rows)["source_name"].value_counts().rename_axis("source_name").reset_index(name=count_name)
-    total = int(counts[count_name].sum())
-    counts["fraction"] = counts[count_name] / float(total) if total else 0.0
-    counts["percent"] = counts["fraction"] * 100.0
-    return counts
-
-
 def build_summary_tables(station_catalog, resolution_catalog):
-    station_catalog = _mark_reach_scale_sources(station_catalog)
-    resolution_catalog = _mark_reach_scale_sources(resolution_catalog)
+    station_catalog = _mark_no_basin_match_sources(station_catalog)
+    resolution_catalog = _mark_no_basin_match_sources(resolution_catalog)
     _ensure_required_columns(
         station_catalog,
-        ["cluster_uid", "cluster_id", "basin_status", "basin_flag", "has_reach_scale_source"],
+        ["cluster_uid", "cluster_id", "basin_status", "basin_flag", "has_no_basin_match_source"],
         "station catalog",
     )
     _ensure_required_columns(
         resolution_catalog,
-        ["cluster_uid", "cluster_id", "resolution", "basin_status", "basin_flag", "has_reach_scale_source"],
+        ["cluster_uid", "cluster_id", "resolution", "basin_status", "basin_flag", "has_no_basin_match_source"],
         "resolution catalog",
     )
 
@@ -176,14 +151,12 @@ def build_summary_tables(station_catalog, resolution_catalog):
 
     resolution_by_status = _resolution_status_table(resolution_catalog)
     resolution_by_flag = _resolution_flag_table(resolution_catalog)
-    reach_scale_station_catalog = station_catalog[station_catalog["has_reach_scale_source"]].copy()
-    reach_scale_resolution_catalog = resolution_catalog[resolution_catalog["has_reach_scale_source"]].copy()
-    reach_scale_station_status = _count_table(reach_scale_station_catalog, "basin_status", "cluster_count")
-    reach_scale_station_flag = _count_table(reach_scale_station_catalog, "basin_flag", "cluster_count")
-    reach_scale_resolution_status = _count_table(reach_scale_resolution_catalog, "basin_status", "row_count")
-    reach_scale_resolution_flag = _count_table(reach_scale_resolution_catalog, "basin_flag", "row_count")
-    station_override_by_source = _override_by_source_table(reach_scale_station_catalog, "cluster_count")
-    resolution_override_by_source = _override_by_source_table(reach_scale_resolution_catalog, "row_count")
+    no_basin_match_station_catalog = station_catalog[station_catalog["has_no_basin_match_source"]].copy()
+    no_basin_match_resolution_catalog = resolution_catalog[resolution_catalog["has_no_basin_match_source"]].copy()
+    no_basin_match_station_status = _count_table(no_basin_match_station_catalog, "basin_status", "cluster_count")
+    no_basin_match_station_flag = _count_table(no_basin_match_station_catalog, "basin_flag", "cluster_count")
+    no_basin_match_resolution_status = _count_table(no_basin_match_resolution_catalog, "basin_status", "row_count")
+    no_basin_match_resolution_flag = _count_table(no_basin_match_resolution_catalog, "basin_flag", "row_count")
 
     return {
         "station_catalog": station_catalog,
@@ -196,14 +169,12 @@ def build_summary_tables(station_catalog, resolution_catalog):
         "unresolved_resolution_flag": unresolved_resolution_flag,
         "resolution_by_status": resolution_by_status,
         "resolution_by_flag": resolution_by_flag,
-        "reach_scale_station_catalog": reach_scale_station_catalog,
-        "reach_scale_resolution_catalog": reach_scale_resolution_catalog,
-        "reach_scale_station_status": reach_scale_station_status,
-        "reach_scale_station_flag": reach_scale_station_flag,
-        "reach_scale_resolution_status": reach_scale_resolution_status,
-        "reach_scale_resolution_flag": reach_scale_resolution_flag,
-        "station_override_by_source": station_override_by_source,
-        "resolution_override_by_source": resolution_override_by_source,
+        "no_basin_match_station_catalog": no_basin_match_station_catalog,
+        "no_basin_match_resolution_catalog": no_basin_match_resolution_catalog,
+        "no_basin_match_station_status": no_basin_match_station_status,
+        "no_basin_match_station_flag": no_basin_match_station_flag,
+        "no_basin_match_resolution_status": no_basin_match_resolution_status,
+        "no_basin_match_resolution_flag": no_basin_match_resolution_flag,
     }
 
 
@@ -225,15 +196,14 @@ def write_summary_text(out_path, station_catalog, resolution_catalog, tables):
     lines.append("Unresolved Cluster Internal Breakdown")
     lines.extend(_format_count_lines(tables["unresolved_station_flag"], "basin_flag", "cluster_count"))
     lines.append("")
-    lines.append("Reach-Scale Source Cluster Summary ({})".format(", ".join(REACH_SCALE_POLICY_SOURCES)))
-    lines.append("  - total reach-scale clusters: {}".format(len(tables["reach_scale_station_catalog"])))
-    lines.extend(_format_count_lines(tables["reach_scale_station_status"], "basin_status", "cluster_count"))
+    lines.append("No-Basin-Match Source Cluster Summary ({})".format(", ".join(NO_BASIN_MATCH_SOURCES)))
+    lines.append("  - policy: observations are kept, MERIT basin assignment is skipped")
+    lines.append("  - expected labels: basin_status=unresolved, basin_flag=no_match")
+    lines.append("  - total no-basin-match clusters: {}".format(len(tables["no_basin_match_station_catalog"])))
+    lines.extend(_format_count_lines(tables["no_basin_match_station_status"], "basin_status", "cluster_count"))
     lines.append("")
-    lines.append("Reach-Scale Source Cluster Flags")
-    lines.extend(_format_count_lines(tables["reach_scale_station_flag"], "basin_flag", "cluster_count"))
-    lines.append("")
-    lines.append("reach_product_offset_ok Cluster Breakdown by Source")
-    lines.extend(_format_count_lines(tables["station_override_by_source"], "source_name", "cluster_count"))
+    lines.append("No-Basin-Match Source Cluster Flags")
+    lines.extend(_format_count_lines(tables["no_basin_match_station_flag"], "basin_flag", "cluster_count"))
     lines.append("")
     lines.append("Resolution-Level Summary")
     lines.append("  - total cluster-resolution rows: {}".format(len(resolution_catalog)))
@@ -245,15 +215,14 @@ def write_summary_text(out_path, station_catalog, resolution_catalog, tables):
     lines.append("Unresolved Resolution-Row Internal Breakdown")
     lines.extend(_format_count_lines(tables["unresolved_resolution_flag"], "basin_flag", "row_count"))
     lines.append("")
-    lines.append("Reach-Scale Source Resolution Summary ({})".format(", ".join(REACH_SCALE_POLICY_SOURCES)))
-    lines.append("  - total reach-scale cluster-resolution rows: {}".format(len(tables["reach_scale_resolution_catalog"])))
-    lines.extend(_format_count_lines(tables["reach_scale_resolution_status"], "basin_status", "row_count"))
+    lines.append("No-Basin-Match Source Resolution Summary ({})".format(", ".join(NO_BASIN_MATCH_SOURCES)))
+    lines.append("  - policy: observations are kept, MERIT basin assignment is skipped")
+    lines.append("  - expected labels: basin_status=unresolved, basin_flag=no_match")
+    lines.append("  - total no-basin-match cluster-resolution rows: {}".format(len(tables["no_basin_match_resolution_catalog"])))
+    lines.extend(_format_count_lines(tables["no_basin_match_resolution_status"], "basin_status", "row_count"))
     lines.append("")
-    lines.append("Reach-Scale Source Resolution Flags")
-    lines.extend(_format_count_lines(tables["reach_scale_resolution_flag"], "basin_flag", "row_count"))
-    lines.append("")
-    lines.append("reach_product_offset_ok Resolution Breakdown by Source")
-    lines.extend(_format_count_lines(tables["resolution_override_by_source"], "source_name", "row_count"))
+    lines.append("No-Basin-Match Source Resolution Flags")
+    lines.extend(_format_count_lines(tables["no_basin_match_resolution_flag"], "basin_flag", "row_count"))
     lines.append("")
     lines.append("Resolution x Basin Status")
     for row in tables["resolution_by_status"].itertuples(index=False):
@@ -282,12 +251,10 @@ def write_summary_csvs(prefix, tables):
         "resolution_unresolved_flag": prefix.with_name(prefix.name + "_resolution_unresolved_flag.csv"),
         "resolution_by_status": prefix.with_name(prefix.name + "_resolution_by_status.csv"),
         "resolution_by_flag": prefix.with_name(prefix.name + "_resolution_by_flag.csv"),
-        "reach_scale_station_status": prefix.with_name(prefix.name + "_reach_scale_station_status.csv"),
-        "reach_scale_station_flag": prefix.with_name(prefix.name + "_reach_scale_station_flag.csv"),
-        "reach_scale_resolution_status": prefix.with_name(prefix.name + "_reach_scale_resolution_status.csv"),
-        "reach_scale_resolution_flag": prefix.with_name(prefix.name + "_reach_scale_resolution_flag.csv"),
-        "station_override_by_source": prefix.with_name(prefix.name + "_reach_scale_station_override_by_source.csv"),
-        "resolution_override_by_source": prefix.with_name(prefix.name + "_reach_scale_resolution_override_by_source.csv"),
+        "no_basin_match_station_status": prefix.with_name(prefix.name + "_no_basin_match_station_status.csv"),
+        "no_basin_match_station_flag": prefix.with_name(prefix.name + "_no_basin_match_station_flag.csv"),
+        "no_basin_match_resolution_status": prefix.with_name(prefix.name + "_no_basin_match_resolution_status.csv"),
+        "no_basin_match_resolution_flag": prefix.with_name(prefix.name + "_no_basin_match_resolution_flag.csv"),
     }
     tables["station_status"].to_csv(outputs["station_status"], index=False)
     tables["station_flag"].to_csv(outputs["station_flag"], index=False)
@@ -297,12 +264,10 @@ def write_summary_csvs(prefix, tables):
     tables["unresolved_resolution_flag"].to_csv(outputs["resolution_unresolved_flag"], index=False)
     tables["resolution_by_status"].to_csv(outputs["resolution_by_status"], index=False)
     tables["resolution_by_flag"].to_csv(outputs["resolution_by_flag"], index=False)
-    tables["reach_scale_station_status"].to_csv(outputs["reach_scale_station_status"], index=False)
-    tables["reach_scale_station_flag"].to_csv(outputs["reach_scale_station_flag"], index=False)
-    tables["reach_scale_resolution_status"].to_csv(outputs["reach_scale_resolution_status"], index=False)
-    tables["reach_scale_resolution_flag"].to_csv(outputs["reach_scale_resolution_flag"], index=False)
-    tables["station_override_by_source"].to_csv(outputs["station_override_by_source"], index=False)
-    tables["resolution_override_by_source"].to_csv(outputs["resolution_override_by_source"], index=False)
+    tables["no_basin_match_station_status"].to_csv(outputs["no_basin_match_station_status"], index=False)
+    tables["no_basin_match_station_flag"].to_csv(outputs["no_basin_match_station_flag"], index=False)
+    tables["no_basin_match_resolution_status"].to_csv(outputs["no_basin_match_resolution_status"], index=False)
+    tables["no_basin_match_resolution_flag"].to_csv(outputs["no_basin_match_resolution_flag"], index=False)
     return outputs
 
 
