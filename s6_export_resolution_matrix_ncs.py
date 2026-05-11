@@ -65,6 +65,7 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_INPUT = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_OUT_DIR = PROJECT_ROOT / S6_MATRIX_DIR
 DEFAULT_RESOLUTIONS = ("daily", "monthly", "annual")
+DEFAULT_WORKERS = 24
 
 
 def _normalize_resolution(value):
@@ -682,8 +683,8 @@ def main():
         "--workers",
         "-w",
         type=int,
-        default=8,
-        help="parallel workers for per-cluster series merge; default: 8",
+        default=DEFAULT_WORKERS,
+        help="parallel workers for per-cluster series merge; default: {}".format(DEFAULT_WORKERS),
     )
     args = ap.parse_args()
 

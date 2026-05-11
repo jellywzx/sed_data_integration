@@ -740,8 +740,9 @@ def build_cluster_series(cid, resolution, recs):
             unit_issues.extend(file_unit_issues)
         if df is not None and len(df) > 0:
             metrics = compute_quality_metrics(df)
-            df["_source"] = source
-            df["_source_station_index"] = int(source_station_index)
+            merge_df = df.loc[df[["Q", "SSC", "SSL"]].notna().any(axis=1)].copy()
+            merge_df["_source"] = source
+            merge_df["_source_station_index"] = int(source_station_index)
             scored.append(
                 {
                     "quality_score": metrics["quality_score"],
@@ -752,10 +753,11 @@ def build_cluster_series(cid, resolution, recs):
                     "valid_flag_count": metrics["valid_flag_count"],
                     "n_time_rows": metrics["n_time_rows"],
                     "n_nonempty_rows": metrics["n_nonempty_rows"],
-                    "df": df,
+                    "df": merge_df,
                 }
             )
-            all_dates.update(df["date"].tolist())
+            if len(merge_df) > 0:
+                all_dates.update(merge_df["date"].tolist())
     if not scored:
         return (None, unit_issues)
 
