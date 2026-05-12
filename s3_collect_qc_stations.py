@@ -34,7 +34,13 @@ from multiprocessing import Pool, cpu_count
 import numpy as np
 import pandas as pd
 from basin_policy import should_skip_basin_matching
-from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root
+from pipeline_paths import (
+    S2_ORGANIZED_DIR,
+    S3_COLLECTED_CSV,
+    RESOLUTION_DIRS,
+    get_log_path,
+    get_output_r_root,
+)
 from qc_contract import LAT_VAR_NAMES, LON_VAR_NAMES, read_scalar_variable, read_station_metadata
 
 try:
@@ -293,7 +299,7 @@ def _enable_script_logging():
     import sys
     from datetime import datetime
 
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(Path(__file__).resolve().parent, "{}_log.txt".format(Path(__file__).stem))
     if log_path.exists():
         try:
             log_path.unlink()

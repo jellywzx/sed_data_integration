@@ -20,13 +20,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from pipeline_paths import OUTPUT_LOG_DIR
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_R_ROOT = SCRIPT_DIR.parent
 OUTPUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test" / "output"
 ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
-DEFAULT_LOG_FILE = SCRIPT_DIR / "run_s1_to_s7_basin_pipeline.log"
+DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s7_basin_pipeline.log"
 STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7")
 
 
@@ -381,7 +383,7 @@ def parse_args():
     parser.add_argument(
         "--log-file",
         default=str(DEFAULT_LOG_FILE),
-        help="Combined pipeline log file path. Default: scripts_basin_test/run_s1_to_s7_basin_pipeline.log",
+        help="Combined pipeline log file path. Default: scripts_basin_test/output/logs/run_s1_to_s7_basin_pipeline.log",
     )
     parser.add_argument("--start-at", choices=STAGES, default="s1", help="First logical stage to run.")
     parser.add_argument("--end-at", choices=STAGES, default="s7", help="Last logical stage to run.")

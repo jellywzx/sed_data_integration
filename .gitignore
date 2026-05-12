@@ -1,8 +1,11 @@
 *.csv
 *.txt
+*.log
+*_log.txt
 *.png
 *.html
 /output
+/output/logs/
 /check_output
 __pycache__/
 *.pyc

@@ -101,7 +101,12 @@ import pandas as pd
 import xarray as xr
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from pipeline_paths import S1_REVIEW_OVERRIDES_CSV, S1_REVIEW_QUEUE_CSV, S1_VERIFY_CSV
+from pipeline_paths import (
+    S1_REVIEW_OVERRIDES_CSV,
+    S1_REVIEW_QUEUE_CSV,
+    S1_VERIFY_CSV,
+    get_log_path,
+)
 import time
 from tqdm import tqdm
 from xarray.coding.times import decode_cf_datetime
@@ -763,7 +768,7 @@ def _enable_script_logging():
     import sys
     from datetime import datetime
 
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(SCRIPT_DIR, "{}_log.txt".format(Path(__file__).stem))
     if log_path.exists():
         try:
             log_path.unlink()

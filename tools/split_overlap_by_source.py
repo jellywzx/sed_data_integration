@@ -11,9 +11,16 @@
 import argparse
 import csv
 import re
+import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = SCRIPT_DIR.parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from pipeline_paths import get_log_path
+
 DEFAULT_INPUT = Path(__file__).resolve().parent.parent.parent / "output/03_merge" / "overlap_for_manual_choice.csv"
 
 
@@ -34,7 +41,7 @@ def _enable_script_logging():
     import sys
     from datetime import datetime
 
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(SCRIPTS_DIR, "{}_log.txt".format(Path(__file__).stem))
     if log_path.exists():
         try:
             log_path.unlink()

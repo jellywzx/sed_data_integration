@@ -66,6 +66,7 @@ from pipeline_paths import (
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
     RESOLUTION_DIRS,
+    get_log_path,
 )
 from qc_contract import ensure_stage1_alias_parity
 from time_resolution import (
@@ -405,7 +406,7 @@ def _enable_script_logging():
     import sys
     from datetime import datetime
 
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(SCRIPT_DIR, "{}_log.txt".format(Path(__file__).stem))
     if log_path.exists():
         try:
             log_path.unlink()

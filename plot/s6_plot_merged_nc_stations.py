@@ -34,6 +34,7 @@ for _p in (_PLOT_DIR, _SCRIPTS_DIR):
         sys.path.insert(0, str(_p))
 
 from s6_plot_common import DEFAULT_NC, DEFAULT_OUT_DIR
+from pipeline_paths import get_log_path
 
 _LOG_TEE_ENABLED = False
 
@@ -43,7 +44,7 @@ def _enable_logging():
     if _LOG_TEE_ENABLED:
         return
 
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(_SCRIPTS_DIR, "{}_log.txt".format(Path(__file__).stem))
     try:
         log_path.unlink(missing_ok=True)
     except Exception:

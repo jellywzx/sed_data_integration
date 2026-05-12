@@ -61,6 +61,7 @@ from basin_policy import (
 )
 from pipeline_paths import (
     get_output_r_root,
+    get_log_path,
     S5_BASIN_CLUSTERED_CSV,
     S6_MERGED_NC,
     S6_QUALITY_ORDER_CSV,
@@ -220,7 +221,7 @@ def _enable_script_logging():
     global _LOG_TEE_ENABLED
     if _LOG_TEE_ENABLED:
         return
-    log_path = Path(__file__).resolve().with_name("{}_log.txt".format(Path(__file__).stem))
+    log_path = get_log_path(SCRIPT_DIR, "{}_log.txt".format(Path(__file__).stem))
     if log_path.exists():
         try:
             log_path.unlink()
