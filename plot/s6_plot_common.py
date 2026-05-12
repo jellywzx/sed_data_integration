@@ -518,7 +518,14 @@ def load_basin_stats(nc_path=None):
             ds.close()
 
     if not match_quality_labels:
-        match_quality_labels = {0: "distance_only", 1: "area_matched", 2: "failed", -1: "unknown"}
+        match_quality_labels = {
+            0: "distance_only",
+            1: "area_matched",
+            2: "area_approximate",
+            3: "area_mismatch",
+            4: "failed",
+            -1: "unknown",
+        }
 
     return {
         "lat": lat,

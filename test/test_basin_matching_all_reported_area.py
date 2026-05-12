@@ -5,6 +5,10 @@ test_basin_matching_all_reported_area.py
 对 s3 CSV 中所有 reported_area 有值且坐标完整的站点进行全量流域匹配测试，
 比较“面积辅助匹配”和“纯坐标最近邻”两种策略的差异。
 
+注意：
+  RiverSed、GSED、Dethier 等不参与 basin matching 的源不应进入这个测试集，
+  因为它们不再把源产品中的面积信息作为 reported_area 传给 basin tracer。
+
 输出：
   - 控制台打印各数据集的匹配质量统计
   - CSV 文件：每行一个站点，包含人工复核所需的关键对比字段
@@ -16,6 +20,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+
+from basin_policy import should_skip_basin_matching
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -193,6 +199,15 @@ def run_test(s3_csv, merit_dir, out_csv):
         logger.error("Missing required columns: %s", ", ".join(missing_cols))
         sys.exit(1)
 
+    skip_mask = df["source"].map(should_skip_basin_matching)
+    skip_with_area = df.loc[skip_mask & df["reported_area"].notna()]
+    if not skip_with_area.empty:
+        logger.error(
+            "No-basin-match source rows must not carry reported_area in the basin mainline. "
+            "Please re-run s3_collect_qc_stations.py after applying the source skip policy."
+        )
+        sys.exit(1)
+
     # 仅保留 reported_area 有值、经纬度完整的记录
     df_target = df.dropna(subset=["lon", "lat", "reported_area"]).copy()
     if df_target.empty:
@@ -295,4 +310,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

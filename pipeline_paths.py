@@ -14,6 +14,7 @@ from pathlib import Path
 
 # ── 统一输出目录（相对 Output_r 根目录） ──────────────────────────────────────
 PIPELINE_OUTPUT_DIR     = "scripts_basin_test/output"
+OUTPUT_LOG_DIR          = "scripts_basin_test/output/logs"
 
 # ── 标准时间类型目录（s2 输出目录名）───────────────────────────────────────────
 # 说明：
@@ -122,3 +123,10 @@ def get_output_r_root(script_dir: Path) -> Path:
     if env_root:
         return Path(env_root).expanduser().resolve()
     return script_dir.parent.resolve()
+
+
+def get_log_path(script_dir: Path, log_name: str) -> Path:
+    """Return an output/logs path for a script log, creating the directory."""
+    log_dir = get_output_r_root(script_dir) / OUTPUT_LOG_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / log_name

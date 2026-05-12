@@ -60,14 +60,7 @@ RESOLUTION_CODES = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "ot
 RESOLUTION_NAMES = {v: k for k, v in RESOLUTION_CODES.items()}
 VAR_UNITS        = {"Q": "m³/s", "SSC": "mg/L", "SSL": "ton/day"}
 FLAG_LABELS      = {0: "good", 1: "est", 2: "suspect", 3: "bad", 9: "missing"}
-MATCH_LABELS     = {
-    0: "distance_only",
-    1: "area_matched",
-    2: "area_approximate",
-    3: "area_mismatch",
-    4: "failed",
-    -1: "unknown",
-}
+MATCH_LABELS     = {0: "distance_only", 1: "area_matched", 2: "failed", -1: "unknown"}
 MATRIX_FILES     = {
     "daily":   "s6_basin_matrix_daily.nc",
     "monthly": "s6_basin_matrix_monthly.nc",
@@ -187,9 +180,6 @@ def _read_station_meta(nc_path, uid):
             "n_upstream_reaches":  _i("n_upstream_reaches"),
             "basin_match_quality": MATCH_LABELS.get(
                 int(np.ma.asarray(ds.variables["basin_match_quality"][idx]).filled(-1)), "unknown"),
-            "basin_status":        _txt(ds.variables["basin_status"][idx]) if "basin_status" in ds.variables else "",
-            "basin_flag":          _txt(ds.variables["basin_flag"][idx]) if "basin_flag" in ds.variables else "",
-            "basin_distance_m":    _f("basin_distance_m") if "basin_distance_m" in ds.variables else np.nan,
             "sources_used":        _txt(ds.variables["sources_used"][idx]),
             "n_source_stations":   _i("n_source_stations_in_cluster"),
             "station_idx":         idx,
@@ -378,10 +368,6 @@ def _print_station(meta):
     _row("上游河段数",        str(nr) if nr >= 0 else _dash())
 
     _row("流域匹配质量",      meta["basin_match_quality"])
-    _row("流域状态",          meta.get("basin_status") or _dash())
-    _row("状态标记",          meta.get("basin_flag") or _dash())
-    bd = meta.get("basin_distance_m", np.nan)
-    _row("点到匹配河段距离",  "{:.1f} m".format(bd) if not np.isnan(bd) else _dash())
 
     srcs = meta["sources_used"]
     _row("数据来源",          " | ".join(srcs.split("|")) if srcs else _dash())

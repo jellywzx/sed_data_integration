@@ -144,19 +144,19 @@
 输出的发布级字段为：
 
 1. `basin_status = resolved | unresolved`
-2. `basin_flag = ok | reach_product_offset_ok | large_offset | area_mismatch | geometry_inconsistent | no_match`
+2. `basin_flag = ok | large_offset | area_mismatch | geometry_inconsistent | no_match`
 
 ### 4.4 当前判定顺序
 
 判定顺序是有优先级的，前面命中的分支会覆盖后面：
 
-1. `basin_id` 缺失或 `match_quality=failed` 时返回 `unresolved / no_match`
-2. `match_quality=area_mismatch` 时返回 `unresolved / area_mismatch`
-3. `distance_m <= 300` 时返回 `resolved / ok`
-4. `distance_m <= 1000` 且 `area_matched / area_approximate` 时返回 `resolved / ok`
-5. `distance_m <= 1000` 且 `point_in_local=True` 时返回 `resolved / ok`
-6. 若 `source in {GSED, RiverSed}`，且 `1000 < distance_m <= 5000` 且 `point_in_local=True`，则返回 `resolved / reach_product_offset_ok`
-7. `distance_m > 1000` 时返回 `unresolved / large_offset`
+1. `source in {RiverSed, GSED, Dethier}` 时不发布 MERIT basin assignment，返回 `unresolved / no_match`
+2. `basin_id` 缺失或 `match_quality=failed` 时返回 `unresolved / no_match`
+3. `match_quality=area_mismatch` 时返回 `unresolved / area_mismatch`
+4. `distance_m <= 300` 时返回 `resolved / ok`
+5. `distance_m <= 1000` 且 `area_matched / area_approximate` 时返回 `resolved / ok`
+6. `distance_m <= 1000` 且 `point_in_local=True` 时返回 `resolved / ok`
+7. 普通 matched stations 若 `distance_m > 1000`，则返回 `unresolved / large_offset`
 8. 其余未被接受的情况返回 `unresolved / geometry_inconsistent`
 
 ### 4.5 当前已删除的规则
@@ -246,11 +246,10 @@
 自动审核和人工抽样应重点关注：
 
 1. `large_offset`
-2. `reach_product_offset_ok`
-3. `area_mismatch`
-4. `geometry_inconsistent`
-5. `no_match`
-6. `unresolved`
+2. `area_mismatch`
+3. `geometry_inconsistent`
+4. `no_match`
+5. `unresolved`
 
 ### 8.2 推荐抽样分组
 
@@ -276,8 +275,8 @@
 3. `distance_m <= 300` 时返回 `resolved / ok`
 4. `distance_m <= 1000` 且 `area_matched / area_approximate` 时返回 `resolved / ok`
 5. `distance_m <= 1000` 且 `point_in_local=True` 时返回 `resolved / ok`
-6. `GSED / RiverSed` 且 `1000 < distance_m <= 5000` 且 `point_in_local=True` 时返回 `resolved / reach_product_offset_ok`
-7. `distance_m > 1000` 时返回 `unresolved / large_offset`
+6. `RiverSed / GSED / Dethier` 等 source 返回 `unresolved / no_match`
+7. 普通 matched stations 若 `distance_m > 1000`，则返回 `unresolved / large_offset`
 8. 名称字段中的 `estuary / delta / tidal / coastal` 等关键词，不再影响判定结果
 
 ---
