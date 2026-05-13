@@ -10,7 +10,8 @@ The polygon selection rule stays the same as before:
 
 Outputs:
   - a multi-layer GPKG with basin_daily / basin_monthly / basin_annual;
-  - optionally a local-catchment GPKG with basin_local_* layers.
+  - optionally, with --include-local-basins, a local-catchment GPKG with
+    basin_local_* layers.
 """
 
 import argparse
@@ -146,6 +147,11 @@ def main():
         default=str(_DEFAULT_LOCAL_OUT),
         help="optional output local-catchment GPKG path",
     )
+    ap.add_argument(
+        "--include-local-basins",
+        action="store_true",
+        help="Write optional local-catchment / local basin GPKG. Default: skip it.",
+    )
     args = ap.parse_args()
 
     if not HAS_GPD:
@@ -197,7 +203,12 @@ def main():
         count = int((basin_catalog["resolution"] == resolution).sum())
         print("basin_{} rows = {}".format(resolution, count))
 
-    if local_basin_gpkg.is_file():
+    if not args.include_local_basins:
+        if local_out_path.exists():
+            local_out_path.unlink()
+            print("Removed existing local basin GPKG: {}".format(local_out_path))
+        print("Skipped local basin GPKG because --include-local-basins was not set")
+    elif local_basin_gpkg.is_file():
         local_gpkg_path, local_catalog = _write_resolution_basin_gpkg(
             cluster_resolution_catalog=cluster_resolution_catalog,
             representatives=representatives,
