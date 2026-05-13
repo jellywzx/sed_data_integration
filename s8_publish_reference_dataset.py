@@ -29,7 +29,7 @@ import argparse
 import os
 import shutil
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -115,7 +115,7 @@ DEFAULT_SOURCE_STATIONS_GPKG = PROJECT_ROOT / RELEASE_SOURCE_STATIONS_GPKG
 DEFAULT_CLUSTER_BASINS_GPKG = PROJECT_ROOT / RELEASE_CLUSTER_BASINS_GPKG
 DEFAULT_VALIDATION_CSV = PROJECT_ROOT / RELEASE_VALIDATION_CSV
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / RELEASE_INVENTORY_CSV
-DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR / "example_reference_workflow.py"
+DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR /"tools"/ "example_reference_workflow.py"
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 # ---- s8 built-in runtime policy ----
 # 不想每次命令行输参数，就改这里。
@@ -130,11 +130,31 @@ DEFAULT_SKIP_OVERLAP_CANDIDATES = False
 DEFAULT_OVERLAP_CANDIDATES_MODE = "overlap-only"
 
 # 并行 worker 数。I/O 很重，不建议直接拉满 CPU。
-# 本地 SSD 可以试 12 或 16；网络盘建议 4 或 8。
-DEFAULT_OVERLAP_WORKERS = min(24, max(1, os.cpu_count() or 1))
+# 对大量 NetCDF 小文件读取，8 个 worker 通常比 24 个更稳定。
+DEFAULT_OVERLAP_WORKERS = min(8, max(1, os.cpu_count() or 1))
 
 # 每个 worker 最多保留多少 warning，避免日志过大。
 DEFAULT_OVERLAP_WARNING_LIMIT = 8
+
+# 大量小 group 并行时的任务批大小；过小会造成调度开销过高。
+DEFAULT_OVERLAP_CHUNKSIZE = 32
+
+# Worker 进程启动时一次性初始化，避免把大 catalog_lookup 重复塞进每个 payload。
+_OVERLAP_CATALOG_LOOKUP = None
+_OVERLAP_MODE = DEFAULT_OVERLAP_CANDIDATES_MODE
+_OVERLAP_WARNING_LIMIT = DEFAULT_OVERLAP_WARNING_LIMIT
+
+
+def _init_overlap_worker(catalog_lookup, mode, warning_limit):
+    global _OVERLAP_CATALOG_LOOKUP
+    global _OVERLAP_MODE
+    global _OVERLAP_WARNING_LIMIT
+
+    _OVERLAP_CATALOG_LOOKUP = catalog_lookup
+    _OVERLAP_MODE = mode
+    _OVERLAP_WARNING_LIMIT = warning_limit
+
+
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
 CORE_FILE_SPECS = (
@@ -531,15 +551,11 @@ def validate_overlap_candidates_sidecar(path):
 
 
 def _build_overlap_candidate_group_rows(payload):
-    (
-        cluster_id,
-        resolution,
-        group_records,
-        catalog_lookup,
-        mode,
-        warning_limit,
-    ) = payload
+    cluster_id, resolution, group_records = payload
 
+    catalog_lookup = _OVERLAP_CATALOG_LOOKUP or {}
+    mode = _OVERLAP_MODE
+    warning_limit = _OVERLAP_WARNING_LIMIT
     group = pd.DataFrame(group_records)
     group = group.sort_values(
         ["quality_rank", "source_station_index", "path"]
@@ -766,50 +782,80 @@ def build_overlap_candidates_sidecar(
     n_unreadable = 0
     n_groups_with_rows = 0
 
+
+    def _collect_group_result(result):
+        nonlocal n_unreadable
+        nonlocal n_groups_with_rows
+
+        group_rows = result.get("rows", [])
+        if group_rows:
+            rows.extend(group_rows)
+
+        if result.get("group_has_rows", False):
+            n_groups_with_rows += 1
+
+        n_unreadable += int(result.get("n_unreadable", 0) or 0)
+
+        for warning in result.get("warnings", []):
+            if len(warnings) < DEFAULT_OVERLAP_WARNING_LIMIT:
+                warnings.append(warning)
+
+
     group_cols = ["cluster_id", "resolution"]
     payloads = []
+    n_input_groups = 0
+    n_skipped_single_candidate_groups = 0
+
     for (cluster_id, resolution), group in quality.groupby(group_cols, sort=True):
+        n_input_groups += 1
+
+        # overlap-only 模式下，单 candidate group 不可能产生 overlap rows，直接跳过。
+        if mode == "overlap-only" and len(group) < 2:
+            n_skipped_single_candidate_groups += 1
+            continue
+
         payloads.append(
             (
                 int(cluster_id),
                 str(resolution),
                 group.to_dict("records"),
-                catalog_lookup,
-                mode,
-                DEFAULT_OVERLAP_WARNING_LIMIT,
             )
         )
 
     n_groups = len(payloads)
     workers = max(1, int(workers or 1))
 
+    # 单进程模式也初始化一次，保证 worker 函数逻辑一致。
+    _init_overlap_worker(catalog_lookup, mode, DEFAULT_OVERLAP_WARNING_LIMIT)
+
     if workers == 1 or n_groups <= 1:
-        results = [_build_overlap_candidate_group_rows(payload) for payload in payloads]
+        for payload in payloads:
+            _collect_group_result(_build_overlap_candidate_group_rows(payload))
     else:
         max_workers = min(workers, n_groups)
         print(
-            "Building overlap candidates with {} worker processes over {} cluster-resolution groups".format(
+            (
+                "Building overlap candidates with {} worker processes over {} submitted "
+                "cluster-resolution groups; skipped {} single-candidate groups"
+            ).format(
                 max_workers,
                 n_groups,
+                n_skipped_single_candidate_groups,
             ),
             flush=True,
         )
-        results = []
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_build_overlap_candidate_group_rows, payload) for payload in payloads]
-            for future in as_completed(futures):
-                results.append(future.result())
 
-    for result in results:
-        group_rows = result.get("rows", [])
-        if group_rows:
-            rows.extend(group_rows)
-        if result.get("group_has_rows", False):
-            n_groups_with_rows += 1
-        n_unreadable += int(result.get("n_unreadable", 0) or 0)
-        for warning in result.get("warnings", []):
-            if len(warnings) < DEFAULT_OVERLAP_WARNING_LIMIT:
-                warnings.append(warning)
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=_init_overlap_worker,
+            initargs=(catalog_lookup, mode, DEFAULT_OVERLAP_WARNING_LIMIT),
+        ) as executor:
+            for result in executor.map(
+                _build_overlap_candidate_group_rows,
+                payloads,
+                chunksize=DEFAULT_OVERLAP_CHUNKSIZE,
+            ):
+                _collect_group_result(result)
 
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -827,7 +873,14 @@ def build_overlap_candidates_sidecar(
     if not ok:
         return out_path, len(frame), "generated sidecar failed schema validation: {}".format(detail)
 
-    detail = "mode={} rows={} groups_with_rows={}/{}".format(mode, len(frame), n_groups_with_rows, n_groups)
+    detail = "mode={} rows={} groups_with_rows={}/{} input_groups={} skipped_single_candidate_groups={}".format(
+    mode,
+    len(frame),
+    n_groups_with_rows,
+    n_groups,
+    n_input_groups,
+    n_skipped_single_candidate_groups,
+    )   
     if n_unreadable:
         detail += "; unreadable_candidates={}".format(n_unreadable)
     if warnings:
