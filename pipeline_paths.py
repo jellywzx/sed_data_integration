@@ -90,6 +90,7 @@ RELEASE_CLIMATOLOGY_NC              = "scripts_basin_test/output/sed_reference_r
 RELEASE_STATION_CATALOG_CSV         = "scripts_basin_test/output/sed_reference_release/station_catalog.csv"
 RELEASE_SOURCE_STATION_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_station_catalog.csv"
 RELEASE_SOURCE_DATASET_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_dataset_catalog.csv"
+RELEASE_OVERLAP_CANDIDATES_CSV      = "scripts_basin_test/output/sed_reference_release/sed_reference_overlap_candidates.csv.gz"
 RELEASE_CLUSTER_POINTS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_points.gpkg"
 RELEASE_SOURCE_STATIONS_GPKG        = "scripts_basin_test/output/sed_reference_release/sed_reference_source_stations.gpkg"
 RELEASE_CLUSTER_BASINS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_basins.gpkg"

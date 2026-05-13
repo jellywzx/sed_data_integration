@@ -57,13 +57,16 @@ from pipeline_paths import (
     RELEASE_MATRIX_ANNUAL_NC,
     RELEASE_MATRIX_DAILY_NC,
     RELEASE_MATRIX_MONTHLY_NC,
+    RELEASE_OVERLAP_CANDIDATES_CSV,
     RELEASE_README_MD,
     RELEASE_SOURCE_DATASET_CATALOG_CSV,
     RELEASE_SOURCE_STATION_CATALOG_CSV,
     RELEASE_SOURCE_STATIONS_GPKG,
     RELEASE_STATION_CATALOG_CSV,
     RELEASE_VALIDATION_CSV,
+    S2_ORGANIZED_DIR,
     S6_CLIMATOLOGY_NC,
+    S6_QUALITY_ORDER_CSV,
     S6_MATRIX_DIR,
     S6_MERGED_NC,
     S7_CLUSTER_BASINS_GPKG,
@@ -71,6 +74,15 @@ from pipeline_paths import (
     S7_CLUSTER_STATION_CATALOG_CSV,
     S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV,
     get_output_r_root,
+)
+from qc_contract import (
+    FINAL_Q_FLAG_NAMES,
+    FINAL_SSC_FLAG_NAMES,
+    FINAL_SSL_FLAG_NAMES,
+    Q_VAR_NAMES,
+    SSC_VAR_NAMES,
+    SSL_VAR_NAMES,
+    TIME_VAR_NAMES,
 )
 
 try:
@@ -96,12 +108,15 @@ DEFAULT_RELEASE_README = PROJECT_ROOT / RELEASE_README_MD
 DEFAULT_STATION_CATALOG = PROJECT_ROOT / RELEASE_STATION_CATALOG_CSV
 DEFAULT_SOURCE_STATION_CATALOG = PROJECT_ROOT / RELEASE_SOURCE_STATION_CATALOG_CSV
 DEFAULT_SOURCE_DATASET_CATALOG = PROJECT_ROOT / RELEASE_SOURCE_DATASET_CATALOG_CSV
+DEFAULT_OVERLAP_CANDIDATES_CSV = PROJECT_ROOT / RELEASE_OVERLAP_CANDIDATES_CSV
 DEFAULT_CLUSTER_POINTS_GPKG = PROJECT_ROOT / RELEASE_CLUSTER_POINTS_GPKG
 DEFAULT_SOURCE_STATIONS_GPKG = PROJECT_ROOT / RELEASE_SOURCE_STATIONS_GPKG
 DEFAULT_CLUSTER_BASINS_GPKG = PROJECT_ROOT / RELEASE_CLUSTER_BASINS_GPKG
 DEFAULT_VALIDATION_CSV = PROJECT_ROOT / RELEASE_VALIDATION_CSV
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / RELEASE_INVENTORY_CSV
 DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR / "example_reference_workflow.py"
+DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
+ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
 CORE_FILE_SPECS = (
     ("master", RELEASE_MASTER_NC, "Authoritative record-level reference dataset"),
@@ -109,6 +124,56 @@ CORE_FILE_SPECS = (
     ("monthly", RELEASE_MATRIX_MONTHLY_NC, "Monthly station x time matrix for validation"),
     ("annual", RELEASE_MATRIX_ANNUAL_NC, "Annual station x time matrix for validation"),
     ("climatology", RELEASE_CLIMATOLOGY_NC, "Standalone climatology reference dataset"),
+)
+OVERLAP_CANDIDATES_FILE_NAME = Path(RELEASE_OVERLAP_CANDIDATES_CSV).name
+OVERLAP_CANDIDATE_COLUMNS = [
+    "cluster_uid",
+    "cluster_id",
+    "resolution",
+    "time",
+    "date",
+    "source",
+    "source_family",
+    "source_station_uid",
+    "source_station_index",
+    "source_station_native_id",
+    "source_station_name",
+    "source_station_river_name",
+    "source_station_paths",
+    "source_station_lat",
+    "source_station_lon",
+    "candidate_path",
+    "candidate_rank",
+    "candidate_quality_score",
+    "selected_flag",
+    "is_overlap",
+    "n_candidates_at_time",
+    "n_ranked_candidates_for_cluster_resolution",
+    "candidate_group_key",
+    "selection_reason",
+    "Q",
+    "SSC",
+    "SSL",
+    "Q_flag",
+    "SSC_flag",
+    "SSL_flag",
+    "Q_units",
+    "SSC_units",
+    "SSL_units",
+    "has_Q",
+    "has_SSC",
+    "has_SSL",
+    "method_notes",
+    "assumptions",
+]
+OVERLAP_CANDIDATE_REQUIRED_COLUMNS = set(OVERLAP_CANDIDATE_COLUMNS)
+OVERLAP_CANDIDATE_METHOD_NOTES = (
+    "candidate-level values rebuilt during s8 from s6_cluster_quality_order.csv "
+    "and source station NetCDF files; selected_flag follows s6 quality-rank fallback per date"
+)
+OVERLAP_CANDIDATE_ASSUMPTIONS = (
+    "dates are normalized to YYYY-MM-DD; overlap means at least two candidate source-station rows "
+    "with any Q/SSC/SSL value for the same cluster/resolution/date"
 )
 FULL_CHAIN_RERUN_HINT = (
     "Likely mixed-run outputs from different pipeline executions. "
@@ -204,6 +269,453 @@ def _write_csv(df, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     return path
+
+
+def classify_source_family(source):
+    text = "" if source is None else str(source)
+    low = text.lower()
+    if "usgs" in low:
+        return "USGS"
+    if "hydat" in low:
+        return "HYDAT"
+    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
+        return "satellite"
+    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
+        return "in_situ"
+    if any(token in low for token in ("compiled", "compilation", "secondary")):
+        return "secondary_compilation"
+    return "other"
+
+
+def _first_existing(columns, candidates):
+    column_set = set(columns)
+    for name in candidates:
+        if name in column_set:
+            return name
+    return None
+
+
+def _empty_overlap_candidates_frame():
+    return pd.DataFrame(columns=OVERLAP_CANDIDATE_COLUMNS)
+
+
+def _portable_candidate_path(path_text):
+    text = _clean_text(path_text)
+    if not text:
+        return ""
+    path = Path(text)
+    try:
+        resolved = path.resolve()
+        try:
+            return str(resolved.relative_to(ORGANIZED_ROOT))
+        except ValueError:
+            pass
+        marker = "output_resolution_organized"
+        parts = resolved.parts
+        for i, part in enumerate(parts):
+            if part == marker and i + 1 < len(parts):
+                return str(Path(*parts[i + 1:]))
+    except Exception:
+        pass
+    return text
+
+
+def _resolve_candidate_path(path_text):
+    text = _clean_text(path_text)
+    if not text:
+        return Path(text)
+    path = Path(text)
+    if not path.is_absolute():
+        return (ORGANIZED_ROOT / path).resolve()
+    if path.is_file():
+        return path
+    try:
+        marker = "output_resolution_organized"
+        parts = path.parts
+        for i, part in enumerate(parts):
+            if part == marker and i + 1 < len(parts):
+                candidate = (ORGANIZED_ROOT / Path(*parts[i + 1:])).resolve()
+                if candidate.is_file():
+                    return candidate
+    except Exception:
+        pass
+    return path
+
+
+def _first_nc_variable(ds, names):
+    for name in names:
+        if name in ds.variables:
+            return name, ds.variables[name]
+    return None, None
+
+
+def _pad_array(values, size, fill_value):
+    arr = np.asarray(values).reshape(-1)
+    if len(arr) >= size:
+        return arr[:size]
+    return np.concatenate([arr, np.full(size - len(arr), fill_value)])
+
+
+def _read_candidate_numeric_var(ds, names, size):
+    name, var = _first_nc_variable(ds, names)
+    if var is None:
+        return np.full(size, np.nan, dtype=np.float64), ""
+    arr = np.ma.asarray(var[:]).astype(np.float64).reshape(-1)
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(np.nan)
+    else:
+        arr = np.asarray(arr, dtype=np.float64)
+    arr = _pad_array(arr, size, np.nan).astype(np.float64)
+    for fill_value in (-9999.0, -9999, 1.0e20):
+        arr[arr == fill_value] = np.nan
+    units = _clean_text(getattr(var, "units", ""))
+    return arr, units
+
+
+def _read_candidate_flag_var(ds, names, size):
+    name, var = _first_nc_variable(ds, names)
+    if var is None:
+        return np.full(size, 9, dtype=np.int16)
+    raw = np.ma.asarray(var[:]).reshape(-1)
+    if np.ma.isMaskedArray(raw):
+        raw = raw.filled(9)
+    raw = _pad_array(raw, size, 9)
+    numeric = pd.to_numeric(pd.Series(raw), errors="coerce").fillna(9)
+    return numeric.astype(np.int16).to_numpy()
+
+
+def _decode_candidate_dates(time_var):
+    raw = np.asarray(time_var[:]).reshape(-1)
+    units = getattr(time_var, "units", "days since 1970-01-01")
+    calendar = getattr(time_var, "calendar", "gregorian")
+    try:
+        decoded = nc4.num2date(raw, units, calendar=calendar, only_use_cftime_datetimes=False)
+    except TypeError:
+        try:
+            decoded = nc4.num2date(raw, units, calendar=calendar)
+        except Exception:
+            decoded = pd.to_datetime(raw, unit="D", origin="1970-01-01")
+    except Exception:
+        decoded = pd.to_datetime(raw, unit="D", origin="1970-01-01")
+
+    dates = []
+    for item in list(decoded):
+        try:
+            ts = pd.Timestamp(item)
+        except Exception:
+            if hasattr(item, "isoformat"):
+                ts = pd.Timestamp(item.isoformat())
+            elif hasattr(item, "year"):
+                ts = pd.Timestamp(item.year, item.month, item.day)
+            else:
+                ts = pd.Timestamp(str(item))
+        dates.append(ts.normalize())
+    return dates
+
+
+def _read_candidate_series(path):
+    if nc4 is None:
+        return None, {}, "netCDF4 is unavailable"
+    try:
+        with nc4.Dataset(path, "r") as ds:
+            time_name, time_var = _first_nc_variable(ds, TIME_VAR_NAMES)
+            if time_var is None:
+                return None, {}, "time variable not found"
+            dates = _decode_candidate_dates(time_var)
+            n = len(dates)
+            if n == 0:
+                return None, {}, "empty time variable"
+
+            q, q_units = _read_candidate_numeric_var(ds, Q_VAR_NAMES, n)
+            ssc, ssc_units = _read_candidate_numeric_var(ds, SSC_VAR_NAMES, n)
+            ssl, ssl_units = _read_candidate_numeric_var(ds, SSL_VAR_NAMES, n)
+            df = pd.DataFrame(
+                {
+                    "date": [ts.strftime("%Y-%m-%d") for ts in dates],
+                    "time": [float((ts - pd.Timestamp("1970-01-01")).days) for ts in dates],
+                    "Q": q,
+                    "SSC": ssc,
+                    "SSL": ssl,
+                    "Q_flag": _read_candidate_flag_var(ds, FINAL_Q_FLAG_NAMES, n),
+                    "SSC_flag": _read_candidate_flag_var(ds, FINAL_SSC_FLAG_NAMES, n),
+                    "SSL_flag": _read_candidate_flag_var(ds, FINAL_SSL_FLAG_NAMES, n),
+                }
+            )
+            df = df[df[["Q", "SSC", "SSL"]].notna().any(axis=1)].copy()
+            if df.empty:
+                return df, {"Q": q_units, "SSC": ssc_units, "SSL": ssl_units}, "no non-empty Q/SSC/SSL rows"
+            df = df.drop_duplicates("date", keep="first").reset_index(drop=True)
+            return df, {"Q": q_units, "SSC": ssc_units, "SSL": ssl_units}, ""
+    except Exception as exc:
+        return None, {}, "cannot read candidate NetCDF: {}".format(exc)
+
+
+def _source_catalog_lookup(source_station_catalog):
+    lookup = {}
+    if source_station_catalog is None or source_station_catalog.empty:
+        return lookup
+    work = source_station_catalog.copy()
+    uid_col = _first_existing(work.columns, ("source_station_uid", "station_uid"))
+    idx_col = _first_existing(work.columns, ("source_station_index", "selected_source_index"))
+    res_col = _first_existing(work.columns, ("resolution", "time_resolution"))
+    if uid_col:
+        for _, row in work.iterrows():
+            uid = _clean_text(row.get(uid_col, ""))
+            resolution = _clean_text(row.get(res_col, "")) if res_col else ""
+            if uid:
+                lookup[("uid", uid, resolution)] = row
+                lookup.setdefault(("uid", uid, ""), row)
+    if idx_col:
+        for _, row in work.iterrows():
+            try:
+                idx = int(row.get(idx_col, -1))
+            except Exception:
+                continue
+            resolution = _clean_text(row.get(res_col, "")) if res_col else ""
+            lookup[("idx", idx, resolution)] = row
+            lookup.setdefault(("idx", idx, ""), row)
+    return lookup
+
+
+def _catalog_value(row, names, default=""):
+    if row is None:
+        return default
+    name = _first_existing(row.index, names)
+    if not name:
+        return default
+    return _clean_text(row.get(name, default))
+
+
+def _catalog_float(row, names):
+    value = _catalog_value(row, names, "")
+    try:
+        return float(value)
+    except Exception:
+        return np.nan
+
+
+def validate_overlap_candidates_sidecar(path):
+    path = Path(path)
+    if not path.is_file():
+        return False, "overlap candidates sidecar not found"
+    try:
+        header = pd.read_csv(path, nrows=0)
+    except Exception as exc:
+        return False, "cannot read overlap candidates sidecar header: {}".format(exc)
+    missing = sorted(OVERLAP_CANDIDATE_REQUIRED_COLUMNS - set(header.columns))
+    if missing:
+        return False, "missing columns: {}".format(", ".join(missing))
+    return True, "schema ok"
+
+
+def build_overlap_candidates_sidecar(
+    quality_order_csv,
+    source_station_catalog,
+    out_path,
+    mode="overlap-only",
+):
+    out_path = Path(out_path)
+    quality_order_csv = Path(quality_order_csv)
+    if mode not in {"overlap-only", "all-candidates"}:
+        return None, 0, "unsupported overlap candidate mode: {}".format(mode)
+    if nc4 is None:
+        return None, 0, "netCDF4 is unavailable"
+    if not quality_order_csv.is_file():
+        return None, 0, "missing upstream quality order CSV: {}".format(quality_order_csv)
+
+    required = {
+        "cluster_id",
+        "resolution",
+        "quality_rank",
+        "source",
+        "source_station_index",
+        "source_station_uid",
+        "path",
+        "quality_score",
+    }
+    quality = pd.read_csv(quality_order_csv, keep_default_na=False)
+    missing = sorted(required - set(quality.columns))
+    if missing:
+        return None, 0, "quality order CSV missing columns: {}".format(", ".join(missing))
+    if quality.empty:
+        frame = _empty_overlap_candidates_frame()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(out_path, index=False, compression="gzip")
+        return out_path, 0, "quality order CSV is empty; wrote header-only sidecar"
+
+    for col in ("cluster_id", "quality_rank", "source_station_index"):
+        quality[col] = pd.to_numeric(quality[col], errors="coerce").fillna(-1).astype(int)
+    quality["quality_score"] = pd.to_numeric(quality["quality_score"], errors="coerce")
+    if "cluster_uid" not in quality.columns:
+        quality["cluster_uid"] = ""
+    quality["cluster_uid"] = quality["cluster_uid"].astype(str)
+    quality.loc[quality["cluster_uid"].str.strip().eq(""), "cluster_uid"] = quality.loc[
+        quality["cluster_uid"].str.strip().eq(""),
+        "cluster_id",
+    ].map(lambda cid: "SED{:06d}".format(int(cid)) if int(cid) >= 0 else "")
+
+    catalog_lookup = _source_catalog_lookup(source_station_catalog)
+    rows = []
+    warnings = []
+    n_unreadable = 0
+    n_groups = 0
+    n_groups_with_rows = 0
+
+    group_cols = ["cluster_id", "resolution"]
+    for (cluster_id, resolution), group in quality.groupby(group_cols, sort=True):
+        n_groups += 1
+        group = group.sort_values(["quality_rank", "source_station_index", "path"]).reset_index(drop=True)
+        candidates = []
+        for _, qrow in group.iterrows():
+            raw_path = _clean_text(qrow.get("path", ""))
+            resolved_path = _resolve_candidate_path(raw_path)
+            if not resolved_path.is_file():
+                n_unreadable += 1
+                if len(warnings) < 8:
+                    warnings.append("missing candidate file: {}".format(raw_path))
+                continue
+            series, units, read_note = _read_candidate_series(resolved_path)
+            if series is None:
+                n_unreadable += 1
+                if len(warnings) < 8:
+                    warnings.append("{}: {}".format(raw_path, read_note))
+                continue
+            if series.empty:
+                continue
+            uid = _clean_text(qrow.get("source_station_uid", ""))
+            try:
+                source_station_index = int(qrow.get("source_station_index", -1))
+            except Exception:
+                source_station_index = -1
+            catalog_row = catalog_lookup.get(("uid", uid, str(resolution)))
+            if catalog_row is None:
+                catalog_row = catalog_lookup.get(("uid", uid, ""))
+            if catalog_row is None and source_station_index >= 0:
+                catalog_row = catalog_lookup.get(("idx", source_station_index, str(resolution)))
+                if catalog_row is None:
+                    catalog_row = catalog_lookup.get(("idx", source_station_index, ""))
+            candidates.append(
+                {
+                    "quality": qrow,
+                    "series": series.set_index("date"),
+                    "units": units,
+                    "catalog": catalog_row,
+                    "portable_path": _portable_candidate_path(raw_path),
+                    "source_station_index": source_station_index,
+                }
+            )
+
+        if not candidates:
+            continue
+        all_dates = sorted(set().union(*(set(item["series"].index) for item in candidates)))
+        group_rows_before = len(rows)
+        for date_text in all_dates:
+            present = [item for item in candidates if date_text in item["series"].index]
+            if not present:
+                continue
+            is_overlap = int(len(present) > 1)
+            if mode == "overlap-only" and not is_overlap:
+                continue
+            selected_item = present[0]
+            for item in present:
+                qrow = item["quality"]
+                data_row = item["series"].loc[date_text]
+                if isinstance(data_row, pd.DataFrame):
+                    data_row = data_row.iloc[0]
+                source = _clean_text(qrow.get("source", ""))
+                source_family = _catalog_value(
+                    item["catalog"],
+                    ("source_family", "source_type", "source_category"),
+                    "",
+                ) or classify_source_family(source)
+                source_station_uid = _clean_text(qrow.get("source_station_uid", ""))
+                cluster_uid = _clean_text(qrow.get("cluster_uid", ""))
+                candidate_group_key = "{}|{}|{}".format(cluster_uid, resolution, date_text)
+                rows.append(
+                    {
+                        "cluster_uid": cluster_uid,
+                        "cluster_id": int(cluster_id),
+                        "resolution": str(resolution),
+                        "time": float(data_row.get("time", np.nan)),
+                        "date": date_text,
+                        "source": source,
+                        "source_family": source_family,
+                        "source_station_uid": source_station_uid,
+                        "source_station_index": int(item["source_station_index"]),
+                        "source_station_native_id": _catalog_value(
+                            item["catalog"],
+                            ("source_station_native_id", "native_id", "source_station_id"),
+                        ),
+                        "source_station_name": _catalog_value(
+                            item["catalog"],
+                            ("source_station_name", "station_name"),
+                        ),
+                        "source_station_river_name": _catalog_value(
+                            item["catalog"],
+                            ("source_station_river_name", "river_name"),
+                        ),
+                        "source_station_paths": _catalog_value(
+                            item["catalog"],
+                            ("source_station_paths", "paths", "path"),
+                        ),
+                        "source_station_lat": _catalog_float(
+                            item["catalog"],
+                            ("source_station_lat", "lat"),
+                        ),
+                        "source_station_lon": _catalog_float(
+                            item["catalog"],
+                            ("source_station_lon", "lon"),
+                        ),
+                        "candidate_path": item["portable_path"],
+                        "candidate_rank": int(qrow.get("quality_rank", -1)),
+                        "candidate_quality_score": float(qrow.get("quality_score", np.nan)),
+                        "selected_flag": int(item is selected_item),
+                        "is_overlap": is_overlap,
+                        "n_candidates_at_time": int(len(present)),
+                        "n_ranked_candidates_for_cluster_resolution": int(len(group)),
+                        "candidate_group_key": candidate_group_key,
+                        "selection_reason": "first non-empty candidate by s6 quality_rank for this date",
+                        "Q": data_row.get("Q", np.nan),
+                        "SSC": data_row.get("SSC", np.nan),
+                        "SSL": data_row.get("SSL", np.nan),
+                        "Q_flag": int(data_row.get("Q_flag", 9)),
+                        "SSC_flag": int(data_row.get("SSC_flag", 9)),
+                        "SSL_flag": int(data_row.get("SSL_flag", 9)),
+                        "Q_units": item["units"].get("Q", ""),
+                        "SSC_units": item["units"].get("SSC", ""),
+                        "SSL_units": item["units"].get("SSL", ""),
+                        "has_Q": int(pd.notna(data_row.get("Q", np.nan))),
+                        "has_SSC": int(pd.notna(data_row.get("SSC", np.nan))),
+                        "has_SSL": int(pd.notna(data_row.get("SSL", np.nan))),
+                        "method_notes": OVERLAP_CANDIDATE_METHOD_NOTES,
+                        "assumptions": OVERLAP_CANDIDATE_ASSUMPTIONS,
+                    }
+                )
+        if len(rows) > group_rows_before:
+            n_groups_with_rows += 1
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        frame = _empty_overlap_candidates_frame()
+    else:
+        frame = frame.reindex(columns=OVERLAP_CANDIDATE_COLUMNS)
+        frame = frame.sort_values(
+            ["resolution", "cluster_uid", "time", "date", "candidate_rank", "source_station_uid"],
+            kind="mergesort",
+        ).reset_index(drop=True)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(out_path, index=False, compression="gzip")
+    ok, detail = validate_overlap_candidates_sidecar(out_path)
+    if not ok:
+        return out_path, len(frame), "generated sidecar failed schema validation: {}".format(detail)
+
+    detail = "mode={} rows={} groups_with_rows={}/{}".format(mode, len(frame), n_groups_with_rows, n_groups)
+    if n_unreadable:
+        detail += "; unreadable_candidates={}".format(n_unreadable)
+    if warnings:
+        detail += "; warnings={}".format(" | ".join(warnings))
+    return out_path, len(frame), detail
 
 
 def _canonical_core_sources(master_nc, daily_nc, monthly_nc, annual_nc, climatology_nc):
@@ -513,6 +1025,7 @@ This directory is the user-facing release layer of the sediment reference datase
 - `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, record count, and time coverage.
 - `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, and original file path.
 - `source_dataset_catalog.csv`: one row per source dataset with metadata and aggregate counts.
+- `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
 ## GIS sidecars
 
@@ -528,7 +1041,8 @@ This directory is the user-facing release layer of the sediment reference datase
 4. If you need quick cell-level provenance, read `selected_source_station_uid` directly from the matrix file.
 5. If you need full record-level provenance, query `sed_reference_master.nc` with `cluster_uid + time + resolution`.
 6. Use `source_station_catalog.csv` to resolve `source_station_uid`, original station metadata, and original file path.
-7. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
+7. For true source-pair overlap consistency metrics, use `sed_reference_overlap_candidates.csv.gz` if it is present.
+8. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
 
 ## Quick example
 
@@ -555,6 +1069,9 @@ python3 example_reference_workflow.py \\
 - `cluster_uid + resolution` is the standard GIS join key for cluster points and basins.
 - `source_station_uid + resolution` is the standard GIS join key for source points.
 - `selected_source_station_uid` is the matrix-native provenance key for each station-time cell.
+- `sed_reference_master.nc` and matrix NetCDF files keep the selected / winning record only; they do not store non-selected candidate values.
+- `is_overlap=1` marks that multiple sources competed for a cluster-resolution-time key, but it is not itself a candidate-value table.
+- Source-pair validation should use `sed_reference_overlap_candidates.csv.gz`. If that sidecar is absent, true source-pair metrics cannot be computed from the release package alone.
 - `station_uid` is the stable key inside the climatology product only.
 - The release does not automatically aggregate daily model output to monthly or annual resolution.
 - Release validation blocks mixed-run outputs whose master / matrix / climatology / catalog time coverage or resolution coverage are inconsistent.
@@ -573,6 +1090,7 @@ def validate_release(
     station_catalog,
     source_station_catalog,
     out_csv,
+    overlap_candidates_csv=None,
 ):
     if nc4 is None:
         raise RuntimeError("netCDF4 is required to validate release consistency")
@@ -981,6 +1499,24 @@ def validate_release(
             }
         )
 
+    if overlap_candidates_csv is None or not Path(overlap_candidates_csv).is_file():
+        rows.append(
+            {
+                "check": "overlap_candidates_sidecar",
+                "status": "skip",
+                "details": "sed_reference_overlap_candidates.csv.gz not generated; true source-pair metrics require this sidecar",
+            }
+        )
+    else:
+        ok, detail = validate_overlap_candidates_sidecar(overlap_candidates_csv)
+        rows.append(
+            {
+                "check": "overlap_candidates_sidecar",
+                "status": "pass" if ok else "fail",
+                "details": detail,
+            }
+        )
+
     report_df = pd.DataFrame(rows)
     _write_csv(report_df, out_csv)
     failed = report_df["status"].eq("fail").any()
@@ -1009,6 +1545,17 @@ def main():
         help="How to materialize canonical NetCDF/example files in the release dir",
     )
     ap.add_argument("--skip-gpkg", action="store_true", help="Skip GPKG spatial sidecars")
+    ap.add_argument(
+        "--skip-overlap-candidates",
+        action="store_true",
+        help="Skip the candidate-level overlap provenance sidecar",
+    )
+    ap.add_argument(
+        "--overlap-candidates-mode",
+        choices=("overlap-only", "all-candidates"),
+        default="overlap-only",
+        help="Rows to publish in sed_reference_overlap_candidates.csv.gz",
+    )
     ap.add_argument(
         "--include-basin-polygons",
         action="store_true",
@@ -1108,6 +1655,33 @@ def main():
         )
     )
 
+    overlap_candidates_path = out_dir / OVERLAP_CANDIDATES_FILE_NAME
+    overlap_candidates_validation_path = None
+    if args.skip_overlap_candidates:
+        print("Skip overlap candidate sidecar by request.")
+    else:
+        built_path, row_count, detail = build_overlap_candidates_sidecar(
+            quality_order_csv=DEFAULT_QUALITY_ORDER_CSV,
+            source_station_catalog=source_station_catalog,
+            out_path=overlap_candidates_path,
+            mode=args.overlap_candidates_mode,
+        )
+        if built_path is None:
+            print("Warning: skip overlap candidate sidecar: {}".format(detail))
+        else:
+            if "failed schema validation" in detail:
+                print("Error: overlap candidate sidecar invalid: {}".format(detail))
+                return 1
+            file_records.append(
+                (
+                    "provenance_sidecar",
+                    built_path,
+                    "Candidate-level selected and non-selected values for multi-source overlap validation",
+                )
+            )
+            overlap_candidates_validation_path = built_path
+            print("Wrote overlap candidates: {} rows ({})".format(row_count, detail))
+
     if args.skip_gpkg:
         print("Skip GPKG sidecars by request.")
     else:
@@ -1181,6 +1755,7 @@ def main():
             station_catalog=station_catalog,
             source_station_catalog=source_station_catalog,
             out_csv=validation_path,
+            overlap_candidates_csv=overlap_candidates_validation_path,
         )
         file_records.append(("report", validation_path, "Release validation report"))
         print("Validation checks: {} rows".format(len(report_df)))

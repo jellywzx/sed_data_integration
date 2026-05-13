@@ -114,6 +114,8 @@
 3. 胜出规则按质量分数排序
 4. `is_overlap = 1` 表示该条记录来自多来源竞争
 5. 即使最终只选一条，原始站点映射关系仍然保留
+6. 发布版 `master.nc` 和 matrix `nc` 仍只保存胜出记录；如需复现真正的 source-pair overlap consistency，应使用发布 sidecar `sed_reference_overlap_candidates.csv.gz`
+7. `sed_reference_overlap_candidates.csv.gz` 保存 overlap key 下 selected 和 non-selected candidate values；如果该文件不存在，仅凭 release 产品无法恢复 non-selected candidate values
 
 ### 2.5 basin 发布策略
 
@@ -490,9 +492,10 @@
 4. 生成一行一个 `cluster_uid + resolution` 的 `station_catalog.csv`
 5. 生成一行一个 `source_station_uid + resolution` 的 `source_station_catalog.csv`
 6. 生成 `source_dataset_catalog.csv`
-7. 生成多图层 `GPKG` 空间 sidecar
-8. 生成发布版 `README.md` 和验证报告
-9. 发布前会额外检查 `master / matrix / climatology / catalog` 的 `resolution` 覆盖面、`record_count`、`time range` 是否一致；若发现 mixed-run 会直接报错并阻止发布
+7. 默认尝试生成 `sed_reference_overlap_candidates.csv.gz`，用于发布级 candidate-level overlap provenance
+8. 生成多图层 `GPKG` 空间 sidecar
+9. 生成发布版 `README.md` 和验证报告
+10. 发布前会额外检查 `master / matrix / climatology / catalog` 的 `resolution` 覆盖面、`record_count`、`time range` 是否一致；若发现 mixed-run 会直接报错并阻止发布
 
 输出目录：
 
@@ -595,10 +598,12 @@
 5. `output/sed_reference_release/sed_reference_climatology.nc`
 6. `output/sed_reference_release/station_catalog.csv`
 7. `output/sed_reference_release/source_station_catalog.csv`
-8. `output/sed_reference_release/sed_reference_cluster_points.gpkg`
-9. `output/sed_reference_release/sed_reference_source_stations.gpkg`
-10. `output/sed_reference_release/sed_reference_cluster_basins.gpkg`
-11. `output/sed_reference_release/README.md`
+8. `output/sed_reference_release/source_dataset_catalog.csv`
+9. `output/sed_reference_release/sed_reference_overlap_candidates.csv.gz`
+10. `output/sed_reference_release/sed_reference_cluster_points.gpkg`
+11. `output/sed_reference_release/sed_reference_source_stations.gpkg`
+12. `output/sed_reference_release/sed_reference_cluster_basins.gpkg`
+13. `output/sed_reference_release/README.md`
 
 这套发布层的标准使用顺序是：
 
@@ -608,6 +613,7 @@
 4. 抽出参考时间序列并与模型结果对齐；如需先看 cell 级 provenance，可直接读 matrix 里的 `selected_source_station_uid`
 5. 如果需要完整记录级 provenance，再去 `sed_reference_master.nc`
 6. 继续通过 `source_station_catalog.csv` 找到同一 `resolution` 下的原始站点和原始路径
+7. 如果需要计算 USGS vs HYDAT、HYDAT vs compiled source、in-situ vs satellite 等 source-pair overlap metrics，应使用 `sed_reference_overlap_candidates.csv.gz`
 
 人工检查相关产物是：
 
@@ -754,6 +760,8 @@
 10. `s11_run_checklist_audit.py`
 
 为准。
+
+新增的 s8 发布产品验证诊断脚本说明见：[`validation_results.md`](validation_results.md)。
 
 ---
 
