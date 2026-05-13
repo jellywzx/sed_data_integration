@@ -29,6 +29,7 @@ import argparse
 import os
 import shutil
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -116,6 +117,24 @@ DEFAULT_VALIDATION_CSV = PROJECT_ROOT / RELEASE_VALIDATION_CSV
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / RELEASE_INVENTORY_CSV
 DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR / "example_reference_workflow.py"
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
+# ---- s8 built-in runtime policy ----
+# 不想每次命令行输参数，就改这里。
+
+# True  = 不生成 sed_reference_overlap_candidates.csv.gz，s8 会快很多，
+#         但 s10 不能做真正 source-pair overlap validation。
+# False = 生成 sidecar，用于后续严格 overlap validation。
+DEFAULT_SKIP_OVERLAP_CANDIDATES = False
+
+# "overlap-only"：只输出真正多来源 overlap 的 candidate rows，推荐。
+# "all-candidates"：输出所有 candidates，会更慢、更大。
+DEFAULT_OVERLAP_CANDIDATES_MODE = "overlap-only"
+
+# 并行 worker 数。I/O 很重，不建议直接拉满 CPU。
+# 本地 SSD 可以试 12 或 16；网络盘建议 4 或 8。
+DEFAULT_OVERLAP_WORKERS = min(24, max(1, os.cpu_count() or 1))
+
+# 每个 worker 最多保留多少 warning，避免日志过大。
+DEFAULT_OVERLAP_WARNING_LIMIT = 8
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
 CORE_FILE_SPECS = (
@@ -480,11 +499,14 @@ def _source_catalog_lookup(source_station_catalog):
 def _catalog_value(row, names, default=""):
     if row is None:
         return default
-    name = _first_existing(row.index, names)
+    if isinstance(row, dict):
+        columns = row.keys()
+    else:
+        columns = row.index
+    name = _first_existing(columns, names)
     if not name:
         return default
     return _clean_text(row.get(name, default))
-
 
 def _catalog_float(row, names):
     value = _catalog_value(row, names, "")
@@ -508,11 +530,185 @@ def validate_overlap_candidates_sidecar(path):
     return True, "schema ok"
 
 
+def _build_overlap_candidate_group_rows(payload):
+    (
+        cluster_id,
+        resolution,
+        group_records,
+        catalog_lookup,
+        mode,
+        warning_limit,
+    ) = payload
+
+    group = pd.DataFrame(group_records)
+    group = group.sort_values(
+        ["quality_rank", "source_station_index", "path"]
+    ).reset_index(drop=True)
+
+    rows = []
+    warnings = []
+    n_unreadable = 0
+
+    candidates = []
+    for _, qrow in group.iterrows():
+        raw_path = _clean_text(qrow.get("path", ""))
+        resolved_path = _resolve_candidate_path(raw_path)
+
+        if not resolved_path.is_file():
+            n_unreadable += 1
+            if len(warnings) < warning_limit:
+                warnings.append("missing candidate file: {}".format(raw_path))
+            continue
+
+        series, units, read_note = _read_candidate_series(resolved_path)
+        if series is None:
+            n_unreadable += 1
+            if len(warnings) < warning_limit:
+                warnings.append("{}: {}".format(raw_path, read_note))
+            continue
+
+        if series.empty:
+            continue
+
+        uid = _clean_text(qrow.get("source_station_uid", ""))
+        try:
+            source_station_index = int(qrow.get("source_station_index", -1))
+        except Exception:
+            source_station_index = -1
+
+        catalog_row = catalog_lookup.get(("uid", uid, str(resolution)))
+        if catalog_row is None:
+            catalog_row = catalog_lookup.get(("uid", uid, ""))
+
+        if catalog_row is None and source_station_index >= 0:
+            catalog_row = catalog_lookup.get(("idx", source_station_index, str(resolution)))
+            if catalog_row is None:
+                catalog_row = catalog_lookup.get(("idx", source_station_index, ""))
+
+        candidates.append(
+            {
+                "quality": qrow,
+                "series": series.set_index("date"),
+                "units": units,
+                "catalog": catalog_row,
+                "portable_path": _portable_candidate_path(raw_path),
+                "source_station_index": source_station_index,
+            }
+        )
+
+    if not candidates:
+        return {
+            "rows": [],
+            "warnings": warnings,
+            "n_unreadable": n_unreadable,
+            "group_has_rows": False,
+        }
+
+    all_dates = sorted(set().union(*(set(item["series"].index) for item in candidates)))
+
+    for date_text in all_dates:
+        present = [item for item in candidates if date_text in item["series"].index]
+        if not present:
+            continue
+
+        is_overlap = int(len(present) > 1)
+        if mode == "overlap-only" and not is_overlap:
+            continue
+
+        selected_item = present[0]
+
+        for item in present:
+            qrow = item["quality"]
+            data_row = item["series"].loc[date_text]
+            if isinstance(data_row, pd.DataFrame):
+                data_row = data_row.iloc[0]
+
+            source = _clean_text(qrow.get("source", ""))
+            source_family = _catalog_value(
+                item["catalog"],
+                ("source_family", "source_type", "source_category"),
+                "",
+            ) or classify_source_family(source)
+
+            source_station_uid = _clean_text(qrow.get("source_station_uid", ""))
+            cluster_uid = _clean_text(qrow.get("cluster_uid", ""))
+            candidate_group_key = "{}|{}|{}".format(cluster_uid, resolution, date_text)
+
+            rows.append(
+                {
+                    "cluster_uid": cluster_uid,
+                    "cluster_id": int(cluster_id),
+                    "resolution": str(resolution),
+                    "time": float(data_row.get("time", np.nan)),
+                    "date": date_text,
+                    "source": source,
+                    "source_family": source_family,
+                    "source_station_uid": source_station_uid,
+                    "source_station_index": int(item["source_station_index"]),
+                    "source_station_native_id": _catalog_value(
+                        item["catalog"],
+                        ("source_station_native_id", "native_id", "source_station_id"),
+                    ),
+                    "source_station_name": _catalog_value(
+                        item["catalog"],
+                        ("source_station_name", "station_name"),
+                    ),
+                    "source_station_river_name": _catalog_value(
+                        item["catalog"],
+                        ("source_station_river_name", "river_name"),
+                    ),
+                    "source_station_paths": _catalog_value(
+                        item["catalog"],
+                        ("source_station_paths", "paths", "path"),
+                    ),
+                    "source_station_lat": _catalog_float(
+                        item["catalog"],
+                        ("source_station_lat", "lat"),
+                    ),
+                    "source_station_lon": _catalog_float(
+                        item["catalog"],
+                        ("source_station_lon", "lon"),
+                    ),
+                    "candidate_path": item["portable_path"],
+                    "candidate_rank": int(qrow.get("quality_rank", -1)),
+                    "candidate_quality_score": float(qrow.get("quality_score", np.nan)),
+                    "selected_flag": int(item is selected_item),
+                    "is_overlap": is_overlap,
+                    "n_candidates_at_time": int(len(present)),
+                    "n_ranked_candidates_for_cluster_resolution": int(len(group)),
+                    "candidate_group_key": candidate_group_key,
+                    "selection_reason": "first non-empty candidate by s6 quality_rank for this date",
+                    "Q": data_row.get("Q", np.nan),
+                    "SSC": data_row.get("SSC", np.nan),
+                    "SSL": data_row.get("SSL", np.nan),
+                    "Q_flag": int(data_row.get("Q_flag", 9)),
+                    "SSC_flag": int(data_row.get("SSC_flag", 9)),
+                    "SSL_flag": int(data_row.get("SSL_flag", 9)),
+                    "Q_units": item["units"].get("Q", ""),
+                    "SSC_units": item["units"].get("SSC", ""),
+                    "SSL_units": item["units"].get("SSL", ""),
+                    "has_Q": int(pd.notna(data_row.get("Q", np.nan))),
+                    "has_SSC": int(pd.notna(data_row.get("SSC", np.nan))),
+                    "has_SSL": int(pd.notna(data_row.get("SSL", np.nan))),
+                    "method_notes": OVERLAP_CANDIDATE_METHOD_NOTES,
+                    "assumptions": OVERLAP_CANDIDATE_ASSUMPTIONS,
+                }
+            )
+
+    return {
+        "rows": rows,
+        "warnings": warnings,
+        "n_unreadable": n_unreadable,
+        "group_has_rows": bool(rows),
+    }
+
+
 def build_overlap_candidates_sidecar(
     quality_order_csv,
     source_station_catalog,
     out_path,
-    mode="overlap-only",
+    mode=DEFAULT_OVERLAP_CANDIDATES_MODE,
+    workers=DEFAULT_OVERLAP_WORKERS,
 ):
     out_path = Path(out_path)
     quality_order_csv = Path(quality_order_csv)
@@ -554,145 +750,66 @@ def build_overlap_candidates_sidecar(
         "cluster_id",
     ].map(lambda cid: "SED{:06d}".format(int(cid)) if int(cid) >= 0 else "")
 
-    catalog_lookup = _source_catalog_lookup(source_station_catalog)
+    catalog_lookup_raw = _source_catalog_lookup(source_station_catalog)
+
+    # pandas Series 跨进程传递比较重，也容易出现 pickle 兼容问题；
+    # 这里转成普通 dict。
+    catalog_lookup = {}
+    for key, row in catalog_lookup_raw.items():
+        if isinstance(row, dict):
+            catalog_lookup[key] = row
+        else:
+            catalog_lookup[key] = row.to_dict()
+
     rows = []
     warnings = []
     n_unreadable = 0
-    n_groups = 0
     n_groups_with_rows = 0
 
     group_cols = ["cluster_id", "resolution"]
+    payloads = []
     for (cluster_id, resolution), group in quality.groupby(group_cols, sort=True):
-        n_groups += 1
-        group = group.sort_values(["quality_rank", "source_station_index", "path"]).reset_index(drop=True)
-        candidates = []
-        for _, qrow in group.iterrows():
-            raw_path = _clean_text(qrow.get("path", ""))
-            resolved_path = _resolve_candidate_path(raw_path)
-            if not resolved_path.is_file():
-                n_unreadable += 1
-                if len(warnings) < 8:
-                    warnings.append("missing candidate file: {}".format(raw_path))
-                continue
-            series, units, read_note = _read_candidate_series(resolved_path)
-            if series is None:
-                n_unreadable += 1
-                if len(warnings) < 8:
-                    warnings.append("{}: {}".format(raw_path, read_note))
-                continue
-            if series.empty:
-                continue
-            uid = _clean_text(qrow.get("source_station_uid", ""))
-            try:
-                source_station_index = int(qrow.get("source_station_index", -1))
-            except Exception:
-                source_station_index = -1
-            catalog_row = catalog_lookup.get(("uid", uid, str(resolution)))
-            if catalog_row is None:
-                catalog_row = catalog_lookup.get(("uid", uid, ""))
-            if catalog_row is None and source_station_index >= 0:
-                catalog_row = catalog_lookup.get(("idx", source_station_index, str(resolution)))
-                if catalog_row is None:
-                    catalog_row = catalog_lookup.get(("idx", source_station_index, ""))
-            candidates.append(
-                {
-                    "quality": qrow,
-                    "series": series.set_index("date"),
-                    "units": units,
-                    "catalog": catalog_row,
-                    "portable_path": _portable_candidate_path(raw_path),
-                    "source_station_index": source_station_index,
-                }
+        payloads.append(
+            (
+                int(cluster_id),
+                str(resolution),
+                group.to_dict("records"),
+                catalog_lookup,
+                mode,
+                DEFAULT_OVERLAP_WARNING_LIMIT,
             )
+        )
 
-        if not candidates:
-            continue
-        all_dates = sorted(set().union(*(set(item["series"].index) for item in candidates)))
-        group_rows_before = len(rows)
-        for date_text in all_dates:
-            present = [item for item in candidates if date_text in item["series"].index]
-            if not present:
-                continue
-            is_overlap = int(len(present) > 1)
-            if mode == "overlap-only" and not is_overlap:
-                continue
-            selected_item = present[0]
-            for item in present:
-                qrow = item["quality"]
-                data_row = item["series"].loc[date_text]
-                if isinstance(data_row, pd.DataFrame):
-                    data_row = data_row.iloc[0]
-                source = _clean_text(qrow.get("source", ""))
-                source_family = _catalog_value(
-                    item["catalog"],
-                    ("source_family", "source_type", "source_category"),
-                    "",
-                ) or classify_source_family(source)
-                source_station_uid = _clean_text(qrow.get("source_station_uid", ""))
-                cluster_uid = _clean_text(qrow.get("cluster_uid", ""))
-                candidate_group_key = "{}|{}|{}".format(cluster_uid, resolution, date_text)
-                rows.append(
-                    {
-                        "cluster_uid": cluster_uid,
-                        "cluster_id": int(cluster_id),
-                        "resolution": str(resolution),
-                        "time": float(data_row.get("time", np.nan)),
-                        "date": date_text,
-                        "source": source,
-                        "source_family": source_family,
-                        "source_station_uid": source_station_uid,
-                        "source_station_index": int(item["source_station_index"]),
-                        "source_station_native_id": _catalog_value(
-                            item["catalog"],
-                            ("source_station_native_id", "native_id", "source_station_id"),
-                        ),
-                        "source_station_name": _catalog_value(
-                            item["catalog"],
-                            ("source_station_name", "station_name"),
-                        ),
-                        "source_station_river_name": _catalog_value(
-                            item["catalog"],
-                            ("source_station_river_name", "river_name"),
-                        ),
-                        "source_station_paths": _catalog_value(
-                            item["catalog"],
-                            ("source_station_paths", "paths", "path"),
-                        ),
-                        "source_station_lat": _catalog_float(
-                            item["catalog"],
-                            ("source_station_lat", "lat"),
-                        ),
-                        "source_station_lon": _catalog_float(
-                            item["catalog"],
-                            ("source_station_lon", "lon"),
-                        ),
-                        "candidate_path": item["portable_path"],
-                        "candidate_rank": int(qrow.get("quality_rank", -1)),
-                        "candidate_quality_score": float(qrow.get("quality_score", np.nan)),
-                        "selected_flag": int(item is selected_item),
-                        "is_overlap": is_overlap,
-                        "n_candidates_at_time": int(len(present)),
-                        "n_ranked_candidates_for_cluster_resolution": int(len(group)),
-                        "candidate_group_key": candidate_group_key,
-                        "selection_reason": "first non-empty candidate by s6 quality_rank for this date",
-                        "Q": data_row.get("Q", np.nan),
-                        "SSC": data_row.get("SSC", np.nan),
-                        "SSL": data_row.get("SSL", np.nan),
-                        "Q_flag": int(data_row.get("Q_flag", 9)),
-                        "SSC_flag": int(data_row.get("SSC_flag", 9)),
-                        "SSL_flag": int(data_row.get("SSL_flag", 9)),
-                        "Q_units": item["units"].get("Q", ""),
-                        "SSC_units": item["units"].get("SSC", ""),
-                        "SSL_units": item["units"].get("SSL", ""),
-                        "has_Q": int(pd.notna(data_row.get("Q", np.nan))),
-                        "has_SSC": int(pd.notna(data_row.get("SSC", np.nan))),
-                        "has_SSL": int(pd.notna(data_row.get("SSL", np.nan))),
-                        "method_notes": OVERLAP_CANDIDATE_METHOD_NOTES,
-                        "assumptions": OVERLAP_CANDIDATE_ASSUMPTIONS,
-                    }
-                )
-        if len(rows) > group_rows_before:
+    n_groups = len(payloads)
+    workers = max(1, int(workers or 1))
+
+    if workers == 1 or n_groups <= 1:
+        results = [_build_overlap_candidate_group_rows(payload) for payload in payloads]
+    else:
+        max_workers = min(workers, n_groups)
+        print(
+            "Building overlap candidates with {} worker processes over {} cluster-resolution groups".format(
+                max_workers,
+                n_groups,
+            ),
+            flush=True,
+        )
+        results = []
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_build_overlap_candidate_group_rows, payload) for payload in payloads]
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    for result in results:
+        group_rows = result.get("rows", [])
+        if group_rows:
+            rows.extend(group_rows)
+        if result.get("group_has_rows", False):
             n_groups_with_rows += 1
+        n_unreadable += int(result.get("n_unreadable", 0) or 0)
+        for warning in result.get("warnings", []):
+            if len(warnings) < DEFAULT_OVERLAP_WARNING_LIMIT:
+                warnings.append(warning)
 
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -1546,17 +1663,6 @@ def main():
     )
     ap.add_argument("--skip-gpkg", action="store_true", help="Skip GPKG spatial sidecars")
     ap.add_argument(
-        "--skip-overlap-candidates",
-        action="store_true",
-        help="Skip the candidate-level overlap provenance sidecar",
-    )
-    ap.add_argument(
-        "--overlap-candidates-mode",
-        choices=("overlap-only", "all-candidates"),
-        default="overlap-only",
-        help="Rows to publish in sed_reference_overlap_candidates.csv.gz",
-    )
-    ap.add_argument(
         "--include-basin-polygons",
         action="store_true",
         help="Also publish the resolution-aware cluster basin GPKG",
@@ -1657,14 +1763,15 @@ def main():
 
     overlap_candidates_path = out_dir / OVERLAP_CANDIDATES_FILE_NAME
     overlap_candidates_validation_path = None
-    if args.skip_overlap_candidates:
-        print("Skip overlap candidate sidecar by request.")
+    if DEFAULT_SKIP_OVERLAP_CANDIDATES:
+        print("Skip overlap candidate sidecar by built-in policy.")
     else:
         built_path, row_count, detail = build_overlap_candidates_sidecar(
             quality_order_csv=DEFAULT_QUALITY_ORDER_CSV,
             source_station_catalog=source_station_catalog,
             out_path=overlap_candidates_path,
-            mode=args.overlap_candidates_mode,
+            mode=DEFAULT_OVERLAP_CANDIDATES_MODE,
+            workers=DEFAULT_OVERLAP_WORKERS,
         )
         if built_path is None:
             print("Warning: skip overlap candidate sidecar: {}".format(detail))
