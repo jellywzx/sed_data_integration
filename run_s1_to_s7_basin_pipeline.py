@@ -7,7 +7,7 @@ Default stage layout:
 
 Stage details:
   s6 = master NC + matrix NC exports + climatology NC export
-  s7 = cluster GPKP + source-station GPKG + cluster-basin GPKG
+  s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
 """
 
 import argparse
