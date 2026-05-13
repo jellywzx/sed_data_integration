@@ -232,6 +232,25 @@ def build_stage_specs(args, python_bin):
             }
         )
 
+    cluster_basin_cmd = [
+        python_bin,
+        str(SCRIPT_DIR / "s7_export_cluster_basin_shp.py"),
+        "--stations",
+        str(s5_csv),
+        "--cluster-resolution-catalog",
+        str(cluster_catalog),
+        "--basin-gpkg",
+        str(OUTPUT_DIR / "s4_upstream_basins.gpkg"),
+        "--local-basin-gpkg",
+        str(OUTPUT_DIR / "s4_local_catchments.gpkg"),
+        "--out",
+        str(OUTPUT_DIR / "s7_cluster_basins.gpkg"),
+        "--local-out",
+        str(OUTPUT_DIR / "s7_cluster_basins_local.gpkg"),
+    ]
+    if args.include_local_basins:
+        cluster_basin_cmd.append("--include-local-basins")
+
     s7_commands = [
         {
             "name": "s7_export_cluster_shp",
@@ -269,22 +288,7 @@ def build_stage_specs(args, python_bin):
         },
         {
             "name": "s7_export_cluster_basin_shp",
-            "cmd": [
-                python_bin,
-                str(SCRIPT_DIR / "s7_export_cluster_basin_shp.py"),
-                "--stations",
-                str(s5_csv),
-                "--cluster-resolution-catalog",
-                str(cluster_catalog),
-                "--basin-gpkg",
-                str(OUTPUT_DIR / "s4_upstream_basins.gpkg"),
-                "--local-basin-gpkg",
-                str(OUTPUT_DIR / "s4_local_catchments.gpkg"),
-                "--out",
-                str(OUTPUT_DIR / "s7_cluster_basins.gpkg"),
-                "--local-out",
-                str(OUTPUT_DIR / "s7_cluster_basins_local.gpkg"),
-            ],
+            "cmd": cluster_basin_cmd,
         },
     ]
 
@@ -428,6 +432,11 @@ def parse_args():
         "--skip-climatology-export",
         action="store_true",
         help="Skip s6_export_climatology_to_nc.py.",
+    )
+    parser.add_argument(
+        "--include-local-basins",
+        action="store_true",
+        help="Generate optional s7_cluster_basins_local.gpkg. Default: skip local basins.",
     )
     return parser.parse_args()
 
