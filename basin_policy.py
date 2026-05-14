@@ -58,22 +58,12 @@ BASIN_FLAG_CODES = {name: idx for idx, name in enumerate(BASIN_FLAG_ORDER)}
 BASIN_FLAG_CODE_TO_NAME = {idx: name for name, idx in BASIN_FLAG_CODES.items()}
 BASIN_FLAG_MEANINGS = " ".join(BASIN_FLAG_ORDER + ("unknown",))
 
-# These source products are remote-sensing / reach-scale records rather than
-# bank-gauge observations. The basin mainline keeps their observations but does
-# not publish a MERIT basin assignment for them.
-NO_BASIN_MATCH_SOURCES = ("RiverSed", "GSED", "Dethier")
-NO_BASIN_MATCH_SOURCE_ALIASES = {
-    "deither": "dethier",
-}
-NO_BASIN_MATCH_SOURCE_SET = frozenset(
-    tuple(name.lower() for name in NO_BASIN_MATCH_SOURCES)
-    + tuple(NO_BASIN_MATCH_SOURCE_ALIASES.keys())
-)
-
-# Backward-compatible names used by summary scripts. The old large-offset
-# acceptance branch is no longer applied in classify_basin_result().
-REACH_SCALE_POLICY_SOURCES = NO_BASIN_MATCH_SOURCES
-REACH_SCALE_POLICY_SOURCE_SET = NO_BASIN_MATCH_SOURCE_SET
+# Some source products are reach-based remote-sensing products rather than bank
+# gauges. They often represent a river segment centroid or centerline footprint,
+# so a few kilometers of point-to-line offset can still be acceptable when the
+# original coordinate remains inside the matched local catchment.
+REACH_SCALE_POLICY_SOURCES = ("GSED", "RiverSed")
+REACH_SCALE_POLICY_SOURCE_SET = frozenset(name.lower() for name in REACH_SCALE_POLICY_SOURCES)
 REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
 REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
 
@@ -133,17 +123,6 @@ def normalize_source_name(value):
     return _clean_text(value).lower()
 
 
-def canonical_source_name(value):
-    """Normalize source names and known spelling aliases for policy checks."""
-    source = normalize_source_name(value)
-    return NO_BASIN_MATCH_SOURCE_ALIASES.get(source, source)
-
-
-def should_skip_basin_matching(source_name):
-    """Return True when a source should not enter MERIT basin matching."""
-    return canonical_source_name(source_name) in NO_BASIN_MATCH_SOURCE_SET
-
-
 def classify_basin_result(
     basin_id,
     match_quality,
@@ -166,8 +145,9 @@ def classify_basin_result(
     distance_m
         Distance from the original station point to the matched reach.
     source_name
-        Source dataset identifier. A small, explicit list of remote-sensing /
-        reach-scale products is never released with a MERIT basin assignment.
+        Source dataset identifier. This is used only for a small, explicit list
+        of reach-scale remote-sensing products that need a slightly different
+        release rule than ordinary station-point observations.
     point_in_local
         Whether the original point is covered by the matched local catchment.
         This is the strongest geometry-consistency check in the current policy.
@@ -184,20 +164,18 @@ def classify_basin_result(
     Decision order
     --------------
     The branch order is deliberate:
-      1. reject sources that do not enter basin matching;
-      2. reject missing / failed matches;
-      3. reject area-mismatch cases;
-      4. accept only a small set of high-confidence rules;
+      1. reject missing / failed matches first;
+      2. reject area-mismatch cases;
+      3. accept only a small set of high-confidence rules;
+      4. allow one source-specific reach-product override;
       5. otherwise keep the record but mark the basin unresolved.
     """
     basin_missing = math.isnan(_coerce_float(basin_id))
     quality = normalize_match_quality(match_quality)
+    source = normalize_source_name(source_name)
     distance = _coerce_float(distance_m)
     local_ok = _coerce_bool(point_in_local)
     basin_ok = _coerce_bool(point_in_basin)
-
-    if should_skip_basin_matching(source_name):
-        return "unresolved", "no_match"
 
     # No basin id or an outright failed reach match means there is no basin
     # assignment we can safely publish. We still keep the observation itself.
@@ -226,6 +204,19 @@ def classify_basin_result(
 
     if resolved:
         return "resolved", "ok"
+
+    # Reach-scale remote-sensing products such as GSED and RiverSed often use a
+    # centerline- or segment-based representative coordinate. Keep the policy
+    # conservative by requiring the point to remain inside the matched local
+    # catchment and by capping the allowed offset at 5 km.
+    if (
+        source in REACH_SCALE_POLICY_SOURCE_SET
+        and math.isfinite(distance)
+        and distance > 1000.0
+        and distance <= REACH_SCALE_POLICY_MAX_DISTANCE_M
+        and local_ok
+    ):
+        return "resolved", REACH_SCALE_POLICY_FLAG
 
     # Beyond 1 km, the current policy assumes the offset is too large for
     # automatic release unless a future manual-review workflow says otherwise.
