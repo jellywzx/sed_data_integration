@@ -134,21 +134,19 @@
 5. `basin_status`
 6. `basin_flag`
 
-`RiverSed / GSED / Dethier` 等 reach-scale remote-sensing products 不发布 MERIT basin assignment。它们的 observation 会继续保留，但 `basin_status` 固定为 `unresolved`，`basin_flag` 固定为 `no_match`。
-
 自动判为 `resolved` 的条件保持简单：
 
 1. `distance_m <= 300`
 2. `distance_m <= 1000` 且 `match_quality in {area_matched, area_approximate}`
 3. `distance_m <= 1000` 且 `point_in_local = True`
+4. 对 `GSED / RiverSed` 这类 `reach-scale` 遥感产品，若 `distance_m > 1000` 但 `distance_m <= 5000` 且 `point_in_local = True`，则返回 `resolved / reach_product_offset_ok`
 
 其余情况默认进入 `unresolved`，常见原因包括：
 
 1. `distance_m > 1000`
 2. `match_quality = area_mismatch`
 3. `match_quality = failed`
-4. `RiverSed / GSED / Dethier` 等 source 不进入 MERIT basin matching
-5. 点面关系不一致
+4. 点面关系不一致
 
 ### 2.6 点是否在流域多边形内的判定过程
 
@@ -198,10 +196,9 @@
 
 1. 先把 `point_in_local` 和 `point_in_basin` 统一转成布尔值
 2. 当前自动接受规则里，`point_in_local = True` 可以作为 `distance_m <= 1000` 条件下的一个放行证据
-3. `RiverSed / GSED / Dethier` 等 reach-scale remote-sensing products 不发布 MERIT basin assignment，会保留 observation，但返回 `unresolved / no_match`
-4. 普通 matched stations 若 `distance_m > 1000`，则返回 `unresolved / large_offset`
-5. `basin_policy.py` 当前不再使用站名/河名关键词做额外分类
-6. 如果点面关系明显不一致，且其他证据也不足，则最后会落到 `geometry_inconsistent`
+3. 对 `GSED / RiverSed` 这类 `reach-scale` 遥感产品，`point_in_local = True` 还可以作为 `1000-5000 m` 偏移区间内的一个特例放行证据，结果标记为 `reach_product_offset_ok`
+4. `basin_policy.py` 当前不再使用站名/河名关键词做额外分类
+5. 如果点面关系明显不一致，且其他证据也不足，则最后会落到 `geometry_inconsistent`
 
 因此，README 中提到的“点是否在流域 polygon 内”，在代码实现上应理解为：
 

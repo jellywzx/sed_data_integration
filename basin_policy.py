@@ -48,6 +48,7 @@ BASIN_STATUS_MEANINGS = " ".join(BASIN_STATUS_ORDER + ("unknown",))
 # outputs and then explained in README / metadata documents.
 BASIN_FLAG_ORDER = (
     "ok",
+    "reach_product_offset_ok",
     "large_offset",
     "area_mismatch",
     "geometry_inconsistent",
@@ -68,6 +69,13 @@ NO_BASIN_MATCH_SOURCE_SET = frozenset(
     tuple(name.lower() for name in NO_BASIN_MATCH_SOURCES)
     + tuple(NO_BASIN_MATCH_SOURCE_ALIASES.keys())
 )
+
+# Backward-compatible names used by summary scripts. The old large-offset
+# acceptance branch is no longer applied in classify_basin_result().
+REACH_SCALE_POLICY_SOURCES = NO_BASIN_MATCH_SOURCES
+REACH_SCALE_POLICY_SOURCE_SET = NO_BASIN_MATCH_SOURCE_SET
+REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
+REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
 
 
 def _clean_text(value):
@@ -166,7 +174,7 @@ def classify_basin_result(
     point_in_basin
         Whether the original point is covered by the traced full upstream basin.
         This is kept mainly as a diagnostic signal; by itself it is too broad to
-        justify automatic release.
+        justify automatic acceptance.
 
     Returns
     -------
@@ -196,8 +204,8 @@ def classify_basin_result(
     if basin_missing or quality == "failed":
         return "unresolved", "no_match"
 
-    # If reported area and matched reach area disagree strongly, keep that
-    # warning instead of accepting the match by distance alone.
+    # If reported area and matched reach area disagree strongly, do not override
+    # that warning with distance alone.
     if quality == "area_mismatch":
         return "unresolved", "area_mismatch"
 
