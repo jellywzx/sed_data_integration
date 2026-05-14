@@ -32,6 +32,7 @@ s4：站点流域匹配脚本（并行版）
 import logging
 import multiprocessing as mp
 import os
+import json
 import sys
 import time
 from pathlib import Path
@@ -42,12 +43,7 @@ import psutil
 from tqdm import tqdm
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
-from basin_policy import classify_basin_result
-from gsed_reach_hint import (
-    load_gsed_reach_metadata,
-    normalize_gsed_rid,
-    resolve_gsed_anchor,
-)
+from basin_policy import classify_basin_result, should_skip_basin_matching
 from pipeline_paths import (
     S3_COLLECTED_CSV,
     S4_LOCAL_GPKG,
@@ -66,12 +62,6 @@ MERIT_DIR  = Path(os.environ.get(
     "MERIT_DIR",
     str(OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1")
 ))
-GSED_SHP = Path(
-    os.environ.get(
-        "GSED_SHP",
-        str(OUTPUT_R_ROOT.parent / "Source" / "GSED" / "GSED" / "GSED_Reach.shp"),
-    )
-)
 S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
 OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
@@ -82,6 +72,19 @@ OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG
 LOG_LEVEL  = "INFO"
 PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
 BASIN_TRACER_DIR = SCRIPT_DIR
+REACH_HINT_SOURCE_SET = {"gsed", "riversed"}
+SKIP_METHOD = "source_remote_sensing_no_basin_match"
+REACH_HINT_COLUMNS = [
+    "reach_midpoint_lat",
+    "reach_midpoint_lon",
+    "reach_endpoint_1_lat",
+    "reach_endpoint_1_lon",
+    "reach_endpoint_2_lat",
+    "reach_endpoint_2_lon",
+    "reach_endpoint_candidates_json",
+    "reach_coordinate_method",
+    "reach_geometry_source",
+]
 
 
 def _env_bool(name, default):
@@ -121,6 +124,12 @@ CSV_COLUMNS = [
     "distance_m",
     "point_in_local",
     "point_in_basin",
+    "reach_hint_used",
+    "reach_anchor_source",
+    "reach_anchor_lat",
+    "reach_anchor_lon",
+    "reach_endpoint_match_count",
+    "reach_hint_method",
     "basin_status",
     "basin_flag",
     "n_upstream_reaches",
@@ -153,6 +162,169 @@ def _compute_area_error(reported_area, uparea_merit):
         return np.nan
 
     return float(np.log10(uparea_merit / reported_area))
+
+
+def _safe_float(value, default=np.nan):
+    try:
+        number = float(value)
+        return number if np.isfinite(number) else default
+    except Exception:
+        return default
+
+
+def _has_valid_coordinate_pair(lat, lon):
+    return np.isfinite(_safe_float(lat)) and np.isfinite(_safe_float(lon))
+
+
+def _parse_endpoint_candidates(raw):
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return []
+    else:
+        try:
+            if pd.isna(raw):
+                return []
+        except (TypeError, ValueError):
+            pass
+        parsed = raw
+    if not isinstance(parsed, list):
+        return []
+
+    candidates = []
+    seen = set()
+    for item in parsed:
+        if isinstance(item, dict):
+            lat = item.get("latitude", item.get("lat"))
+            lon = item.get("longitude", item.get("lon"))
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            lat, lon = item[0], item[1]
+        else:
+            continue
+        lat = _safe_float(lat)
+        lon = _safe_float(lon)
+        if not np.isfinite(lat) or not np.isfinite(lon):
+            continue
+        key = (round(lat, 12), round(lon, 12))
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append({"latitude": lat, "longitude": lon})
+    return candidates
+
+
+def _build_reach_hint_meta(station):
+    midpoint_lat = _safe_float(station.get("reach_midpoint_lat"), default=np.nan)
+    midpoint_lon = _safe_float(station.get("reach_midpoint_lon"), default=np.nan)
+    if not np.isfinite(midpoint_lat):
+        midpoint_lat = _safe_float(station.get("lat"), default=np.nan)
+    if not np.isfinite(midpoint_lon):
+        midpoint_lon = _safe_float(station.get("lon"), default=np.nan)
+
+    endpoint_candidates = _parse_endpoint_candidates(
+        station.get("reach_endpoint_candidates_json")
+    )
+    for prefix in ("reach_endpoint_1", "reach_endpoint_2"):
+        lat = _safe_float(station.get(f"{prefix}_lat"), default=np.nan)
+        lon = _safe_float(station.get(f"{prefix}_lon"), default=np.nan)
+        if _has_valid_coordinate_pair(lat, lon):
+            endpoint_candidates.append({"latitude": lat, "longitude": lon})
+    return {
+        "midpoint_latitude": midpoint_lat,
+        "midpoint_longitude": midpoint_lon,
+        "endpoint_candidates": _parse_endpoint_candidates(
+            json.dumps(endpoint_candidates, separators=(",", ":"))
+        ),
+    }
+
+
+def _resolve_reach_hint_anchor(tracer, meta):
+    endpoint_matches = []
+    for candidate_index, endpoint in enumerate(meta.get("endpoint_candidates") or []):
+        lat = endpoint.get("latitude")
+        lon = endpoint.get("longitude")
+        if not _has_valid_coordinate_pair(lat, lon):
+            continue
+        reach_info = tracer.find_best_reach(float(lon), float(lat), reported_area=None)
+        if not _has_valid_reach_info(reach_info):
+            continue
+        endpoint_matches.append(
+            {
+                "candidate_index": candidate_index,
+                "latitude": float(lat),
+                "longitude": float(lon),
+                "reach_info": reach_info,
+            }
+        )
+
+    if endpoint_matches:
+        endpoint_matches.sort(
+            key=lambda item: (
+                -_safe_float(item["reach_info"].get("uparea"), default=-np.inf),
+                _safe_float(item["reach_info"].get("distance"), default=np.inf),
+                item["candidate_index"],
+            )
+        )
+        best = endpoint_matches[0]
+        return {
+            "reach_hint_used": True,
+            "anchor_source": "endpoint",
+            "hint_method": "endpoint_uparea_max_distance_min",
+            "endpoint_match_count": len(endpoint_matches),
+            "latitude": best["latitude"],
+            "longitude": best["longitude"],
+            "reach_info": best["reach_info"],
+        }
+
+    midpoint_lat = meta.get("midpoint_latitude")
+    midpoint_lon = meta.get("midpoint_longitude")
+    reach_info = {
+        "COMID": None,
+        "uparea": np.nan,
+        "distance": np.nan,
+        "pfaf_code": None,
+        "match_quality": "failed",
+        "area_error": np.nan,
+    }
+    if _has_valid_coordinate_pair(midpoint_lat, midpoint_lon):
+        reach_info = tracer.find_best_reach(
+            float(midpoint_lon),
+            float(midpoint_lat),
+            reported_area=None,
+        )
+    return {
+        "reach_hint_used": True,
+        "anchor_source": "midpoint_fallback",
+        "hint_method": "midpoint_fallback",
+        "endpoint_match_count": 0,
+        "latitude": midpoint_lat,
+        "longitude": midpoint_lon,
+        "reach_info": reach_info,
+    }
+
+
+def _empty_basin_result():
+    return {
+        "geometry": None,
+        "geometry_local": None,
+        "basin_area": np.nan,
+        "basin_id": None,
+        "match_quality": "failed",
+        "area_error": np.nan,
+        "uparea_merit": np.nan,
+        "pfaf_code": None,
+        "distance": np.nan,
+        "method": SKIP_METHOD,
+        "n_upstream_reaches": 0,
+        "point_in_local": False,
+        "point_in_basin": False,
+    }
 
 
 # ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
@@ -209,38 +381,38 @@ def _trace_chunk(args):
         reported_area = station.get("reported_area")
         if pd.isna(reported_area):
             reported_area = None
+        reach_diag = {
+            "reach_hint_used": False,
+            "reach_anchor_source": "",
+            "reach_anchor_lat": np.nan,
+            "reach_anchor_lon": np.nan,
+            "reach_endpoint_match_count": 0,
+            "reach_hint_method": "",
+        }
 
-        basin_result = None
-        if source_token == "gsed":
-            gsed_meta = station.get("gsed_meta")
-            if isinstance(gsed_meta, dict):
-                anchor_result = resolve_gsed_anchor(
-                    tracer,
-                    gsed_meta,
-                    allow_centroid_fallback=False,
-                )
-                reach_info = anchor_result.get("reach_info")
-                if _has_valid_reach_info(reach_info):
-                    anchor_lon = anchor_result.get("longitude")
-                    anchor_lat = anchor_result.get("latitude")
-                    basin_result = tracer.get_upstream_basin_from_reach(
-                        float(anchor_lon),
-                        float(anchor_lat),
-                        reach_info,
-                    )
-
-        if basin_result is None:
+        if source_token in REACH_HINT_SOURCE_SET:
+            reported_area = None
+            anchor_result = _resolve_reach_hint_anchor(
+                tracer,
+                _build_reach_hint_meta(station),
+            )
+            reach_diag = {
+                "reach_hint_used": bool(anchor_result.get("reach_hint_used", False)),
+                "reach_anchor_source": anchor_result.get("anchor_source", ""),
+                "reach_anchor_lat": anchor_result.get("latitude", np.nan),
+                "reach_anchor_lon": anchor_result.get("longitude", np.nan),
+                "reach_endpoint_match_count": int(anchor_result.get("endpoint_match_count", 0)),
+                "reach_hint_method": anchor_result.get("hint_method", ""),
+            }
+            basin_result = tracer.get_upstream_basin_from_reach(
+                _safe_float(anchor_result.get("longitude")),
+                _safe_float(anchor_result.get("latitude")),
+                anchor_result.get("reach_info", {}),
+            )
+        else:
             basin_result = tracer.get_upstream_basin(
                 lon, lat, reported_area=reported_area
             )
-
-        if source_token == "gsed":
-            area_error = _compute_area_error(
-                reported_area,
-                basin_result.get("uparea_merit"),
-            )
-            if np.isfinite(area_error):
-                basin_result["area_error"] = area_error
 
         basin_status, basin_flag = classify_basin_result(
             basin_id=basin_result["basin_id"],
@@ -269,6 +441,7 @@ def _trace_chunk(args):
                 "distance_m": basin_result.get("distance", np.nan),
                 "point_in_local": basin_result.get("point_in_local", False),
                 "point_in_basin": basin_result.get("point_in_basin", False),
+                **reach_diag,
                 "basin_status": basin_status,
                 "basin_flag": basin_flag,
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
@@ -283,6 +456,43 @@ def _trace_chunk(args):
     del tracer
     gc.collect()
     return results
+
+
+def _build_skip_result(station):
+    lon = _safe_float(station.get("lon"))
+    lat = _safe_float(station.get("lat"))
+    basin_result = _empty_basin_result()
+    return {
+        "station_id": int(station["station_id"]),
+        "lon": lon,
+        "lat": lat,
+        "source_station_name": station.get("source_station_name", ""),
+        "source_river_name": station.get("source_river_name", ""),
+        "source_station_id": station.get("source_station_id", ""),
+        "reported_area": np.nan,
+        "basin_id": basin_result["basin_id"],
+        "basin_area": basin_result["basin_area"],
+        "match_quality": basin_result["match_quality"],
+        "area_error": basin_result["area_error"],
+        "uparea_merit": basin_result["uparea_merit"],
+        "pfaf_code": basin_result["pfaf_code"],
+        "method": basin_result["method"],
+        "distance_m": basin_result["distance"],
+        "point_in_local": False,
+        "point_in_basin": False,
+        "reach_hint_used": False,
+        "reach_anchor_source": "",
+        "reach_anchor_lat": np.nan,
+        "reach_anchor_lon": np.nan,
+        "reach_endpoint_match_count": 0,
+        "reach_hint_method": "",
+        "basin_status": "unresolved",
+        "basin_flag": "no_match",
+        "n_upstream_reaches": 0,
+        "geometry": None,
+        "geometry_local": None,
+    }
+
 
 def _chunk_to_partial_df(chunk_results, include_geometry):
     rows = []
@@ -306,6 +516,12 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             "distance_m": row.get("distance_m", np.nan),
             "point_in_local": row.get("point_in_local", False),
             "point_in_basin": row.get("point_in_basin", False),
+            "reach_hint_used": row.get("reach_hint_used", False),
+            "reach_anchor_source": row.get("reach_anchor_source", ""),
+            "reach_anchor_lat": row.get("reach_anchor_lat", np.nan),
+            "reach_anchor_lon": row.get("reach_anchor_lon", np.nan),
+            "reach_endpoint_match_count": row.get("reach_endpoint_match_count", 0),
+            "reach_hint_method": row.get("reach_hint_method", ""),
             "basin_status": row.get("basin_status", ""),
             "basin_flag": row.get("basin_flag", ""),
         }
@@ -359,9 +575,6 @@ def main():
     if not S3_CSV.is_file():
         logger.error("s3 CSV not found: %s", S3_CSV)
         return 1
-    if not MERIT_DIR.is_dir():
-        logger.error("MERIT dir not found: %s", MERIT_DIR)
-        return 1
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -401,10 +614,9 @@ def main():
     else:
         stations_sorted["source"] = ""
 
-    # 即使误用了旧版 s3 CSV，也不要让 RiverSed 的 reported_area 进入 MERIT
-    # 匹配评分；RiverSed 在 basin 主线下始终只按坐标匹配。
-    riversed_mask = stations_sorted["source"].str.lower().eq("riversed")
-    stations_sorted.loc[riversed_mask, "reported_area"] = np.nan
+    source_tokens = stations_sorted["source"].str.lower()
+    reach_hint_mask = source_tokens.isin(REACH_HINT_SOURCE_SET)
+    stations_sorted.loc[reach_hint_mask, "reported_area"] = np.nan
 
     source_text_columns = {
         "station_name": "source_station_name",
@@ -422,47 +634,29 @@ def main():
         else:
             stations_sorted[output_col] = ""
 
-    stations_sorted["gsed_r_id"] = ""
-    gsed_mask = stations_sorted["source"].str.lower().eq("gsed")
-    gsed_metadata = {}
-    if gsed_mask.any():
-        gsed_candidate_ids = stations_sorted["source_station_id"].where(
-            stations_sorted["source_station_id"].ne(""),
-            stations_sorted["source_station_name"],
+    for column in REACH_HINT_COLUMNS:
+        if column not in stations_sorted.columns:
+            stations_sorted[column] = ""
+
+    skip_mask = stations_sorted["source"].map(should_skip_basin_matching)
+    skip_records = stations_sorted.loc[skip_mask].to_dict(orient="records")
+    if skip_records:
+        skip_df = _chunk_to_partial_df(
+            [_build_skip_result(row) for row in skip_records],
+            include_geometry=SAVE_GPKG,
         )
-        stations_sorted.loc[gsed_mask, "gsed_r_id"] = gsed_candidate_ids.loc[gsed_mask]
-        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].map(normalize_gsed_rid)
-        stations_sorted["gsed_r_id"] = stations_sorted["gsed_r_id"].fillna("")
-        target_rids = [
-            rid
-            for rid in stations_sorted.loc[gsed_mask, "gsed_r_id"].tolist()
-            if rid
-        ]
-        if target_rids:
-            if GSED_SHP.is_file():
-                try:
-                    gsed_metadata = load_gsed_reach_metadata(
-                        GSED_SHP,
-                        target_rids=target_rids,
-                    )
-                    logger.info(
-                        "Loaded GSED reach hints for %d/%d pending reaches from %s",
-                        len(gsed_metadata),
-                        len(set(target_rids)),
-                        GSED_SHP,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to load GSED reach hints from %s; "
-                        "falling back to point-based matching for GSED.",
-                        GSED_SHP,
-                    )
-            else:
-                logger.warning(
-                    "GSED shapefile not found: %s; falling back to point-based "
-                    "matching for GSED.",
-                    GSED_SHP,
-                )
+        skip_df.to_csv(
+            PARTIAL_CSV,
+            mode="a",
+            index=False,
+            header=not PARTIAL_CSV.exists(),
+        )
+        logger.info("Wrote %d no-basin skip rows", len(skip_records))
+
+    stations_sorted = stations_sorted.loc[~skip_mask].copy()
+    if len(stations_sorted) > 0 and not MERIT_DIR.is_dir():
+        logger.error("MERIT dir not found: %s", MERIT_DIR)
+        return 1
 
     record_columns = [
         "station_id",
@@ -473,12 +667,8 @@ def main():
         "source_station_name",
         "source_river_name",
         "source_station_id",
-        "gsed_r_id",
-    ]
+    ] + REACH_HINT_COLUMNS
     station_records = stations_sorted[record_columns].to_dict(orient="records")
-    for station in station_records:
-        gsed_r_id = station.get("gsed_r_id", "")
-        station["gsed_meta"] = gsed_metadata.get(gsed_r_id) if gsed_r_id else None
 
     chunk_size = BATCH_SIZE
     chunks = [
@@ -605,8 +795,11 @@ def main():
         except Exception as e:
             logger.warning("GPKG save failed (skipping): %s", e)
 
-    PARTIAL_CSV.unlink(missing_ok=True)
-    logger.info("Removed partial CSV -> %s", PARTIAL_CSV)
+    try:
+        PARTIAL_CSV.unlink()
+        logger.info("Removed partial CSV -> %s", PARTIAL_CSV)
+    except FileNotFoundError:
+        pass
     logger.info("Done.")
     return 0
 

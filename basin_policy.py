@@ -66,6 +66,7 @@ REACH_SCALE_POLICY_SOURCES = ("GSED", "RiverSed")
 REACH_SCALE_POLICY_SOURCE_SET = frozenset(name.lower() for name in REACH_SCALE_POLICY_SOURCES)
 REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
 REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
+NO_BASIN_MATCH_SOURCE_SET = frozenset({"dethier", "deither"})
 
 
 def _clean_text(value):
@@ -121,6 +122,11 @@ def normalize_match_quality(value):
 def normalize_source_name(value):
     """Map source names to a lowercase comparable token."""
     return _clean_text(value).lower()
+
+
+def should_skip_basin_matching(source_name):
+    """Return True for sources temporarily excluded from basin matching."""
+    return normalize_source_name(source_name) in NO_BASIN_MATCH_SOURCE_SET
 
 
 def classify_basin_result(
@@ -182,6 +188,22 @@ def classify_basin_result(
     if basin_missing or quality == "failed":
         return "unresolved", "no_match"
 
+    if source in REACH_SCALE_POLICY_SOURCE_SET:
+        if math.isfinite(distance) and distance <= 300.0:
+            return "resolved", "ok"
+        if math.isfinite(distance) and distance <= 1000.0 and local_ok:
+            return "resolved", "ok"
+        if (
+            math.isfinite(distance)
+            and distance > 1000.0
+            and distance <= REACH_SCALE_POLICY_MAX_DISTANCE_M
+            and local_ok
+        ):
+            return "resolved", REACH_SCALE_POLICY_FLAG
+        if math.isfinite(distance) and distance > 1000.0:
+            return "unresolved", "large_offset"
+        return "unresolved", "geometry_inconsistent"
+
     # If reported area and matched reach area disagree strongly, do not override
     # that warning with distance alone.
     if quality == "area_mismatch":
@@ -204,19 +226,6 @@ def classify_basin_result(
 
     if resolved:
         return "resolved", "ok"
-
-    # Reach-scale remote-sensing products such as GSED and RiverSed often use a
-    # centerline- or segment-based representative coordinate. Keep the policy
-    # conservative by requiring the point to remain inside the matched local
-    # catchment and by capping the allowed offset at 5 km.
-    if (
-        source in REACH_SCALE_POLICY_SOURCE_SET
-        and math.isfinite(distance)
-        and distance > 1000.0
-        and distance <= REACH_SCALE_POLICY_MAX_DISTANCE_M
-        and local_ok
-    ):
-        return "resolved", REACH_SCALE_POLICY_FLAG
 
     # Beyond 1 km, the current policy assumes the offset is too large for
     # automatic release unless a future manual-review workflow says otherwise.
