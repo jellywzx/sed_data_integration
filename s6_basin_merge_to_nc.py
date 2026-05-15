@@ -177,6 +177,7 @@ RESOLUTION_CODES = {
 
 # 默认并行进程数，None = 自动取 CPU 核数，命令行 --workers 可覆盖
 _DEFAULT_WORKERS = 24
+_DEFAULT_METADATA_WORKERS = 16
 
 _PROC = psutil.Process(os.getpid())
 
@@ -316,6 +317,9 @@ def _read_explanatory_meta_from_nc(path):
         "source_station_declared_temporal_resolution": _clean_text(meta.get("declared_temporal_resolution", "")),
     }
 
+def _read_explanatory_meta_worker(path_str):
+    """Worker wrapper for parallel explanatory metadata reading."""
+    return path_str, _read_explanatory_meta_from_nc(path_str)
 
 def _new_source_station_text_aggregate():
     agg = dict((field, []) for field in SOURCE_STATION_TEXT_FIELDS)
@@ -899,6 +903,13 @@ def main():
     ap.add_argument("--workers", "-w", type=int, default=_DEFAULT_WORKERS,
                     help="并行进程数（0 = 自动取 CPU 核数）。默认: {}".format(_DEFAULT_WORKERS))
     ap.add_argument(
+        "--metadata-workers",
+        type=int,
+        default=_DEFAULT_METADATA_WORKERS,
+        help="并行读取 source-station explanatory metadata 的进程数。默认: {}；0 = 自动。".format(_DEFAULT_METADATA_WORKERS)
+    )
+
+    ap.add_argument(
         "--include-climatology",
         action="store_true",
         help="默认会过滤掉 climatology 行；如确实需要将 climatology 混入主库，可显式开启此选项",
@@ -1115,7 +1126,63 @@ def main():
     row_source_station_index = []
     explanatory_meta_cache = {}
 
-    for row in stations.itertuples(index=False):
+    # ── 并行预读取每个唯一 NetCDF 的 explanatory metadata ─────────────────────
+    if getattr(args, "skip_source_station_text_metadata", False):
+        print("Skipping source-station explanatory metadata reading.")
+    else:
+        unique_meta_paths = sorted(stations["path"].astype(str).unique().tolist())
+        n_meta_paths = len(unique_meta_paths)
+
+        metadata_workers = int(args.metadata_workers)
+        if metadata_workers <= 0:
+            metadata_workers = os.cpu_count() or 4
+        metadata_workers = max(1, min(metadata_workers, n_meta_paths))
+
+        print(
+            "Reading source-station explanatory metadata: {} unique files, {} workers".format(
+                n_meta_paths, metadata_workers
+            )
+        )
+
+        if metadata_workers == 1:
+            for path_str in tqdm(
+                unique_meta_paths,
+                total=n_meta_paths,
+                desc="Reading explanatory metadata",
+                unit="file",
+                ncols=120,
+                file=sys.stderr,
+            ):
+                explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
+        else:
+            with ProcessPoolExecutor(max_workers=metadata_workers) as ex:
+                futures = {
+                    ex.submit(_read_explanatory_meta_worker, path_str): path_str
+                    for path_str in unique_meta_paths
+                }
+
+                with tqdm(
+                    total=n_meta_paths,
+                    desc="Reading explanatory metadata",
+                    unit="file",
+                    ncols=120,
+                    file=sys.stderr,
+                ) as pbar:
+                    for future in as_completed(futures):
+                        path_str, meta = future.result()
+                        explanatory_meta_cache[path_str] = meta
+                        pbar.update(1)
+
+    print("Building source-station map: {} station rows ...".format(len(stations)))
+
+    for row in tqdm(
+        stations.itertuples(index=False),
+        total=len(stations),
+        desc="Building source-station map",
+        unit="row",
+        ncols=120,
+        file=sys.stderr,
+    ):
         row_dict = {
             "path": getattr(row, "path", ""),
             "source": getattr(row, "source", ""),
@@ -1128,8 +1195,12 @@ def main():
             "source_station_id": getattr(row, "source_station_id", ""),
         }
         path_str = str(row_dict["path"])
-        if path_str not in explanatory_meta_cache:
-            explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
+
+        if getattr(args, "skip_source_station_text_metadata", False):
+            explanatory_meta = {}
+        else:
+            explanatory_meta = explanatory_meta_cache.get(path_str, {})
+
         key = _build_source_station_key(row_dict)
         idx = source_station_lookup.get(key)
         if idx is None:
@@ -1154,8 +1225,8 @@ def main():
         source_station_rows[idx]["resolutions"].add(str(row_dict["resolution"]))
         _merge_source_station_text_aggregate(
             source_station_rows[idx]["text_agg"],
-            explanatory_meta_cache[path_str],
-        )
+            explanatory_meta,
+        )   
         row_source_station_index.append(idx)
 
     stations["_source_station_index"] = np.asarray(row_source_station_index, dtype=np.int32)
