@@ -66,7 +66,10 @@ REACH_SCALE_POLICY_SOURCES = ("GSED", "RiverSed")
 REACH_SCALE_POLICY_SOURCE_SET = frozenset(name.lower() for name in REACH_SCALE_POLICY_SOURCES)
 REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
 REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
-NO_BASIN_MATCH_SOURCE_SET = frozenset({"dethier", "deither"})
+
+# No source is currently excluded from s4 basin matching. Dethier is the
+# canonical spelling and should follow the ordinary station policy.
+NO_BASIN_MATCH_SOURCE_SET = frozenset()
 
 
 def _clean_text(value):
