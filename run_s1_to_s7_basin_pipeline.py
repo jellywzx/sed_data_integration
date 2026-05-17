@@ -184,6 +184,19 @@ def build_stage_specs(args, python_bin):
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
     }
 
+    matrix_cmd = [
+        python_bin,
+        str(SCRIPT_DIR / "s6_export_resolution_matrix_ncs.py"),
+        "-i",
+        str(s5_csv),
+        "--out-dir",
+        str(matrix_dir),
+    ]
+    if args.matrix_workers is not None:
+        matrix_cmd += ["--workers", str(args.matrix_workers)]
+    if args.matrix_resolution_workers is not None:
+        matrix_cmd += ["--resolution-workers", str(args.matrix_resolution_workers)]
+
     s6_commands = [
         {
             "name": "s6_basin_merge_to_nc",
@@ -203,16 +216,7 @@ def build_stage_specs(args, python_bin):
         },
         {
             "name": "s6_export_resolution_matrix_ncs",
-            "cmd": [
-                python_bin,
-                str(SCRIPT_DIR / "s6_export_resolution_matrix_ncs.py"),
-                "-i",
-                str(s5_csv),
-                "--out-dir",
-                str(matrix_dir),
-                "-w",
-                str(args.matrix_workers),
-            ],
+            "cmd": matrix_cmd,
         },
     ]
     if not args.skip_climatology_export:
@@ -422,7 +426,18 @@ def parse_args():
         help="MERIT Hydro directory passed to s4 via MERIT_DIR.",
     )
     parser.add_argument("--s6-workers", type=int, default=24, help="Worker count for s6_basin_merge_to_nc.py.")
-    parser.add_argument("--matrix-workers", type=int, default=8, help="Worker count for s6_export_resolution_matrix_ncs.py.")
+    parser.add_argument(
+        "--matrix-workers",
+        type=int,
+        default=None,
+        help="Optional override of total worker budget for s6_export_resolution_matrix_ncs.py.",
+    )
+    parser.add_argument(
+        "--matrix-resolution-workers",
+        type=int,
+        default=None,
+        help="Optional override of concurrent resolution jobs for s6_export_resolution_matrix_ncs.py.",
+    )
     parser.add_argument(
         "--s6-include-climatology",
         action="store_true",

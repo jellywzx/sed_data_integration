@@ -797,8 +797,6 @@ def build_cluster_series(cid, resolution, recs):
             cid, resolution, score_info
         )
 
-    # 将 date 列设为 index 以加速查找，按质量顺序排列
-    indexed = [item["df"].set_index("date") for item in scored]
     all_dates = sorted(all_dates)
     n = len(all_dates)
 
@@ -818,36 +816,87 @@ def build_cluster_series(cid, resolution, recs):
     source_arr[:] = ""
     source_station_idx_arr = np.full(n, -1, dtype=np.int32)
 
-    for i, d in enumerate(all_dates):
-        # 统计在该日期有数据的来源数，>1 则标记重叠
-        sources_with_date = sum(1 for s in indexed if d in s.index)
-        if sources_with_date > 1:
-            is_overlap_arr[i] = 1
+    if n == 0:
+        return (
+            dates_arr,
+            q_arr,
+            ssc_arr,
+            ssl_arr,
+            q_flag_arr,
+            ssc_flag_arr,
+            ssl_flag_arr,
+            stage_qc_arrays,
+            is_overlap_arr,
+            source_arr,
+            source_station_idx_arr,
+            quality_rows,
+            quality_log,
+            unit_issues,
+        )
 
-        for s in indexed:   # 按质量从高到低尝试
-            if d not in s.index:
-                continue
-            row = s.loc[d]
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-            q   = row.get("Q",   np.nan)
-            ssc = row.get("SSC", np.nan)
-            ssl = row.get("SSL", np.nan)
-            if pd.isna(q) and pd.isna(ssc) and pd.isna(ssl):
-                continue
-            q_arr[i]        = q   if pd.notna(q)   else FILL
-            ssc_arr[i]      = ssc if pd.notna(ssc) else FILL
-            ssl_arr[i]      = ssl if pd.notna(ssl) else FILL
-            # 同时读取所选来源的质量标记及来源名
-            q_flag_arr[i]   = int(row.get("Q_flag",   9))
-            ssc_flag_arr[i] = int(row.get("SSC_flag", 9))
-            ssl_flag_arr[i] = int(row.get("SSL_flag", 9))
+    ranked_frames = []
+    for rank, item in enumerate(scored):
+        if len(item["df"]) == 0:
+            continue
+        work_df = item["df"].copy()
+        work_df["_quality_rank"] = int(rank)
+        work_df["_row_order"] = np.arange(len(work_df), dtype=np.int64)
+        ranked_frames.append(work_df)
+
+    if ranked_frames:
+        merged = pd.concat(ranked_frames, ignore_index=True)
+        overlap_count = merged["date"].value_counts()
+        overlap_dates = set(overlap_count[overlap_count > 1].index.tolist())
+        if overlap_dates:
+            overlap_mask = np.asarray([date in overlap_dates for date in all_dates], dtype=bool)
+            is_overlap_arr[overlap_mask] = 1
+
+        selected = (
+            merged.sort_values(["date", "_quality_rank", "_row_order"], kind="mergesort")
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date", kind="mergesort")
+        )
+
+        cols = pd.Index(all_dates).get_indexer(selected["date"])
+        valid_mask = cols >= 0
+        if np.any(valid_mask):
+            cols = cols[valid_mask]
+            selected = selected.iloc[valid_mask]
+
+            q_vals = selected["Q"].to_numpy(dtype=np.float32, copy=True)
+            ssc_vals = selected["SSC"].to_numpy(dtype=np.float32, copy=True)
+            ssl_vals = selected["SSL"].to_numpy(dtype=np.float32, copy=True)
+            q_vals[np.isnan(q_vals)] = FILL
+            ssc_vals[np.isnan(ssc_vals)] = FILL
+            ssl_vals[np.isnan(ssl_vals)] = FILL
+            q_arr[cols] = q_vals
+            ssc_arr[cols] = ssc_vals
+            ssl_arr[cols] = ssl_vals
+
+            if "Q_flag" in selected.columns:
+                q_flag_arr[cols] = selected["Q_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+            if "SSC_flag" in selected.columns:
+                ssc_flag_arr[cols] = selected["SSC_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+            if "SSL_flag" in selected.columns:
+                ssl_flag_arr[cols] = selected["SSL_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+
             for field_name in STANDARD_QC_STAGE_NAMES:
                 fill_value = STANDARD_QC_STAGE_NAME_TO_SPEC[field_name]["fill_value"]
-                stage_qc_arrays[field_name][i] = int(row.get(field_name, fill_value))
-            source_arr[i]   = str(row.get("_source", ""))
-            source_station_idx_arr[i] = int(row.get("_source_station_index", -1))
-            break
+                if field_name in selected.columns:
+                    stage_qc_arrays[field_name][cols] = (
+                        selected[field_name]
+                        .fillna(fill_value)
+                        .astype(np.int16)
+                        .to_numpy(dtype=np.int8)
+                    )
+
+            source_arr[cols] = selected["_source"].fillna("").astype(str).to_numpy(dtype=object)
+            source_station_idx_arr[cols] = (
+                selected["_source_station_index"]
+                .fillna(-1)
+                .astype(np.int64)
+                .to_numpy(dtype=np.int32)
+            )
 
     return (
         dates_arr,

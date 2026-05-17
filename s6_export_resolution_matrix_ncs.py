@@ -22,7 +22,10 @@ Design:
 """
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import os
+import socket
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -65,7 +68,133 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_INPUT = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_OUT_DIR = PROJECT_ROOT / S6_MATRIX_DIR
 DEFAULT_RESOLUTIONS = ("daily", "monthly", "annual")
-DEFAULT_WORKERS = 24
+DEFAULT_WORKERS = None
+DEFAULT_RESOLUTION_WORKERS = None
+
+GENERIC_PROFILE = {
+    "total_worker_budget": 8,
+    "resolution_workers": 1,
+    "resolution_order": list(DEFAULT_RESOLUTIONS),
+    "resolution_worker_weights": {"daily": 4, "monthly": 2, "annual": 1},
+}
+
+HOST_PROFILES = {
+    "node113": {
+        "total_worker_budget": 32,
+        "resolution_workers": 3,
+        "resolution_order": ["daily", "monthly", "annual"],
+        "resolution_worker_weights": {"daily": 24, "monthly": 6, "annual": 2},
+    },
+}
+
+RESOLUTION_WEIGHT_FALLBACK = {"daily": 4, "monthly": 2, "annual": 1}
+
+
+def _normalize_hostname(hostname):
+    return str(hostname or "").strip().split(".")[0].lower()
+
+
+def _positive_int_or_none(value):
+    if value is None:
+        return None
+    value = int(value)
+    return value if value > 0 else None
+
+
+def resolve_runtime_config(
+    hostname,
+    cpu_count,
+    resolutions,
+    workers_override=None,
+    resolution_workers_override=None,
+):
+    host_key = _normalize_hostname(hostname)
+    profile = dict(GENERIC_PROFILE)
+    host_profile = HOST_PROFILES.get(host_key)
+    if host_profile:
+        profile.update(host_profile)
+    profile["resolution_order"] = list(profile.get("resolution_order", list(DEFAULT_RESOLUTIONS)))
+    profile["resolution_worker_weights"] = dict(profile.get("resolution_worker_weights", {}))
+
+    cpu_count = max(1, int(cpu_count or 1))
+    total_worker_budget = min(max(1, int(profile.get("total_worker_budget", 1))), cpu_count)
+    resolution_workers = min(max(1, int(profile.get("resolution_workers", 1))), len(resolutions) or 1)
+
+    workers_override = _positive_int_or_none(workers_override)
+    if workers_override is not None:
+        total_worker_budget = min(workers_override, cpu_count)
+
+    resolution_workers_override = _positive_int_or_none(resolution_workers_override)
+    if resolution_workers_override is not None:
+        resolution_workers = min(max(1, resolution_workers_override), len(resolutions) or 1)
+
+    weights = {}
+    for res in resolutions:
+        weights[res] = int(
+            profile["resolution_worker_weights"].get(
+                res,
+                RESOLUTION_WEIGHT_FALLBACK.get(res, 1),
+            )
+        )
+        if weights[res] <= 0:
+            weights[res] = 1
+
+    ordered = [res for res in profile["resolution_order"] if res in resolutions]
+    for res in resolutions:
+        if res not in ordered:
+            ordered.append(res)
+
+    return {
+        "hostname": host_key,
+        "cpu_count": cpu_count,
+        "total_worker_budget": total_worker_budget,
+        "resolution_workers": resolution_workers,
+        "resolution_order": ordered,
+        "resolution_worker_weights": weights,
+    }
+
+
+def _allocate_resolution_workers(active_resolutions, total_worker_budget, resolution_weights, max_parallel=1):
+    if not active_resolutions:
+        return {}
+    total_worker_budget = max(1, int(total_worker_budget))
+    max_parallel = max(1, min(int(max_parallel), len(active_resolutions)))
+    alloc = {res: 1 for res in active_resolutions}
+
+    # We only run `max_parallel` resolutions concurrently, so prioritize
+    # worker distribution for the first execution window.
+    wave = active_resolutions[:max_parallel]
+    if not wave:
+        return alloc
+
+    budget_for_wave = max_parallel
+    if total_worker_budget > max_parallel:
+        budget_for_wave = total_worker_budget
+    remaining = max(0, budget_for_wave - len(wave))
+    if remaining == 0:
+        return alloc
+
+    weights = {res: max(1, int(resolution_weights.get(res, 1))) for res in wave}
+    weight_sum = float(sum(weights.values()))
+    raw_extra = {
+        res: (remaining * (weights[res] / weight_sum)) if weight_sum > 0 else 0.0
+        for res in wave
+    }
+    int_extra = {res: int(raw_extra[res]) for res in wave}
+    used = sum(int_extra.values())
+    leftover = remaining - used
+    if leftover > 0:
+        ranked = sorted(
+            wave,
+            key=lambda res: (raw_extra[res] - int_extra[res], weights[res]),
+            reverse=True,
+        )
+        for i in range(leftover):
+            int_extra[ranked[i % len(ranked)]] += 1
+
+    for res in wave:
+        alloc[res] += int_extra[res]
+    return alloc
 
 
 def _normalize_resolution(value):
@@ -305,8 +434,8 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
     time_values = (
         (pd.to_datetime(all_dates) - ref).total_seconds().values / 86400.0
     ).astype(np.float64)
-    date_to_idx = {date: i for i, date in enumerate(all_dates)}
-    chunks = (1, min(512, n_time))
+    time_index = pd.DatetimeIndex(pd.to_datetime(all_dates))
+    chunks = (64, min(1024, n_time))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with nc4.Dataset(out_path, "w", format="NETCDF4") as nc:
@@ -508,22 +637,44 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             src_row = np.full(n_time, -1, dtype=np.int32)
             ssuid_row = np.full(n_time, "", dtype=object)
 
-            for i, date in enumerate(pd.to_datetime(dates_arr).date):
-                col = date_to_idx[date]
-                q_row[col] = q_arr[i]
-                ssc_row[col] = ssc_arr[i]
-                ssl_row[col] = ssl_arr[i]
-                qf_row[col] = q_flag_arr[i]
-                sscf_row[col] = ssc_flag_arr[i]
-                sslf_row[col] = ssl_flag_arr[i]
+            cols = time_index.get_indexer(pd.DatetimeIndex(pd.to_datetime(dates_arr)))
+            valid_mask = cols >= 0
+            if np.any(valid_mask):
+                cols = cols[valid_mask]
+                q_vals = np.asarray(q_arr)[valid_mask]
+                ssc_vals = np.asarray(ssc_arr)[valid_mask]
+                ssl_vals = np.asarray(ssl_arr)[valid_mask]
+                qf_vals = np.asarray(q_flag_arr)[valid_mask]
+                sscf_vals = np.asarray(ssc_flag_arr)[valid_mask]
+                sslf_vals = np.asarray(ssl_flag_arr)[valid_mask]
+                ov_vals = np.asarray(is_overlap_arr)[valid_mask]
+                source_vals = np.asarray(source_arr, dtype=object)[valid_mask]
+                source_station_vals = np.asarray(source_station_idx_arr)[valid_mask]
+
+                q_row[cols] = q_vals
+                ssc_row[cols] = ssc_vals
+                ssl_row[cols] = ssl_vals
+                qf_row[cols] = qf_vals
+                sscf_row[cols] = sscf_vals
+                sslf_row[cols] = sslf_vals
+                ov_row[cols] = ov_vals
+
                 for field_name in STANDARD_QC_STAGE_NAMES:
-                    stage_qc_rows[field_name][col] = stage_qc_arrs[field_name][i]
-                ov_row[col] = is_overlap_arr[i]
-                source_name = str(source_arr[i] or "")
-                src_row[col] = source_lookup["to_idx"].get(source_name, -1)
-                source_station_index = int(source_station_idx_arr[i]) if np.isfinite(source_station_idx_arr[i]) else -1
-                if source_station_index >= 0:
-                    ssuid_row[col] = source_station_uid_lookup.get(source_station_index, "")
+                    stage_qc_rows[field_name][cols] = np.asarray(stage_qc_arrs[field_name])[valid_mask]
+
+                src_row[cols] = np.asarray(
+                    [source_lookup["to_idx"].get(str(name or ""), -1) for name in source_vals],
+                    dtype=np.int32,
+                )
+
+                valid_station_mask = source_station_vals >= 0
+                if np.any(valid_station_mask):
+                    ss_cols = cols[valid_station_mask]
+                    ss_values = source_station_vals[valid_station_mask].astype(np.int64, copy=False)
+                    ssuid_row[ss_cols] = np.asarray(
+                        [source_station_uid_lookup.get(int(idx), "") for idx in ss_values],
+                        dtype=object,
+                    )
 
             valid_counts[station_idx] = int(
                 np.count_nonzero((q_row != FILL) | (ssc_row != FILL) | (ssl_row != FILL))
@@ -669,6 +820,87 @@ def _collect_resolution_series(resolution, resolution_df, workers):
     return series_results, quality_messages, unit_issue_rows
 
 
+def _run_resolution_export(args):
+    (
+        resolution,
+        resolution_df,
+        cluster_rep_lookup,
+        out_dir,
+        source_station_uid_lookup,
+        cluster_workers,
+    ) = args
+    run_t0 = time.perf_counter()
+
+    print(
+        "\n[{}] rows={} clusters={} cluster_workers={}".format(
+            resolution,
+            len(resolution_df),
+            resolution_df["cluster_id"].nunique(),
+            cluster_workers,
+        )
+    )
+
+    source_lookup = _build_source_lookup(resolution_df)
+    t_collect = time.perf_counter()
+    series_results, quality_messages, unit_issue_rows = _collect_resolution_series(
+        resolution,
+        resolution_df,
+        max(1, int(cluster_workers)),
+    )
+    collect_seconds = time.perf_counter() - t_collect
+
+    _summarize_unit_issues(
+        unit_issue_rows,
+        strict_mode=False,
+        label="{} matrix input unit validation".format(resolution),
+    )
+    if not series_results:
+        return {
+            "resolution": resolution,
+            "skipped": True,
+            "reason": "no non-empty merged series",
+            "collect_series_seconds": collect_seconds,
+            "write_nc_seconds": 0.0,
+            "total_seconds": time.perf_counter() - run_t0,
+        }
+
+    cluster_ids = sorted(series_results.keys())
+    metadata = _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df)
+    out_path = out_dir / "s6_basin_matrix_{}.nc".format(resolution)
+    t_write = time.perf_counter()
+    _write_matrix_nc(
+        out_path,
+        resolution,
+        cluster_ids,
+        metadata,
+        source_lookup,
+        series_results,
+        source_station_uid_lookup,
+    )
+    write_seconds = time.perf_counter() - t_write
+    time_steps = len(
+        {
+            pd.Timestamp(date).date()
+            for result in series_results.values()
+            for date in result[0]
+        }
+    )
+    total_points = sum(len(result[0]) for result in series_results.values())
+    total_seconds = time.perf_counter() - run_t0
+    return {
+        "resolution": resolution,
+        "skipped": False,
+        "out_path": out_path,
+        "stations": len(cluster_ids),
+        "time_steps": time_steps,
+        "merged_points": total_points,
+        "quality_logs": quality_messages,
+        "collect_series_seconds": collect_seconds,
+        "write_nc_seconds": write_seconds,
+        "total_seconds": total_seconds,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description="Export one station x time NC per basin resolution")
     ap.add_argument("--input", "-i", default=str(DEFAULT_INPUT), help="input s5 clustered csv")
@@ -684,7 +916,13 @@ def main():
         "-w",
         type=int,
         default=DEFAULT_WORKERS,
-        help="parallel workers for per-cluster series merge; default: {}".format(DEFAULT_WORKERS),
+        help="optional override for total worker budget; default uses host profile",
+    )
+    ap.add_argument(
+        "--resolution-workers",
+        type=int,
+        default=DEFAULT_RESOLUTION_WORKERS,
+        help="optional override for concurrent resolution jobs; default uses host profile",
     )
     args = ap.parse_args()
 
@@ -697,6 +935,15 @@ def main():
     resolutions = [_normalize_resolution(res) for res in args.resolutions]
     resolutions = [res for res in resolutions if res]
     resolutions = list(dict.fromkeys(resolutions))
+    hostname = _normalize_hostname(socket.gethostname())
+    cpu_count = int(os.cpu_count() or 1)
+    runtime_cfg = resolve_runtime_config(
+        hostname,
+        cpu_count,
+        resolutions,
+        workers_override=args.workers,
+        resolution_workers_override=args.resolution_workers,
+    )
 
     if not inp_path.is_file():
         print("Error: input not found: {}".format(inp_path))
@@ -732,59 +979,86 @@ def main():
     print("Input rows after filtering: {}".format(len(stations)))
     print("Requested resolutions: {}".format(", ".join(resolutions)))
     print("Output dir: {}".format(out_dir))
+    print(
+        "Runtime profile host={} cpu_count={} total_worker_budget={} resolution_workers={}".format(
+            runtime_cfg["hostname"],
+            runtime_cfg["cpu_count"],
+            runtime_cfg["total_worker_budget"],
+            runtime_cfg["resolution_workers"],
+        )
+    )
 
-    for resolution in resolutions:
+    active_resolutions = []
+    resolution_frames = {}
+    for resolution in runtime_cfg["resolution_order"]:
         resolution_df = stations[stations["resolution_norm"] == resolution].copy()
         if len(resolution_df) == 0:
             print("Skip {}: no rows found".format(resolution))
             continue
+        active_resolutions.append(resolution)
+        resolution_frames[resolution] = resolution_df
 
-        print("\n[{}] rows={} clusters={}".format(
-            resolution,
-            len(resolution_df),
-            resolution_df["cluster_id"].nunique(),
-        ))
-        source_lookup = _build_source_lookup(resolution_df)
-        series_results, quality_messages, unit_issue_rows = _collect_resolution_series(
-            resolution, resolution_df, max(1, int(args.workers))
-        )
-        _summarize_unit_issues(
-            unit_issue_rows,
-            strict_mode=False,
-            label="{} matrix input unit validation".format(resolution),
-        )
-        if not series_results:
-            print("Skip {}: no non-empty merged series".format(resolution))
-            continue
+    if not active_resolutions:
+        print("Error: no valid resolution rows remain after filtering.")
+        return 1
 
-        cluster_ids = sorted(series_results.keys())
-        metadata = _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df)
-        out_path = out_dir / "s6_basin_matrix_{}.nc".format(resolution)
-        _write_matrix_nc(
-            out_path,
+    resolution_workers_map = _allocate_resolution_workers(
+        active_resolutions,
+        runtime_cfg["total_worker_budget"],
+        runtime_cfg["resolution_worker_weights"],
+        max_parallel=runtime_cfg["resolution_workers"],
+    )
+    print("Resolution worker map: {}".format(resolution_workers_map))
+
+    jobs = [
+        (
             resolution,
-            cluster_ids,
-            metadata,
-            source_lookup,
-            series_results,
+            resolution_frames[resolution],
+            cluster_rep_lookup,
+            out_dir,
             source_station_uid_lookup,
+            resolution_workers_map[resolution],
         )
-        total_points = sum(len(result[0]) for result in series_results.values())
+        for resolution in active_resolutions
+    ]
+
+    all_results = []
+    s0 = time.perf_counter()
+    max_resolution_workers = min(runtime_cfg["resolution_workers"], len(jobs))
+    if max_resolution_workers <= 1:
+        for job in jobs:
+            all_results.append(_run_resolution_export(job))
+    else:
+        with ThreadPoolExecutor(max_workers=max_resolution_workers) as ex:
+            futures = [ex.submit(_run_resolution_export, job) for job in jobs]
+            for future in as_completed(futures):
+                all_results.append(future.result())
+
+    all_results = sorted(all_results, key=lambda item: active_resolutions.index(item["resolution"]))
+    for result in all_results:
+        if result["skipped"]:
+            print(
+                "Skip {}: {} | collect_series_seconds={:.1f}s | total_seconds={:.1f}s".format(
+                    result["resolution"],
+                    result["reason"],
+                    result["collect_series_seconds"],
+                    result["total_seconds"],
+                )
+            )
+            continue
         print(
-            "Wrote {} | stations={} | time_steps={} | merged_points={} | quality_logs={}".format(
-                out_path,
-                len(cluster_ids),
-                len(
-                    {
-                        pd.Timestamp(date).date()
-                        for result in series_results.values()
-                        for date in result[0]
-                    }
-                ),
-                total_points,
-                quality_messages,
+            "Wrote {} | stations={} | time_steps={} | merged_points={} | quality_logs={} | collect_series_seconds={:.1f}s | write_nc_seconds={:.1f}s | total_seconds={:.1f}s".format(
+                result["out_path"],
+                result["stations"],
+                result["time_steps"],
+                result["merged_points"],
+                result["quality_logs"],
+                result["collect_series_seconds"],
+                result["write_nc_seconds"],
+                result["total_seconds"],
             )
         )
+    print("All resolution exports finished in {:.1f}s".format(time.perf_counter() - s0))
 
     return 0
 
