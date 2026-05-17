@@ -3,7 +3,10 @@
 步骤 s4（流域版）：读取 s3 站点列表，基于流域归属为每个站点分配 cluster_id。
 
 与原版 s4（空间聚类）不同，本脚本使用 basin tracer 的输出来定义聚类：
-  - 同一流域（basin_id 相同）的站点合并为一个 cluster；
+  - 仅 basin_status=resolved 且 basin_id 一致的站点允许进入合并候选；
+  - 同一 cluster 内任意两站点都必须满足：
+      距离 <= 5 km，且 upstream area 相对误差 <= 10%（默认）；
+  - 采用 complete-linkage 风格，避免链式跨阈值合并；
   - cluster_id = 该流域中最小的 station_id；
   - 无流域信息的站点以其 station_id 作为独立的 cluster_id（单独成组）。
 
@@ -27,6 +30,7 @@
 """
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +51,10 @@ _DEFAULT_S3_CSV    = PROJECT_ROOT / S3_COLLECTED_CSV
 _DEFAULT_OUT       = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 _DEFAULT_REPORT    = PROJECT_ROOT / S5_BASIN_REPORT_CSV
 _DEFAULT_BASIN_CSV = PROJECT_ROOT / S4_UPSTREAM_CSV
+
+DEFAULT_MAX_STATION_DISTANCE_M = 5000.0
+DEFAULT_MAX_UPSTREAM_REL_ERROR = 0.10
+DEFAULT_UPSTREAM_AREA_COL = "uparea_merit"
 
 
 def _build_cluster_report(df: pd.DataFrame) -> pd.DataFrame:
@@ -93,6 +101,20 @@ def _mask_unresolved_basin_fields(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
+    raw_argv = sys.argv[1:]
+    has_distance_override = any(
+        a == "--max-station-distance-m" or a.startswith("--max-station-distance-m=")
+        for a in raw_argv
+    )
+    has_rel_error_override = any(
+        a == "--max-upstream-rel-error" or a.startswith("--max-upstream-rel-error=")
+        for a in raw_argv
+    )
+    has_area_col_override = any(
+        a == "--upstream-area-col" or a.startswith("--upstream-area-col=")
+        for a in raw_argv
+    )
+
     ap = argparse.ArgumentParser(
         description="步骤 s4（流域版）：基于 basin tracer 结果为 s3 站点分配 cluster_id"
     )
@@ -120,6 +142,29 @@ def main():
         default=str(_DEFAULT_REPORT),
         help="输出：cluster 汇总报告 CSV。默认: {}".format(_DEFAULT_REPORT),
     )
+    ap.add_argument(
+        "--max-station-distance-m",
+        type=float,
+        default=DEFAULT_MAX_STATION_DISTANCE_M,
+        help="同一 cluster 内任意两站点最大距离（米）。默认: {}".format(
+            DEFAULT_MAX_STATION_DISTANCE_M
+        ),
+    )
+    ap.add_argument(
+        "--max-upstream-rel-error",
+        type=float,
+        default=DEFAULT_MAX_UPSTREAM_REL_ERROR,
+        help="同一 cluster 内任意两站点 upstream area 最大相对误差。默认: {}".format(
+            DEFAULT_MAX_UPSTREAM_REL_ERROR
+        ),
+    )
+    ap.add_argument(
+        "--upstream-area-col",
+        default=DEFAULT_UPSTREAM_AREA_COL,
+        help="用于 upstream area 相对误差计算的列名。默认: {}".format(
+            DEFAULT_UPSTREAM_AREA_COL
+        ),
+    )
     args = ap.parse_args()
 
     s3_path    = Path(args.s3_csv)
@@ -146,10 +191,32 @@ def main():
         )
         return 1
 
-    station_to_cluster, stats = load_station_to_basin_cluster_map(basin_path)
+    station_to_cluster, stats = load_station_to_basin_cluster_map(
+        basin_path,
+        station_df=df,
+        max_station_distance_m=args.max_station_distance_m,
+        max_upstream_rel_error=args.max_upstream_rel_error,
+        upstream_area_col=args.upstream_area_col,
+    )
     print(
-        "Basin map: n_station={}, n_success={}, n_basins={}, n_remapped={}".format(
-            stats["n_station"], stats["n_success"], stats["n_basins"], stats["n_changed"]
+        "Merge params: max_station_distance_m={}, max_upstream_rel_error={}, upstream_area_col={}".format(
+            args.max_station_distance_m, args.max_upstream_rel_error, args.upstream_area_col
+        )
+    )
+    if not (has_distance_override or has_rel_error_override or has_area_col_override):
+        print(
+            "Merge params source: built-in defaults "
+            "(use --max-station-distance-m/--max-upstream-rel-error/--upstream-area-col to override)"
+        )
+    else:
+        print("Merge params source: CLI override")
+    print(
+        "Basin map: n_station={}, n_success={}, n_basins={}, n_clusters_from_basins={}, n_remapped={}".format(
+            stats["n_station"],
+            stats["n_success"],
+            stats["n_basins"],
+            stats["n_clusters_from_basins"],
+            stats["n_changed"],
         )
     )
 

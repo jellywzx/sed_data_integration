@@ -351,6 +351,25 @@
 2. 输出 `cluster` 级站点表
 3. 对 `unresolved` 站点保留观测，但不把 basin polygon 相关字段作为正式发布分配结果
 
+合并规则（默认）：
+
+1. 仅 `basin_status=resolved` 且 `basin_id` 一致的站点进入候选
+2. 同一候选 cluster 内任意两站点都必须满足：距离 `<= 5000 m`
+3. 同一候选 cluster 内任意两站点都必须满足：`abs(a-b)/max(abs(a),abs(b)) <= 0.10`（`a,b` 来自 `uparea_merit`）
+4. 使用 complete-linkage 风格，只有两个候选 cluster 的所有跨组站点 pair 都满足时才可合并；否则保持 singleton
+
+默认参数：
+
+1. `max_station_distance_m = 5000.0`
+2. `max_upstream_rel_error = 0.10`
+3. `upstream_area_col = uparea_merit`
+
+示例命令：
+
+```bash
+python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 0.10 --upstream-area-col uparea_merit
+```
+
 输出：
 
 1. `scripts_basin_test/output/s5_basin_clustered_stations.csv`

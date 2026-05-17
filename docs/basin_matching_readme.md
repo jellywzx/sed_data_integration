@@ -177,8 +177,14 @@
 ### 5.2 合并原则
 
 1. `resolved` 且有有效 `basin_id` 的站点，才允许作为正式 basin assignment 进入发布主线
-2. `unresolved` 站点仍保留在主数据表中
-3. `unresolved` 站点不作为正式 basin polygon 的发布依据
+2. `resolved` 站点并非按同一 `basin_id` 全部合并；还需满足 cluster 内任意两站点距离 `<= max_station_distance_m`
+3. 同时还需满足 cluster 内任意两站点 upstream area 对称相对误差 `<= max_upstream_rel_error`，默认列为 `uparea_merit`
+4. 使用 complete-linkage：仅当两个候选 cluster 的所有跨组 pair 都满足阈值时才允许合并
+5. 不满足条件、缺少 `lat/lon`、缺少 upstream area、`unresolved` 或缺少 `basin_id` 的站点保持 singleton（`cluster_id=station_id`）
+6. 默认参数：`max_station_distance_m=5000.0`，`max_upstream_rel_error=0.10`，`upstream_area_col=uparea_merit`
+7. 示例命令：`python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 0.10 --upstream-area-col uparea_merit`
+8. `unresolved` 站点仍保留在主数据表中
+9. `unresolved` 站点不作为正式 basin polygon 的发布依据
 
 ### 5.3 本阶段目标
 

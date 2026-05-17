@@ -103,7 +103,7 @@ def _env_int(name, default):
 
 SAVE_GPKG = _env_bool("S4_SAVE_GPKG", True)
 RESUME    = _env_bool("S4_RESUME", True)
-N_WORKERS = _env_int("S4_N_WORKERS", 24)
+N_WORKERS = _env_int("S4_N_WORKERS", 32)
 BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)  # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
 MAX_TASKS_PER_CHILD = _env_int("S4_MAXTASKSPERCHILD", 10)
 CSV_COLUMNS = [
