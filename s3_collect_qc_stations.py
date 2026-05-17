@@ -33,7 +33,7 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root
+from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root, get_log_path
 from qc_contract import LAT_VAR_NAMES, LON_VAR_NAMES, read_scalar_variable, read_station_metadata
 
 try:
