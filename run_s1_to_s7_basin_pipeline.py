@@ -14,6 +14,7 @@ import argparse
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -192,10 +193,18 @@ def build_stage_specs(args, python_bin):
         "--out-dir",
         str(matrix_dir),
     ]
-    if args.matrix_workers is not None:
-        matrix_cmd += ["--workers", str(args.matrix_workers)]
-    if args.matrix_resolution_workers is not None:
-        matrix_cmd += ["--resolution-workers", str(args.matrix_resolution_workers)]
+    host = str(socket.gethostname() or "").strip().split(".")[0].lower()
+    matrix_workers = args.matrix_workers
+    matrix_resolution_workers = args.matrix_resolution_workers
+    if host == "node113":
+        if matrix_workers is None:
+            matrix_workers = 32
+        if matrix_resolution_workers is None:
+            matrix_resolution_workers = 1
+    if matrix_workers is not None:
+        matrix_cmd += ["--workers", str(matrix_workers)]
+    if matrix_resolution_workers is not None:
+        matrix_cmd += ["--resolution-workers", str(matrix_resolution_workers)]
 
     s6_commands = [
         {
