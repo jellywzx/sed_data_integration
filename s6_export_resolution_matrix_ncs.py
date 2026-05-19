@@ -81,7 +81,7 @@ GENERIC_PROFILE = {
 HOST_PROFILES = {
     "node113": {
         "total_worker_budget": 32,
-        "resolution_workers": 3,
+        "resolution_workers": 1,
         "resolution_order": ["daily", "monthly", "annual"],
         "resolution_worker_weights": {"daily": 24, "monthly": 6, "annual": 2},
     },
@@ -246,7 +246,16 @@ def _build_cluster_rep_lookup(stations):
 
 def _worker_build_cluster(args):
     cid, resolution, recs = args
-    return cid, resolution, build_cluster_series(cid, resolution, recs)
+    return cid, resolution, build_cluster_series(
+        cid,
+        resolution,
+        recs,
+        include_satellite_in_main_merge=False,
+    )
+
+
+def _worker_build_cluster_chunk(task_chunk):
+    return [_worker_build_cluster(task) for task in task_chunk]
 
 
 def _build_source_lookup(resolution_df):
@@ -279,6 +288,11 @@ def _build_source_lookup(resolution_df):
 def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
     n_stations = len(cluster_ids)
     cluster_to_idx = {cid: i for i, cid in enumerate(cluster_ids)}
+    cluster_groups = {
+        int(cid): group
+        for cid, group in resolution_df.groupby("cluster_id", sort=False)
+    }
+    rep_cluster_ids = set(cluster_rep_lookup.index.tolist())
 
     lat_arr = np.full(n_stations, FILL, dtype=np.float32)
     lon_arr = np.full(n_stations, FILL, dtype=np.float32)
@@ -301,8 +315,10 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
     station_meta_cache = {}
 
     for cid, idx in cluster_to_idx.items():
-        group = resolution_df[resolution_df["cluster_id"] == cid]
-        if cid in cluster_rep_lookup.index:
+        group = cluster_groups.get(int(cid))
+        if group is None or len(group) == 0:
+            continue
+        if cid in rep_cluster_ids:
             rep_row = cluster_rep_lookup.loc[cid]
         else:
             rep_row = group.iloc[0]
@@ -623,22 +639,9 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                 source_station_idx_arr,
             ) = result
 
-            q_row = np.full(n_time, FILL, dtype=np.float32)
-            ssc_row = np.full(n_time, FILL, dtype=np.float32)
-            ssl_row = np.full(n_time, FILL, dtype=np.float32)
-            qf_row = np.full(n_time, 9, dtype=np.int8)
-            sscf_row = np.full(n_time, 9, dtype=np.int8)
-            sslf_row = np.full(n_time, 9, dtype=np.int8)
-            stage_qc_rows = dict(
-                (field_name, np.full(n_time, 9, dtype=np.int8))
-                for field_name in STANDARD_QC_STAGE_NAMES
-            )
-            ov_row = np.zeros(n_time, dtype=np.int8)
-            src_row = np.full(n_time, -1, dtype=np.int32)
-            ssuid_row = np.full(n_time, "", dtype=object)
-
             cols = time_index.get_indexer(pd.DatetimeIndex(pd.to_datetime(dates_arr)))
             valid_mask = cols >= 0
+            ssuid_row = np.full(n_time, "", dtype=object)
             if np.any(valid_mask):
                 cols = cols[valid_mask]
                 q_vals = np.asarray(q_arr)[valid_mask]
@@ -651,18 +654,18 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                 source_vals = np.asarray(source_arr, dtype=object)[valid_mask]
                 source_station_vals = np.asarray(source_station_idx_arr)[valid_mask]
 
-                q_row[cols] = q_vals
-                ssc_row[cols] = ssc_vals
-                ssl_row[cols] = ssl_vals
-                qf_row[cols] = qf_vals
-                sscf_row[cols] = sscf_vals
-                sslf_row[cols] = sslf_vals
-                ov_row[cols] = ov_vals
+                q_v[station_idx, cols] = q_vals
+                ssc_v[station_idx, cols] = ssc_vals
+                ssl_v[station_idx, cols] = ssl_vals
+                qf_v[station_idx, cols] = qf_vals
+                sscf_v[station_idx, cols] = sscf_vals
+                sslf_v[station_idx, cols] = sslf_vals
+                ov_v[station_idx, cols] = ov_vals
 
                 for field_name in STANDARD_QC_STAGE_NAMES:
-                    stage_qc_rows[field_name][cols] = np.asarray(stage_qc_arrs[field_name])[valid_mask]
+                    stage_qc_vars[field_name][station_idx, cols] = np.asarray(stage_qc_arrs[field_name])[valid_mask]
 
-                src_row[cols] = np.asarray(
+                src_v[station_idx, cols] = np.asarray(
                     [source_lookup["to_idx"].get(str(name or ""), -1) for name in source_vals],
                     dtype=np.int32,
                 )
@@ -675,21 +678,12 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                         [source_station_uid_lookup.get(int(idx), "") for idx in ss_values],
                         dtype=object,
                     )
-
-            valid_counts[station_idx] = int(
-                np.count_nonzero((q_row != FILL) | (ssc_row != FILL) | (ssl_row != FILL))
-            )
-            q_v[station_idx, :] = q_row
-            ssc_v[station_idx, :] = ssc_row
-            ssl_v[station_idx, :] = ssl_row
-            qf_v[station_idx, :] = qf_row
-            sscf_v[station_idx, :] = sscf_row
-            sslf_v[station_idx, :] = sslf_row
-            for field_name in STANDARD_QC_STAGE_NAMES:
-                stage_qc_vars[field_name][station_idx, :] = stage_qc_rows[field_name]
-            ov_v[station_idx, :] = ov_row
-            src_v[station_idx, :] = src_row
-            ssuid_v[station_idx, :] = np.asarray(ssuid_row, dtype=object)
+                valid_counts[station_idx] = int(
+                    np.count_nonzero((q_vals != FILL) | (ssc_vals != FILL) | (ssl_vals != FILL))
+                )
+            else:
+                valid_counts[station_idx] = 0
+            ssuid_v[station_idx, :] = ssuid_row
 
         count_v[:] = valid_counts
 
@@ -707,6 +701,9 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nc.time_type_code = str(RESOLUTION_CODES.get(resolution, RESOLUTION_CODES["other"]))
         nc.matrix_layout = "rows are stations (clusters), columns are time steps shared within one resolution"
         nc.provenance_key = "selected_source_station_uid"
+        nc.merge_policy = (
+            "matrix values exclude satellite source_family by default; satellite retained separately for validation"
+        )
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
         nc.n_clusters = str(n_stations)
@@ -726,95 +723,72 @@ def _collect_resolution_series(resolution, resolution_df, workers):
     unit_issue_rows = []
     use_parallel = workers > 1 and len(tasks) > 1
 
+    def _handle_worker_output(output):
+        nonlocal quality_messages
+        cid, _, result = output
+        if result is None:
+            return
+        if len(result) == 2 and result[0] is None:
+            unit_issue_rows.extend(result[1])
+            return
+        if len(result) == 4 and result[0] is None:
+            _, _, quality_log, unit_issues = result
+            if unit_issues:
+                unit_issue_rows.extend(unit_issues)
+            if quality_log:
+                quality_messages += 1
+                tqdm.write(quality_log)
+            return
+        (
+            dates_arr,
+            q_arr,
+            ssc_arr,
+            ssl_arr,
+            q_flag_arr,
+            ssc_flag_arr,
+            ssl_flag_arr,
+            stage_qc_arrs,
+            is_overlap_arr,
+            source_arr,
+            source_station_idx_arr,
+            quality_rows,
+            quality_log,
+            unit_issues,
+        ) = result
+        series_results[cid] = (
+            dates_arr,
+            q_arr,
+            ssc_arr,
+            ssl_arr,
+            q_flag_arr,
+            ssc_flag_arr,
+            ssl_flag_arr,
+            stage_qc_arrs,
+            is_overlap_arr,
+            source_arr,
+            source_station_idx_arr,
+        )
+        if unit_issues:
+            unit_issue_rows.extend(unit_issues)
+        if quality_log:
+            quality_messages += 1
+            tqdm.write(quality_log)
+
     if use_parallel:
-        with ProcessPoolExecutor(max_workers=min(workers, len(tasks))) as ex:
-            futures = {ex.submit(_worker_build_cluster, task): task for task in tasks}
+        max_workers = min(workers, len(tasks))
+        chunk_size = max(16, min(256, len(tasks) // max(1, max_workers * 4)))
+        chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(_worker_build_cluster_chunk, chunk) for chunk in chunks]
             with tqdm(total=len(tasks), desc="{} series".format(resolution), unit="cluster") as pbar:
                 for future in as_completed(futures):
-                    cid, _, result = future.result()
-                    if result is not None:
-                        if len(result) == 2 and result[0] is None:
-                            unit_issue_rows.extend(result[1])
-                            pbar.update(1)
-                            continue
-                        (
-                            dates_arr,
-                            q_arr,
-                            ssc_arr,
-                            ssl_arr,
-                            q_flag_arr,
-                            ssc_flag_arr,
-                            ssl_flag_arr,
-                            stage_qc_arrs,
-                            is_overlap_arr,
-                            source_arr,
-                            source_station_idx_arr,
-                            quality_rows,
-                            quality_log,
-                            unit_issues,
-                        ) = result
-                        series_results[cid] = (
-                            dates_arr,
-                            q_arr,
-                            ssc_arr,
-                            ssl_arr,
-                            q_flag_arr,
-                            ssc_flag_arr,
-                            ssl_flag_arr,
-                            stage_qc_arrs,
-                            is_overlap_arr,
-                            source_arr,
-                            source_station_idx_arr,
-                        )
-                        if unit_issues:
-                            unit_issue_rows.extend(unit_issues)
-                        if quality_log:
-                            quality_messages += 1
-                            tqdm.write(quality_log)
-                    pbar.update(1)
+                    for output in future.result():
+                        _handle_worker_output(output)
+                        pbar.update(1)
     else:
         with tqdm(total=len(tasks), desc="{} series".format(resolution), unit="cluster") as pbar:
             for task in tasks:
-                cid, _, result = _worker_build_cluster(task)
-                if result is not None:
-                    if len(result) == 2 and result[0] is None:
-                        unit_issue_rows.extend(result[1])
-                        pbar.update(1)
-                        continue
-                    (
-                        dates_arr,
-                        q_arr,
-                        ssc_arr,
-                        ssl_arr,
-                        q_flag_arr,
-                        ssc_flag_arr,
-                        ssl_flag_arr,
-                        stage_qc_arrs,
-                        is_overlap_arr,
-                        source_arr,
-                        source_station_idx_arr,
-                        quality_rows,
-                        quality_log,
-                        unit_issues,
-                    ) = result
-                    series_results[cid] = (
-                        dates_arr,
-                        q_arr,
-                        ssc_arr,
-                        ssl_arr,
-                        q_flag_arr,
-                        ssc_flag_arr,
-                        ssl_flag_arr,
-                        stage_qc_arrs,
-                        is_overlap_arr,
-                        source_arr,
-                        source_station_idx_arr,
-                    )
-                    if unit_issues:
-                        unit_issue_rows.extend(unit_issues)
-                    if quality_log:
-                        quality_messages += 1
-                        tqdm.write(quality_log)
+                _handle_worker_output(_worker_build_cluster(task))
                 pbar.update(1)
 
     return series_results, quality_messages, unit_issue_rows

@@ -62,6 +62,8 @@ S6_MATRIX_DIR           = "scripts_basin_test/output/s6_matrix_by_resolution"
 S6_MATRIX_SUMMARY_DIR   = "scripts_basin_test/output/s6_matrix_by_resolution/summary"
 S6_CLIMATOLOGY_NC       = "scripts_basin_test/output/s6_climatology_only.nc"
 S6_CLIMATOLOGY_SHP      = "scripts_basin_test/output/s6_climatology_stations.shp" 
+S6_SATELLITE_VALIDATION_NC = "scripts_basin_test/output/s6_satellite_validation_only.nc"
+S6_SATELLITE_VALIDATION_CATALOG_CSV = "scripts_basin_test/output/s6_satellite_validation_catalog.csv"
 
 # ── s7：空间文件导出 ──────────────────────────────────────────────────────────
 # Deprecated compatibility path. The cluster summary SHP is no longer generated
@@ -91,6 +93,8 @@ RELEASE_STATION_CATALOG_CSV         = "scripts_basin_test/output/sed_reference_r
 RELEASE_SOURCE_STATION_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_station_catalog.csv"
 RELEASE_SOURCE_DATASET_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_dataset_catalog.csv"
 RELEASE_OVERLAP_CANDIDATES_CSV      = "scripts_basin_test/output/sed_reference_release/sed_reference_overlap_candidates.csv.gz"
+RELEASE_SATELLITE_VALIDATION_NC     = "scripts_basin_test/output/sed_reference_release/sed_reference_satellite_validation.nc"
+RELEASE_SATELLITE_VALIDATION_CATALOG_CSV = "scripts_basin_test/output/sed_reference_release/satellite_validation_catalog.csv"
 RELEASE_CLUSTER_POINTS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_points.gpkg"
 RELEASE_SOURCE_STATIONS_GPKG        = "scripts_basin_test/output/sed_reference_release/sed_reference_source_stations.gpkg"
 RELEASE_CLUSTER_BASINS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_basins.gpkg"

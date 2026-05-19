@@ -149,7 +149,14 @@ QUALITY_ORDER_COLUMNS = [
     "valid_flag_count",
     "n_time_rows",
     "n_nonempty_rows",
+    "source_family",
+    "merge_eligible",
+    "validation_only",
+    "merge_exclusion_reason",
+    "merge_policy",
 ]
+MERGE_EXCLUDED_SOURCE_FAMILIES = {"satellite"}
+VALIDATION_ONLY_SOURCE_FAMILIES = {"satellite"}
 
 SOURCE_STATION_TEXT_LIMITS = {
     "source_station_temporal_span": 512,
@@ -180,6 +187,47 @@ _DEFAULT_WORKERS = 24
 _DEFAULT_METADATA_WORKERS = 16
 
 _PROC = psutil.Process(os.getpid())
+
+
+def classify_source_family(source):
+    text = "" if source is None else str(source)
+    low = text.lower()
+    if "usgs" in low:
+        return "USGS"
+    if "hydat" in low:
+        return "HYDAT"
+    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
+        return "satellite"
+    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
+        return "in_situ"
+    if any(token in low for token in ("compiled", "compilation", "secondary")):
+        return "secondary_compilation"
+    return "other"
+
+
+def is_merge_eligible_source(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if include_satellite_in_main_merge and family == "satellite":
+        return True
+    return family not in MERGE_EXCLUDED_SOURCE_FAMILIES
+
+
+def merge_exclusion_reason(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if family == "satellite" and not include_satellite_in_main_merge:
+        return "source_family=satellite excluded from default main merge"
+    if not is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+        return "source_family={} excluded from default main merge".format(family)
+    return ""
+
+
+def merge_policy_for_source(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if family in VALIDATION_ONLY_SOURCE_FAMILIES and not include_satellite_in_main_merge:
+        return "validation_only"
+    if is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+        return "merge_candidate"
+    return "excluded_from_main_merge"
 
 
 class UnitValidationError(ValueError):
@@ -721,7 +769,7 @@ def load_nc_series(path):
 
 
 # ── 时间序列构建（worker 函数，运行在子进程）─────────────────────────────────
-def build_cluster_series(cid, resolution, recs):
+def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=False):
     """
     为单个 (cluster_id, resolution) 构建合并时间序列。
     recs: list of (source, path, source_station_index)
@@ -759,6 +807,18 @@ def build_cluster_series(cid, resolution, recs):
                     "n_time_rows": metrics["n_time_rows"],
                     "n_nonempty_rows": metrics["n_nonempty_rows"],
                     "df": merge_df,
+                    "source_family": classify_source_family(source),
+                    "merge_eligible": int(
+                        is_merge_eligible_source(
+                            source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                        )
+                    ),
+                    "merge_exclusion_reason": merge_exclusion_reason(
+                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                    ),
+                    "merge_policy": merge_policy_for_source(
+                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                    ),
                 }
             )
             if len(merge_df) > 0:
@@ -786,6 +846,11 @@ def build_cluster_series(cid, resolution, recs):
                 "valid_flag_count": int(item["valid_flag_count"]),
                 "n_time_rows": int(item["n_time_rows"]),
                 "n_nonempty_rows": int(item["n_nonempty_rows"]),
+                "source_family": item["source_family"],
+                "merge_eligible": int(item["merge_eligible"]),
+                "validation_only": int(item["merge_policy"] == "validation_only"),
+                "merge_exclusion_reason": item["merge_exclusion_reason"],
+                "merge_policy": item["merge_policy"],
             }
         )
 
@@ -796,6 +861,16 @@ def build_cluster_series(cid, resolution, recs):
         quality_log = "  cluster {} [{}] quality order: [{}]".format(
             cid, resolution, score_info
         )
+
+    merge_scored = [item for item in scored if int(item["merge_eligible"]) == 1]
+    if not merge_scored:
+        n_validation_only = sum(1 for item in scored if item.get("merge_policy") == "validation_only")
+        skip_msg = (
+            "cluster {} [{}] skipped from main merge: no merge-eligible station candidates; "
+            "validation-only candidates={}"
+        ).format(cid, resolution, n_validation_only)
+        quality_log = "{}; {}".format(quality_log, skip_msg) if quality_log else skip_msg
+        return (None, quality_rows, quality_log, unit_issues)
 
     all_dates = sorted(all_dates)
     n = len(all_dates)
@@ -835,7 +910,7 @@ def build_cluster_series(cid, resolution, recs):
         )
 
     ranked_frames = []
-    for rank, item in enumerate(scored):
+    for rank, item in enumerate(merge_scored):
         if len(item["df"]) == 0:
             continue
         work_df = item["df"].copy()
@@ -917,12 +992,24 @@ def build_cluster_series(cid, resolution, recs):
 
 
 def _worker_build_cluster(args):
-    cid, resolution, recs = args
-    result = build_cluster_series(cid, resolution, recs)
+    if len(args) == 4:
+        cid, resolution, recs, include_satellite_in_main_merge = args
+    else:
+        cid, resolution, recs = args
+        include_satellite_in_main_merge = False
+    result = build_cluster_series(
+        cid,
+        resolution,
+        recs,
+        include_satellite_in_main_merge=bool(include_satellite_in_main_merge),
+    )
     if result is None:
         return (cid, resolution, None, [], None, [])
     if len(result) == 2 and result[0] is None:
         return (cid, resolution, None, [], None, list(result[1]))
+    if len(result) == 4 and result[0] is None:
+        _, quality_rows, quality_log, unit_issues = result
+        return (cid, resolution, None, quality_rows, quality_log, list(unit_issues))
     (dates_arr, q_arr, ssc_arr, ssl_arr,
      q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
      source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
@@ -967,6 +1054,11 @@ def main():
         "--strict-units",
         action="store_true",
         help="对输入 Q/SSC/SSL units 启用严格校验；若缺失或不在白名单中则直接失败并停止写出。",
+    )
+    ap.add_argument(
+        "--include-satellite-in-main-merge",
+        action="store_true",
+        help="可选覆盖：默认主合并排除 satellite source_family；开启后允许 satellite 参与主合并。",
     )
     args = ap.parse_args()
 
@@ -1323,7 +1415,10 @@ def main():
             zip(grp["source"], grp["path"], grp["_source_station_index"])
         )
 
-    tasks     = [(cid, res, recs) for (cid, res), recs in by_cluster_res.items()]
+    tasks     = [
+        (cid, res, recs, bool(args.include_satellite_in_main_merge))
+        for (cid, res), recs in by_cluster_res.items()
+    ]
     n_tasks   = len(tasks)
     n_workers = args.workers if args.workers > 0 else (os.cpu_count() or 4)
     n_workers = max(1, min(n_workers, n_tasks))
@@ -1415,12 +1510,20 @@ def main():
                     _flush_result(pbar, cid, resolution, res, quality_rows, quality_log, unit_issues)
     else:
         with tqdm(**_pbar_fmt) as pbar:
-            for (cid, res, recs) in tasks:
-                result = build_cluster_series(cid, res, recs)
+            for (cid, res, recs, include_satellite_in_main_merge) in tasks:
+                result = build_cluster_series(
+                    cid,
+                    res,
+                    recs,
+                    include_satellite_in_main_merge=include_satellite_in_main_merge,
+                )
                 if result is None:
                     _flush_result(pbar, cid, res, None, [], None, [])
                 elif len(result) == 2 and result[0] is None:
                     _flush_result(pbar, cid, res, None, [], None, list(result[1]))
+                elif len(result) == 4 and result[0] is None:
+                    _, quality_rows, quality_log, unit_issues = result
+                    _flush_result(pbar, cid, res, None, quality_rows, quality_log, unit_issues)
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
                      q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
@@ -1791,6 +1894,11 @@ def main():
                                "normally exported separately and therefore filtered out by default.")
         nc.provenance_policy = ("Each merged record links back to one source_station_index, while the full "
                                 "source-station mapping is preserved in n_source_stations")
+        nc.merge_policy = (
+            "main merge excludes satellite source_family; satellite retained for validation sidecars"
+        )
+        nc.validation_only_source_families = "satellite"
+        nc.merge_excluded_source_families = "satellite"
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
         nc.basin_csv      = str(inp_path)

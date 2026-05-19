@@ -60,6 +60,8 @@ from pipeline_paths import (
     RELEASE_MATRIX_MONTHLY_NC,
     RELEASE_OVERLAP_CANDIDATES_CSV,
     RELEASE_README_MD,
+    RELEASE_SATELLITE_VALIDATION_CATALOG_CSV,
+    RELEASE_SATELLITE_VALIDATION_NC,
     RELEASE_SOURCE_DATASET_CATALOG_CSV,
     RELEASE_SOURCE_STATION_CATALOG_CSV,
     RELEASE_SOURCE_STATIONS_GPKG,
@@ -67,6 +69,8 @@ from pipeline_paths import (
     RELEASE_VALIDATION_CSV,
     S2_ORGANIZED_DIR,
     S6_CLIMATOLOGY_NC,
+    S6_SATELLITE_VALIDATION_CATALOG_CSV,
+    S6_SATELLITE_VALIDATION_NC,
     S6_QUALITY_ORDER_CSV,
     S6_MATRIX_DIR,
     S6_MERGED_NC,
@@ -117,6 +121,10 @@ DEFAULT_VALIDATION_CSV = PROJECT_ROOT / RELEASE_VALIDATION_CSV
 DEFAULT_INVENTORY_CSV = PROJECT_ROOT / RELEASE_INVENTORY_CSV
 DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR /"tools"/ "example_reference_workflow.py"
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
+DEFAULT_SATELLITE_VALIDATION_NC = PROJECT_ROOT / S6_SATELLITE_VALIDATION_NC
+DEFAULT_SATELLITE_VALIDATION_CATALOG_CSV = PROJECT_ROOT / S6_SATELLITE_VALIDATION_CATALOG_CSV
+DEFAULT_RELEASE_SATELLITE_VALIDATION_NC = PROJECT_ROOT / RELEASE_SATELLITE_VALIDATION_NC
+DEFAULT_RELEASE_SATELLITE_VALIDATION_CATALOG_CSV = PROJECT_ROOT / RELEASE_SATELLITE_VALIDATION_CATALOG_CSV
 # ---- s8 built-in runtime policy ----
 # 不想每次命令行输参数，就改这里。
 
@@ -184,6 +192,10 @@ OVERLAP_CANDIDATE_COLUMNS = [
     "candidate_path",
     "candidate_rank",
     "candidate_quality_score",
+    "merge_eligible",
+    "validation_only",
+    "merge_exclusion_reason",
+    "merge_policy",
     "selected_flag",
     "is_overlap",
     "n_candidates_at_time",
@@ -208,11 +220,13 @@ OVERLAP_CANDIDATE_COLUMNS = [
 OVERLAP_CANDIDATE_REQUIRED_COLUMNS = set(OVERLAP_CANDIDATE_COLUMNS)
 OVERLAP_CANDIDATE_METHOD_NOTES = (
     "candidate-level values rebuilt during s8 from s6_cluster_quality_order.csv "
-    "and source station NetCDF files; selected_flag follows s6 quality-rank fallback per date"
+    "and source station NetCDF files; selected_flag follows s6 quality-rank fallback per date; "
+    "satellite candidates are retained for validation sidecars but excluded from default main merged value selection"
 )
 OVERLAP_CANDIDATE_ASSUMPTIONS = (
     "dates are normalized to YYYY-MM-DD; overlap means at least two candidate source-station rows "
-    "with any Q/SSC/SSL value for the same cluster/resolution/date"
+    "with any Q/SSC/SSL value for the same cluster/resolution/date; satellite candidates are retained "
+    "for validation sidecars but excluded from default main merged value selection"
 )
 FULL_CHAIN_RERUN_HINT = (
     "Likely mixed-run outputs from different pipeline executions. "
@@ -536,6 +550,18 @@ def _catalog_float(row, names):
         return np.nan
 
 
+def _binary_flag_or_default(value, default):
+    text = _clean_text(value).lower()
+    if text in {"1", "true", "yes", "y", "t"}:
+        return 1
+    if text in {"0", "false", "no", "n", "f"}:
+        return 0
+    try:
+        return 1 if int(float(value)) != 0 else 0
+    except Exception:
+        return int(default)
+
+
 def validate_overlap_candidates_sidecar(path):
     path = Path(path)
     if not path.is_file():
@@ -631,7 +657,21 @@ def _build_overlap_candidate_group_rows(payload):
         if mode == "overlap-only" and not is_overlap:
             continue
 
-        selected_item = present[0]
+        eligible_present = []
+        for item in present:
+            qrow = item["quality"]
+            source = _clean_text(qrow.get("source", ""))
+            source_family = classify_source_family(source)
+
+            if "merge_eligible" in qrow.index:
+                merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
+            else:
+                merge_eligible = 0 if source_family == "satellite" else 1
+
+            if merge_eligible == 1:
+                eligible_present.append(item)
+
+        selected_item = eligible_present[0] if eligible_present else None
 
         for item in present:
             qrow = item["quality"]
@@ -645,6 +685,32 @@ def _build_overlap_candidate_group_rows(payload):
                 ("source_family", "source_type", "source_category"),
                 "",
             ) or classify_source_family(source)
+
+            if "merge_eligible" in qrow.index:
+                merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
+            else:
+                merge_eligible = 0 if source_family == "satellite" else 1
+
+            if "validation_only" in qrow.index:
+                validation_only = _binary_flag_or_default(
+                    qrow.get("validation_only", 1 if source_family == "satellite" else 0),
+                    1 if source_family == "satellite" else 0,
+                )
+            else:
+                validation_only = 1 if source_family == "satellite" else 0
+
+            merge_exclusion_reason = _clean_text(qrow.get("merge_exclusion_reason", ""))
+            merge_policy = _clean_text(qrow.get("merge_policy", ""))
+            if not merge_policy:
+                merge_policy = "validation_only" if source_family == "satellite" else "merge_candidate"
+
+            selected_flag = int(item is selected_item)
+            if validation_only == 1:
+                selected_flag = 0
+            if selected_item is None:
+                selection_reason = "no merge-eligible candidate by s6 policy for this date"
+            else:
+                selection_reason = "first non-empty merge-eligible candidate by s6 quality_rank for this date"
 
             source_station_uid = _clean_text(qrow.get("source_station_uid", ""))
             cluster_uid = _clean_text(qrow.get("cluster_uid", ""))
@@ -688,12 +754,16 @@ def _build_overlap_candidate_group_rows(payload):
                     "candidate_path": item["portable_path"],
                     "candidate_rank": int(qrow.get("quality_rank", -1)),
                     "candidate_quality_score": float(qrow.get("quality_score", np.nan)),
-                    "selected_flag": int(item is selected_item),
+                    "merge_eligible": int(merge_eligible),
+                    "validation_only": int(validation_only),
+                    "merge_exclusion_reason": merge_exclusion_reason,
+                    "merge_policy": merge_policy,
+                    "selected_flag": int(selected_flag),
                     "is_overlap": is_overlap,
                     "n_candidates_at_time": int(len(present)),
                     "n_ranked_candidates_for_cluster_resolution": int(len(group)),
                     "candidate_group_key": candidate_group_key,
-                    "selection_reason": "first non-empty candidate by s6 quality_rank for this date",
+                    "selection_reason": selection_reason,
                     "Q": data_row.get("Q", np.nan),
                     "SSC": data_row.get("SSC", np.nan),
                     "SSL": data_row.get("SSL", np.nan),
@@ -1197,6 +1267,11 @@ This directory is the user-facing release layer of the sediment reference datase
 - `source_dataset_catalog.csv`: one row per source dataset with metadata and aggregate counts.
 - `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
+## Satellite validation layer
+
+- `sed_reference_satellite_validation.nc` contains validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
+- These records are excluded from the main station-reference merge by default. They are intended for satellite-vs-station validation, spatial diagnostic checks, and optional downstream comparison, not for automatic station-reference merging.
+
 ## GIS sidecars
 
 - `sed_reference_cluster_points.gpkg`: multi-layer cluster point sidecar with `cluster_summary`, `cluster_daily`, `cluster_monthly`, and `cluster_annual`.
@@ -1261,6 +1336,8 @@ def validate_release(
     source_station_catalog,
     out_csv,
     overlap_candidates_csv=None,
+    satellite_validation_nc=None,
+    satellite_validation_catalog_csv=None,
 ):
     if nc4 is None:
         raise RuntimeError("netCDF4 is required to validate release consistency")
@@ -1687,6 +1764,33 @@ def validate_release(
             }
         )
 
+    sat_nc_path = Path(satellite_validation_nc).resolve() if satellite_validation_nc else None
+    sat_catalog_path = (
+        Path(satellite_validation_catalog_csv).resolve()
+        if satellite_validation_catalog_csv
+        else None
+    )
+    sat_nc_exists = bool(sat_nc_path and sat_nc_path.is_file())
+    sat_catalog_exists = bool(sat_catalog_path and sat_catalog_path.is_file())
+    sat_status = "present" if sat_nc_exists else "omitted"
+    sat_details = "nc={} catalog={}".format(
+        str(sat_nc_path) if sat_nc_path else "(not provided)",
+        str(sat_catalog_path) if sat_catalog_path else "(not provided)",
+    )
+    if sat_nc_exists:
+        sat_details += "; satellite validation layer included in release"
+    else:
+        sat_details += "; satellite validation NC missing or not provided"
+    if sat_catalog_path is not None:
+        sat_details += "; catalog_exists={}".format(int(sat_catalog_exists))
+    rows.append(
+        {
+            "check": "satellite_validation_layer",
+            "status": sat_status,
+            "details": sat_details,
+        }
+    )
+
     report_df = pd.DataFrame(rows)
     _write_csv(report_df, out_csv)
     failed = report_df["status"].eq("fail").any()
@@ -1700,6 +1804,11 @@ def main():
     ap.add_argument("--monthly-nc", default=str(DEFAULT_MATRIX_MONTHLY))
     ap.add_argument("--annual-nc", default=str(DEFAULT_MATRIX_ANNUAL))
     ap.add_argument("--climatology-nc", default=str(DEFAULT_CLIM_NC))
+    ap.add_argument("--satellite-validation-nc", default=str(DEFAULT_SATELLITE_VALIDATION_NC))
+    ap.add_argument(
+        "--satellite-validation-catalog",
+        default=str(DEFAULT_SATELLITE_VALIDATION_CATALOG_CSV),
+    )
     ap.add_argument("--cluster-station-catalog", default=str(DEFAULT_CLUSTER_STATION_CATALOG_INPUT))
     ap.add_argument("--cluster-resolution-catalog", default=str(DEFAULT_CLUSTER_RESOLUTION_CATALOG_INPUT))
     ap.add_argument(
@@ -1733,6 +1842,8 @@ def main():
     monthly_nc = Path(args.monthly_nc).resolve()
     annual_nc = Path(args.annual_nc).resolve()
     climatology_nc = Path(args.climatology_nc).resolve()
+    satellite_validation_nc = Path(args.satellite_validation_nc).resolve()
+    satellite_validation_catalog = Path(args.satellite_validation_catalog).resolve()
     cluster_station_catalog_in = Path(args.cluster_station_catalog).resolve()
     cluster_resolution_catalog_in = Path(args.cluster_resolution_catalog).resolve()
     source_station_resolution_catalog_in = Path(args.source_station_resolution_catalog).resolve()
@@ -1813,6 +1924,48 @@ def main():
             len(source_dataset_catalog),
         )
     )
+
+    release_sat_nc_path = out_dir / Path(RELEASE_SATELLITE_VALIDATION_NC).name
+    release_sat_catalog_path = out_dir / Path(RELEASE_SATELLITE_VALIDATION_CATALOG_CSV).name
+    release_sat_nc_for_validation = None
+    release_sat_catalog_for_validation = None
+    if satellite_validation_nc.is_file():
+        sat_nc_dst = _link_or_copy_file(
+            satellite_validation_nc,
+            release_sat_nc_path,
+            mode=args.link_mode,
+            force=args.force,
+        )
+        file_records.append(
+            (
+                "satellite_validation_nc",
+                sat_nc_dst,
+                "Satellite validation-only observations excluded from main station-reference merge.",
+            )
+        )
+        release_sat_nc_for_validation = sat_nc_dst
+        print("Prepared satellite validation NC: {}".format(sat_nc_dst.name))
+    else:
+        print("Warning: satellite validation NC not found; release will omit satellite validation layer")
+
+    if satellite_validation_catalog.is_file():
+        sat_catalog_dst = _link_or_copy_file(
+            satellite_validation_catalog,
+            release_sat_catalog_path,
+            mode=args.link_mode,
+            force=args.force,
+        )
+        file_records.append(
+            (
+                "satellite_validation_catalog",
+                sat_catalog_dst,
+                "Satellite validation-only observations excluded from main station-reference merge.",
+            )
+        )
+        release_sat_catalog_for_validation = sat_catalog_dst
+        print("Prepared satellite validation catalog: {}".format(sat_catalog_dst.name))
+    elif satellite_validation_nc.is_file():
+        print("Warning: satellite validation catalog not found; release omits catalog sidecar")
 
     overlap_candidates_path = out_dir / OVERLAP_CANDIDATES_FILE_NAME
     overlap_candidates_validation_path = None
@@ -1916,6 +2069,8 @@ def main():
             source_station_catalog=source_station_catalog,
             out_csv=validation_path,
             overlap_candidates_csv=overlap_candidates_validation_path,
+            satellite_validation_nc=release_sat_nc_for_validation,
+            satellite_validation_catalog_csv=release_sat_catalog_for_validation,
         )
         file_records.append(("report", validation_path, "Release validation report"))
         print("Validation checks: {} rows".format(len(report_df)))
