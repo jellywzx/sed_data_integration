@@ -68,6 +68,7 @@ OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
 OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
 OUT_REPORTED_AREA_CSV = OUTPUT_R_ROOT / S4_REPORTED_AREA_CHECK_CSV
 OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG 
+SHARD_DIR = OUT_DIR / "s4_shards"
 
 LOG_LEVEL  = "INFO"
 PARTIAL_CSV = OUT_CSV.with_suffix(".partial.csv")
@@ -103,9 +104,13 @@ def _env_int(name, default):
 
 SAVE_GPKG = _env_bool("S4_SAVE_GPKG", True)
 RESUME    = _env_bool("S4_RESUME", True)
-N_WORKERS = _env_int("S4_N_WORKERS", 32)
+N_WORKERS = _env_int("S4_N_WORKERS", 24)
 BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)  # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
-MAX_TASKS_PER_CHILD = _env_int("S4_MAXTASKSPERCHILD", 10)
+MAX_TASKS_PER_CHILD = _env_int("S4_MAXTASKSPERCHILD", 8)
+SHARD_COUNT = _env_int("S4_SHARD_COUNT", 1)
+SHARD_INDEX = _env_int("S4_SHARD_INDEX", 0)
+FINALIZE_ONLY = _env_bool("S4_FINALIZE_ONLY", False)
+PROGRESS_LOG_INTERVAL = _env_int("S4_PROGRESS_LOG_INTERVAL", 30)
 CSV_COLUMNS = [
     "station_id",
     "lon",
@@ -559,6 +564,122 @@ def _write_gpkg_from_wkt(result_df, wkt_column, out_path, label, logger):
     logger.info("Saved %s -> %s (%.1fs)", label, out_path, time.perf_counter() - started_at)
 
 
+def _validate_shard_config():
+    if SHARD_COUNT <= 0:
+        raise ValueError(f"S4_SHARD_COUNT must be > 0, got {SHARD_COUNT}")
+    if SHARD_INDEX < 0 or SHARD_INDEX >= SHARD_COUNT:
+        raise ValueError(
+            f"S4_SHARD_INDEX must be in [0, {SHARD_COUNT - 1}], got {SHARD_INDEX}"
+        )
+
+
+def _shard_csv_path(shard_index):
+    return SHARD_DIR / f"s4_upstream_basins.shard_{shard_index:04d}.csv"
+
+
+def _shard_work_csv_path(shard_index):
+    return SHARD_DIR / f"s4_upstream_basins.shard_{shard_index:04d}.work.csv"
+
+
+def _merge_and_write_outputs(result_df, logger):
+    result_df = result_df.sort_values("station_id").drop_duplicates(
+        subset=["station_id"], keep="last"
+    )
+    csv_df = _drop_geometry_export_columns(result_df)
+    csv_df.to_csv(OUT_CSV, index=False)
+
+    if "reported_area" in result_df.columns:
+        reported_mask = result_df["reported_area"].notna()
+        n_with_area = int(reported_mask.sum())
+        if n_with_area > 0:
+            check_cols = [
+                "station_id",
+                "lon",
+                "lat",
+                "reported_area",
+                "source_station_name",
+                "source_river_name",
+                "source_station_id",
+                "uparea_merit",
+                "area_error",
+                "match_quality",
+                "basin_id",
+                "pfaf_code",
+                "method",
+                "distance_m",
+                "point_in_local",
+                "point_in_basin",
+                "basin_status",
+                "basin_flag",
+            ]
+            check_df = result_df.loc[
+                reported_mask, [c for c in check_cols if c in result_df.columns]
+            ]
+            check_df = check_df.sort_values("station_id")
+            check_df.to_csv(OUT_REPORTED_AREA_CSV, index=False)
+            logger.info(
+                "Saved reported_area check CSV (%d stations) -> %s",
+                n_with_area,
+                OUT_REPORTED_AREA_CSV,
+            )
+        else:
+            logger.info("No stations with reported_area; skipping check CSV")
+    logger.info("Saved basin CSV -> %s", OUT_CSV)
+
+    if SAVE_GPKG:
+        try:
+            _write_gpkg_from_wkt(
+                result_df=result_df,
+                wkt_column="geometry_wkt",
+                out_path=OUT_GPKG,
+                label="basin GPKG",
+                logger=logger,
+            )
+
+            if "geometry_local_wkt" in result_df.columns:
+                _write_gpkg_from_wkt(
+                    result_df=result_df,
+                    wkt_column="geometry_local_wkt",
+                    out_path=OUT_LOCAL_GPKG,
+                    label="local catchment GPKG",
+                    logger=logger,
+                )
+        except Exception as e:
+            logger.warning("GPKG save failed (skipping): %s", e)
+
+
+def _finalize_from_shards(logger):
+    missing = []
+    shard_files = []
+    for idx in range(SHARD_COUNT):
+        shard_csv = _shard_csv_path(idx)
+        if not shard_csv.is_file():
+            missing.append(str(shard_csv))
+            continue
+        shard_files.append(shard_csv)
+
+    if missing:
+        logger.error(
+            "Cannot finalize: %d shard CSV files missing. First missing: %s",
+            len(missing),
+            missing[0],
+        )
+        return 1
+
+    frames = []
+    for shard_csv in shard_files:
+        frames.append(pd.read_csv(shard_csv))
+
+    if frames:
+        result_df = pd.concat(frames, ignore_index=True)
+    else:
+        result_df = pd.DataFrame(columns=CSV_COLUMNS_WITH_GEOM if SAVE_GPKG else CSV_COLUMNS)
+
+    _merge_and_write_outputs(result_df, logger)
+    logger.info("Finalize completed from %d shard files", len(shard_files))
+    return 0
+
+
 def main():
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL),
@@ -566,9 +687,22 @@ def main():
     )
     logger = logging.getLogger(__name__)
 
+    try:
+        _validate_shard_config()
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+
     logger.info(
-        "s4 config | workers=%d | batch_size=%d | resume=%s | save_gpkg=%s | maxtasksperchild=%d",
-        N_WORKERS, BATCH_SIZE, RESUME, SAVE_GPKG, MAX_TASKS_PER_CHILD,
+        "s4 config | workers=%d | batch_size=%d | resume=%s | save_gpkg=%s | maxtasksperchild=%d | shard=%d/%d | finalize_only=%s",
+        N_WORKERS,
+        BATCH_SIZE,
+        RESUME,
+        SAVE_GPKG,
+        MAX_TASKS_PER_CHILD,
+        SHARD_INDEX + 1,
+        SHARD_COUNT,
+        FINALIZE_ONLY,
     )
 
     # ── 1. 检查路径 ──────────────────────────────────────────────────────────
@@ -577,27 +711,60 @@ def main():
         return 1
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    SHARD_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── 2. 读取 s3 站点 ──────────────────────────────────────────────────────
+    if FINALIZE_ONLY:
+        return _finalize_from_shards(logger)
+
+    # ── 2. 读取 s3 站点并按 shard 切分 ───────────────────────────────────────
     stations = pd.read_csv(S3_CSV)
     stations = stations.reset_index(drop=True)
     stations.insert(0, "station_id", stations.index)
     stations = stations.dropna(subset=["lon", "lat"]).copy()
 
-    if not RESUME and PARTIAL_CSV.exists():
-        PARTIAL_CSV.unlink()
-        logger.info("Removed stale partial CSV: %s", PARTIAL_CSV)
+    stations = stations[stations["station_id"] % SHARD_COUNT == SHARD_INDEX].copy()
+    shard_total = len(stations)
+    logger.info(
+        "Shard station selection | shard=%d/%d | total=%d",
+        SHARD_INDEX + 1,
+        SHARD_COUNT,
+        shard_total,
+    )
+
+    shard_csv = _shard_csv_path(SHARD_INDEX)
+    shard_work_csv = _shard_work_csv_path(SHARD_INDEX)
+
+    if not RESUME:
+        try:
+            shard_work_csv.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            shard_csv.unlink()
+        except FileNotFoundError:
+            pass
 
     completed_station_ids = set()
-    if RESUME and PARTIAL_CSV.is_file():
-        partial_df = pd.read_csv(PARTIAL_CSV, usecols=["station_id"])
+
+    if RESUME and shard_csv.is_file() and not shard_work_csv.is_file():
+        logger.info("Shard output already exists, skipping: %s", shard_csv)
+        if SHARD_COUNT == 1:
+            return _finalize_from_shards(logger)
+        return 0
+
+    if RESUME and shard_work_csv.is_file():
+        partial_df = pd.read_csv(shard_work_csv, usecols=["station_id"])
         completed_station_ids = set(partial_df["station_id"].dropna().astype(int).tolist())
-        logger.info("Resume mode: found %d completed stations in %s", len(completed_station_ids), PARTIAL_CSV)
+        logger.info(
+            "Resume mode: found %d completed stations in %s",
+            len(completed_station_ids),
+            shard_work_csv,
+        )
         stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
 
     n_pending = len(stations)
-    n_total = len(pd.read_csv(S3_CSV).dropna(subset=["lon", "lat"]))
-    logger.info("Loaded %d stations (%d pending)", n_total, n_pending)
+    n_total = shard_total
+    logger.info("Loaded %d shard stations (%d pending)", n_total, n_pending)
     if n_pending == 0:
         logger.info("No pending stations to process")
 
@@ -645,12 +812,7 @@ def main():
             [_build_skip_result(row) for row in skip_records],
             include_geometry=SAVE_GPKG,
         )
-        skip_df.to_csv(
-            PARTIAL_CSV,
-            mode="a",
-            index=False,
-            header=not PARTIAL_CSV.exists(),
-        )
+        skip_df.to_csv(shard_work_csv, mode="a", index=False, header=not shard_work_csv.exists())
         logger.info("Wrote %d no-basin skip rows", len(skip_records))
 
     stations_sorted = stations_sorted.loc[~skip_mask].copy()
@@ -684,14 +846,18 @@ def main():
     # 共享计数器：跨进程追踪已完成的站点数
     counter = mp.Value("i", 0)
 
-    pbar = tqdm(total=n_total, desc="追溯流域", unit="站点",
-                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
+    pbar = tqdm(
+        total=n_total,
+        desc=f"s4-shard-{SHARD_INDEX + 1}/{SHARD_COUNT}",
+        unit="站点",
+        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        disable=SHARD_COUNT > 1,
+    )
     pbar.n = len(completed_station_ids)
     pbar.refresh()
 
-    # 内存监控间隔（秒）
-    MEM_LOG_INTERVAL = 30
     last_mem_log = time.time()
+    start_ts = time.time()
     peak_total_mb = 0.0
 
     with counter.get_lock():
@@ -710,12 +876,7 @@ def main():
                     break
 
                 chunk_df = _chunk_to_partial_df(chunk_results, include_geometry=SAVE_GPKG)
-                chunk_df.to_csv(
-                    PARTIAL_CSV,
-                    mode="a",
-                    index=False,
-                    header=not PARTIAL_CSV.exists(),
-                )
+                chunk_df.to_csv(shard_work_csv, mode="a", index=False, header=not shard_work_csv.exists())
 
                 chunks_done += 1
 
@@ -725,13 +886,22 @@ def main():
                 pbar.refresh()
 
                 now = time.time()
-                if now - last_mem_log >= MEM_LOG_INTERVAL or chunks_done == len(args_list):
+                if now - last_mem_log >= PROGRESS_LOG_INTERVAL or chunks_done == len(args_list):
                     main_mb, children_mb, total_mb = _get_memory_info()
                     peak_total_mb = max(peak_total_mb, total_mb)
+                    pct = (done_count / n_total * 100.0) if n_total else 100.0
                     logger.info(
-                        "内存监控 | 主进程: %.1f MB | 子进程合计: %.1f MB | "
-                        "总计: %.1f MB | 峰值: %.1f MB | 进度: %d/%d 站点",
-                        main_mb, children_mb, total_mb, peak_total_mb, done_count, n_total,
+                        "shard_progress | shard=%d/%d | processed=%d/%d | %.2f%% | elapsed=%.1fs | mem_main=%.1fMB | mem_children=%.1fMB | mem_total=%.1fMB | mem_peak=%.1fMB",
+                        SHARD_INDEX + 1,
+                        SHARD_COUNT,
+                        done_count,
+                        n_total,
+                        pct,
+                        now - start_ts,
+                        main_mb,
+                        children_mb,
+                        total_mb,
+                        peak_total_mb,
                     )
                     last_mem_log = now
 
@@ -742,64 +912,48 @@ def main():
     # 最终内存报告
     main_mb, children_mb, total_mb = _get_memory_info()
     peak_total_mb = max(peak_total_mb, total_mb)
-    logger.info("All %d stations processed", len(completed_station_ids) + n_pending)
-    logger.info("最终内存: %.1f MB | 运行峰值: %.1f MB", total_mb, peak_total_mb)
+    done_total = len(completed_station_ids) + n_pending
+    logger.info("All %d shard stations processed", done_total)
+    logger.info(
+        "shard_progress | shard=%d/%d | processed=%d/%d | %.2f%% | elapsed=%.1fs | mem_total=%.1fMB | mem_peak=%.1fMB",
+        SHARD_INDEX + 1,
+        SHARD_COUNT,
+        done_total,
+        n_total,
+        (done_total / n_total * 100.0) if n_total else 100.0,
+        time.time() - start_ts,
+        total_mb,
+        peak_total_mb,
+    )
 
-    # ── 5. 输出 CSV ──────────────────────────────────────────────────────────
-    if not PARTIAL_CSV.is_file():
-        logger.error("Partial CSV not found: %s", PARTIAL_CSV)
+    # ── 5. 生成 shard CSV ───────────────────────────────────────────────────
+    if not shard_work_csv.is_file():
+        if n_total == 0:
+            empty_df = pd.DataFrame(columns=CSV_COLUMNS_WITH_GEOM if SAVE_GPKG else CSV_COLUMNS)
+            empty_df.to_csv(shard_csv, index=False)
+            logger.info("No stations in shard; wrote empty shard CSV -> %s", shard_csv)
+            if SHARD_COUNT == 1:
+                return _finalize_from_shards(logger)
+            return 0
+        logger.error("Shard work CSV not found: %s", shard_work_csv)
         return 1
 
-    result_df = pd.read_csv(PARTIAL_CSV)
-    result_df = result_df.sort_values("station_id").drop_duplicates(subset=["station_id"], keep="last")
-    csv_df = _drop_geometry_export_columns(result_df)
-    csv_df.to_csv(OUT_CSV, index=False)
-    # ── 5b. 输出 reported_area 检查 CSV ─────────────────────────────────
-    if "reported_area" in result_df.columns:
-        reported_mask = result_df["reported_area"].notna()
-        n_with_area = int(reported_mask.sum())
-        if n_with_area > 0:
-            check_cols = ["station_id", "lon", "lat", "reported_area",
-                        "source_station_name", "source_river_name", "source_station_id",
-                        "uparea_merit", "area_error", "match_quality",
-                        "basin_id", "pfaf_code", "method", "distance_m", "point_in_local",
-                        "point_in_basin", "basin_status", "basin_flag"]
-            check_df = result_df.loc[reported_mask, [c for c in check_cols if c in result_df.columns]]
-            check_df = check_df.sort_values("station_id")
-            check_df.to_csv(OUT_REPORTED_AREA_CSV, index=False)
-            logger.info("Saved reported_area check CSV (%d stations) -> %s", n_with_area, OUT_REPORTED_AREA_CSV)
-        else:
-            logger.info("No stations with reported_area; skipping check CSV")
-    logger.info("Saved basin CSV -> %s", OUT_CSV)
-
-    # ── 6. 输出 GPKG（可选）─────────────────────────────────────────────────
-    if SAVE_GPKG:
-        try:
-            _write_gpkg_from_wkt(
-                result_df=result_df,
-                wkt_column="geometry_wkt",
-                out_path=OUT_GPKG,
-                label="basin GPKG",
-                logger=logger,
-            )
-
-            # 最小单元集水区 GPKG（新增）
-            if "geometry_local_wkt" in result_df.columns:
-                _write_gpkg_from_wkt(
-                    result_df=result_df,
-                    wkt_column="geometry_local_wkt",
-                    out_path=OUT_LOCAL_GPKG,
-                    label="local catchment GPKG",
-                    logger=logger,
-                )
-        except Exception as e:
-            logger.warning("GPKG save failed (skipping): %s", e)
+    result_df = pd.read_csv(shard_work_csv)
+    result_df = result_df.sort_values("station_id").drop_duplicates(
+        subset=["station_id"], keep="last"
+    )
+    result_df.to_csv(shard_csv, index=False)
+    logger.info("Saved shard CSV -> %s", shard_csv)
 
     try:
-        PARTIAL_CSV.unlink()
-        logger.info("Removed partial CSV -> %s", PARTIAL_CSV)
+        shard_work_csv.unlink()
+        logger.info("Removed shard work CSV -> %s", shard_work_csv)
     except FileNotFoundError:
         pass
+
+    if SHARD_COUNT == 1:
+        return _finalize_from_shards(logger)
+
     logger.info("Done.")
     return 0
 
