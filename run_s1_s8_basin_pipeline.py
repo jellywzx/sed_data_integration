@@ -6,7 +6,7 @@ Default stage layout:
   s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
 
 Stage details:
-  s6 = master NC + matrix NC exports + climatology NC export
+  s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
   s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
   s8 = release package + catalogs + validation report
 """
@@ -193,6 +193,8 @@ def stage_outputs():
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_daily.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_monthly.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_annual.nc",
+            OUTPUT_DIR / "s6_satellite_validation_only.nc",
+            OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
         "s7": [
             OUTPUT_DIR / "s7_cluster_points.gpkg",
@@ -233,14 +235,21 @@ def build_stage_specs(args, python_bin):
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
     }
 
-    matrix_cmd = [
-        python_bin,
-        str(SCRIPT_DIR / "s6_export_resolution_matrix_ncs.py"),
-        "-i",
-        str(s5_csv),
-        "--out-dir",
-        str(matrix_dir),
-    ]
+    def build_matrix_cmd(script_name):
+        cmd = [
+            python_bin,
+            str(SCRIPT_DIR / script_name),
+            "-i",
+            str(s5_csv),
+            "--out-dir",
+            str(matrix_dir),
+        ]
+        if matrix_workers is not None:
+            cmd += ["--workers", str(matrix_workers)]
+        if matrix_resolution_workers is not None:
+            cmd += ["--resolution-workers", str(matrix_resolution_workers)]
+        return cmd
+
     host = str(socket.gethostname() or "").strip().split(".")[0].lower()
     matrix_workers = args.matrix_workers
     matrix_resolution_workers = args.matrix_resolution_workers
@@ -249,10 +258,6 @@ def build_stage_specs(args, python_bin):
             matrix_workers = 32
         if matrix_resolution_workers is None:
             matrix_resolution_workers = 1
-    if matrix_workers is not None:
-        matrix_cmd += ["--workers", str(matrix_workers)]
-    if matrix_resolution_workers is not None:
-        matrix_cmd += ["--resolution-workers", str(matrix_resolution_workers)]
 
     s6_commands = [
         {
@@ -272,8 +277,16 @@ def build_stage_specs(args, python_bin):
             + (["--include-climatology"] if args.s6_include_climatology else []),
         },
         {
-            "name": "s6_export_resolution_matrix_ncs",
-            "cmd": matrix_cmd,
+            "name": "s6_export_daily_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_daily_matrix_nc.py"),
+        },
+        {
+            "name": "s6_export_monthly_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_monthly_matrix_nc.py"),
+        },
+        {
+            "name": "s6_export_annual_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_annual_matrix_nc.py"),
         },
     ]
     if not args.skip_climatology_export:
@@ -292,6 +305,15 @@ def build_stage_specs(args, python_bin):
                 ],
             }
         )
+    s6_commands.append(
+        {
+            "name": "s6_export_satellite_validation_to_nc",
+            "cmd": [
+                python_bin,
+                str(SCRIPT_DIR / "s6_export_satellite_validation_to_nc.py"),
+            ],
+        }
+    )
 
     cluster_basin_cmd = [
         python_bin,
@@ -529,13 +551,13 @@ def parse_args():
         "--matrix-workers",
         type=int,
         default=BUILTIN_MATRIX_WORKERS,
-        help="Optional override of total worker budget for s6_export_resolution_matrix_ncs.py.",
+        help="Optional override of total worker budget for the per-resolution s6 matrix export scripts.",
     )
     parser.add_argument(
         "--matrix-resolution-workers",
         type=int,
         default=BUILTIN_MATRIX_RESOLUTION_WORKERS,
-        help="Optional override of concurrent resolution jobs for s6_export_resolution_matrix_ncs.py.",
+        help="Optional override passed through to the per-resolution s6 matrix export scripts.",
     )
     parser.add_argument(
         "--s6-include-climatology",

@@ -451,7 +451,11 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         (pd.to_datetime(all_dates) - ref).total_seconds().values / 86400.0
     ).astype(np.float64)
     time_index = pd.DatetimeIndex(pd.to_datetime(all_dates))
-    chunks = (64, min(1024, n_time))
+    # NetCDF requires each chunk edge to be <= its dimension size.
+    # Annual exports can have very small station/time sizes, so clip both axes.
+    chunk_stations = max(1, min(64, n_stations))
+    chunk_time = max(1, min(1024, n_time))
+    chunks = (chunk_stations, chunk_time)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with nc4.Dataset(out_path, "w", format="NETCDF4") as nc:
@@ -875,7 +879,7 @@ def _run_resolution_export(args):
     }
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Export one station x time NC per basin resolution")
     ap.add_argument("--input", "-i", default=str(DEFAULT_INPUT), help="input s5 clustered csv")
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="output directory for matrix nc files")
@@ -898,7 +902,7 @@ def main():
         default=DEFAULT_RESOLUTION_WORKERS,
         help="optional override for concurrent resolution jobs; default uses host profile",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not HAS_NC or nc4 is None:
         print("Error: netCDF4 is required. pip install netCDF4")
