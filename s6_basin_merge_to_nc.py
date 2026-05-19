@@ -17,6 +17,11 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
   - climatology 不进入 basin 主线；
   - 若输入 s5 中仍混入 climatology 行，本脚本默认会将其过滤掉；
   - climatology 应通过独立脚本单独导出为 climatology NC。
+  - satellite / validation-only 数据不进入 basin 主线；
+  - 为避免 satellite 大文件拖慢主 merge，本脚本默认会在读取任何 NetCDF metadata
+    或时间序列之前，先从 s5 表中过滤掉 source_family == satellite 的行；
+  - 如确实需要将 satellite 混入主库，可显式使用 `--include-satellite-in-main-merge`
+    关闭这个预过滤，并允许 satellite 参与主合并。
   - 默认会校验输入 Q/SSC/SSL 的 units；若缺失或不在白名单中会记 warning，
     `--strict-units` 下则直接报错停止写出。
 
@@ -1098,6 +1103,70 @@ def main():
         if len(stations) == 0:
             print("Error: no non-climatology rows remain after filtering.")
             return 1
+
+    # ── 1b. 主 merge 预过滤 satellite / validation-only 数据 ───────────────
+    #
+    # 注意：原来的主 merge 逻辑已经会在 build_cluster_series() 中排除 satellite，
+    # 但那个排除发生得太晚：每个 satellite NC 文件已经被打开、读取时间序列、
+    # 计算 quality score 之后才被标记为 validation_only。
+    #
+    # satellite 数据量很大时，会显著拖慢以下步骤：
+    #   - representative station metadata 读取；
+    #   - source-station explanatory metadata 读取；
+    #   - ProcessPoolExecutor 并行读取 NC series；
+    #   - quality-order 候选排序。
+    #
+    # 因此默认在 path resolution 和任何 NetCDF 读取之前就过滤掉 satellite 行。
+    # 若确实需要 satellite 进入主 merge，可显式传：
+    #   --include-satellite-in-main-merge
+    if not args.include_satellite_in_main_merge:
+        source_family = stations["source"].map(classify_source_family)
+        satellite_mask = source_family.eq("satellite")
+        n_satellite = int(satellite_mask.sum())
+
+        if n_satellite > 0:
+            n_before = int(len(stations))
+            satellite_sources = (
+                stations.loc[satellite_mask, "source"]
+                .fillna("")
+                .astype(str)
+                .value_counts()
+                .head(20)
+            )
+
+            stations = stations.loc[~satellite_mask].copy()
+            n_after = int(len(stations))
+
+            print(
+                "Pre-filtered satellite rows before main merge: "
+                "removed {} / {} rows; remaining {} rows.".format(
+                    n_satellite,
+                    n_before,
+                    n_after,
+                )
+            )
+            if len(satellite_sources) > 0:
+                print(
+                    "Top satellite sources removed: {}".format(
+                        ", ".join(
+                            "{}={}".format(src, count)
+                            for src, count in satellite_sources.items()
+                        )
+                    )
+                )
+        else:
+            print("Pre-filtered satellite rows before main merge: none found.")
+
+        if len(stations) == 0:
+            print(
+                "Error: no non-satellite rows remain after satellite pre-filter. "
+                "Use --include-satellite-in-main-merge if you intended to merge satellite data."
+            )
+            return 1
+    else:
+        print(
+            "Satellite pre-filter disabled because --include-satellite-in-main-merge was set."
+        )
 
     # ── 相对路径 → 绝对路径 ───────────────────────────────────────────────────
     # s3 存储相对于 output_resolution_organized/ 的相对路径（如 daily/xxx.nc）
