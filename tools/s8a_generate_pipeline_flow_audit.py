@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+可以输出每一步骤每个标签的数据，判断是否正确传递到下一个步骤
 Generate a pipeline flow audit for the sediment basin reference pipeline.
 
 This script is intentionally independent from s8_publish_reference_dataset.py.
