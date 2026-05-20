@@ -14,9 +14,11 @@ Why:
 Default behavior:
   - remove source_family == "satellite" rows from the S5 CSV;
   - write a temporary non-satellite S5 CSV under <out-dir>/_tmp/;
-  - call the shared exporter with --resolutions daily.
+  - call the shared exporter with --resolutions daily;
+  - DO NOT compress NetCDF output by default.
 
 Use --keep-satellite to restore old behavior for diagnostics.
+Use --compress --compression-level 4 when you later want compressed output.
 """
 
 import argparse
@@ -86,6 +88,23 @@ def _build_parser():
         help=(
             "do not pre-filter satellite rows; restore old behavior where "
             "satellite candidates are passed to the shared exporter"
+        ),
+    )
+    parser.add_argument(
+        "--compress",
+        action="store_true",
+        help=(
+            "enable zlib compression in the underlying matrix exporter. "
+            "Default is no compression for faster temporary daily matrix writes."
+        ),
+    )
+    parser.add_argument(
+        "--compression-level",
+        type=int,
+        default=4,
+        help=(
+            "zlib compression level passed to the underlying matrix exporter "
+            "when --compress is set. Default: 4"
         ),
     )
     return parser
@@ -217,6 +236,20 @@ def _build_export_argv(argv):
         export_argv.extend(["--workers", str(args.workers)])
     if args.resolution_workers is not None:
         export_argv.extend(["--resolution-workers", str(args.resolution_workers)])
+
+    # Default: do not pass --compress, so the underlying exporter writes
+    # uncompressed NetCDF if it has been updated to default compress=False.
+    if args.compress:
+        compression_level = int(args.compression_level)
+        if compression_level < 1:
+            compression_level = 1
+        if compression_level > 9:
+            compression_level = 9
+        export_argv.append("--compress")
+        export_argv.extend(["--compression-level", str(compression_level)])
+        print("NetCDF compression requested: zlib level {}".format(compression_level))
+    else:
+        print("NetCDF compression requested: none")
 
     return export_argv
 
