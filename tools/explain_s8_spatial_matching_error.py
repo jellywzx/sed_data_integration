@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Explain spatial matching uncertainty for the released sediment reference product.
 
-This release-product version is intentionally different from the earlier s4
-source-station diagnostic script.  It defaults to the publication package table:
+This release-product diagnostic defaults to the publication package table:
 
     scripts_basin_test/output/sed_reference_release/station_catalog.csv
 
@@ -10,11 +9,15 @@ and writes a separate output directory:
 
     scripts_basin_test/output/spatial_match_error_release_product
 
-The main statistics are computed only after excluding satellite / reach-scale
-sources such as RiverSed, GSED, and Dethier.  Those products are valid
-observations, but their coordinates represent image-derived reaches, centerlines,
-or ROIs rather than precise gauge-outlet points.  Therefore they should not be
-included in the denominator when evaluating release-level basin matching errors.
+The main statistics are computed after excluding satellite / reach-scale sources
+such as RiverSed, GSED, and Dethier. Those products are valid observations, but
+their coordinates represent image-derived reaches, centerlines, or ROIs rather
+than precise gauge-outlet points. Therefore they should not be included in the
+denominator when evaluating release-level basin matching errors.
+
+The summary and figures also report a dedicated subset analysis for rows with a
+source-reported drainage area (reported_area). This directly answers: among rows
+where drainage-area evidence is available, how successful is basin matching?
 
 Main outputs
 ------------
@@ -27,13 +30,16 @@ Main outputs
     Counts of rows excluded before the main matching-error statistics.
 - spatial_match_threshold_sensitivity.csv
     Release-schema-aware threshold sensitivity table.
-- Several CSV summaries and PNG figures.
+- reported_area_*.csv
+    Dedicated summaries for rows with positive reported_area.
+- figures/*.png
+    General release-level plots and reported_area-specific plots.
 
 Usage
 -----
 Edit the USER CONFIGURATION block if your paths are non-standard, then run:
 
-    python3 tools/explain_spatial_matching_error_release_product.py
+    python3 tools/explain_spatial_matching_error.py
 
 No command-line arguments are required.
 """
@@ -70,7 +76,7 @@ TOP_N_MANUAL_REVIEW = 100
 MAKE_FIGURES = True
 
 # Main statistics are computed after excluding these satellite/reach-scale
-# sources.  The list includes basin_policy.py aliases and spelling variants.
+# sources. The list includes basin_policy.py aliases and spelling variants.
 EXCLUDE_REMOTE_REACH_SCALE = True
 REMOTE_REACH_SOURCE_PATTERNS = [
     "riversed",
@@ -186,20 +192,24 @@ def _to_numeric(df: pd.DataFrame, columns: Iterable[str]) -> None:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
 
-def _first_existing(columns: Sequence[str], choices: Sequence[str]) -> Optional[str]:
-    for c in choices:
-        if c in columns:
-            return c
-    return None
-
-
 def _copy_if_exists(df: pd.DataFrame, src: str, dst: str) -> None:
     if dst not in df.columns and src in df.columns:
         df[dst] = df[src]
 
 
-def _has_column(df: pd.DataFrame, col: str) -> bool:
-    return col in df.columns
+def _format_number(value: float, digits: int = 2) -> str:
+    return "NA" if pd.isna(value) else f"{value:.{digits}f}"
+
+
+def _format_numeric_summary(summary: Dict[str, float], unit: str = "", digits: int = 2) -> str:
+    suffix = f" {unit}" if unit else ""
+    return (
+        f"n={int(summary['n'])}, "
+        f"median={_format_number(summary['median'], digits)}{suffix}, "
+        f"p90={_format_number(summary['p90'], digits)}{suffix}, "
+        f"p95={_format_number(summary['p95'], digits)}{suffix}, "
+        f"max={_format_number(summary['max'], digits)}{suffix}"
+    )
 
 
 # =============================================================================
@@ -209,22 +219,15 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
     """Read release station_catalog.csv and adapt it to diagnostic names.
 
     The publication table uses release-facing names such as basin_match_quality
-    and basin_distance_m.  The downstream diagnostic functions expect normalized
-    names such as match_quality and distance_m.  This function preserves all
-    original columns while adding the normalized aliases.
-
-    Returns
-    -------
-    raw_df, normalized_df
-        raw_df is kept for exclusion reporting; normalized_df is ready for main
-        spatial matching diagnostics.
+    and basin_distance_m. The downstream diagnostic functions expect normalized
+    names such as match_quality and distance_m. This function preserves all
+    original columns while adding normalized aliases.
     """
     raw = pd.read_csv(path)
     df = raw.copy()
     df["_input_row_number"] = np.arange(len(df), dtype=int)
     df["_input_table_type"] = "release_station_catalog"
 
-    # Identifier and coordinate aliases.
     if "station_id" not in df.columns:
         if "cluster_uid" in df.columns:
             df["station_id"] = df["cluster_uid"]
@@ -255,8 +258,6 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
     _copy_if_exists(df, "source_station_uid", "source_station_id")
     _copy_if_exists(df, "native_station_id", "source_station_id")
 
-    # Source string used for source filtering.  In station_catalog.csv this is
-    # usually sources_used.  Keep a normalized source column for old output code.
     if "source" not in df.columns:
         if "sources_used" in df.columns:
             df["source"] = df["sources_used"]
@@ -267,9 +268,6 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
         else:
             df["source"] = ""
 
-    # Ensure required diagnostic columns exist even if the release schema omits
-    # them.  Missing numeric diagnostics become NaN and missing flags become a
-    # conservative value.
     for col in ["lon", "lat", "basin_id", "reported_area", "area_error", "uparea_merit", "distance_m", "n_upstream_reaches"]:
         if col not in df.columns:
             df[col] = np.nan
@@ -282,18 +280,10 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
         if col not in df.columns:
             df[col] = False
 
-    numeric_cols = [
-        "lon",
-        "lat",
-        "basin_id",
-        "reported_area",
-        "area_error",
-        "uparea_merit",
-        "distance_m",
-        "n_upstream_reaches",
-        "cluster_id",
-    ]
-    _to_numeric(df, numeric_cols)
+    _to_numeric(
+        df,
+        ["lon", "lat", "basin_id", "reported_area", "area_error", "uparea_merit", "distance_m", "n_upstream_reaches", "cluster_id"],
+    )
 
     for col in ["source", "method", "match_quality", "basin_status", "basin_flag"]:
         df[col] = _clean_series(df[col]).str.lower()
@@ -301,14 +291,6 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
     for col in ["point_in_local", "point_in_basin"]:
         df[col] = _bool_series(df[col])
 
-    # In some station_catalog variants the match flag is stored under a release
-    # name.  Harmonize common alternatives.
-    if "basin_flag" in df.columns:
-        df["basin_flag"] = _clean_series(df["basin_flag"]).str.lower()
-    if "basin_status" in df.columns:
-        df["basin_status"] = _clean_series(df["basin_status"]).str.lower()
-
-    # Fill status/flag conservatively if missing or blank.
     blank_status = df["basin_status"].eq("")
     if blank_status.any():
         df.loc[blank_status, "basin_status"] = np.where(
@@ -324,14 +306,7 @@ def normalize_release_station_catalog(path: Path) -> Tuple[pd.DataFrame, pd.Data
 
 
 def _source_text_for_filter(row: pd.Series) -> str:
-    fields = [
-        "sources_used",
-        "source",
-        "primary_source",
-        "source_name",
-        "data_source_name",
-        "method",
-    ]
+    fields = ["sources_used", "source", "primary_source", "source_name", "data_source_name", "method"]
     parts = [_clean_text(row.get(f, "")) for f in fields]
     return " | ".join(p for p in parts if p).lower()
 
@@ -349,20 +324,12 @@ def _remote_source_label(text: str) -> Optional[str]:
     return None
 
 
-def _is_remote_reach_scale_row(row: pd.Series) -> bool:
-    text = _source_text_for_filter(row)
-    if not text:
-        return False
-    return any(pattern in text for pattern in REMOTE_REACH_SOURCE_PATTERNS)
-
-
 def build_exclusion_summary(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
     """Return exclusion counts and boolean exclusion mask."""
     labels = []
     exclude = []
     for _, row in df.iterrows():
-        text = _source_text_for_filter(row)
-        label = _remote_source_label(text)
+        label = _remote_source_label(_source_text_for_filter(row))
         is_excluded = label is not None if EXCLUDE_REMOTE_REACH_SCALE else False
         labels.append(label if label is not None else "not_excluded")
         exclude.append(is_excluded)
@@ -389,9 +356,7 @@ def add_area_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
     """Add area-ratio diagnostics from area_error if available.
 
     area_error is interpreted as log10(MERIT upstream area / source-reported
-    area).  Therefore 10 ** area_error is the multiplicative area ratio.  Release
-    station_catalog rows may not carry reported_area or area_error; in that case
-    these columns are retained as NaN/not_available.
+    area). Therefore 10 ** area_error is the multiplicative area ratio.
     """
     out = df.copy()
     if "area_error" not in out.columns:
@@ -429,18 +394,19 @@ def add_distance_diagnostics(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["distance_m"] = pd.to_numeric(out["distance_m"], errors="coerce")
     bins = [-np.inf, 100.0, 300.0, 1000.0, 5000.0, 120000.0, np.inf]
-    labels = [
-        "<=100 m",
-        "100-300 m",
-        "300-1000 m",
-        "1-5 km",
-        "5-120 km",
-        ">120 km or invalid",
-    ]
+    labels = ["<=100 m", "100-300 m", "300-1000 m", "1-5 km", "5-120 km", ">120 km or invalid"]
     out["distance_bin"] = pd.cut(out["distance_m"], bins=bins, labels=labels)
     out["distance_bin"] = out["distance_bin"].astype("object").fillna("not_available")
     out["distance_km"] = out["distance_m"] / 1000.0
     return out
+
+
+def has_reported_area(df: pd.DataFrame) -> pd.Series:
+    """Rows with a usable source-reported drainage area."""
+    if "reported_area" not in df.columns:
+        return pd.Series(False, index=df.index)
+    reported = pd.to_numeric(df["reported_area"], errors="coerce")
+    return reported.notna() & np.isfinite(reported) & (reported > 0)
 
 
 def classify_spatial_error(row: pd.Series) -> Tuple[str, str, int, str]:
@@ -544,6 +510,7 @@ def add_spatial_error_classes(df: pd.DataFrame) -> pd.DataFrame:
         "publishable_basin_assignment",
         "observation_retained_basin_not_published",
     )
+    out["has_reported_area"] = has_reported_area(out)
     return out
 
 
@@ -584,19 +551,12 @@ def threshold_reclassify(
     accept_area_approx: bool = True,
     accept_local: bool = True,
 ) -> pd.Series:
-    """Reapply a simplified release policy under alternative thresholds.
-
-    Release station_catalog rows may hide basin_id.  Therefore this function
-    does not require basin_id in release mode.  It uses match_quality, basin_flag,
-    distance_m, point_in_local, and area-supported quality labels.
-    """
+    """Reapply a simplified release policy under alternative thresholds."""
     quality = _clean_series(df["match_quality"]).str.lower()
     flag = _clean_series(df["basin_flag"]).str.lower()
     distance = pd.to_numeric(df["distance_m"], errors="coerce")
     point_in_local = df["point_in_local"].astype(bool) if "point_in_local" in df.columns else pd.Series(False, index=df.index)
 
-    # Release-aware candidate test.  If basin_id is absent or entirely missing,
-    # do not reject every row; rely on match_quality and flag instead.
     if "basin_id" in df.columns and pd.to_numeric(df["basin_id"], errors="coerce").notna().any():
         has_candidate = pd.to_numeric(df["basin_id"], errors="coerce").notna()
     else:
@@ -700,6 +660,36 @@ def write_exclusion_summary(
     (out_dir / "remote_sensing_exclusion_summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _append_count_table(lines: List[str], table: pd.DataFrame, columns: Sequence[str], indent: str = "    ") -> None:
+    if table.empty:
+        lines.append(f"{indent}- none")
+        return
+    for row in table.itertuples(index=False):
+        parts = [str(getattr(row, c)) for c in columns]
+        label = " | ".join(parts)
+        lines.append(f"{indent}- {label}: {int(row.row_count)} ({float(row.percent):.2f}%)")
+
+
+def reported_area_summary_tables(area_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    if area_df.empty:
+        return {
+            "status": pd.DataFrame(),
+            "flag": pd.DataFrame(),
+            "quality": pd.DataFrame(),
+            "class": pd.DataFrame(),
+            "status_quality": pd.DataFrame(),
+            "area_error_bin_quality": pd.DataFrame(),
+        }
+    return {
+        "status": summarize_counts(area_df, ["basin_status"]),
+        "flag": summarize_counts(area_df, ["basin_flag"]),
+        "quality": summarize_counts(area_df, ["match_quality"]),
+        "class": summarize_counts(area_df, ["spatial_error_class"]),
+        "status_quality": summarize_counts(area_df, ["basin_status", "match_quality"]),
+        "area_error_bin_quality": summarize_counts(area_df, ["area_error_bin", "match_quality"]),
+    }
+
+
 def write_summary_text(
     df: pd.DataFrame,
     out_path: Path,
@@ -713,22 +703,35 @@ def write_summary_text(
     flag_counts = summarize_counts(df, ["basin_flag"])
     class_counts = summarize_counts(df, ["spatial_error_class"])
 
-    resolved = df[_clean_series(df["basin_status"]).str.lower().eq("resolved")]
-    unresolved = df[_clean_series(df["basin_status"]).str.lower().eq("unresolved")]
+    status = _clean_series(df["basin_status"]).str.lower()
+    flag = _clean_series(df["basin_flag"]).str.lower()
+    quality = _clean_series(df["match_quality"]).str.lower()
+    resolved = df[status.eq("resolved")]
+    unresolved = df[status.eq("unresolved")]
     resolved_distance = numeric_summary(resolved["distance_m"])
     unresolved_distance = numeric_summary(unresolved["distance_m"])
     all_distance = numeric_summary(df["distance_m"])
-    area_available = df[pd.to_numeric(df["area_error"], errors="coerce").notna()]
+    area_available = df[has_reported_area(df)].copy()
     area_abs = numeric_summary(area_available["area_log10_error_abs"] if len(area_available) else pd.Series(dtype=float))
+    area_distance = numeric_summary(area_available["distance_m"] if len(area_available) else pd.Series(dtype=float))
+    area_tables = reported_area_summary_tables(area_available)
 
     def pct(n: int, denom: Optional[int] = None) -> float:
         d = total if denom is None else denom
         return 100.0 * n / d if d else 0.0
 
-    n_area_mismatch = int((_clean_series(df["basin_flag"]).str.lower() == "area_mismatch").sum())
-    n_large_offset = int((_clean_series(df["basin_flag"]).str.lower() == "large_offset").sum())
-    n_geom = int((_clean_series(df["basin_flag"]).str.lower() == "geometry_inconsistent").sum())
-    n_no_match = int((_clean_series(df["basin_flag"]).str.lower() == "no_match").sum())
+    n_area_mismatch = int((flag == "area_mismatch").sum())
+    n_large_offset = int((flag == "large_offset").sum())
+    n_geom = int((flag == "geometry_inconsistent").sum())
+    n_no_match = int((flag == "no_match").sum())
+
+    area_total = len(area_available)
+    area_status = _clean_series(area_available["basin_status"]).str.lower() if area_total else pd.Series(dtype=str)
+    area_flag = _clean_series(area_available["basin_flag"]).str.lower() if area_total else pd.Series(dtype=str)
+    area_quality = _clean_series(area_available["match_quality"]).str.lower() if area_total else pd.Series(dtype=str)
+    area_resolved = int(area_status.eq("resolved").sum()) if area_total else 0
+    area_area_supported = int(area_quality.isin(AREA_SUPPORTED_QUALITIES).sum()) if area_total else 0
+    area_area_mismatch = int(area_flag.eq("area_mismatch").sum()) if area_total else 0
 
     lines: List[str] = []
     lines.append("Release-Level Spatial Matching Error Explanation")
@@ -748,58 +751,60 @@ def write_summary_text(
             lines.append(f"  - {row.excluded_source_group}: {int(row.row_count)}")
     lines.append("")
     lines.append("1. Publication status after source filtering")
-    for row in status_counts.itertuples(index=False):
-        lines.append(f"  - {row.basin_status}: {int(row.row_count)} ({float(row.percent):.2f}%)")
+    _append_count_table(lines, status_counts, ["basin_status"], indent="  ")
     lines.append("")
     lines.append("2. Basin flag breakdown after source filtering")
-    for row in flag_counts.itertuples(index=False):
-        lines.append(f"  - {row.basin_flag}: {int(row.row_count)} ({float(row.percent):.2f}%)")
+    _append_count_table(lines, flag_counts, ["basin_flag"], indent="  ")
     lines.append("")
     lines.append("3. Spatial error classes after source filtering")
-    for row in class_counts.itertuples(index=False):
-        lines.append(f"  - {row.spatial_error_class}: {int(row.row_count)} ({float(row.percent):.2f}%)")
+    _append_count_table(lines, class_counts, ["spatial_error_class"], indent="  ")
     lines.append("")
     lines.append("4. Distance diagnostics")
-    lines.append(
-        "  - all finite distances: n={n}, median={median:.2f} m, p90={p90:.2f} m, p95={p95:.2f} m, max={max:.2f} m".format(
-            **all_distance
-        )
-    )
-    lines.append(
-        "  - resolved distances: n={n}, median={median:.2f} m, p90={p90:.2f} m, p95={p95:.2f} m, max={max:.2f} m".format(
-            **resolved_distance
-        )
-    )
-    lines.append(
-        "  - unresolved finite distances: n={n}, median={median:.2f} m, p90={p90:.2f} m, p95={p95:.2f} m, max={max:.2f} m".format(
-            **unresolved_distance
-        )
-    )
+    lines.append(f"  - all finite distances: {_format_numeric_summary(all_distance, 'm', 2)}")
+    lines.append(f"  - resolved distances: {_format_numeric_summary(resolved_distance, 'm', 2)}")
+    lines.append(f"  - unresolved finite distances: {_format_numeric_summary(unresolved_distance, 'm', 2)}")
     lines.append("")
     lines.append("5. Drainage-area diagnostics")
-    lines.append(
-        "  - rows with reported-area comparison: n={n}, median_abs_log10_error={median:.3f}, p90={p90:.3f}, p95={p95:.3f}, max={max:.3f}".format(
-            **area_abs
-        )
-    )
+    lines.append(f"  - rows with positive reported_area: {area_total} ({pct(area_total):.2f}% of analyzed rows)")
+    lines.append(f"  - abs(area_error) among rows with reported_area: {_format_numeric_summary(area_abs, '', 3)}")
     lines.append(
         "  - interpretation: area_error = log10(MERIT upstream area / source-reported area); abs(area_error)=0.3 means about a factor-of-2 difference."
     )
     lines.append("")
-    lines.append("6. Main uncertainty mechanisms among checked release-product rows")
+    lines.append("6. Basin-matching results among rows with reported_area")
+    if area_total == 0:
+        lines.append("  - No rows have positive reported_area after source filtering.")
+    else:
+        lines.append(f"  - positive reported_area rows: {area_total} ({pct(area_total):.2f}% of analyzed rows)")
+        lines.append(f"  - resolved / publishable basin assignments: {area_resolved} ({pct(area_resolved, area_total):.2f}% of reported_area rows)")
+        lines.append(f"  - area-supported match_quality ({', '.join(sorted(AREA_SUPPORTED_QUALITIES))}): {area_area_supported} ({pct(area_area_supported, area_total):.2f}% of reported_area rows)")
+        lines.append(f"  - area_mismatch basin_flag: {area_area_mismatch} ({pct(area_area_mismatch, area_total):.2f}% of reported_area rows)")
+        lines.append(f"  - distance among reported_area rows: {_format_numeric_summary(area_distance, 'm', 2)}")
+        lines.append(f"  - abs(area_error) among reported_area rows: {_format_numeric_summary(area_abs, '', 3)}")
+        lines.append("  - basin_status breakdown:")
+        _append_count_table(lines, area_tables["status"], ["basin_status"], indent="    ")
+        lines.append("  - basin_flag breakdown:")
+        _append_count_table(lines, area_tables["flag"], ["basin_flag"], indent="    ")
+        lines.append("  - match_quality breakdown:")
+        _append_count_table(lines, area_tables["quality"], ["match_quality"], indent="    ")
+        lines.append("  - spatial_error_class breakdown:")
+        _append_count_table(lines, area_tables["class"], ["spatial_error_class"], indent="    ")
+    lines.append("")
+    lines.append("7. Main uncertainty mechanisms among checked release-product rows")
     lines.append(f"  - no publishable match: {n_no_match} ({pct(n_no_match):.2f}%)")
     lines.append(f"  - large point-to-reach offset: {n_large_offset} ({pct(n_large_offset):.2f}%)")
     lines.append(f"  - source area vs MERIT area mismatch: {n_area_mismatch} ({pct(n_area_mismatch):.2f}%)")
     lines.append(f"  - geometry inconsistency: {n_geom} ({pct(n_geom):.2f}%)")
     lines.append("")
-    lines.append("7. Suggested manuscript wording")
+    lines.append("8. Suggested manuscript wording")
     lines.append(
-        "  Release-level basin-matching uncertainty was evaluated from station_catalog.csv after excluding satellite-derived and reach-scale products from the matching-error denominator. Basin assignments were quantified using point-to-reach distance, drainage-area agreement, and point-in-polygon diagnostics. Resolved rows are considered suitable for released basin polygons, whereas unresolved rows are retained as observations but excluded from formal basin-polygon publication."
+        "  Release-level basin-matching uncertainty was evaluated from station_catalog.csv after excluding satellite-derived and reach-scale products from the matching-error denominator. Basin assignments were quantified using point-to-reach distance, drainage-area agreement, and point-in-polygon diagnostics. For rows with source-reported drainage area, we separately summarized the resolved rate, area-supported match qualities, and area-mismatch failures. Resolved rows are considered suitable for released basin polygons, whereas unresolved rows are retained as observations but excluded from formal basin-polygon publication."
     )
     lines.append("")
-    lines.append("8. Suggested user filtering")
+    lines.append("9. Suggested user filtering")
     lines.append("  - Standard basin-scale use: basin_status == 'resolved'.")
     lines.append("  - Conservative basin-scale use: basin_status == 'resolved' and spatial_error_severity <= 2.")
+    lines.append("  - Reported-area-supported use: has_reported_area == True and match_quality in ['area_matched', 'area_approximate'].")
     lines.append("  - Observation-only use: all retained rows can be used as records, but unresolved rows should not be used to extract upstream basin attributes.")
     lines.append("")
 
@@ -807,6 +812,9 @@ def write_summary_text(
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# =============================================================================
+# Plot helpers
+# =============================================================================
 def _save_bar(table: pd.DataFrame, label_col: str, value_col: str, title: str, out_png: Path) -> None:
     if plt is None or table.empty:
         return
@@ -846,9 +854,7 @@ def _save_hist(series: pd.Series, title: str, xlabel: str, out_png: Path, log_x:
 
 
 def _save_scatter(df: pd.DataFrame, out_png: Path) -> None:
-    if plt is None:
-        return
-    if "area_log10_error_abs" not in df.columns:
+    if plt is None or "area_log10_error_abs" not in df.columns:
         return
     work = df[["distance_m", "area_log10_error_abs"]].copy()
     work = work.replace([np.inf, -np.inf], np.nan).dropna()
@@ -887,6 +893,123 @@ def _save_threshold_plot(table: pd.DataFrame, out_png: Path) -> None:
     plt.close(fig)
 
 
+def _save_stacked_count_bar(
+    df: pd.DataFrame,
+    x_col: str,
+    stack_col: str,
+    title: str,
+    ylabel: str,
+    out_png: Path,
+    normalize: bool = False,
+) -> None:
+    if plt is None or df.empty or x_col not in df.columns or stack_col not in df.columns:
+        return
+    pivot = pd.crosstab(df[x_col].fillna("NA"), df[stack_col].fillna("NA"))
+    if pivot.empty:
+        return
+    if normalize:
+        row_totals = pivot.sum(axis=1).replace(0, np.nan)
+        plot_df = pivot.div(row_totals, axis=0) * 100.0
+    else:
+        plot_df = pivot
+    fig, ax = plt.subplots(figsize=(max(8, 0.6 * len(plot_df)), 5))
+    plot_df.plot(kind="bar", stacked=True, ax=ax)
+    ax.set_xlabel(x_col)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(title=stack_col, bbox_to_anchor=(1.02, 1), loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=180)
+    plt.close(fig)
+
+
+def _save_reported_area_resolution_pie(area_df: pd.DataFrame, out_png: Path) -> None:
+    if plt is None or area_df.empty:
+        return
+    counts = _clean_series(area_df["basin_status"]).replace("", "NA").value_counts()
+    if counts.empty:
+        return
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(counts.values, labels=counts.index.astype(str), autopct="%1.1f%%", startangle=90)
+    ax.set_title("Basin status among rows with reported_area")
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=180)
+    plt.close(fig)
+
+
+def write_reported_area_csv_outputs(area_df: pd.DataFrame, out_dir: Path) -> None:
+    tables = reported_area_summary_tables(area_df)
+    tables["status"].to_csv(out_dir / "reported_area_match_status_counts.csv", index=False)
+    tables["flag"].to_csv(out_dir / "reported_area_match_flag_counts.csv", index=False)
+    tables["quality"].to_csv(out_dir / "reported_area_match_quality_counts.csv", index=False)
+    tables["class"].to_csv(out_dir / "reported_area_spatial_error_class_counts.csv", index=False)
+    tables["status_quality"].to_csv(out_dir / "reported_area_match_status_quality_counts.csv", index=False)
+    tables["area_error_bin_quality"].to_csv(out_dir / "reported_area_area_error_bin_quality_counts.csv", index=False)
+    area_df.to_csv(out_dir / "reported_area_spatial_match_rows.csv", index=False)
+
+
+def write_reported_area_figures(area_df: pd.DataFrame, figs_dir: Path) -> None:
+    if plt is None or area_df.empty:
+        return
+    reported_dir = figs_dir / "reported_area"
+    reported_dir.mkdir(exist_ok=True)
+
+    _save_bar(
+        summarize_counts(area_df, ["basin_status"]),
+        "basin_status",
+        "row_count",
+        "Basin status among rows with reported_area",
+        reported_dir / "reported_area_basin_status_counts.png",
+    )
+    _save_bar(
+        summarize_counts(area_df, ["basin_flag"]),
+        "basin_flag",
+        "row_count",
+        "Basin flag among rows with reported_area",
+        reported_dir / "reported_area_basin_flag_counts.png",
+    )
+    _save_bar(
+        summarize_counts(area_df, ["match_quality"]),
+        "match_quality",
+        "row_count",
+        "Match quality among rows with reported_area",
+        reported_dir / "reported_area_match_quality_counts.png",
+    )
+    _save_reported_area_resolution_pie(area_df, reported_dir / "reported_area_basin_status_share.png")
+    _save_hist(
+        area_df["distance_m"],
+        "Point-to-reach distance among rows with reported_area",
+        "distance (m)",
+        reported_dir / "reported_area_distance_hist_logx.png",
+        log_x=True,
+    )
+    _save_hist(
+        area_df["area_log10_error_abs"],
+        "Drainage-area mismatch among rows with reported_area",
+        "abs(log10 area ratio)",
+        reported_dir / "reported_area_area_error_hist.png",
+    )
+    _save_scatter(area_df, reported_dir / "reported_area_distance_vs_area_error.png")
+    _save_stacked_count_bar(
+        area_df,
+        x_col="area_error_bin",
+        stack_col="basin_status",
+        title="Basin status by drainage-area error bin",
+        ylabel="row count",
+        out_png=reported_dir / "reported_area_status_by_area_error_bin.png",
+        normalize=False,
+    )
+    _save_stacked_count_bar(
+        area_df,
+        x_col="match_quality",
+        stack_col="basin_status",
+        title="Basin status by match quality for rows with reported_area",
+        ylabel="row count",
+        out_png=reported_dir / "reported_area_status_by_match_quality.png",
+        normalize=False,
+    )
+
+
 def write_outputs(
     df: pd.DataFrame,
     input_path: Path,
@@ -907,6 +1030,10 @@ def write_outputs(
     summarize_counts(df, ["spatial_error_class"]).to_csv(out_dir / "spatial_match_error_class_counts.csv", index=False)
     summarize_counts(df, ["distance_bin", "basin_status"]).to_csv(out_dir / "spatial_match_distance_bins.csv", index=False)
     summarize_counts(df, ["area_error_bin", "match_quality"]).to_csv(out_dir / "spatial_match_area_error_bins.csv", index=False)
+    summarize_counts(df, ["has_reported_area", "basin_status"]).to_csv(out_dir / "spatial_match_status_by_reported_area_presence.csv", index=False)
+
+    area_df = df[df["has_reported_area"]].copy()
+    write_reported_area_csv_outputs(area_df, out_dir)
 
     if "resolution" in df.columns:
         summarize_counts(df, ["resolution", "basin_status"]).to_csv(out_dir / "spatial_match_status_by_resolution.csv", index=False)
@@ -945,6 +1072,7 @@ def write_outputs(
         "point_in_basin",
         "basin_status",
         "basin_flag",
+        "has_reported_area",
         "spatial_error_class",
         "spatial_error_explanation",
         "spatial_error_severity",
@@ -986,12 +1114,22 @@ def write_outputs(
     _save_scatter(df, figs_dir / "distance_vs_area_error.png")
     _save_bar(summarize_counts(df, ["basin_flag"]), "basin_flag", "row_count", "Release-level basin flag counts", figs_dir / "basin_flag_counts.png")
     _save_bar(summarize_counts(df, ["spatial_error_class"]), "spatial_error_class", "row_count", "Release-level spatial error class counts", figs_dir / "spatial_error_class_counts.png")
+    _save_bar(summarize_counts(df, ["has_reported_area"]), "has_reported_area", "row_count", "Rows with/without reported_area", figs_dir / "reported_area_presence_counts.png")
+    _save_stacked_count_bar(
+        df,
+        x_col="has_reported_area",
+        stack_col="basin_status",
+        title="Basin status by reported_area availability",
+        ylabel="row count",
+        out_png=figs_dir / "basin_status_by_reported_area_presence.png",
+    )
     _save_threshold_plot(threshold_table, figs_dir / "threshold_sensitivity.png")
+    write_reported_area_figures(area_df, figs_dir)
 
 
 def build_spatial_error_package(input_path: Path, out_dir: Path, top_n: int = 100) -> pd.DataFrame:
     raw_df, df = normalize_release_station_catalog(input_path)
-    raw_count = len(df)
+    raw_count = len(raw_df)
     exclusion_summary, exclude_mask = build_exclusion_summary(df)
 
     if EXCLUDE_REMOTE_REACH_SCALE:
@@ -1033,14 +1171,18 @@ def main() -> int:
         out_dir=out_dir,
         top_n=TOP_N_MANUAL_REVIEW,
     )
+    area_rows = int(df["has_reported_area"].sum()) if "has_reported_area" in df.columns else 0
     print(f"Input release station_catalog: {input_path}")
     print(f"Wrote release-level spatial matching error package -> {out_dir}")
     print(f"Rows processed after remote/reach-scale filtering: {len(df)}")
+    print(f"Rows with positive reported_area: {area_rows}")
     print("Key outputs:")
     print(f"  - {out_dir / 'spatial_match_error_summary.txt'}")
     print(f"  - {out_dir / 'remote_sensing_exclusion_summary.txt'}")
     print(f"  - {out_dir / 'spatial_match_error_table.csv'}")
+    print(f"  - {out_dir / 'reported_area_match_status_counts.csv'}")
     print(f"  - {out_dir / 'spatial_match_threshold_sensitivity.csv'}")
+    print(f"  - {out_dir / 'figures'}")
     return 0
 
 
