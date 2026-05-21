@@ -194,43 +194,73 @@ _DEFAULT_METADATA_WORKERS = 16
 _PROC = psutil.Process(os.getpid())
 
 
-def classify_source_family(source):
-    text = "" if source is None else str(source)
-    low = text.lower()
-    if "usgs" in low:
-        return "USGS"
-    if "hydat" in low:
-        return "HYDAT"
-    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
+def classify_source_family_from_observation_type(observation_type):
+    """Classify source_family from required s3/s5 observation_type.
+
+    s6 intentionally does not fall back to source-name heuristics. Missing or
+    blank observation_type is treated as an upstream data-contract error and is
+    checked immediately after reading the s5 CSV in main().
+    """
+    obs_text = "" if observation_type is None else str(observation_type).strip()
+    obs_low = obs_text.lower().replace("-", "_").replace(" ", "_")
+
+    if obs_low in {"usgs", "hydat"}:
+        return obs_low.upper()
+    if obs_low in {
+        "satellite",
+        "remote_sensing",
+        "remote_sensing_observation",
+        "satellite_observation",
+    }:
         return "satellite"
-    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
+    if obs_low in {
+        "in_situ",
+        "insitu",
+        "in_situ_observation",
+        "station",
+        "station_observation",
+        "gauge",
+        "gauge_observation",
+    }:
         return "in_situ"
-    if any(token in low for token in ("compiled", "compilation", "secondary")):
+    if obs_low in {
+        "secondary_compilation",
+        "compiled",
+        "compilation",
+        "secondary",
+        "secondary_dataset",
+    }:
         return "secondary_compilation"
     return "other"
 
 
-def is_merge_eligible_source(source, include_satellite_in_main_merge=False):
-    family = classify_source_family(source)
+def is_merge_eligible_source(observation_type, include_satellite_in_main_merge=False):
+    family = classify_source_family_from_observation_type(observation_type)
     if include_satellite_in_main_merge and family == "satellite":
         return True
     return family not in MERGE_EXCLUDED_SOURCE_FAMILIES
 
 
-def merge_exclusion_reason(source, include_satellite_in_main_merge=False):
-    family = classify_source_family(source)
+def merge_exclusion_reason(observation_type, include_satellite_in_main_merge=False):
+    family = classify_source_family_from_observation_type(observation_type)
     if family == "satellite" and not include_satellite_in_main_merge:
         return "source_family=satellite excluded from default main merge"
-    if not is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+    if not is_merge_eligible_source(
+        observation_type,
+        include_satellite_in_main_merge=include_satellite_in_main_merge,
+    ):
         return "source_family={} excluded from default main merge".format(family)
     return ""
 
 
-def merge_policy_for_source(source, include_satellite_in_main_merge=False):
-    family = classify_source_family(source)
+def merge_policy_for_source(observation_type, include_satellite_in_main_merge=False):
+    family = classify_source_family_from_observation_type(observation_type)
     if family in VALIDATION_ONLY_SOURCE_FAMILIES and not include_satellite_in_main_merge:
         return "validation_only"
-    if is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+    if is_merge_eligible_source(
+        observation_type,
+        include_satellite_in_main_merge=include_satellite_in_main_merge,
+    ):
         return "merge_candidate"
     return "excluded_from_main_merge"
 
@@ -777,7 +807,7 @@ def load_nc_series(path):
 def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=False):
     """
     为单个 (cluster_id, resolution) 构建合并时间序列。
-    recs: list of (source, path, source_station_index)
+    recs: list of (source, observation_type, path, source_station_index)
 
     合并规则（相同分辨率内）：
       - 按文件整体质量分数（flag==0 好数据占比）从高到低排序；
@@ -792,7 +822,7 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
     scored = []   # list of metadata dict with df
     all_dates = set()
     unit_issues = []
-    for source, path, source_station_index in recs:
+    for source, observation_type, path, source_station_index in recs:
         df, file_unit_issues = load_nc_series(path)
         if file_unit_issues:
             unit_issues.extend(file_unit_issues)
@@ -812,17 +842,20 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
                     "n_time_rows": metrics["n_time_rows"],
                     "n_nonempty_rows": metrics["n_nonempty_rows"],
                     "df": merge_df,
-                    "source_family": classify_source_family(source),
+                    "source_family": classify_source_family_from_observation_type(observation_type),
                     "merge_eligible": int(
                         is_merge_eligible_source(
-                            source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                            observation_type,
+                            include_satellite_in_main_merge=include_satellite_in_main_merge,
                         )
                     ),
                     "merge_exclusion_reason": merge_exclusion_reason(
-                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                        observation_type,
+                        include_satellite_in_main_merge=include_satellite_in_main_merge,
                     ),
                     "merge_policy": merge_policy_for_source(
-                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                        observation_type,
+                        include_satellite_in_main_merge=include_satellite_in_main_merge,
                     ),
                 }
             )
@@ -1092,6 +1125,38 @@ def main():
             print("Error: s5 CSV 缺少列 '{}'".format(col))
             return 1
 
+    if "observation_type" not in stations.columns:
+        print(
+            "Error: s5 CSV 缺少列 'observation_type'. "
+            "请先重新运行 s3_collect_qc_stations.py 和后续 s4/s5，确认每个 NC 全局属性 observation_type 已写入。"
+        )
+        return 1
+
+    stations["observation_type"] = (
+        stations["observation_type"].fillna("").astype(str).str.strip()
+    )
+    missing_observation_type = stations["observation_type"].eq("")
+    n_missing_observation_type = int(missing_observation_type.sum())
+    if n_missing_observation_type > 0:
+        print(
+            "Error: s5 CSV 中有 {} 行 observation_type 为空；s6 不再回退到 source 名称判断 source_family。".format(
+                n_missing_observation_type
+            )
+        )
+        sample_cols = [
+            c
+            for c in ["path", "source", "station_id", "cluster_id", "resolution"]
+            if c in stations.columns
+        ]
+        if sample_cols:
+            print("请检查以下样例行，并回到对应 NC 全局属性补充 observation_type：")
+            print(
+                stations.loc[missing_observation_type, sample_cols]
+                .head(20)
+                .to_string(index=False)
+            )
+        return 1
+
     print("Loaded s5 stations: {} rows".format(len(stations)))
 
     if not args.include_climatology:
@@ -1120,7 +1185,7 @@ def main():
     # 若确实需要 satellite 进入主 merge，可显式传：
     #   --include-satellite-in-main-merge
     if not args.include_satellite_in_main_merge:
-        source_family = stations["source"].map(classify_source_family)
+        source_family = stations["observation_type"].map(classify_source_family_from_observation_type)
         satellite_mask = source_family.eq("satellite")
         n_satellite = int(satellite_mask.sum())
 
@@ -1396,6 +1461,7 @@ def main():
         row_dict = {
             "path": getattr(row, "path", ""),
             "source": getattr(row, "source", ""),
+            "observation_type": getattr(row, "observation_type", ""),
             "cluster_id": getattr(row, "cluster_id", -1),
             "lat": getattr(row, "lat", np.nan),
             "lon": getattr(row, "lon", np.nan),
@@ -1481,7 +1547,7 @@ def main():
     by_cluster_res = defaultdict(list)
     for (cid, res), grp in stations.groupby(["cluster_id", "resolution"], sort=False):
         by_cluster_res[(int(cid), str(res))] = list(
-            zip(grp["source"], grp["path"], grp["_source_station_index"])
+            zip(grp["source"], grp["observation_type"], grp["path"], grp["_source_station_index"])
         )
 
     tasks     = [
