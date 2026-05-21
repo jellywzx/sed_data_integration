@@ -2,52 +2,27 @@
 
 ## 1. 这套流程现在在做什么
 
-`scripts_basin_test` 是当前用于构建泥沙参考数据集的主线流程。
+`scripts_basin_test` 是当前 `experiment/restore_satellite_basin` 分支上的 `basin mainline`，主线范围是 `s1 -> s8`。
 
-它的目标是生成一套以 `cluster` 为核心的参考数据集，包括：
+这套流程的目标是构建一套以 `cluster` 为核心的泥沙参考数据集，并发布到 `scripts_basin_test/output/sed_reference_release/`。当前主合同包括：
 
-1. 一个压缩的总 `NetCDF` 文件
-2. 一个单独的 `climatology NetCDF` 文件
-3. 一个 `cluster` 点位 `gpkg`
-4. 一个原始站点点位 `gpkg`
-5. 一个最终 `cluster` 级流域单元 `gpkg`
-6. 一套用于人工检查的 `csv` 表格
+1. `master nc`：`sed_reference_master.nc`
+2. `timeseries matrix nc`：`daily / monthly / annual`
+3. `climatology nc`：`sed_reference_climatology.nc`
+4. `catalog`：`station_catalog.csv`、`source_station_catalog.csv`、`source_dataset_catalog.csv`
+5. `GPKG sidecar`：`cluster points`、`source stations`，以及可选的 `cluster basins`
+6. 发布级 provenance sidecar：`sed_reference_overlap_candidates.csv.gz`
 
 这里的 `cluster` 不是严格意义上的“同一个物理站点”，而是：
 
-**同一个 90m 流域单元下的站点合并组。**
+**同一个 basin 合并规则下的站点合并组。**
 
-所以这套数据更准确地说是：
+当前推荐把内部产物理解为同一套参考数据的不同层级：
 
-**一个以 90m 流域单元为合并基础、同时保留原始站点映射关系的泥沙参考数据集。**
-
-### 1.1 现在推荐的发布方式
-
-当前不再建议在下面两种输出之间二选一：
-
-1. `s6_basin_merged_all.nc`
-2. `s6_matrix_by_resolution/*.nc`
-
-更推荐把它们定义为同一套参考数据集的两个层级：
-
-1. `master.nc` 层：
-   以 `s6_basin_merged_all.nc` 为基础，保留完整记录级 provenance，适合追溯和审计
-2. `timeseries matrix` 层：
-   以 `daily / monthly / annual` 三个矩阵 `nc` 为基础，适合最近站点匹配、抽取时间序列、和模型直接对比
-3. `climatology` 层：
-   以 `s6_climatology_only.nc` 为基础，独立发布，不进入 basin 主线
-
-当前目录里新增了：
-
-1. `s8_publish_reference_dataset.py`
-2. `example_reference_workflow.py`
-3. `second_stage_contract.md`
-
-它们的用途分别是：
-
-1. 将现有主线产物整理成正式发布版 `sed_reference_release/`
-2. 演示“最近站点匹配 -> 抽时间序列 -> 可选模型对比 -> 回查 provenance”的标准使用路径
-3. 明确第二阶段真正依赖和保留的字段 contract，以及哪些字段只是中间使用或设计上主动丢弃
+1. `master` 层：以 `s6_basin_merged_all.nc` 为基础，保留完整记录级 provenance
+2. `matrix` 层：以 `daily / monthly / annual` 三个矩阵 `nc` 为基础，适合最近站点匹配和模型对比
+3. `climatology` 层：以 `s6_climatology_only.nc` 为基础，独立发布，不进入 basin 主线 merge
+4. `release` 层：由 `s8_publish_reference_dataset.py` 整理为标准命名的对外数据包
 
 ---
 
@@ -55,10 +30,10 @@
 
 ### 2.1 cluster 规则
 
-1. 同一个 90m 流域单元内的原始站点，归为同一个 `cluster`
-2. 一个 `cluster` 下可以包含多个原始站点
-3. 合并后不能丢掉原始站点信息
-4. 最终记录仍需能追溯到原始站点和原始文件
+1. 一个 `cluster` 可以包含多个原始站点
+2. 主线最终必须同时保留 `cluster` 层、原始站点层和记录层
+3. 最终记录必须能追溯到 `source_station_uid` 和原始文件路径
+4. 发布层的标准空间和 catalog 连接键是 `cluster_uid + resolution`
 
 ### 2.2 时间分辨率规则
 
@@ -75,7 +50,7 @@
 |---|---|
 | `hourly` | `daily` |
 | `daily` | `daily` |
-| `single_point` | `daily` |
+| `single_point` | `daily` 或 `climatology` |
 | `monthly` | `monthly` |
 | `quarterly` | `monthly` |
 | `annual` | `annual` 或 `climatology` |
@@ -83,49 +58,32 @@
 
 补充说明：
 
-1. `single_point` 如果从元数据判断其实是多年平均或气候态，则归为 `climatology`
-2. `annual` 如果从元数据判断其实是多年平均或气候态，则归为 `climatology`
+1. `single_point` 如果从元数据判断是多年平均或气候态，则归为 `climatology`
+2. `annual` 如果从元数据判断是多年平均或气候态，则归为 `climatology`
 3. `climatology` 在 `s2` 之后会被单独保留，但默认不进入 basin 主线
 4. basin 主线默认只处理非 `climatology` 的站点
-5. `climatology` 最后单独导出为一个独立 `nc`
-6. 不同时间类型不能混成一种普通时间序列，必须带清楚的时间类型标记
-7. 第二阶段不直接信任第一阶段目录名，实际以 `s1` 输出的 `temporal_semantics` 为准
+5. 第二阶段不直接信任第一阶段目录名，实际以 `s1` 输出的 `temporal_semantics` 为准
 
-### 2.3 原始信息保留规则
+### 2.3 多来源重叠规则
 
-最终数据集中必须能回答下面这些问题：
+如果同一个 `cluster`、同一 `resolution`、同一时间点存在多个来源：
 
-1. 一个 `cluster` 下面有哪些原始站点
-2. 每个原始站点来自哪个数据源
-3. 每条最终记录来自哪个原始站点
-4. 每条最终记录来自哪个原始文件
-
-补充：
-
-1. 当前更细的第二阶段字段 contract 见 `second_stage_contract.md`
-2. 文档中明确区分了“必须保留”“中间使用但最终不保留”“设计上主动丢弃”三类字段
-
-### 2.4 多来源重叠规则
-
-如果同一个 `cluster`、同一时间类型、同一时间点存在多个来源：
-
-1. 允许多个来源同时进入候选
+1. 多个来源都可以进入候选
 2. 最终记录层只保留一条胜出记录
 3. 胜出规则按质量分数排序
 4. `is_overlap = 1` 表示该条记录来自多来源竞争
-5. 即使最终只选一条，原始站点映射关系仍然保留
-6. 发布版 `master.nc` 和 matrix `nc` 仍只保存胜出记录；如需复现真正的 source-pair overlap consistency，应使用发布 sidecar `sed_reference_overlap_candidates.csv.gz`
-7. `sed_reference_overlap_candidates.csv.gz` 保存 overlap key 下 selected 和 non-selected candidate values；如果该文件不存在，仅凭 release 产品无法恢复 non-selected candidate values
+5. `master nc` 和 `matrix nc` 只保存胜出记录
+6. 真正的 source-pair overlap 一致性分析应使用 `sed_reference_overlap_candidates.csv.gz`
 
-### 2.5 basin 发布策略
+### 2.4 basin 发布策略
 
 当前 basin 发布策略采用保守规则：
 
-1. 宁可少分配一些 basin，也不要把错误 basin 大规模写入正式发布数据
-2. 发布层只区分两类结果：`resolved` 和 `unresolved`
-3. `unresolved` 站点仍保留观测记录，但不强行发布 basin polygon
+1. 发布层只区分 `resolved` 和 `unresolved`
+2. `unresolved` 记录可以保留在主数据中
+3. 是否进入 basin polygon sidecar 属于 `s7 / s8` 发布层规则，不属于 `s5` 合并规则本身
 
-当前主线使用的站点级诊断字段包括：
+当前主线使用的关键 basin 诊断字段包括：
 
 1. `distance_m`
 2. `match_quality`
@@ -134,85 +92,27 @@
 5. `basin_status`
 6. `basin_flag`
 
-自动判为 `resolved` 的条件保持简单：
+### 2.5 点是否在流域多边形内的判定过程
 
-1. `distance_m <= 300`
-2. `distance_m <= 1000` 且 `match_quality in {area_matched, area_approximate}`
-3. `distance_m <= 1000` 且 `point_in_local = True`
-4. 对 `GSED / RiverSed` 这类 `reach-scale` 遥感产品，若 `distance_m > 1000` 但 `distance_m <= 5000` 且 `point_in_local = True`，则返回 `resolved / reach_product_offset_ok`
+这里要区分两层逻辑：
 
-其余情况默认进入 `unresolved`，常见原因包括：
+1. `basin_tracer.py` 负责几何计算，生成 `point_in_local` 和 `point_in_basin`
+2. `basin_policy.py` 负责读取这些诊断结果，并给出最终 `resolved / unresolved`
 
-1. `distance_m > 1000`
-2. `match_quality = area_mismatch`
-3. `match_quality = failed`
-4. 点面关系不一致
+当前实现要点：
 
-### 2.6 点是否在流域多边形内的判定过程
-
-这里需要特别区分两件事：
-
-1. `basin_tracer.py` 负责真正的几何判断，也就是算出 `point_in_local` 和 `point_in_basin`
-2. `basin_policy.py` 不重新做点面计算，它只是读取这些诊断结果，再决定最终给 `resolved` 还是 `unresolved`
-
-也就是说，`basin_policy.py` 本身不是用来“算点在不在 polygon 里”的，它是用来“解释这个点面关系该如何进入发布策略”的。
-
-当前代码里的实际判定流程如下：
-
-1. 先用 `find_best_reach()` 为站点找到最合适的 MERIT 河段 `COMID`
-2. 用这个匹配到的单一 `COMID`，构建最小单元汇水区 `geometry_local`
-3. 再沿河网向上游追溯全部 `COMID`，把所有上游汇水面合并成完整流域 `geometry`
-4. 用原始站点坐标直接构造 `Point(lon, lat)`
-5. 如果 `geometry_local` 存在且非空，则计算 `geometry_local.covers(point)`，结果写入 `point_in_local`
-6. 如果完整上游流域 `geometry` 存在、非空，且当前方法是 `upstream_traced`，则计算 `geometry.covers(point)`，结果写入 `point_in_basin`
-
-这两个判断都是直接基于原始点坐标完成的：
-
-1. 当前这一步不做 snapping
-2. 不修改站点原始经纬度
-3. 不额外加 buffer 再判断 inside / outside
-
-之所以使用 `covers()` 而不是更严格的 `contains()`，是因为：
-
-1. `covers()` 会把恰好落在 polygon 边界上的点也视为“在面内”
-2. 这对岸边站点、河道边界站点、以及由坐标精度造成的边界贴线情况更稳健
-3. 这样可以减少“其实只是落在边界上，但被判成 outside”的伪问题
-
-`point_in_local` 和 `point_in_basin` 的含义并不相同：
-
-1. `point_in_local` 检查的是站点是否落在“匹配河段自身对应的最小局地汇水区”里
-2. `point_in_basin` 检查的是站点是否落在“整条上游追溯后合并得到的完整流域”里
-
-其中当前发布策略更看重 `point_in_local`，因为它更能反映“这个点是否真的属于当前匹配河段附近的局地汇水单元”；`point_in_basin` 更偏向辅助诊断，因为完整上游流域往往范围很大，单独用它来放宽匹配会过于宽松。
-
-还有一个重要细节：
-
-1. 如果 tracer 没能成功拼出完整上游 polygon，就会退回 `area_buffer_fallback`
-2. 在这种 fallback 情况下，代码不会用这个圆形 buffer 去计算 `point_in_basin = True`
-3. 也就是说，`point_in_basin` 只在真实的 `upstream_traced` polygon 存在时才会被赋值
-4. 这样做是为了避免把“兜底几何”误当成真实流域边界证据
-
-最后，`basin_policy.py` 对这些布尔值的使用方式是：
-
-1. 先把 `point_in_local` 和 `point_in_basin` 统一转成布尔值
-2. 当前自动接受规则里，`point_in_local = True` 可以作为 `distance_m <= 1000` 条件下的一个放行证据
-3. 对 `GSED / RiverSed` 这类 `reach-scale` 遥感产品，`point_in_local = True` 还可以作为 `1000-5000 m` 偏移区间内的一个特例放行证据，结果标记为 `reach_product_offset_ok`
-4. `basin_policy.py` 当前不再使用站名/河名关键词做额外分类
-5. 如果点面关系明显不一致，且其他证据也不足，则最后会落到 `geometry_inconsistent`
-
-因此，README 中提到的“点是否在流域 polygon 内”，在代码实现上应理解为：
-
-1. 几何计算发生在 `basin_tracer.get_upstream_basin()`
-2. 发布判定发生在 `basin_policy.classify_basin_result()`
-3. `s4 / s5 / s6 / s7` 只是把这个结果逐步写出和传递，并不重复计算几何关系
+1. 几何判断直接基于原始站点坐标
+2. 当前不做 snapping，不修改原始经纬度
+3. 使用 `covers()` 而不是 `contains()`，让边界点也视为面内
+4. `point_in_local` 更偏向匹配河段附近的局地证据
+5. `point_in_basin` 更偏向完整上游流域的辅助诊断
+6. `s4 / s5 / s6 / s7` 只是传递和写出这些结果，不重复计算几何关系
 
 ---
 
 ## 3. 最终数据结构
 
 ### 3.1 cluster 层
-
-每一行代表一个合并后的 `cluster`。
 
 常见关键字段：
 
@@ -222,33 +122,27 @@
 4. `lon`
 5. `basin_area`
 6. `pfaf_code`
-7. `basin_match_quality`
-8. `basin_status`
-9. `basin_flag`
-10. `basin_distance_m`
-11. `point_in_local`
-12. `point_in_basin`
-13. `n_source_stations_in_cluster`
+7. `basin_status`
+8. `basin_flag`
+9. `basin_distance_m`
+10. `point_in_local`
+11. `point_in_basin`
+12. `n_source_stations_in_cluster`
 
 ### 3.2 原始站点层
-
-每一行代表一个原始站点。
 
 常见关键字段：
 
 1. `source_station_uid`
-2. `source_station_cluster_index`
-3. `source_station_native_id`
-4. `source_station_name`
-5. `source_station_river_name`
-6. `source_station_lat`
-7. `source_station_lon`
-8. `source_station_paths`
-9. `source_station_resolutions`
+2. `source_station_native_id`
+3. `source_station_name`
+4. `source_station_river_name`
+5. `source_station_lat`
+6. `source_station_lon`
+7. `source_station_paths`
+8. `source_station_resolutions`
 
 ### 3.3 观测记录层
-
-每一行代表一条最终保留的观测记录。
 
 常见关键字段：
 
@@ -259,292 +153,335 @@
 5. `Q`
 6. `SSC`
 7. `SSL`
-8. `Q_flag`
-9. `SSC_flag`
-10. `SSL_flag`
-11. `source`
-12. `is_overlap`
+8. `source`
+9. `is_overlap`
 
 ---
 
 ## 4. 主流程脚本
 
-当前主线流程按下面顺序运行。
+当前主线流程按 `s1 -> s8` 运行。`s4` 和 `s6` 生产环境优先使用 submit 脚本，底层 Python 脚本主要用于调试或单步运行。
 
 ### s1_verify_time_resolution.py
 
 作用：
 
-1. 检查各输入文件的时间分辨率
-2. 输出时间分辨率验证结果
+1. 校验输入文件的时间分辨率
+2. 生成主分类结果、人工 review queue 和 manual override 模板
 
-输出：
+关键输入：
+
+1. `qc` 输入目录下的原始 `nc`
+
+关键输出：
 
 1. `scripts_basin_test/output/s1_verify_time_resolution_results.csv`
+2. `scripts_basin_test/output/s1_resolution_review_queue.csv`
+3. `scripts_basin_test/output/s1_resolution_review_overrides.csv`
+
+高影响注意事项：
+
+1. `s2` 实际以 `s1` 输出的 `temporal_semantics` 为准
+2. 如果 override 发生变化，通常应从 `s2` 起重跑
 
 ### s2_reorganize_qc_by_resolution.py
 
 作用：
 
-1. 按当前时间规则整理 `qc` 文件
+1. 按 `s1` 的最终判定重组 `qc` 文件
 2. 输出到 `output_resolution_organized/`
 
-当前主目录只保留：
+关键输入：
 
-1. `daily`
-2. `monthly`
-3. `annual`
-4. `climatology`
-5. `other`
+1. `scripts_basin_test/output/s1_verify_time_resolution_results.csv`
 
-注意：
+关键输出：
 
-1. `single_point -> daily`
-2. `quarterly -> monthly`
-3. 传了 `--dataset` 时，当前默认不会再清空整个 `output_resolution_organized/`
-4. 如果确实要全清，需显式传入 `--clear-all`
+1. `../output_resolution_organized/`
+2. `scripts_basin_test/output/s2_resolution_classification_details.csv`
+3. `scripts_basin_test/output/s2_other_resolution_summary.csv`
+4. `scripts_basin_test/output/s2_other_resolution_details.csv`
+
+高影响注意事项：
+
+1. 主目录只保留 `daily / monthly / annual / climatology / other`
+2. `single_point -> daily`，`quarterly -> monthly`
+3. 传了 `--dataset` 时默认不会清空整个 `output_resolution_organized/`
 
 ### s3_collect_qc_stations.py
 
 作用：
 
 1. 扫描整理后的 `nc`
-2. 提取坐标、数据源、站名、河名、原始站点编号
-3. 生成 basin 主线使用的站点表
+2. 提取 basin 主线使用的站点元数据
+3. 生成后续 `station_id` 基础表
 
-输出：
+关键输入：
+
+1. `../output_resolution_organized/`
+
+关键输出：
 
 1. `scripts_basin_test/output/s3_collected_stations.csv`
 
-说明：
+高影响注意事项：
 
-1. 当前脚本会先对扫描结果排序，以提高重跑时的稳定性
-2. 当前默认会排除 `climatology`，使其不进入 basin tracing 和 basin merge
-3. RiverSed 在 basin 主线下只保留 `lon/lat + 基本站点标识`，不再输出 NHDPlus 流域元数据，也不再把其 `upstream_area` 作为 `reported_area`
+1. 当前默认排除 `climatology`
+2. 扫描结果会先排序，以提高重跑稳定性
+3. RiverSed 在 basin 主线下只保留 `lon/lat + 基本站点标识`，不再沿用源产品自带的 NHDPlus / upstream area 元数据
 
 ### s4_basin_trace_watch.py
 
+推荐运行入口：
+
+```bash
+bash submit_s4_lsf.sh
+bash submit_s4_lsf.sh 16
+```
+
 作用：
 
-1. 为每个站点追溯上游流域
-2. 输出站点级流域匹配结果
+1. 为每个站点做 upstream basin tracing
+2. 输出站点级 basin 匹配结果和诊断字段
 
-输出：
+关键输入：
+
+1. `scripts_basin_test/output/s3_collected_stations.csv`
+2. `MERIT_Hydro_v07_Basins_v01_bugfix1`
+
+关键输出：
 
 1. `scripts_basin_test/output/s4_upstream_basins.csv`
 2. `scripts_basin_test/output/s4_upstream_basins.gpkg`
-3. `scripts_basin_test/output/s4_reported_area_check.csv`
+3. `scripts_basin_test/output/s4_local_catchments.gpkg`
+4. `scripts_basin_test/output/s4_reported_area_check.csv`
 
-说明：
+高影响注意事项：
 
-1. 这里的 `gpkg` 是站点级流域面结果
-2. 它不是最终 `cluster` 级流域单元文件
-3. `s4_upstream_basins.csv` 现在会保留 `distance_m / match_quality / point_in_local / point_in_basin / basin_status / basin_flag`
-4. `s4_reported_area_check.csv` 用于单独检查 reported drainage area 与 tracer 结果的一致性
-5. RiverSed 在这一步只按坐标匹配 MERIT，不再使用其源产品自带的 `upstream_area` 或 NHDPlus reach/basin 信息
+1. 当前推荐通过 `submit_s4_lsf.sh` 运行，而不是手工直接调用 `s4_basin_trace_watch.py`
+2. `submit_s4_lsf.sh` 会提交两阶段 LSF 流程：先跑 `s4_trace[1-N]` 数组分片任务，再自动提交 finalize 合并任务
+3. 常用环境变量包括 `S4_QUEUE`、`S4_NCORES`、`S4_MEM`、`S4_PTILE`、`PYTHON_BIN`
+4. 日志目录在 `scripts_basin_test/output/logs/s4_lsf/`
+5. 分片中间结果目录在 `scripts_basin_test/output/s4_shards/`
+6. `s4_upstream_basins.csv` 会保留 `distance_m / match_quality / point_in_local / point_in_basin / basin_status / basin_flag`
+7. RiverSed 在这一步只按坐标匹配 MERIT，不再使用其源产品自带的 `upstream_area` 或 NHDPlus basin 信息
 
 ### s5_basin_merge.py
 
 作用：
 
-1. 按流域单元将站点归入 `cluster`
-2. 输出 `cluster` 级站点表
-3. 对 `unresolved` 站点保留观测，但不把 basin polygon 相关字段作为正式发布分配结果
+1. 基于 `s4` basin 结果为站点分配 `cluster_id`
+2. 输出 cluster 级站点表和 cluster 报告
 
-合并规则（默认）：
+关键输入：
 
-1. 仅 `basin_status=resolved` 且 `basin_id` 一致的站点进入候选
-2. 同一候选 cluster 内任意两站点都必须满足：距离 `<= 5000 m`
-3. 同一候选 cluster 内任意两站点都必须满足：`abs(a-b)/max(abs(a),abs(b)) <= 0.10`（`a,b` 来自 `uparea_merit`）
-4. 使用 complete-linkage 风格，只有两个候选 cluster 的所有跨组站点 pair 都满足时才可合并；否则保持 singleton
+1. `scripts_basin_test/output/s3_collected_stations.csv`
+2. `scripts_basin_test/output/s4_upstream_basins.csv`
 
-默认参数：
-
-1. `max_station_distance_m = 5000.0`
-2. `max_upstream_rel_error = 0.10`
-3. `upstream_area_col = uparea_merit`
-
-示例命令：
-
-```bash
-python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 0.10 --upstream-area-col uparea_merit
-```
-
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s5_basin_clustered_stations.csv`
 2. `scripts_basin_test/output/s5_basin_cluster_report.csv`
 
-### s6_basin_merge_to_nc.py
+高影响注意事项：
+
+1. 只有 `basin_status=resolved` 且 `basin_id` 有效的站点才参与 basin cluster 合并
+2. 同一 `basin_id` 内，只有所有跨组站点对都满足距离阈值和 `uparea_merit` 相对误差阈值时，两个候选 cluster 才能合并
+3. 合并方式是 `complete-linkage`
+4. 不满足条件的站点保留为 singleton，`cluster_id=station_id`
+5. `s5` 会把 basin 元数据并回站点表，并对 `unresolved` 行屏蔽部分 release-facing basin 字段
+
+### s6 主线输出
+
+推荐运行入口：
+
+```bash
+bash submit_s6_fast.sh
+```
+
+当前 `s6` 是一组并行任务，而不是单一脚本。`submit_s6_fast.sh` 当前会并行提交：
+
+1. `merge`：`s6_basin_merge_to_nc.py`
+2. `daily`：`s6_export_daily_matrix_nc.py`
+3. `monthly`：`s6_export_monthly_matrix_nc.py`
+4. `annual`：`s6_export_annual_matrix_nc.py`
+5. `clim`：`s6_export_climatology_to_nc.py`
+6. `satellite`：`s6_export_satellite_validation_to_nc.py`
+
+在未设置 `RUN_ONLY` 时，脚本还会额外提交一个依赖型 `check` 任务，用于检查关键输出是否齐全。
+
+常用环境变量：
+
+1. `RUN_ONLY`
+2. `DRY_RUN`
+3. `LSF_QUEUE`
+4. `LSF_PROJECT`
+5. `LSF_EXTRA`
+6. `MERGE_N`、`MERGE_WORKERS`、`MERGE_METADATA_WORKERS`
+7. `DAILY_N`、`DAILY_WORKERS`
+8. `MONTHLY_N`、`MONTHLY_WORKERS`
+9. `ANNUAL_N`、`ANNUAL_WORKERS`
+10. `CLIM_N`
+11. `SATVAL_N`
+
+前置输入：
+
+1. `scripts_basin_test/output/s5_basin_clustered_stations.csv`
+2. `../output_resolution_organized/climatology`
+
+#### s6_basin_merge_to_nc.py
 
 作用：
 
-1. 合并时间序列
-2. 生成 basin 主线的最终压缩 `nc`
-3. 同时保留 `cluster` 层、原始站点层和观测记录层
-4. 将站点级 basin 诊断字段写入 `master nc`
+1. 合并主线时间序列
+2. 生成 `master nc`
+3. 写出 cluster 级候选质量排序表
 
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s6_basin_merged_all.nc`
 2. `scripts_basin_test/output/s6_cluster_quality_order.csv`
 
-说明：
+高影响注意事项：
 
-1. 当前默认会过滤掉 `climatology`
-2. `climatology` 应由单独脚本导出
-3. `s6_cluster_quality_order.csv` 会按 `cluster_id + resolution` 列出候选来源的质量排序、分数、rank 和路径
-4. `s7` 使用的 `basin_status / basin_flag / basin_distance_m / point_in_local / point_in_basin` 都来自这个 `master nc`
-5. 如果更新了 `s5_basin_clustered_stations.csv` 里的 basin 字段，但没有重跑本脚本，那么后续 `s7` catalog 里的这些字段可能仍然为空
+1. 默认不把 `climatology` 并入主 merge
+2. `s7` 中使用的 `basin_status / basin_flag / basin_distance_m / point_in_local / point_in_basin` 来自这个 `master nc`
 
-### s6_export_resolution_matrix_ncs.py
+#### s6_export_daily_matrix_nc.py / s6_export_monthly_matrix_nc.py / s6_export_annual_matrix_nc.py
 
 作用：
 
-1. 按 `daily / monthly / annual` 分别导出一个 `station × time` 矩阵 `nc`
-2. 在每个分辨率内部仍沿用 `s6_basin_merge_to_nc.py` 的质量排序合并规则
-3. 更适合直接查看某个时间分辨率下的二维数据矩阵
-4. 现在会额外写出 `selected_source_station_uid`，让只拿 matrix `nc` 也能直接追溯到 source station
+1. 分别导出 `daily / monthly / annual` 的 `station x time` 矩阵 `nc`
+2. 在各自分辨率内部沿用主 merge 的质量排序逻辑
 
-输出目录：
+关键输出：
 
-1. `scripts_basin_test/output/s6_matrix_by_resolution/`
+1. `scripts_basin_test/output/s6_matrix_by_resolution/s6_basin_matrix_daily.nc`
+2. `scripts_basin_test/output/s6_matrix_by_resolution/s6_basin_matrix_monthly.nc`
+3. `scripts_basin_test/output/s6_matrix_by_resolution/s6_basin_matrix_annual.nc`
 
-### s6_summarize_matrix_ncs.py
+高影响注意事项：
 
-作用：
+1. 这些矩阵文件更适合最近站点匹配和模型直接对比
+2. 只拿 matrix 也可以通过 `selected_source_station_uid` 回溯到 source station
+3. `s6_export_resolution_matrix_ncs.py` 仍可作为兼容/聚合入口，但不是 `submit_s6_fast.sh` 的默认主入口
 
-1. 用 `xarray.Dataset` 风格输出矩阵版 `nc` 的可读文本摘要
-2. 为每个矩阵 `nc` 输出一个基础统计表
-3. 额外生成一个跨文件总览表，方便比较 `daily / monthly / annual`
-
-输出目录：
-
-1. `scripts_basin_test/output/s6_matrix_by_resolution/summary/`
-
-### s6_export_climatology_to_nc.py
+#### s6_export_climatology_to_nc.py
 
 作用：
 
-1. 直接扫描 `output_resolution_organized/climatology`
+1. 单独扫描 `output_resolution_organized/climatology`
 2. 不经过 basin tracing
 3. 不经过 cluster merge
-4. 将所有 climatology 站点单独导出为一个 `nc`
 
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s6_climatology_only.nc`
+2. `scripts_basin_test/output/s6_climatology_stations.shp`
 
-说明：
+高影响注意事项：
 
-1. 当前会保留 `station_uid` 和 `source_station_path` 作为 climatology 文件级 provenance
-2. 当前会额外写出站点级 `temporal_span`
-3. `temporal_span` 仅用于解释单个 climatology 站点对应的时间覆盖范围
-4. `temporal_span` 不是发布 contract 必填项，也不会触发 `s8` 的硬校验失败
+1. `climatology` 独立发布，不进入 basin 主线 merge
+2. 当前会保留 `station_uid`、`source_station_path` 和 `temporal_span`
 
-### s7_export_cluster_shp.py
+#### s6_export_satellite_validation_to_nc.py
+
+作用：
+
+1. 导出不进入主线 station-reference merge 的 satellite validation-only 数据
+
+关键输出：
+
+1. `scripts_basin_test/output/s6_satellite_validation_only.nc`
+2. `scripts_basin_test/output/s6_satellite_validation_catalog.csv`
+
+### s7 空间与 catalog 输出
+
+#### s7_export_cluster_shp.py
 
 作用：
 
 1. 读取 `master nc + daily/monthly/annual matrix nc`
-2. 生成 `cluster` 级空间摘要目录
-3. 导出主 GIS 产品 `cluster` 多图层 `gpkg`
+2. 导出 cluster 点位 `gpkg`
+3. 导出 cluster 级 station / resolution catalog
 
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s7_cluster_points.gpkg`
 2. `scripts_basin_test/output/s7_cluster_station_catalog.csv`
 3. `scripts_basin_test/output/s7_cluster_resolution_catalog.csv`
 
-说明：
+高影响注意事项：
 
-1. `s7_cluster_points.gpkg` 是主 GIS 产品，包含 `cluster_summary / cluster_daily / cluster_monthly / cluster_annual` 多图层
-2. `climatology` 不进入 `cluster_uid` 图层体系，继续单独发布
-3. `s7_cluster_station_catalog.csv` 和 `s7_cluster_resolution_catalog.csv` 中的 `basin_status` 等字段来自 `s6_basin_merged_all.nc`，不是直接从 `s5` 读
+1. `s7_cluster_points.gpkg` 包含 `cluster_summary / cluster_daily / cluster_monthly / cluster_annual`
+2. `climatology` 不进入 `cluster_uid` 图层体系
+3. `cluster_uid + resolution` 是发布层标准 join key
 
-### s7_export_source_station_shp.py
+#### s7_export_source_station_shp.py
 
 作用：
 
 1. 读取 `master nc`
-2. 按实际进入最终主线的 `source_station_uid + resolution` 聚合
-3. 导出多图层 `gpkg`
-4. 导出 `source station` 分辨率 catalog
+2. 按实际进入主线的 `source_station_uid + resolution` 聚合
+3. 导出 source-station `gpkg` 和 catalog
 
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s7_source_stations.gpkg`
 2. `scripts_basin_test/output/s7_source_station_resolution_catalog.csv`
 
-### s7_export_cluster_basin_shp.py
+#### s7_export_cluster_basin_shp.py
 
 作用：
 
-1. 从 `s5` 中为每个 `cluster_id` 选代表站点 polygon
-2. 读取 `s7_cluster_resolution_catalog.csv`
-3. 将代表 polygon 按 `cluster_uid + resolution` 展开
-4. 导出多图层 `gpkg`
+1. 为每个 `cluster_id` 选代表 polygon
+2. 按 `cluster_uid + resolution` 展开 basin 面
+3. 导出 cluster basin `gpkg`
 
-输出：
+关键输出：
 
 1. `scripts_basin_test/output/s7_cluster_basins.gpkg`
 2. `scripts_basin_test/output/s7_cluster_basins_local.gpkg`
 
-说明：
+高影响注意事项：
 
-1. `s7_cluster_basins.gpkg` 是主 polygon 产品，包含 `basin_daily / basin_monthly / basin_annual`
-2. `cluster_basin` 的标准 join key 现在是 `cluster_uid + resolution`
-3. 它仍依赖 `s4_upstream_basins.gpkg`
-4. 当前只会为 `basin_status = resolved` 的站点导出 basin polygon
-5. `unresolved` 站点即使保留在主数据表中，也不会进入 basin polygon sidecar
+1. `s7_cluster_basins.gpkg` 是发布前的主 polygon 产品
+2. 只会为 `basin_status=resolved` 的记录导出 basin polygon
+3. `unresolved` 记录即使保留在主数据表中，也不会进入 basin polygon sidecar
 
 ### s8_publish_reference_dataset.py
 
 作用：
 
-1. 将现有 `s6 / s7` 主线输出整理成用户发布版数据集
+1. 把 `s6 / s7` 主线产物整理成标准发布包
 2. 生成标准命名的 `sed_reference_*.nc`
-3. 复用 `s7` 产出的 cluster/source resolution catalog
-4. 生成一行一个 `cluster_uid + resolution` 的 `station_catalog.csv`
-5. 生成一行一个 `source_station_uid + resolution` 的 `source_station_catalog.csv`
-6. 生成 `source_dataset_catalog.csv`
-7. 默认尝试生成 `sed_reference_overlap_candidates.csv.gz`，用于发布级 candidate-level overlap provenance
-8. 生成多图层 `GPKG` 空间 sidecar
-9. 生成发布版 `README.md` 和验证报告
-10. 发布前会额外检查 `master / matrix / climatology / catalog` 的 `resolution` 覆盖面、`record_count`、`time range` 是否一致；若发现 mixed-run 会直接报错并阻止发布
+3. 生成标准 catalog、GPKG sidecar、发布 README、验证报告和 inventory
 
-输出目录：
+关键输入：
+
+1. `s6` 的 `master / daily / monthly / annual / climatology / satellite validation`
+2. `s7_cluster_station_catalog.csv`
+3. `s7_cluster_resolution_catalog.csv`
+4. `s7_source_station_resolution_catalog.csv`
+5. `s7_cluster_basins.gpkg`
+
+关键输出：
 
 1. `scripts_basin_test/output/sed_reference_release/`
 
-### s9_generate_manual_review_tables.py
+高影响注意事项：
 
-作用：
-
-1. 自动生成适合人工检查的 `csv` 表格
-2. 自动挑出优先检查的 `cluster`
-
-输出目录：
-
-1. `scripts_basin_test/output/manual_review/`
-
-主要输出：
-
-1. `00_dataset_summary.csv`
-2. `01_linkage_summary.csv`
-3. `02_resolution_summary.csv`
-4. `03_priority_cluster_queue.csv`
-5. `04_random_cluster_queue.csv`
-6. `05_multi_resolution_clusters.csv`
-7. `06_overlap_cluster_queue.csv`
-8. `07_missing_basin_queue.csv`
+1. 发布层主合同包括 `master nc`、`daily/monthly/annual matrix`、`climatology nc`、`catalog`、`GPKG sidecar`
+2. 脚本默认可生成 cluster/source GPKG，但默认不会发布 basin polygon GPKG；需要显式传 `--include-basin-polygons`
+3. `run_s1_s8_basin_pipeline.py` 的内建默认会把 `--include-basin-polygons` 打开
+4. 发布前会检查 `master / matrix / climatology / catalog` 的覆盖范围、记录数和时间范围是否一致，发现 mixed-run 会报错
+5. `sed_reference_overlap_candidates.csv.gz` 是发布级 candidate-level overlap provenance sidecar
 
 ---
 
 ## 5. 空间文件说明
 
-当前主线的空间点产品统一使用 `GPKG`。
-发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
+当前主线的空间产品统一使用 `GPKG`。发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
 
 ### 5.1 cluster 点位文件
 
@@ -555,12 +492,8 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 
 作用：
 
-1. `s7_cluster_points.gpkg` 是主 GIS 产品，包含：
-2. `cluster_summary`
-3. `cluster_daily`
-4. `cluster_monthly`
-5. `cluster_annual`
-6. 作为 `nc` 和空间数据之间的多分辨率连接层
+1. 提供 `cluster_summary / cluster_daily / cluster_monthly / cluster_annual` 多图层
+2. 作为 `nc`、catalog 与空间数据之间的多分辨率连接层
 
 ### 5.2 原始站点点位文件
 
@@ -571,9 +504,8 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 
 作用：
 
-1. 查看某个 `cluster_uid + resolution` 内部有哪些原始站点参与
-2. 标准图层为 `source_daily / source_monthly / source_annual`
-3. 标准 join key 是 `source_station_uid + resolution`
+1. 查看某个 `cluster_uid + resolution` 内有哪些原始站点参与
+2. 标准 join key 是 `source_station_uid + resolution`
 
 ### 5.3 cluster 级流域单元文件
 
@@ -584,26 +516,29 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 
 作用：
 
-1. 查看每个 `cluster_uid + resolution` 对应的最终流域单元面
-2. 标准图层为 `basin_daily / basin_monthly / basin_annual`
-3. 与 `nc` 和 `cluster` 点位文件按复合键做空间联动
+1. 查看每个 `cluster_uid + resolution` 对应的最终流域面
+2. 与 `cluster` 点位文件和发布 `catalog` 按复合键做空间联动
+
+---
 
 ## 6. 当前主要输出文件
 
-默认都输出到：
-
-`scripts_basin_test/output/`
+默认都输出到 `scripts_basin_test/output/`。
 
 如果是内部流程检查，最关键的主线产物是：
 
-1. `s5_basin_clustered_stations.csv`
-2. `s6_basin_merged_all.nc`
-3. `s7_cluster_points.gpkg`
-4. `s7_cluster_station_catalog.csv`
-5. `s7_cluster_resolution_catalog.csv`
-6. `s7_source_stations.gpkg`
-7. `s7_source_station_resolution_catalog.csv`
-8. `s7_cluster_basins.gpkg`
+1. `s4_upstream_basins.csv`
+2. `s5_basin_clustered_stations.csv`
+3. `s6_basin_merged_all.nc`
+4. `s6_matrix_by_resolution/s6_basin_matrix_daily.nc`
+5. `s6_matrix_by_resolution/s6_basin_matrix_monthly.nc`
+6. `s6_matrix_by_resolution/s6_basin_matrix_annual.nc`
+7. `s7_cluster_points.gpkg`
+8. `s7_cluster_station_catalog.csv`
+9. `s7_cluster_resolution_catalog.csv`
+10. `s7_source_stations.gpkg`
+11. `s7_source_station_resolution_catalog.csv`
+12. `s7_cluster_basins.gpkg`
 
 如果是面向用户发布，当前推荐直接使用：
 
@@ -620,105 +555,61 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 11. `output/sed_reference_release/sed_reference_source_stations.gpkg`
 12. `output/sed_reference_release/sed_reference_cluster_basins.gpkg`
 13. `output/sed_reference_release/README.md`
+14. `output/sed_reference_release/release_validation_report.csv`
 
 这套发布层的标准使用顺序是：
 
 1. 先按模型输出时间分辨率选择对应的 matrix `nc`
-2. 先把 `station_catalog.csv` 过滤到对应 `resolution`
-3. 再用过滤后的 `lat/lon` 找最近的 `cluster_uid`
-4. 抽出参考时间序列并与模型结果对齐；如需先看 cell 级 provenance，可直接读 matrix 里的 `selected_source_station_uid`
-5. 如果需要完整记录级 provenance，再去 `sed_reference_master.nc`
-6. 继续通过 `source_station_catalog.csv` 找到同一 `resolution` 下的原始站点和原始路径
-7. 如果需要计算 USGS vs HYDAT、HYDAT vs compiled source、in-situ vs satellite 等 source-pair overlap metrics，应使用 `sed_reference_overlap_candidates.csv.gz`
-
-人工检查相关产物是：
-
-1. `manual_review_checklist.csv`
-2. `output/manual_review/*.csv`
+2. 把 `station_catalog.csv` 过滤到对应 `resolution`
+3. 用过滤后的 `lat/lon` 或 `sed_reference_cluster_points.gpkg` 找最近的 `cluster_uid`
+4. 抽出参考时间序列并与模型结果对齐
+5. 如需完整记录级 provenance，再查询 `sed_reference_master.nc`
+6. 通过 `source_station_catalog.csv` 回查原始站点和原始路径
+7. 如需真正的 source-pair overlap 指标，使用 `sed_reference_overlap_candidates.csv.gz`
 
 ---
 
-## 7. 人工检查工作流
+## 7. 推荐运行顺序
 
-### 7.1 总检查表
-
-文件：
-
-1. `manual_review_checklist.csv`
-
-用途：
-
-1. 这是总的人工检查清单
-2. 适合在 VSCode 里直接编辑
-3. 可直接填写 `selected / done / status / notes`
-
-### 7.2 自动抽查表
-
-目录：
-
-1. `output/manual_review/`
-
-其中最推荐先看的几张：
-
-1. `03_priority_cluster_queue.csv`
-2. `06_overlap_cluster_queue.csv`
-3. `05_multi_resolution_clusters.csv`
-4. `19_basin_distance_review_queue.csv`
-5. `20_unresolved_basin_queue.csv`
-
-这些表适合优先筛查：
-
-1. 多站点 cluster
-2. 多来源重叠 cluster
-3. 多时间类型 cluster
-4. basin 信息缺失 cluster
-5. 大距离偏移站点
-6. `unresolved` basin 站点
-
----
-
-## 8. 推荐运行顺序
-
-如果是完整重跑，建议顺序为：
+如果是完整重跑，当前推荐顺序为：
 
 1. `s1_verify_time_resolution.py`
 2. `s2_reorganize_qc_by_resolution.py`
 3. `s3_collect_qc_stations.py`
-4. `s4_basin_trace_watch.py`
+4. `submit_s4_lsf.sh`
 5. `s5_basin_merge.py`
-6. `s6_basin_merge_to_nc.py`
-7. `s6_export_resolution_matrix_ncs.py`
-8. `s6_export_climatology_to_nc.py`
-9. `s7_export_cluster_shp.py`
-10. `s7_export_source_station_shp.py`
-11. `s7_export_cluster_basin_shp.py`
-12. `s8_publish_reference_dataset.py`
-13. `s9_generate_manual_review_tables.py`
-14. `s11_run_checklist_audit.py`
+6. `submit_s6_fast.sh`
+7. `s7_export_cluster_shp.py`
+8. `s7_export_source_station_shp.py`
+9. `s7_export_cluster_basin_shp.py`
+10. `s8_publish_reference_dataset.py`
 
-如果只是更新 basin 匹配规则或 `basin_status` 相关字段，至少需要重跑：
+如果只是调试或单步运行，也可以按底层 Python 脚本顺序执行：
 
 1. `s4_basin_trace_watch.py`
 2. `s5_basin_merge.py`
 3. `s6_basin_merge_to_nc.py`
-4. `s6_export_resolution_matrix_ncs.py`
-5. `s7_export_cluster_shp.py`
-6. `s7_export_cluster_basin_shp.py`
-7. `s8_publish_reference_dataset.py`
-8. `s9_generate_manual_review_tables.py`
-9. `s11_run_checklist_audit.py`
+4. `s6_export_daily_matrix_nc.py`
+5. `s6_export_monthly_matrix_nc.py`
+6. `s6_export_annual_matrix_nc.py`
+7. `s6_export_climatology_to_nc.py`
+8. `s6_export_satellite_validation_to_nc.py`
+9. `s7_export_cluster_shp.py`
+10. `s7_export_source_station_shp.py`
+11. `s7_export_cluster_basin_shp.py`
+12. `s8_publish_reference_dataset.py`
 
 ---
 
-## 9. 什么时候必须重跑整条流程
+## 8. 什么时候必须重跑整条流程
 
-如果下面这些规则发生变化，建议从 `s2` 开始一直重跑到 `s9`：
+下面这些变化通常需要较大范围重跑：
 
-1. 时间分辨率规则变化
-2. `single_point` 或 `quarterly` 的归类规则变化
-3. `annual / climatology` 的判定规则变化
-4. `cluster` 合并规则变化
-5. basin 匹配规则变化
+1. 时间分辨率规则变化：从 `s2` 起重跑
+2. `single_point / quarterly / annual / climatology` 判定逻辑变化：从 `s2` 起重跑
+3. basin tracing 或 `basin_status` 规则变化：从 `s4` 起重跑
+4. cluster merge 规则变化：从 `s5` 起重跑
+5. `s6` 输出字段或发布 contract 变化：至少重跑 `s6 -> s8`
 
 原因是：
 
@@ -729,9 +620,7 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 
 ---
 
-## 10. 依赖说明
-
-不同脚本的依赖不完全一样。
+## 9. 依赖说明
 
 常见依赖包括：
 
@@ -747,40 +636,26 @@ python s5_basin_merge.py --max-station-distance-m 5000 --max-upstream-rel-error 
 
 1. `s7_export_cluster_shp.py` 需要 `pyshp + geopandas`
 2. `s7_export_source_station_shp.py` 和 `s7_export_cluster_basin_shp.py` 需要 `geopandas`
-3. `s9_generate_manual_review_tables.py` 使用 `xarray` 读取 `nc`，建议环境中可用 `h5netcdf`
+3. `s8_publish_reference_dataset.py` 在发布 `GPKG sidecar` 时需要 `geopandas`
 
 ---
 
-## 11. 非主线脚本说明
+## 10. 非主线脚本说明
 
-当前目录下还有一些历史脚本或兼容脚本，例如：
+当前目录下仍有一些历史脚本、兼容脚本或辅助脚本，例如：
 
 1. `s4_cluster_qc_stations.py`
 2. `s6_merge_timeseries_by_cluster.py`
 3. `s7_merge_overlap_by_cluster.py`
 4. `s8_merge_qc_csv_to_one_nc.py`
+5. `s6_summarize_matrix_ncs.py`
 
-这些脚本不是当前主线构建流程的一部分。
+这些脚本不是当前 `s1 -> s8` 主线构建流程的一部分。人工质检与审计脚本也不属于主线发布 contract，如需使用，请参考独立脚本和相关验证文档。
 
-当前主线应以：
-
-1. `s1`
-2. `s2`
-3. `s3`
-4. `s4_basin_trace_watch.py`
-5. `s5_basin_merge.py`
-6. `s6_basin_merge_to_nc.py`
-7. `s7_*`
-8. `s8_publish_reference_dataset.py`
-9. `s9_generate_manual_review_tables.py`
-10. `s11_run_checklist_audit.py`
-
-为准。
-
-新增的 s8 发布产品验证诊断脚本说明见：[`validation_results.md`](validation_results.md)。
+新增的发布层验证说明见：[`validation_results.md`](validation_results.md)。
 
 ---
 
-## 12. 当前有效规则一句话总结
+## 11. 当前有效规则一句话总结
 
-**按 90m 流域单元合并站点为 `cluster`，保留所有原始站点映射关系；其中 `daily / monthly / annual` 进入 basin 主线，`climatology` 不进入流域筛选环节而是单独导出为 `nc`。对 basin 分配采用保守发布策略：只把 `resolved` 站点发布为 basin polygon，`unresolved` 站点保留观测但不强行发布 basin 面。时间规则上 `single_point` 归为 `daily`，`quarterly` 归为 `monthly`，并额外导出 `cluster` 点位、原始站点点位、`cluster` 级流域单元面文件，以及人工检查表。**
+**当前主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出；`s4` 和 `s6` 优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 `master nc`、matrix、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。**
