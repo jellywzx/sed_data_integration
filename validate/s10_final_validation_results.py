@@ -29,7 +29,7 @@ DEFAULT_UNITS = {
     "SSL": "t day-1",
 }
 TIMESERIES_FILES = {
-    "daily": "sed_reference_timeseries_daily.nc",
+    # "daily": "sed_reference_timeseries_daily.nc",
     "monthly": "sed_reference_timeseries_monthly.nc",
     "annual": "sed_reference_timeseries_annual.nc",
 }
