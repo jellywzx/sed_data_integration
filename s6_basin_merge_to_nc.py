@@ -17,6 +17,11 @@ s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间
   - climatology 不进入 basin 主线；
   - 若输入 s5 中仍混入 climatology 行，本脚本默认会将其过滤掉；
   - climatology 应通过独立脚本单独导出为 climatology NC。
+  - satellite / validation-only 数据不进入 basin 主线；
+  - 为避免 satellite 大文件拖慢主 merge，本脚本默认会在读取任何 NetCDF metadata
+    或时间序列之前，先从 s5 表中过滤掉 source_family == satellite 的行；
+  - 如确实需要将 satellite 混入主库，可显式使用 `--include-satellite-in-main-merge`
+    关闭这个预过滤，并允许 satellite 参与主合并。
   - 默认会校验输入 Q/SSC/SSL 的 units；若缺失或不在白名单中会记 warning，
     `--strict-units` 下则直接报错停止写出。
 
@@ -149,7 +154,14 @@ QUALITY_ORDER_COLUMNS = [
     "valid_flag_count",
     "n_time_rows",
     "n_nonempty_rows",
+    "source_family",
+    "merge_eligible",
+    "validation_only",
+    "merge_exclusion_reason",
+    "merge_policy",
 ]
+MERGE_EXCLUDED_SOURCE_FAMILIES = {"satellite"}
+VALIDATION_ONLY_SOURCE_FAMILIES = {"satellite"}
 
 SOURCE_STATION_TEXT_LIMITS = {
     "source_station_temporal_span": 512,
@@ -177,8 +189,50 @@ RESOLUTION_CODES = {
 
 # 默认并行进程数，None = 自动取 CPU 核数，命令行 --workers 可覆盖
 _DEFAULT_WORKERS = 24
+_DEFAULT_METADATA_WORKERS = 16
 
 _PROC = psutil.Process(os.getpid())
+
+
+def classify_source_family(source):
+    text = "" if source is None else str(source)
+    low = text.lower()
+    if "usgs" in low:
+        return "USGS"
+    if "hydat" in low:
+        return "HYDAT"
+    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
+        return "satellite"
+    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
+        return "in_situ"
+    if any(token in low for token in ("compiled", "compilation", "secondary")):
+        return "secondary_compilation"
+    return "other"
+
+
+def is_merge_eligible_source(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if include_satellite_in_main_merge and family == "satellite":
+        return True
+    return family not in MERGE_EXCLUDED_SOURCE_FAMILIES
+
+
+def merge_exclusion_reason(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if family == "satellite" and not include_satellite_in_main_merge:
+        return "source_family=satellite excluded from default main merge"
+    if not is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+        return "source_family={} excluded from default main merge".format(family)
+    return ""
+
+
+def merge_policy_for_source(source, include_satellite_in_main_merge=False):
+    family = classify_source_family(source)
+    if family in VALIDATION_ONLY_SOURCE_FAMILIES and not include_satellite_in_main_merge:
+        return "validation_only"
+    if is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
+        return "merge_candidate"
+    return "excluded_from_main_merge"
 
 
 class UnitValidationError(ValueError):
@@ -316,6 +370,9 @@ def _read_explanatory_meta_from_nc(path):
         "source_station_declared_temporal_resolution": _clean_text(meta.get("declared_temporal_resolution", "")),
     }
 
+def _read_explanatory_meta_worker(path_str):
+    """Worker wrapper for parallel explanatory metadata reading."""
+    return path_str, _read_explanatory_meta_from_nc(path_str)
 
 def _new_source_station_text_aggregate():
     agg = dict((field, []) for field in SOURCE_STATION_TEXT_FIELDS)
@@ -717,7 +774,7 @@ def load_nc_series(path):
 
 
 # ── 时间序列构建（worker 函数，运行在子进程）─────────────────────────────────
-def build_cluster_series(cid, resolution, recs):
+def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=False):
     """
     为单个 (cluster_id, resolution) 构建合并时间序列。
     recs: list of (source, path, source_station_index)
@@ -755,6 +812,18 @@ def build_cluster_series(cid, resolution, recs):
                     "n_time_rows": metrics["n_time_rows"],
                     "n_nonempty_rows": metrics["n_nonempty_rows"],
                     "df": merge_df,
+                    "source_family": classify_source_family(source),
+                    "merge_eligible": int(
+                        is_merge_eligible_source(
+                            source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                        )
+                    ),
+                    "merge_exclusion_reason": merge_exclusion_reason(
+                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                    ),
+                    "merge_policy": merge_policy_for_source(
+                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
+                    ),
                 }
             )
             if len(merge_df) > 0:
@@ -782,6 +851,11 @@ def build_cluster_series(cid, resolution, recs):
                 "valid_flag_count": int(item["valid_flag_count"]),
                 "n_time_rows": int(item["n_time_rows"]),
                 "n_nonempty_rows": int(item["n_nonempty_rows"]),
+                "source_family": item["source_family"],
+                "merge_eligible": int(item["merge_eligible"]),
+                "validation_only": int(item["merge_policy"] == "validation_only"),
+                "merge_exclusion_reason": item["merge_exclusion_reason"],
+                "merge_policy": item["merge_policy"],
             }
         )
 
@@ -793,8 +867,16 @@ def build_cluster_series(cid, resolution, recs):
             cid, resolution, score_info
         )
 
-    # 将 date 列设为 index 以加速查找，按质量顺序排列
-    indexed = [item["df"].set_index("date") for item in scored]
+    merge_scored = [item for item in scored if int(item["merge_eligible"]) == 1]
+    if not merge_scored:
+        n_validation_only = sum(1 for item in scored if item.get("merge_policy") == "validation_only")
+        skip_msg = (
+            "cluster {} [{}] skipped from main merge: no merge-eligible station candidates; "
+            "validation-only candidates={}"
+        ).format(cid, resolution, n_validation_only)
+        quality_log = "{}; {}".format(quality_log, skip_msg) if quality_log else skip_msg
+        return (None, quality_rows, quality_log, unit_issues)
+
     all_dates = sorted(all_dates)
     n = len(all_dates)
 
@@ -814,36 +896,87 @@ def build_cluster_series(cid, resolution, recs):
     source_arr[:] = ""
     source_station_idx_arr = np.full(n, -1, dtype=np.int32)
 
-    for i, d in enumerate(all_dates):
-        # 统计在该日期有数据的来源数，>1 则标记重叠
-        sources_with_date = sum(1 for s in indexed if d in s.index)
-        if sources_with_date > 1:
-            is_overlap_arr[i] = 1
+    if n == 0:
+        return (
+            dates_arr,
+            q_arr,
+            ssc_arr,
+            ssl_arr,
+            q_flag_arr,
+            ssc_flag_arr,
+            ssl_flag_arr,
+            stage_qc_arrays,
+            is_overlap_arr,
+            source_arr,
+            source_station_idx_arr,
+            quality_rows,
+            quality_log,
+            unit_issues,
+        )
 
-        for s in indexed:   # 按质量从高到低尝试
-            if d not in s.index:
-                continue
-            row = s.loc[d]
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-            q   = row.get("Q",   np.nan)
-            ssc = row.get("SSC", np.nan)
-            ssl = row.get("SSL", np.nan)
-            if pd.isna(q) and pd.isna(ssc) and pd.isna(ssl):
-                continue
-            q_arr[i]        = q   if pd.notna(q)   else FILL
-            ssc_arr[i]      = ssc if pd.notna(ssc) else FILL
-            ssl_arr[i]      = ssl if pd.notna(ssl) else FILL
-            # 同时读取所选来源的质量标记及来源名
-            q_flag_arr[i]   = int(row.get("Q_flag",   9))
-            ssc_flag_arr[i] = int(row.get("SSC_flag", 9))
-            ssl_flag_arr[i] = int(row.get("SSL_flag", 9))
+    ranked_frames = []
+    for rank, item in enumerate(merge_scored):
+        if len(item["df"]) == 0:
+            continue
+        work_df = item["df"].copy()
+        work_df["_quality_rank"] = int(rank)
+        work_df["_row_order"] = np.arange(len(work_df), dtype=np.int64)
+        ranked_frames.append(work_df)
+
+    if ranked_frames:
+        merged = pd.concat(ranked_frames, ignore_index=True)
+        overlap_count = merged["date"].value_counts()
+        overlap_dates = set(overlap_count[overlap_count > 1].index.tolist())
+        if overlap_dates:
+            overlap_mask = np.asarray([date in overlap_dates for date in all_dates], dtype=bool)
+            is_overlap_arr[overlap_mask] = 1
+
+        selected = (
+            merged.sort_values(["date", "_quality_rank", "_row_order"], kind="mergesort")
+            .drop_duplicates(subset=["date"], keep="first")
+            .sort_values("date", kind="mergesort")
+        )
+
+        cols = pd.Index(all_dates).get_indexer(selected["date"])
+        valid_mask = cols >= 0
+        if np.any(valid_mask):
+            cols = cols[valid_mask]
+            selected = selected.iloc[valid_mask]
+
+            q_vals = selected["Q"].to_numpy(dtype=np.float32, copy=True)
+            ssc_vals = selected["SSC"].to_numpy(dtype=np.float32, copy=True)
+            ssl_vals = selected["SSL"].to_numpy(dtype=np.float32, copy=True)
+            q_vals[np.isnan(q_vals)] = FILL
+            ssc_vals[np.isnan(ssc_vals)] = FILL
+            ssl_vals[np.isnan(ssl_vals)] = FILL
+            q_arr[cols] = q_vals
+            ssc_arr[cols] = ssc_vals
+            ssl_arr[cols] = ssl_vals
+
+            if "Q_flag" in selected.columns:
+                q_flag_arr[cols] = selected["Q_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+            if "SSC_flag" in selected.columns:
+                ssc_flag_arr[cols] = selected["SSC_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+            if "SSL_flag" in selected.columns:
+                ssl_flag_arr[cols] = selected["SSL_flag"].fillna(9).astype(np.int16).to_numpy(dtype=np.int8)
+
             for field_name in STANDARD_QC_STAGE_NAMES:
                 fill_value = STANDARD_QC_STAGE_NAME_TO_SPEC[field_name]["fill_value"]
-                stage_qc_arrays[field_name][i] = int(row.get(field_name, fill_value))
-            source_arr[i]   = str(row.get("_source", ""))
-            source_station_idx_arr[i] = int(row.get("_source_station_index", -1))
-            break
+                if field_name in selected.columns:
+                    stage_qc_arrays[field_name][cols] = (
+                        selected[field_name]
+                        .fillna(fill_value)
+                        .astype(np.int16)
+                        .to_numpy(dtype=np.int8)
+                    )
+
+            source_arr[cols] = selected["_source"].fillna("").astype(str).to_numpy(dtype=object)
+            source_station_idx_arr[cols] = (
+                selected["_source_station_index"]
+                .fillna(-1)
+                .astype(np.int64)
+                .to_numpy(dtype=np.int32)
+            )
 
     return (
         dates_arr,
@@ -864,12 +997,24 @@ def build_cluster_series(cid, resolution, recs):
 
 
 def _worker_build_cluster(args):
-    cid, resolution, recs = args
-    result = build_cluster_series(cid, resolution, recs)
+    if len(args) == 4:
+        cid, resolution, recs, include_satellite_in_main_merge = args
+    else:
+        cid, resolution, recs = args
+        include_satellite_in_main_merge = False
+    result = build_cluster_series(
+        cid,
+        resolution,
+        recs,
+        include_satellite_in_main_merge=bool(include_satellite_in_main_merge),
+    )
     if result is None:
         return (cid, resolution, None, [], None, [])
     if len(result) == 2 and result[0] is None:
         return (cid, resolution, None, [], None, list(result[1]))
+    if len(result) == 4 and result[0] is None:
+        _, quality_rows, quality_log, unit_issues = result
+        return (cid, resolution, None, quality_rows, quality_log, list(unit_issues))
     (dates_arr, q_arr, ssc_arr, ssl_arr,
      q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
      source_station_idx_arr, quality_rows, quality_log, unit_issues) = result
@@ -899,6 +1044,13 @@ def main():
     ap.add_argument("--workers", "-w", type=int, default=_DEFAULT_WORKERS,
                     help="并行进程数（0 = 自动取 CPU 核数）。默认: {}".format(_DEFAULT_WORKERS))
     ap.add_argument(
+        "--metadata-workers",
+        type=int,
+        default=_DEFAULT_METADATA_WORKERS,
+        help="并行读取 source-station explanatory metadata 的进程数。默认: {}；0 = 自动。".format(_DEFAULT_METADATA_WORKERS)
+    )
+
+    ap.add_argument(
         "--include-climatology",
         action="store_true",
         help="默认会过滤掉 climatology 行；如确实需要将 climatology 混入主库，可显式开启此选项",
@@ -907,6 +1059,11 @@ def main():
         "--strict-units",
         action="store_true",
         help="对输入 Q/SSC/SSL units 启用严格校验；若缺失或不在白名单中则直接失败并停止写出。",
+    )
+    ap.add_argument(
+        "--include-satellite-in-main-merge",
+        action="store_true",
+        help="可选覆盖：默认主合并排除 satellite source_family；开启后允许 satellite 参与主合并。",
     )
     args = ap.parse_args()
 
@@ -946,6 +1103,70 @@ def main():
         if len(stations) == 0:
             print("Error: no non-climatology rows remain after filtering.")
             return 1
+
+    # ── 1b. 主 merge 预过滤 satellite / validation-only 数据 ───────────────
+    #
+    # 注意：原来的主 merge 逻辑已经会在 build_cluster_series() 中排除 satellite，
+    # 但那个排除发生得太晚：每个 satellite NC 文件已经被打开、读取时间序列、
+    # 计算 quality score 之后才被标记为 validation_only。
+    #
+    # satellite 数据量很大时，会显著拖慢以下步骤：
+    #   - representative station metadata 读取；
+    #   - source-station explanatory metadata 读取；
+    #   - ProcessPoolExecutor 并行读取 NC series；
+    #   - quality-order 候选排序。
+    #
+    # 因此默认在 path resolution 和任何 NetCDF 读取之前就过滤掉 satellite 行。
+    # 若确实需要 satellite 进入主 merge，可显式传：
+    #   --include-satellite-in-main-merge
+    if not args.include_satellite_in_main_merge:
+        source_family = stations["source"].map(classify_source_family)
+        satellite_mask = source_family.eq("satellite")
+        n_satellite = int(satellite_mask.sum())
+
+        if n_satellite > 0:
+            n_before = int(len(stations))
+            satellite_sources = (
+                stations.loc[satellite_mask, "source"]
+                .fillna("")
+                .astype(str)
+                .value_counts()
+                .head(20)
+            )
+
+            stations = stations.loc[~satellite_mask].copy()
+            n_after = int(len(stations))
+
+            print(
+                "Pre-filtered satellite rows before main merge: "
+                "removed {} / {} rows; remaining {} rows.".format(
+                    n_satellite,
+                    n_before,
+                    n_after,
+                )
+            )
+            if len(satellite_sources) > 0:
+                print(
+                    "Top satellite sources removed: {}".format(
+                        ", ".join(
+                            "{}={}".format(src, count)
+                            for src, count in satellite_sources.items()
+                        )
+                    )
+                )
+        else:
+            print("Pre-filtered satellite rows before main merge: none found.")
+
+        if len(stations) == 0:
+            print(
+                "Error: no non-satellite rows remain after satellite pre-filter. "
+                "Use --include-satellite-in-main-merge if you intended to merge satellite data."
+            )
+            return 1
+    else:
+        print(
+            "Satellite pre-filter disabled because --include-satellite-in-main-merge was set."
+        )
 
     # ── 相对路径 → 绝对路径 ───────────────────────────────────────────────────
     # s3 存储相对于 output_resolution_organized/ 的相对路径（如 daily/xxx.nc）
@@ -1115,7 +1336,63 @@ def main():
     row_source_station_index = []
     explanatory_meta_cache = {}
 
-    for row in stations.itertuples(index=False):
+    # ── 并行预读取每个唯一 NetCDF 的 explanatory metadata ─────────────────────
+    if getattr(args, "skip_source_station_text_metadata", False):
+        print("Skipping source-station explanatory metadata reading.")
+    else:
+        unique_meta_paths = sorted(stations["path"].astype(str).unique().tolist())
+        n_meta_paths = len(unique_meta_paths)
+
+        metadata_workers = int(args.metadata_workers)
+        if metadata_workers <= 0:
+            metadata_workers = os.cpu_count() or 4
+        metadata_workers = max(1, min(metadata_workers, n_meta_paths))
+
+        print(
+            "Reading source-station explanatory metadata: {} unique files, {} workers".format(
+                n_meta_paths, metadata_workers
+            )
+        )
+
+        if metadata_workers == 1:
+            for path_str in tqdm(
+                unique_meta_paths,
+                total=n_meta_paths,
+                desc="Reading explanatory metadata",
+                unit="file",
+                ncols=120,
+                file=sys.stderr,
+            ):
+                explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
+        else:
+            with ProcessPoolExecutor(max_workers=metadata_workers) as ex:
+                futures = {
+                    ex.submit(_read_explanatory_meta_worker, path_str): path_str
+                    for path_str in unique_meta_paths
+                }
+
+                with tqdm(
+                    total=n_meta_paths,
+                    desc="Reading explanatory metadata",
+                    unit="file",
+                    ncols=120,
+                    file=sys.stderr,
+                ) as pbar:
+                    for future in as_completed(futures):
+                        path_str, meta = future.result()
+                        explanatory_meta_cache[path_str] = meta
+                        pbar.update(1)
+
+    print("Building source-station map: {} station rows ...".format(len(stations)))
+
+    for row in tqdm(
+        stations.itertuples(index=False),
+        total=len(stations),
+        desc="Building source-station map",
+        unit="row",
+        ncols=120,
+        file=sys.stderr,
+    ):
         row_dict = {
             "path": getattr(row, "path", ""),
             "source": getattr(row, "source", ""),
@@ -1128,8 +1405,12 @@ def main():
             "source_station_id": getattr(row, "source_station_id", ""),
         }
         path_str = str(row_dict["path"])
-        if path_str not in explanatory_meta_cache:
-            explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
+
+        if getattr(args, "skip_source_station_text_metadata", False):
+            explanatory_meta = {}
+        else:
+            explanatory_meta = explanatory_meta_cache.get(path_str, {})
+
         key = _build_source_station_key(row_dict)
         idx = source_station_lookup.get(key)
         if idx is None:
@@ -1154,8 +1435,8 @@ def main():
         source_station_rows[idx]["resolutions"].add(str(row_dict["resolution"]))
         _merge_source_station_text_aggregate(
             source_station_rows[idx]["text_agg"],
-            explanatory_meta_cache[path_str],
-        )
+            explanatory_meta,
+        )   
         row_source_station_index.append(idx)
 
     stations["_source_station_index"] = np.asarray(row_source_station_index, dtype=np.int32)
@@ -1203,7 +1484,10 @@ def main():
             zip(grp["source"], grp["path"], grp["_source_station_index"])
         )
 
-    tasks     = [(cid, res, recs) for (cid, res), recs in by_cluster_res.items()]
+    tasks     = [
+        (cid, res, recs, bool(args.include_satellite_in_main_merge))
+        for (cid, res), recs in by_cluster_res.items()
+    ]
     n_tasks   = len(tasks)
     n_workers = args.workers if args.workers > 0 else (os.cpu_count() or 4)
     n_workers = max(1, min(n_workers, n_tasks))
@@ -1295,12 +1579,20 @@ def main():
                     _flush_result(pbar, cid, resolution, res, quality_rows, quality_log, unit_issues)
     else:
         with tqdm(**_pbar_fmt) as pbar:
-            for (cid, res, recs) in tasks:
-                result = build_cluster_series(cid, res, recs)
+            for (cid, res, recs, include_satellite_in_main_merge) in tasks:
+                result = build_cluster_series(
+                    cid,
+                    res,
+                    recs,
+                    include_satellite_in_main_merge=include_satellite_in_main_merge,
+                )
                 if result is None:
                     _flush_result(pbar, cid, res, None, [], None, [])
                 elif len(result) == 2 and result[0] is None:
                     _flush_result(pbar, cid, res, None, [], None, list(result[1]))
+                elif len(result) == 4 and result[0] is None:
+                    _, quality_rows, quality_log, unit_issues = result
+                    _flush_result(pbar, cid, res, None, quality_rows, quality_log, unit_issues)
                 else:
                     (dates_arr, q_arr, ssc_arr, ssl_arr,
                      q_flag, ssc_flag, ssl_flag, stage_qc_arrays, is_overlap, source_arr,
@@ -1671,6 +1963,11 @@ def main():
                                "normally exported separately and therefore filtered out by default.")
         nc.provenance_policy = ("Each merged record links back to one source_station_index, while the full "
                                 "source-station mapping is preserved in n_source_stations")
+        nc.merge_policy = (
+            "main merge excludes satellite source_family; satellite retained for validation sidecars"
+        )
+        nc.validation_only_source_families = "satellite"
+        nc.merge_excluded_source_families = "satellite"
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
         nc.basin_csv      = str(inp_path)
