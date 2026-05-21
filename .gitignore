@@ -5,8 +5,10 @@
 *.png
 *.html
 /output
+/output_other
 /output/logs/
 /check_output
+/scratch
 __pycache__/
 *.pyc
 plot/__pycache__/

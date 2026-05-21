@@ -3,17 +3,40 @@
 Run the scripts_basin_test basin mainline in order.
 
 Default stage layout:
-  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
 
 Stage details:
-  s6 = master NC + matrix NC exports + climatology NC export
+  s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
   s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
+  s8 = release package + catalogs + validation report
+
+Typical usage:
+  # Show all available command-line options
+  python run_s1_s8_basin_pipeline.py --help
+
+  # Run the whole pipeline with the built-in defaults
+  python run_s1_s8_basin_pipeline.py
+
+  # Run a continuous stage range
+  python run_s1_s8_basin_pipeline.py --start-at s3 --end-at s6
+
+  # Run explicit stages only; useful for reruns or skipping finished stages
+  python run_s1_s8_basin_pipeline.py --steps s4,s5,s8
+
+  # Preview the commands without executing them
+  python run_s1_s8_basin_pipeline.py --steps s6,s7 --dry-run
+
+Notes:
+  1. If --steps is provided, it takes priority and --start-at/--end-at are ignored.
+  2. The BUILTIN_* constants below define the default runtime behavior for routine runs.
+  3. Command-line options override the BUILTIN_* defaults for the current invocation only.
 """
 
 import argparse
 import os
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -28,8 +51,43 @@ OUTPUT_R_ROOT = SCRIPT_DIR.parent
 OUTPUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test" / "output"
 ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
-DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s7_basin_pipeline.log"
-STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7")
+DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
+STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
+
+# ---- Built-in runtime defaults -------------------------------------------------
+# These constants are the script's everyday defaults.
+# For stable long-term preferences, edit them here.
+# For one-off runs, prefer passing CLI arguments so the change only affects
+# the current invocation.
+BUILTIN_START_AT = "s1"
+BUILTIN_END_AT = "s8"
+BUILTIN_STRICT_S1 = False
+
+BUILTIN_S2_WORKERS = 8
+BUILTIN_S2_CLEAR = False
+BUILTIN_S3_WORKERS = 32
+BUILTIN_S3_EXCLUDE_RESOLUTIONS = "climatology"
+
+BUILTIN_S4_WORKERS = 24
+BUILTIN_S4_BATCH_SIZE = 50
+BUILTIN_S4_MAXTASKSPERCHILD = 10
+BUILTIN_S4_RESUME = True
+BUILTIN_S4_SAVE_GPKG = True
+BUILTIN_MERIT_DIR = DEFAULT_MERIT_DIR
+
+BUILTIN_S6_WORKERS = 24
+BUILTIN_MATRIX_WORKERS = None
+BUILTIN_MATRIX_RESOLUTION_WORKERS = None
+BUILTIN_S6_INCLUDE_CLIMATOLOGY = False
+BUILTIN_SKIP_CLIMATOLOGY_EXPORT = False
+
+BUILTIN_INCLUDE_LOCAL_BASINS = False
+
+BUILTIN_S8_LINK_MODE = "hardlink"
+BUILTIN_S8_SKIP_GPKG = False
+BUILTIN_S8_INCLUDE_BASIN_POLYGONS = True
+BUILTIN_S8_SKIP_VALIDATION = False
+BUILTIN_S8_FORCE = True
 
 
 def _quote(parts):
@@ -134,7 +192,33 @@ def _validate_stage_range(start_at, end_at):
     return STAGES[start_index : end_index + 1]
 
 
+def _parse_steps_arg(steps_text):
+    selected = []
+    for raw in str(steps_text).split(","):
+        step = raw.strip().lower()
+        if not step:
+            continue
+        if step not in STAGES:
+            raise SystemExit(
+                "Invalid step '{}' in --steps. Allowed: {}".format(
+                    step, ", ".join(STAGES)
+                )
+            )
+        if step not in selected:
+            selected.append(step)
+    if not selected:
+        raise SystemExit("--steps was provided but no valid step was parsed.")
+    return selected
+
+
+def _resolve_selected_stages(args):
+    if args.steps:
+        return _parse_steps_arg(args.steps)
+    return _validate_stage_range(args.start_at, args.end_at)
+
+
 def stage_outputs():
+    release_dir = OUTPUT_DIR / "sed_reference_release"
     return {
         "s1": [
             OUTPUT_DIR / "s1_verify_time_resolution_results.csv",
@@ -157,6 +241,8 @@ def stage_outputs():
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_daily.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_monthly.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_annual.nc",
+            OUTPUT_DIR / "s6_satellite_validation_only.nc",
+            OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
         "s7": [
             OUTPUT_DIR / "s7_cluster_points.gpkg",
@@ -165,6 +251,19 @@ def stage_outputs():
             OUTPUT_DIR / "s7_source_stations.gpkg",
             OUTPUT_DIR / "s7_source_station_resolution_catalog.csv",
             OUTPUT_DIR / "s7_cluster_basins.gpkg",
+        ],
+        "s8": [
+            release_dir / "sed_reference_master.nc",
+            release_dir / "sed_reference_timeseries_daily.nc",
+            release_dir / "sed_reference_timeseries_monthly.nc",
+            release_dir / "sed_reference_timeseries_annual.nc",
+            release_dir / "sed_reference_climatology.nc",
+            release_dir / "station_catalog.csv",
+            release_dir / "source_station_catalog.csv",
+            release_dir / "source_dataset_catalog.csv",
+            release_dir / "release_validation_report.csv",
+            release_dir / "release_inventory.csv",
+            release_dir / "README.md",
         ],
     }
 
@@ -184,6 +283,30 @@ def build_stage_specs(args, python_bin):
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
     }
 
+    def build_matrix_cmd(script_name):
+        cmd = [
+            python_bin,
+            str(SCRIPT_DIR / script_name),
+            "-i",
+            str(s5_csv),
+            "--out-dir",
+            str(matrix_dir),
+        ]
+        if matrix_workers is not None:
+            cmd += ["--workers", str(matrix_workers)]
+        if matrix_resolution_workers is not None:
+            cmd += ["--resolution-workers", str(matrix_resolution_workers)]
+        return cmd
+
+    host = str(socket.gethostname() or "").strip().split(".")[0].lower()
+    matrix_workers = args.matrix_workers
+    matrix_resolution_workers = args.matrix_resolution_workers
+    if host == "node113":
+        if matrix_workers is None:
+            matrix_workers = 32
+        if matrix_resolution_workers is None:
+            matrix_resolution_workers = 1
+
     s6_commands = [
         {
             "name": "s6_basin_merge_to_nc",
@@ -202,17 +325,16 @@ def build_stage_specs(args, python_bin):
             + (["--include-climatology"] if args.s6_include_climatology else []),
         },
         {
-            "name": "s6_export_resolution_matrix_ncs",
-            "cmd": [
-                python_bin,
-                str(SCRIPT_DIR / "s6_export_resolution_matrix_ncs.py"),
-                "-i",
-                str(s5_csv),
-                "--out-dir",
-                str(matrix_dir),
-                "-w",
-                str(args.matrix_workers),
-            ],
+            "name": "s6_export_daily_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_daily_matrix_nc.py"),
+        },
+        {
+            "name": "s6_export_monthly_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_monthly_matrix_nc.py"),
+        },
+        {
+            "name": "s6_export_annual_matrix_nc",
+            "cmd": build_matrix_cmd("s6_export_annual_matrix_nc.py"),
         },
     ]
     if not args.skip_climatology_export:
@@ -231,6 +353,15 @@ def build_stage_specs(args, python_bin):
                 ],
             }
         )
+    s6_commands.append(
+        {
+            "name": "s6_export_satellite_validation_to_nc",
+            "cmd": [
+                python_bin,
+                str(SCRIPT_DIR / "s6_export_satellite_validation_to_nc.py"),
+            ],
+        }
+    )
 
     cluster_basin_cmd = [
         python_bin,
@@ -290,6 +421,28 @@ def build_stage_specs(args, python_bin):
             "name": "s7_export_cluster_basin_shp",
             "cmd": cluster_basin_cmd,
         },
+    ]
+
+    s8_cmd = [
+        python_bin,
+        str(SCRIPT_DIR / "s8_publish_reference_dataset.py"),
+        "--link-mode",
+        str(args.s8_link_mode),
+    ]
+    if args.s8_skip_gpkg:
+        s8_cmd.append("--skip-gpkg")
+    if args.s8_include_basin_polygons:
+        s8_cmd.append("--include-basin-polygons")
+    if args.s8_skip_validation:
+        s8_cmd.append("--skip-validation")
+    if args.s8_force:
+        s8_cmd.append("--force")
+
+    s8_commands = [
+        {
+            "name": "s8_publish_reference_dataset",
+            "cmd": s8_cmd,
+        }
     ]
 
     return {
@@ -376,67 +529,140 @@ def build_stage_specs(args, python_bin):
             "label": "export GIS sidecars",
             "commands": s7_commands,
         },
+        "s8": {
+            "label": "publish reference release package",
+            "commands": s8_commands,
+        },
     }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run the scripts_basin_test s1-s7 basin mainline in order."
+        description="Run the scripts_basin_test s1-s8 basin mainline in order."
     )
     parser.add_argument("--python", help="Python 3 interpreter used to launch each step.")
     parser.add_argument(
         "--log-file",
         default=str(DEFAULT_LOG_FILE),
-        help="Combined pipeline log file path. Default: scripts_basin_test/output/logs/run_s1_to_s7_basin_pipeline.log",
+        help="Combined pipeline log file path. Default: scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log",
     )
-    parser.add_argument("--start-at", choices=STAGES, default="s1", help="First logical stage to run.")
-    parser.add_argument("--end-at", choices=STAGES, default="s7", help="Last logical stage to run.")
+    parser.add_argument("--start-at", choices=STAGES, default=BUILTIN_START_AT, help="First logical stage to run.")
+    parser.add_argument("--end-at", choices=STAGES, default=BUILTIN_END_AT, help="Last logical stage to run.")
+    parser.add_argument(
+        "--steps",
+        help=(
+            "Comma-separated explicit stage list, e.g. s1,s2,s5 or s4,s6,s8. "
+            "When set, --start-at/--end-at are ignored."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     parser.add_argument(
         "--strict-s1",
         action="store_true",
+        default=BUILTIN_STRICT_S1,
         help="Treat a non-zero s1 exit code as fatal even if the s1 CSV was produced.",
     )
 
-    parser.add_argument("--s2-workers", type=int, default=8, help="Worker count for s2.")
-    parser.add_argument("--s2-clear", action="store_true", help="Pass --clear-all to s2.")
-    parser.add_argument("--s3-workers", type=int, default=32, help="Worker count for s3.")
+    parser.add_argument("--s2-workers", type=int, default=BUILTIN_S2_WORKERS, help="Worker count for s2.")
+    parser.add_argument(
+        "--s2-clear",
+        action="store_true",
+        default=BUILTIN_S2_CLEAR,
+        help="Pass --clear-all to s2.",
+    )
+    parser.add_argument("--s3-workers", type=int, default=BUILTIN_S3_WORKERS, help="Worker count for s3.")
     parser.add_argument(
         "--s3-exclude-resolutions",
-        default="climatology",
+        default=BUILTIN_S3_EXCLUDE_RESOLUTIONS,
         help="Comma-separated resolutions excluded from s3. Default keeps climatology out of the basin mainline.",
     )
-    parser.add_argument("--s4-workers", type=int, default=24, help="Worker count for s4 via S4_N_WORKERS.")
-    parser.add_argument("--s4-batch-size", type=int, default=50, help="Batch size for s4 via S4_BATCH_SIZE.")
+    parser.add_argument("--s4-workers", type=int, default=BUILTIN_S4_WORKERS, help="Worker count for s4 via S4_N_WORKERS.")
+    parser.add_argument("--s4-batch-size", type=int, default=BUILTIN_S4_BATCH_SIZE, help="Batch size for s4 via S4_BATCH_SIZE.")
     parser.add_argument(
         "--s4-maxtasksperchild",
         type=int,
-        default=10,
+        default=BUILTIN_S4_MAXTASKSPERCHILD,
         help="maxtasksperchild for s4 worker pool.",
     )
-    parser.add_argument("--s4-no-resume", action="store_true", help="Disable s4 resume mode.")
-    parser.add_argument("--s4-no-gpkg", action="store_true", help="Disable s4 GPKG export.")
+    parser.add_argument(
+        "--s4-no-resume",
+        action="store_true",
+        default=not BUILTIN_S4_RESUME,
+        help="Disable s4 resume mode.",
+    )
+    parser.add_argument(
+        "--s4-no-gpkg",
+        action="store_true",
+        default=not BUILTIN_S4_SAVE_GPKG,
+        help="Disable s4 GPKG export.",
+    )
     parser.add_argument(
         "--merit-dir",
-        default=str(DEFAULT_MERIT_DIR),
+        default=str(BUILTIN_MERIT_DIR),
         help="MERIT Hydro directory passed to s4 via MERIT_DIR.",
     )
-    parser.add_argument("--s6-workers", type=int, default=24, help="Worker count for s6_basin_merge_to_nc.py.")
-    parser.add_argument("--matrix-workers", type=int, default=8, help="Worker count for s6_export_resolution_matrix_ncs.py.")
+    parser.add_argument("--s6-workers", type=int, default=BUILTIN_S6_WORKERS, help="Worker count for s6_basin_merge_to_nc.py.")
+    parser.add_argument(
+        "--matrix-workers",
+        type=int,
+        default=BUILTIN_MATRIX_WORKERS,
+        help="Optional override of total worker budget for the per-resolution s6 matrix export scripts.",
+    )
+    parser.add_argument(
+        "--matrix-resolution-workers",
+        type=int,
+        default=BUILTIN_MATRIX_RESOLUTION_WORKERS,
+        help="Optional override passed through to the per-resolution s6 matrix export scripts.",
+    )
     parser.add_argument(
         "--s6-include-climatology",
         action="store_true",
+        default=BUILTIN_S6_INCLUDE_CLIMATOLOGY,
         help="Pass --include-climatology to s6_basin_merge_to_nc.py.",
     )
     parser.add_argument(
         "--skip-climatology-export",
         action="store_true",
+        default=BUILTIN_SKIP_CLIMATOLOGY_EXPORT,
         help="Skip s6_export_climatology_to_nc.py.",
     )
     parser.add_argument(
         "--include-local-basins",
         action="store_true",
+        default=BUILTIN_INCLUDE_LOCAL_BASINS,
         help="Generate optional s7_cluster_basins_local.gpkg. Default: skip local basins.",
+    )
+    parser.add_argument(
+        "--s8-link-mode",
+        choices=("hardlink", "symlink", "copy"),
+        default=BUILTIN_S8_LINK_MODE,
+        help="How s8 materializes canonical files in sed_reference_release.",
+    )
+    parser.add_argument(
+        "--s8-skip-gpkg",
+        action="store_true",
+        default=BUILTIN_S8_SKIP_GPKG,
+        help="Pass --skip-gpkg to s8_publish_reference_dataset.py.",
+    )
+    parser.add_argument(
+        "--s8-no-basin-polygons",
+        action="store_false",
+        dest="s8_include_basin_polygons",
+        default=BUILTIN_S8_INCLUDE_BASIN_POLYGONS,
+        help="Do not pass --include-basin-polygons to s8_publish_reference_dataset.py.",
+    )
+    parser.add_argument(
+        "--s8-skip-validation",
+        action="store_true",
+        default=BUILTIN_S8_SKIP_VALIDATION,
+        help="Pass --skip-validation to s8_publish_reference_dataset.py.",
+    )
+    parser.add_argument(
+        "--s8-no-force",
+        action="store_false",
+        dest="s8_force",
+        default=BUILTIN_S8_FORCE,
+        help="Do not pass --force to s8_publish_reference_dataset.py.",
     )
     return parser.parse_args()
 
@@ -461,7 +687,7 @@ def _review_queue_count(path):
 def main():
     args = parse_args()
     python_bin = resolve_python(args.python)
-    stages = _validate_stage_range(args.start_at, args.end_at)
+    stages = _resolve_selected_stages(args)
     outputs = stage_outputs()
     specs = build_stage_specs(args, python_bin)
     log_path = Path(args.log_file).expanduser().resolve()
