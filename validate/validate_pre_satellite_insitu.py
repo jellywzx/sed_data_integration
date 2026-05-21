@@ -9,18 +9,18 @@ run without command-line arguments:
 Supported input modes
 ---------------------
 1. s6-candidates
-   Reads scripts_basin_test/output/s6_cluster_quality_order.csv and opens the
+   Reads output/s6_cluster_quality_order.csv and opens the
    source NetCDF files listed in its path column. This is the recommended mode
    when you have run through s6 but have not regenerated s8 release outputs.
    It preserves candidate source observations for satellite vs in-situ pairing.
 
 2. s6-selected
-   Reads scripts_basin_test/output/s6_basin_merged_all.nc directly. This is
+   Reads output/s6_basin_merged_all.nc directly. This is
    useful only as a selected-record sanity check; it usually cannot build true
    satellite vs in-situ pairs because non-selected candidate values are absent.
 
 3. s5-candidates
-   Reads scripts_basin_test/output/s5_basin_clustered_stations.csv and opens the
+   Reads output/s5_basin_clustered_stations.csv and opens the
    source NetCDF files listed in its path column. This can run after s5, before
    s6/s8, and preserves candidate source observations for validation.
 
@@ -88,9 +88,9 @@ try:
     )
 except Exception:
     S2_ORGANIZED_DIR = "../output_resolution_organized"
-    S5_BASIN_CLUSTERED_CSV = "scripts_basin_test/output/s5_basin_clustered_stations.csv"
-    S6_MERGED_NC = "scripts_basin_test/output/s6_basin_merged_all.nc"
-    S6_QUALITY_ORDER_CSV = "scripts_basin_test/output/s6_cluster_quality_order.csv"
+    S5_BASIN_CLUSTERED_CSV = "output/s5_basin_clustered_stations.csv"
+    S6_MERGED_NC = "output/s6_basin_merged_all.nc"
+    S6_QUALITY_ORDER_CSV = "output/s6_cluster_quality_order.csv"
 
     def get_output_r_root(script_dir: Path) -> Path:
         return script_dir.parent.resolve()
@@ -98,7 +98,7 @@ except Exception:
 
 OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)
 
-DEFAULT_RELEASE_DIR = OUTPUT_R_ROOT / "scripts_basin_test/output/sed_reference_release"
+DEFAULT_RELEASE_DIR = OUTPUT_R_ROOT / "output/sed_reference_release"
 DEFAULT_S6_NC = OUTPUT_R_ROOT / S6_MERGED_NC
 DEFAULT_S6_QUALITY_ORDER_CSV = OUTPUT_R_ROOT / S6_QUALITY_ORDER_CSV
 DEFAULT_S5_CSV = OUTPUT_R_ROOT / S5_BASIN_CLUSTERED_CSV
@@ -126,13 +126,13 @@ RUN_S5_CSV = DEFAULT_S5_CSV
 RUN_ORGANIZED_ROOT = DEFAULT_ORGANIZED_ROOT
 
 RUN_OUT_DIR_BY_MODE = {
-    "release": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_release",
-    "candidate_sidecar": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_release",
-    "selected_master": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_release",
-    "s6-candidates": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_s6_candidates",
-    "s6-selected": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_s6_selected",
-    "s5-candidates": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_s5_candidates",
-    "auto": OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_auto",
+    "release": OUTPUT_R_ROOT / "output/validation_results_release",
+    "candidate_sidecar": OUTPUT_R_ROOT / "output/validation_results_release",
+    "selected_master": OUTPUT_R_ROOT / "output/validation_results_release",
+    "s6-candidates": OUTPUT_R_ROOT / "output/validation_results_s6_candidates",
+    "s6-selected": OUTPUT_R_ROOT / "output/validation_results_s6_selected",
+    "s5-candidates": OUTPUT_R_ROOT / "output/validation_results_s5_candidates",
+    "auto": OUTPUT_R_ROOT / "output/validation_results_auto",
 }
 
 # s6-candidates can be slow because it opens source NetCDF files listed by s6.
@@ -2544,7 +2544,7 @@ def run_from_builtin_config() -> None:
 
     out_dir = RUN_OUT_DIR_BY_MODE.get(
         input_mode,
-        OUTPUT_R_ROOT / "scripts_basin_test/output/validation_results_builtin",
+        OUTPUT_R_ROOT / "output/validation_results_builtin",
     )
     out_dir = Path(out_dir).expanduser().resolve()
 
