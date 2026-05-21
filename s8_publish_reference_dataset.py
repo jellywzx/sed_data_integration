@@ -328,9 +328,9 @@ def classify_source_family(source):
     text = "" if source is None else str(source)
     low = text.lower()
     if "usgs" in low:
-        return "USGS"
+        return "in_situ"
     if "hydat" in low:
-        return "HYDAT"
+        return "in_situ"
     if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
         return "satellite"
     if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
