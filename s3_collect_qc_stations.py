@@ -14,8 +14,8 @@ resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
   - basin 主线默认不收集 climatology；
   - climatology 文件保留在 output_resolution_organized/climatology 下，
     供独立的 climatology NC 导出脚本使用；
-  - RiverSed、GSED、Dethier 等遥感 / reach-scale 产品在 basin 主线下只提供
-    lon/lat，不把源文件中的面积信息作为 reported_area 传给 basin tracer。
+  - RiverSed 在 basin 主线下只提供 lon/lat，不输出 NHDPlus reach/basin 元数据，
+    也不把源文件中的 upstream_area 作为 reported_area 传给 basin tracer。
 
 根目录说明：
   - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
@@ -33,14 +33,7 @@ from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import pandas as pd
-from basin_policy import should_skip_basin_matching
-from pipeline_paths import (
-    S2_ORGANIZED_DIR,
-    S3_COLLECTED_CSV,
-    RESOLUTION_DIRS,
-    get_log_path,
-    get_output_r_root,
-)
+from pipeline_paths import S2_ORGANIZED_DIR, S3_COLLECTED_CSV, RESOLUTION_DIRS, get_output_r_root, get_log_path
 from qc_contract import LAT_VAR_NAMES, LON_VAR_NAMES, read_scalar_variable, read_station_metadata
 
 try:
@@ -68,6 +61,20 @@ _AREA_ATTR_NAMES = [
     "basin_area",
     "catchment_area",
 ]
+_REACH_HINT_NUMERIC_NAMES = [
+    "reach_midpoint_lat",
+    "reach_midpoint_lon",
+    "reach_endpoint_1_lat",
+    "reach_endpoint_1_lon",
+    "reach_endpoint_2_lat",
+    "reach_endpoint_2_lon",
+]
+_REACH_HINT_TEXT_NAMES = [
+    "reach_endpoint_candidates_json",
+    "reach_coordinate_method",
+    "reach_geometry_source",
+]
+_REACH_HINT_SOURCES = {"gsed", "riversed"}
 
 
 def _get_scalar(var):
@@ -171,6 +178,58 @@ def get_station_meta_from_nc(path):
         }
 
 
+def _clean_text(value):
+    if value is None or np.ma.is_masked(value):
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return ""
+        return _clean_text(value.flat[0])
+    text = str(value).strip()
+    return "" if text.lower() in {"", "nan", "none"} else text
+
+
+def _get_nc_text(nc, name):
+    if name in nc.variables:
+        try:
+            text = _clean_text(nc.variables[name][()])
+            if text:
+                return text
+        except Exception:
+            pass
+    return _clean_text(getattr(nc, name, ""))
+
+
+def get_reach_hints_from_nc(path):
+    hints = {name: np.nan for name in _REACH_HINT_NUMERIC_NAMES}
+    hints.update({name: "" for name in _REACH_HINT_TEXT_NAMES})
+    if not HAS_NC:
+        return hints
+    try:
+        with nc4.Dataset(path, "r") as nc:
+            for name in _REACH_HINT_NUMERIC_NAMES:
+                if name in nc.variables:
+                    val = _get_scalar(nc.variables[name][:])
+                    if val is not None and not np.isnan(val):
+                        hints[name] = float(val)
+                        continue
+                raw = getattr(nc, name, None)
+                if raw is not None:
+                    try:
+                        val = float(raw)
+                        if not np.isnan(val) and val != FILL:
+                            hints[name] = val
+                    except (TypeError, ValueError):
+                        pass
+            for name in _REACH_HINT_TEXT_NAMES:
+                hints[name] = _get_nc_text(nc, name)
+    except Exception:
+        pass
+    return hints
+
+
 def get_resolution_from_path(path, root_dir):
     """从路径第一级目录解析时间分辨率。"""
     try:
@@ -235,9 +294,11 @@ def _collect_one_nc(path, root_dir):
         station_meta = get_station_meta_from_nc(path)
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
+        reach_hints = get_reach_hints_from_nc(path)
         reported_area = get_reported_area_from_nc(path)
-        # 遥感 / reach-scale 产品不参与 basin matching，不向 s4 传 reported_area。
-        if should_skip_basin_matching(source):
+        # Reach-scale satellite products match MERIT by geometry hints in s4,
+        # not by source/NHDPlus upstream-area values.
+        if source.strip().lower() in _REACH_HINT_SOURCES:
             reported_area = None
         # 存相对路径，跨平台可移植
         rel_path = str(Path(path).relative_to(root_dir))
@@ -251,6 +312,7 @@ def _collect_one_nc(path, root_dir):
             "river_name": station_meta["river_name"],
             "source_station_id": station_meta["source_station_id"],
             "reported_area": reported_area if reported_area is not None else float("nan"),
+            **reach_hints,
         }
     except (ValueError, OSError):
         return None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test that remote-sensing sources bypass s4 MERIT basin tracing."""
+"""Smoke test that Dethier-style sources bypass s4 MERIT basin tracing."""
 
 import os
 import subprocess
@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
 S3_REL = Path("scripts_basin_test/output/s3_collected_stations.csv")
 S4_REL = Path("scripts_basin_test/output/s4_upstream_basins.csv")
 SKIP_METHOD = "source_remote_sensing_no_basin_match"
@@ -20,28 +20,6 @@ def _write_s3(root):
     out_path = root / S3_REL
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        {
-            "path": "monthly/RiverSed_monthly_a.nc",
-            "source": "RiverSed",
-            "lat": 10.0,
-            "lon": 100.0,
-            "resolution": "monthly",
-            "station_name": "RiverSed sample",
-            "river_name": "A",
-            "source_station_id": "rs-1",
-            "reported_area": 1234.0,
-        },
-        {
-            "path": "monthly/GSED_monthly_b.nc",
-            "source": "GSED",
-            "lat": 11.0,
-            "lon": 101.0,
-            "resolution": "monthly",
-            "station_name": "GSED sample",
-            "river_name": "B",
-            "source_station_id": "gs-1",
-            "reported_area": 2345.0,
-        },
         {
             "path": "monthly/Dethier_monthly_c.nc",
             "source": "Dethier",
@@ -82,6 +60,18 @@ def main():
         root = Path(tmp)
         _write_s3(root)
 
+        stub_dir = root / "stubs"
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        (stub_dir / "tqdm.py").write_text(
+            "class tqdm:\n"
+            "    def __init__(self, *args, **kwargs):\n"
+            "        self.n = 0\n"
+            "    def refresh(self):\n"
+            "        return None\n"
+            "    def close(self):\n"
+            "        return None\n"
+        )
+
         env = os.environ.copy()
         env.update(
             {
@@ -91,7 +81,9 @@ def main():
                 "S4_RESUME": "0",
                 "S4_N_WORKERS": "2",
                 "S4_BATCH_SIZE": "2",
-                "PYTHONPATH": str(SCRIPT_DIR)
+                "PYTHONPATH": str(stub_dir)
+                + os.pathsep
+                + str(SCRIPT_DIR)
                 + os.pathsep
                 + env.get("PYTHONPATH", ""),
             }
@@ -119,8 +111,8 @@ def main():
             raise AssertionError("missing s4 output: {}".format(out_path))
 
         out = pd.read_csv(out_path)
-        if len(out) != 4:
-            raise AssertionError("expected 4 output rows, got {}".format(len(out)))
+        if len(out) != 2:
+            raise AssertionError("expected 2 output rows, got {}".format(len(out)))
 
         _assert_all_missing(
             out,

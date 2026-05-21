@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Smoke tests for no-basin-match source policy."""
 
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
 from basin_policy import BASIN_FLAG_ORDER, classify_basin_result, should_skip_basin_matching
 
 
@@ -15,6 +22,7 @@ def _assert_case(label, expected, **kwargs):
 def main():
     expected_flags = {
         "ok",
+        "reach_product_offset_ok",
         "large_offset",
         "area_mismatch",
         "geometry_inconsistent",
@@ -23,11 +31,11 @@ def main():
     if set(BASIN_FLAG_ORDER) != expected_flags:
         raise AssertionError("Unexpected basin flags: {}".format(BASIN_FLAG_ORDER))
 
-    for source_name in ("RiverSed", "GSED", "Dethier", "Deither", "dethier"):
+    for source_name in ("Dethier", "Deither", "dethier"):
         if not should_skip_basin_matching(source_name):
             raise AssertionError("{} should skip basin matching".format(source_name))
 
-    for source_name in ("USGS", "HYBAM"):
+    for source_name in ("RiverSed", "GSED", "USGS", "HYBAM"):
         if should_skip_basin_matching(source_name):
             raise AssertionError("{} should not skip basin matching".format(source_name))
 
@@ -42,8 +50,8 @@ def main():
         point_in_basin=False,
     )
     _assert_case(
-        "gsed_remote_sensing_skip",
-        ("unresolved", "no_match"),
+        "gsed_reach_scale_offset",
+        ("resolved", "reach_product_offset_ok"),
         basin_id=12345,
         match_quality="distance_only",
         distance_m=2000,
@@ -52,8 +60,8 @@ def main():
         point_in_basin=True,
     )
     _assert_case(
-        "riversed_remote_sensing_skip",
-        ("unresolved", "no_match"),
+        "riversed_small_offset",
+        ("resolved", "ok"),
         basin_id=12345,
         match_quality="distance_only",
         distance_m=250,
@@ -62,13 +70,13 @@ def main():
         point_in_basin=True,
     )
     _assert_case(
-        "dethier_remote_sensing_skip",
-        ("unresolved", "no_match"),
+        "gsed_reach_scale_no_local",
+        ("unresolved", "large_offset"),
         basin_id=12345,
-        match_quality="area_matched",
-        distance_m=100,
-        source_name="Dethier",
-        point_in_local=True,
+        match_quality="distance_only",
+        distance_m=2000,
+        source_name="GSED",
+        point_in_local=False,
         point_in_basin=True,
     )
     _assert_case(
@@ -101,7 +109,7 @@ def main():
         point_in_local=True,
         point_in_basin=True,
     )
-    print("No-basin-match source policy smoke tests passed.")
+    print("Basin policy source-specific smoke tests passed.")
 
 
 if __name__ == "__main__":
