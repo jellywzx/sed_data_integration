@@ -1,0 +1,35 @@
+#!/bin/bash
+#BSUB -J s4_trace[1-16]
+#BSUB -q normal
+#BSUB -o output/logs/s4_lsf/s4_trace.%I.out
+#BSUB -e output/logs/s4_lsf/s4_trace.%I.err
+#BSUB -n 24
+#BSUB -R "rusage[mem=120G]"
+#BSUB -R "span[ptile=24] span[hosts=1]"
+
+set -euo pipefail
+
+SCRIPT_DIR="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
+cd "${SCRIPT_DIR}"
+
+mkdir -p output/logs/s4_lsf output/s4_shards
+
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+JOB_INDEX="${LSB_JOBINDEX:-1}"
+LIVE_LOG="output/logs/s4_lsf/s4_trace.${JOB_INDEX}.live.log"
+
+# Direct runtime stdout/stderr to shared filesystem so logs are visible while job is running.
+exec >> "${LIVE_LOG}" 2>&1
+
+export S4_SHARD_COUNT="${S4_SHARD_COUNT:-16}"
+export S4_SHARD_INDEX="$((JOB_INDEX - 1))"
+export S4_FINALIZE_ONLY=0
+
+echo "[$(date '+%F %T')] live log: ${LIVE_LOG}"
+echo "[$(date '+%F %T')] start shard job: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"
+echo "[$(date '+%F %T')] host: $(hostname)"
+echo "[$(date '+%F %T')] python: ${PYTHON_BIN}"
+
+"${PYTHON_BIN}" s4_basin_trace_watch.py
+
+echo "[$(date '+%F %T')] shard done: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"
