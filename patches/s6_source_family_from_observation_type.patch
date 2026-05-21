@@ -1,0 +1,107 @@
+diff --git a/s6_basin_merge_to_nc.py b/s6_basin_merge_to_nc.py
+--- a/s6_basin_merge_to_nc.py
++++ b/s6_basin_merge_to_nc.py
+@@
+-def classify_source_family(source):
++def classify_source_family(source, observation_type=None):
++    """Classify source_family.
++
++    Prefer the explicit observation_type propagated from s3/s5. Fall back to
++    source-name heuristics so older s5 CSVs without observation_type continue
++    to run.
++    """
++    obs_text = "" if observation_type is None else str(observation_type).strip()
++    obs_low = obs_text.lower().replace("-", "_").replace(" ", "_")
++    if obs_low:
++        if obs_low in {"usgs", "hydat", "satellite", "in_situ", "secondary_compilation"}:
++            return obs_low if obs_low not in {"usgs", "hydat"} else obs_low.upper()
++        if obs_low in {"insitu", "in_situ_observation", "station", "station_observation", "gauge", "gauge_observation"}:
++            return "in_situ"
++        if obs_low in {"remote_sensing", "remote_sensing_observation", "satellite_observation"}:
++            return "satellite"
++        if obs_low in {"compiled", "compilation", "secondary", "secondary_dataset"}:
++            return "secondary_compilation"
++
+     text = "" if source is None else str(source)
+     low = text.lower()
+@@
+-def is_merge_eligible_source(source, include_satellite_in_main_merge=False):
+-    family = classify_source_family(source)
++def is_merge_eligible_source(source, observation_type=None, include_satellite_in_main_merge=False):
++    family = classify_source_family(source, observation_type=observation_type)
+@@
+-def merge_exclusion_reason(source, include_satellite_in_main_merge=False):
+-    family = classify_source_family(source)
++def merge_exclusion_reason(source, observation_type=None, include_satellite_in_main_merge=False):
++    family = classify_source_family(source, observation_type=observation_type)
+@@
+-    if not is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
++    if not is_merge_eligible_source(source, observation_type=observation_type, include_satellite_in_main_merge=include_satellite_in_main_merge):
+@@
+-def merge_policy_for_source(source, include_satellite_in_main_merge=False):
+-    family = classify_source_family(source)
++def merge_policy_for_source(source, observation_type=None, include_satellite_in_main_merge=False):
++    family = classify_source_family(source, observation_type=observation_type)
+@@
+-    if is_merge_eligible_source(source, include_satellite_in_main_merge=include_satellite_in_main_merge):
++    if is_merge_eligible_source(source, observation_type=observation_type, include_satellite_in_main_merge=include_satellite_in_main_merge):
+@@
+-    recs: list of (source, path, source_station_index)
++    recs: list of (source, observation_type, path, source_station_index)
+@@
+-    for source, path, source_station_index in recs:
++    for rec in recs:
++        if len(rec) == 4:
++            source, observation_type, path, source_station_index = rec
++        else:
++            source, path, source_station_index = rec
++            observation_type = ""
+@@
+-                    "source_family": classify_source_family(source),
++                    "source_family": classify_source_family(source, observation_type=observation_type),
+@@
+-                            source, include_satellite_in_main_merge=include_satellite_in_main_merge
++                            source,
++                            observation_type=observation_type,
++                            include_satellite_in_main_merge=include_satellite_in_main_merge,
+@@
+-                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
++                        source,
++                        observation_type=observation_type,
++                        include_satellite_in_main_merge=include_satellite_in_main_merge,
+@@
+-                        source, include_satellite_in_main_merge=include_satellite_in_main_merge
++                        source,
++                        observation_type=observation_type,
++                        include_satellite_in_main_merge=include_satellite_in_main_merge,
+@@
+     stations = pd.read_csv(inp_path)
+     for col in ["path", "source", "lat", "lon", "cluster_id", "station_id", "resolution"]:
+@@
+             return 1
++
++    if "observation_type" not in stations.columns:
++        stations["observation_type"] = ""
++        print("Warning: s5 CSV lacks observation_type; falling back to source-name source_family heuristics.")
++    else:
++        stations["observation_type"] = stations["observation_type"].fillna("").astype(str)
+@@
+-        source_family = stations["source"].map(classify_source_family)
++        source_family = stations.apply(
++            lambda row: classify_source_family(
++                row.get("source", ""),
++                observation_type=row.get("observation_type", ""),
++            ),
++            axis=1,
++        )
+@@
+         row_dict = {
+             "path": getattr(row, "path", ""),
+             "source": getattr(row, "source", ""),
++            "observation_type": getattr(row, "observation_type", ""),
+             "cluster_id": getattr(row, "cluster_id", -1),
+@@
+         by_cluster_res[(int(cid), str(res))] = list(
+-            zip(grp["source"], grp["path"], grp["_source_station_index"])
++            zip(grp["source"], grp["observation_type"], grp["path"], grp["_source_station_index"])
+         )
