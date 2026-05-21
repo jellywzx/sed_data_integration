@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 步骤 s3：从 s2 重组目录中扫描 .nc 文件，
-读取经纬度与数据源，输出 basin 主线使用的站点列表 CSV。
+读取经纬度、数据源与观测类型，输出 basin 主线使用的站点列表 CSV。
 
 输入（默认）：
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution, station_name, river_name, source_station_id, reported_area）
+    列 path, source, lat, lon, resolution, observation_type,
+    station_name, river_name, source_station_id, reported_area）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
 当前默认规则：
@@ -97,6 +98,7 @@ def _get_scalar(var):
     if np.isnan(v) or v == FILL or v == -9999:
         return np.nan
     return v
+
 
 def get_reported_area_from_nc(path):
     """从 NC 文件提取上游汇水面积（km²），失败返回 None。
@@ -202,6 +204,17 @@ def _get_nc_text(nc, name):
     return _clean_text(getattr(nc, name, ""))
 
 
+def get_observation_type_from_nc(path):
+    """从 NC 全局属性 observation_type 读取观测类型；缺失或读取失败返回空字符串。"""
+    if not HAS_NC:
+        return ""
+    try:
+        with nc4.Dataset(path, "r") as nc:
+            return _clean_text(getattr(nc, "observation_type", ""))
+    except Exception:
+        return ""
+
+
 def get_reach_hints_from_nc(path):
     hints = {name: np.nan for name in _REACH_HINT_NUMERIC_NAMES}
     hints.update({name: "" for name in _REACH_HINT_TEXT_NAMES})
@@ -283,7 +296,7 @@ def get_source_from_organized_path(path, root_dir):
 
 
 def _collect_one_nc(path, root_dir):
-    """Worker: 读单个 nc 的 path/source/lat/lon/resolution；source 从 s2 重组文件名解析。
+    """Worker: 读单个 nc 的 path/source/lat/lon/resolution/observation_type；source 从 s2 重组文件名解析。
     path 列存储相对于 root_dir（output_resolution_organized/）的相对路径，
     便于跨机器迁移时无需修改 CSV。
     """
@@ -294,6 +307,7 @@ def _collect_one_nc(path, root_dir):
         station_meta = get_station_meta_from_nc(path)
         source = get_source_from_organized_path(path, root_dir)
         resolution = get_resolution_from_path(path, root_dir)
+        observation_type = get_observation_type_from_nc(path)
         reach_hints = get_reach_hints_from_nc(path)
         reported_area = get_reported_area_from_nc(path)
         # Reach-scale satellite products match MERIT by geometry hints in s4,
@@ -308,6 +322,7 @@ def _collect_one_nc(path, root_dir):
             "lat": lat,
             "lon": lon,
             "resolution": resolution,
+            "observation_type": observation_type,
             "station_name": station_meta["station_name"],
             "river_name": station_meta["river_name"],
             "source_station_id": station_meta["source_station_id"],
@@ -413,7 +428,7 @@ def main():
     _enable_script_logging()
     # 默认根目录为脚本所在目录的上一级（Output_r），便于在 scripts 下直接运行
     _default_root = str(get_output_r_root(Path(__file__).resolve().parent))
-    ap = argparse.ArgumentParser(description="步骤 s3：收集 nc 站点 (path, source, lat, lon, resolution) 输出 s3_collected_stations.csv")
+    ap = argparse.ArgumentParser(description="步骤 s3：收集 nc 站点 (path, source, lat, lon, resolution, observation_type) 输出 s3_collected_stations.csv")
     ap.add_argument("--root", default=_default_root, help="根目录，默认脚本所在目录的上一级 (Output_r)")
     ap.add_argument("--out", default=S3_COLLECTED_CSV, help="步骤 s3 输出 CSV 路径")
     ap.add_argument("--workers", "-j", type=int, default=0,
