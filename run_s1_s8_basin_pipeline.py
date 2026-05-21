@@ -9,6 +9,27 @@ Stage details:
   s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
   s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
   s8 = release package + catalogs + validation report
+
+Typical usage:
+  # Show all available command-line options
+  python run_s1_s8_basin_pipeline.py --help
+
+  # Run the whole pipeline with the built-in defaults
+  python run_s1_s8_basin_pipeline.py
+
+  # Run a continuous stage range
+  python run_s1_s8_basin_pipeline.py --start-at s3 --end-at s6
+
+  # Run explicit stages only; useful for reruns or skipping finished stages
+  python run_s1_s8_basin_pipeline.py --steps s4,s5,s8
+
+  # Preview the commands without executing them
+  python run_s1_s8_basin_pipeline.py --steps s6,s7 --dry-run
+
+Notes:
+  1. If --steps is provided, it takes priority and --start-at/--end-at are ignored.
+  2. The BUILTIN_* constants below define the default runtime behavior for routine runs.
+  3. Command-line options override the BUILTIN_* defaults for the current invocation only.
 """
 
 import argparse
@@ -34,9 +55,11 @@ DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline
 STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
 
 # ---- Built-in runtime defaults -------------------------------------------------
-# Edit these constants for normal runs instead of passing long command-line args.
-# The CLI options below are kept only as temporary overrides.
-BUILTIN_START_AT = "s6"
+# These constants are the script's everyday defaults.
+# For stable long-term preferences, edit them here.
+# For one-off runs, prefer passing CLI arguments so the change only affects
+# the current invocation.
+BUILTIN_START_AT = "s1"
 BUILTIN_END_AT = "s8"
 BUILTIN_STRICT_S1 = False
 
@@ -167,6 +190,31 @@ def _validate_stage_range(start_at, end_at):
     if start_index > end_index:
         raise SystemExit("--start-at must not be after --end-at.")
     return STAGES[start_index : end_index + 1]
+
+
+def _parse_steps_arg(steps_text):
+    selected = []
+    for raw in str(steps_text).split(","):
+        step = raw.strip().lower()
+        if not step:
+            continue
+        if step not in STAGES:
+            raise SystemExit(
+                "Invalid step '{}' in --steps. Allowed: {}".format(
+                    step, ", ".join(STAGES)
+                )
+            )
+        if step not in selected:
+            selected.append(step)
+    if not selected:
+        raise SystemExit("--steps was provided but no valid step was parsed.")
+    return selected
+
+
+def _resolve_selected_stages(args):
+    if args.steps:
+        return _parse_steps_arg(args.steps)
+    return _validate_stage_range(args.start_at, args.end_at)
 
 
 def stage_outputs():
@@ -500,6 +548,13 @@ def parse_args():
     )
     parser.add_argument("--start-at", choices=STAGES, default=BUILTIN_START_AT, help="First logical stage to run.")
     parser.add_argument("--end-at", choices=STAGES, default=BUILTIN_END_AT, help="Last logical stage to run.")
+    parser.add_argument(
+        "--steps",
+        help=(
+            "Comma-separated explicit stage list, e.g. s1,s2,s5 or s4,s6,s8. "
+            "When set, --start-at/--end-at are ignored."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     parser.add_argument(
         "--strict-s1",
@@ -632,7 +687,7 @@ def _review_queue_count(path):
 def main():
     args = parse_args()
     python_bin = resolve_python(args.python)
-    stages = _validate_stage_range(args.start_at, args.end_at)
+    stages = _resolve_selected_stages(args)
     outputs = stage_outputs()
     specs = build_stage_specs(args, python_bin)
     log_path = Path(args.log_file).expanduser().resolve()
