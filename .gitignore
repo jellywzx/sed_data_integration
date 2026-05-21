@@ -5,6 +5,7 @@
 *.png
 *.html
 /output
+/output_other
 /output/logs/
 /check_output
 /scratch
