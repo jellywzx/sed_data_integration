@@ -180,6 +180,7 @@ OVERLAP_CANDIDATE_COLUMNS = [
     "time",
     "date",
     "source",
+    "observation_type",
     "source_family",
     "source_station_uid",
     "source_station_index",
@@ -324,18 +325,42 @@ def _write_csv(df, path):
     return path
 
 
-def classify_source_family(source):
-    text = "" if source is None else str(source)
-    low = text.lower()
-    if "usgs" in low:
-        return "in_situ"
-    if "hydat" in low:
-        return "in_situ"
-    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
+def classify_source_family_from_observation_type(observation_type):
+    """Classify source_family from required observation_type.
+
+    s8 intentionally does not fall back to source-name heuristics or catalog
+    source_family/source_type/source_category values. The upstream
+    s6_cluster_quality_order.csv must carry observation_type from s3/s5/s6.
+    """
+    obs_text = "" if observation_type is None else str(observation_type).strip()
+    obs_low = obs_text.lower().replace("-", "_").replace(" ", "_")
+
+    if obs_low in {"usgs", "hydat"}:
+        return obs_low.upper()
+    if obs_low in {
+        "satellite",
+        "remote_sensing",
+        "remote_sensing_observation",
+        "satellite_observation",
+    }:
         return "satellite"
-    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
+    if obs_low in {
+        "in_situ",
+        "insitu",
+        "in_situ_observation",
+        "station",
+        "station_observation",
+        "gauge",
+        "gauge_observation",
+    }:
         return "in_situ"
-    if any(token in low for token in ("compiled", "compilation", "secondary")):
+    if obs_low in {
+        "secondary_compilation",
+        "compiled",
+        "compilation",
+        "secondary",
+        "secondary_dataset",
+    }:
         return "secondary_compilation"
     return "other"
 
@@ -660,8 +685,8 @@ def _build_overlap_candidate_group_rows(payload):
         eligible_present = []
         for item in present:
             qrow = item["quality"]
-            source = _clean_text(qrow.get("source", ""))
-            source_family = classify_source_family(source)
+            observation_type = _clean_text(qrow.get("observation_type", ""))
+            source_family = classify_source_family_from_observation_type(observation_type)
 
             if "merge_eligible" in qrow.index:
                 merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
@@ -680,11 +705,8 @@ def _build_overlap_candidate_group_rows(payload):
                 data_row = data_row.iloc[0]
 
             source = _clean_text(qrow.get("source", ""))
-            source_family = _catalog_value(
-                item["catalog"],
-                ("source_family", "source_type", "source_category"),
-                "",
-            ) or classify_source_family(source)
+            observation_type = _clean_text(qrow.get("observation_type", ""))
+            source_family = classify_source_family_from_observation_type(observation_type)
 
             if "merge_eligible" in qrow.index:
                 merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
@@ -724,6 +746,7 @@ def _build_overlap_candidate_group_rows(payload):
                     "time": float(data_row.get("time", np.nan)),
                     "date": date_text,
                     "source": source,
+                    "observation_type": observation_type,
                     "source_family": source_family,
                     "source_station_uid": source_station_uid,
                     "source_station_index": int(item["source_station_index"]),
@@ -810,6 +833,7 @@ def build_overlap_candidates_sidecar(
         "resolution",
         "quality_rank",
         "source",
+        "observation_type",
         "source_station_index",
         "source_station_uid",
         "path",
@@ -824,6 +848,30 @@ def build_overlap_candidates_sidecar(
         out_path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(out_path, index=False, compression="gzip")
         return out_path, 0, "quality order CSV is empty; wrote header-only sidecar"
+
+    quality["observation_type"] = quality["observation_type"].fillna("").astype(str).str.strip()
+    missing_observation_type = quality["observation_type"].eq("")
+    n_missing_observation_type = int(missing_observation_type.sum())
+    if n_missing_observation_type > 0:
+        sample_cols = [
+            col
+            for col in ["cluster_id", "resolution", "source", "source_station_uid", "path"]
+            if col in quality.columns
+        ]
+        sample_text = ""
+        if sample_cols:
+            sample_text = "; sample rows: " + quality.loc[
+                missing_observation_type, sample_cols
+            ].head(20).to_string(index=False)
+        return (
+            None,
+            0,
+            "quality order CSV has {} rows with blank observation_type; rerun s3->s5->s6 "
+            "after fixing NC global attribute observation_type{}".format(
+                n_missing_observation_type,
+                sample_text,
+            ),
+        )
 
     for col in ("cluster_id", "quality_rank", "source_station_index"):
         quality[col] = pd.to_numeric(quality[col], errors="coerce").fillna(-1).astype(int)
