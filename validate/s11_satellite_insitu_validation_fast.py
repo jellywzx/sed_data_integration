@@ -15,8 +15,9 @@ chunk scanner unless ``--no-nc-fallback`` is set.
 """
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -27,6 +28,7 @@ SATELLITE_CANDIDATE_SIDECAR_FILES = (
     "sed_reference_satellite_candidates.parquet",
     "sed_reference_satellite_candidates.csv.gz",
 )
+DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE = 200000
 
 
 def _find_sidecar(release_dir: Path, names) -> Optional[Path]:
@@ -54,66 +56,218 @@ def load_satellite_candidate_sidecar(
     return pd.DataFrame(), None, "satellite candidate sidecar not found"
 
 
-def _filter_satellite_rows_to_candidate_windows(
-    satellite_rows: pd.DataFrame,
-    candidate_rows: pd.DataFrame,
-    windows: Sequence[str],
-    progress=base.log_progress,
-) -> pd.DataFrame:
-    """Keep only satellite rows near candidate sidecar keys and time windows."""
-    if satellite_rows.empty or candidate_rows.empty:
-        return satellite_rows.iloc[0:0].copy()
+def _satellite_candidate_path(
+    release_dir: Path,
+    explicit_path: Optional[Path] = None,
+) -> Optional[Path]:
+    if explicit_path is not None:
+        return explicit_path if explicit_path.exists() else None
+    return _find_sidecar(release_dir, SATELLITE_CANDIDATE_SIDECAR_FILES)
 
+
+def _candidate_windows_frame(candidate_rows: pd.DataFrame, windows: Sequence[str]) -> Tuple[pd.DataFrame, int]:
     candidate_windows, candidate_key_count = base._build_satellite_candidate_windows(
         candidate_rows,
         windows=windows,
         satellite_time_units="days since 1970-01-01",
     )
-    if not candidate_windows:
-        if progress:
-            progress("Satellite candidate CSV filtering skipped: no candidate windows")
-        return satellite_rows.iloc[0:0].copy()
-
-    work = satellite_rows.copy()
-    work["_cluster_id_numeric"] = pd.to_numeric(work.get("cluster_id", pd.Series(index=work.index)), errors="coerce")
-    work["_resolution_norm"] = work.get("resolution", "").map(base._normalize_resolution)
-    work["_time_day"] = base._coerce_datetime_from_columns(work)
-
-    keep = []
-    for _, row in work.iterrows():
-        cluster_id = row.get("_cluster_id_numeric")
-        if pd.isna(cluster_id):
-            keep.append(False)
-            continue
-        key = (int(cluster_id), base._normalize_resolution(row.get("_resolution_norm", "")))
-        window = candidate_windows.get(key)
-        if not window:
-            keep.append(False)
-            continue
-        time_value = row.get("_time_day")
-        if pd.isna(time_value):
-            keep.append(False)
-            continue
-        numeric_day = base._datetime_to_cf_days(
-            pd.Series([time_value]),
-            "days since 1970-01-01",
-        ).iloc[0]
-        keep.append(
-            pd.notna(numeric_day)
-            and float(window["start_day"]) <= float(numeric_day) <= float(window["end_day"])
+    rows = []
+    for (cluster_id, resolution), window in candidate_windows.items():
+        rows.append(
+            {
+                "_cluster_id_key": int(cluster_id),
+                "_resolution_key": base._normalize_resolution(resolution),
+                "_start_day": float(window["start_day"]),
+                "_end_day": float(window["end_day"]),
+            }
         )
+    return pd.DataFrame(rows), int(candidate_key_count)
 
-    filtered = work[pd.Series(keep, index=work.index)].copy()
-    filtered = filtered.drop(columns=["_cluster_id_numeric", "_resolution_norm", "_time_day"], errors="ignore")
+
+def _numeric_day_series(frame: pd.DataFrame) -> pd.Series:
+    if "time" in frame.columns:
+        numeric = pd.to_numeric(frame["time"], errors="coerce")
+    else:
+        numeric = pd.Series([pd.NA] * len(frame), index=frame.index, dtype="float64")
+
+    if numeric.notna().all():
+        return numeric
+
+    if "date" in frame.columns:
+        parsed = pd.to_datetime(frame["date"], errors="coerce").dt.floor("D")
+        parsed_numeric = base._datetime_to_cf_days(parsed, "days since 1970-01-01")
+        numeric = numeric.where(numeric.notna(), parsed_numeric)
+    return numeric
+
+
+def _filter_satellite_chunk_vectorized(
+    chunk: pd.DataFrame,
+    windows_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Vectorized satellite-window filter for one CSV chunk.
+
+    This replaces the old Python-level ``iterrows`` loop.  It keeps the original
+    satellite columns and only adds temporary helper columns during filtering.
+    """
+    if chunk.empty or windows_frame.empty:
+        return chunk.iloc[0:0].copy()
+    if "cluster_id" not in chunk.columns or "resolution" not in chunk.columns:
+        return chunk.iloc[0:0].copy()
+
+    work = chunk.copy()
+    work["_cluster_id_key"] = pd.to_numeric(work["cluster_id"], errors="coerce")
+    work = work[work["_cluster_id_key"].notna()].copy()
+    if work.empty:
+        return chunk.iloc[0:0].copy()
+
+    work["_cluster_id_key"] = work["_cluster_id_key"].astype("int64")
+    work["_resolution_key"] = work["resolution"].map(base._normalize_resolution)
+    work["_time_day_num"] = _numeric_day_series(work)
+    work = work[work["_time_day_num"].notna()].copy()
+    if work.empty:
+        return chunk.iloc[0:0].copy()
+
+    merged = work.merge(
+        windows_frame,
+        how="inner",
+        on=["_cluster_id_key", "_resolution_key"],
+        sort=False,
+    )
+    if merged.empty:
+        return chunk.iloc[0:0].copy()
+
+    mask = (merged["_time_day_num"] >= merged["_start_day"]) & (
+        merged["_time_day_num"] <= merged["_end_day"]
+    )
+    filtered = merged.loc[mask].copy()
+    if filtered.empty:
+        return chunk.iloc[0:0].copy()
+
+    filtered = filtered.drop(
+        columns=["_cluster_id_key", "_resolution_key", "_time_day_num", "_start_day", "_end_day"],
+        errors="ignore",
+    )
+    return filtered.reset_index(drop=True)
+
+
+def _filter_satellite_chunk_worker(
+    item: Tuple[int, pd.DataFrame, pd.DataFrame]
+) -> Tuple[int, pd.DataFrame, Dict[str, int]]:
+    ordinal, chunk, windows_frame = item
+    filtered = _filter_satellite_chunk_vectorized(chunk, windows_frame)
+    return ordinal, filtered, {"input_rows": int(len(chunk)), "kept_rows": int(len(filtered))}
+
+
+def load_relevant_satellite_candidate_sidecar(
+    release_dir: Path,
+    candidate_rows: pd.DataFrame,
+    windows: Sequence[str],
+    explicit_path: Optional[Path] = None,
+    workers: int = 1,
+    chunk_size: int = DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE,
+    progress=base.log_progress,
+) -> Tuple[pd.DataFrame, Optional[Path], Dict[str, int]]:
+    """Read and filter the satellite CSV sidecar without materializing all rows.
+
+    The satellite CSV can be much larger than the final relevant subset.  This
+    function builds candidate windows from the in-situ sidecar, reads satellite
+    rows in chunks, and filters each chunk with vectorized pandas operations.  If
+    more than one worker is requested, chunks are filtered in parallel.
+    """
+    stats = {
+        "candidate_keys": 0,
+        "input_rows": 0,
+        "kept_rows": 0,
+        "chunks": 0,
+        "missing_file": 0,
+    }
+    path = _satellite_candidate_path(release_dir, explicit_path)
+    if path is None:
+        stats["missing_file"] = 1
+        return pd.DataFrame(), None, stats
+
+    windows_frame, candidate_key_count = _candidate_windows_frame(candidate_rows, windows)
+    stats["candidate_keys"] = int(candidate_key_count)
+    if windows_frame.empty:
+        if progress:
+            progress("Satellite candidate sidecar filtering skipped: no candidate windows")
+        return pd.DataFrame(), path, stats
+
+    workers = max(1, int(workers or 1))
+    chunk_size = max(1, int(chunk_size or DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE))
+    suffixes = "".join(path.suffixes).lower()
     if progress:
         progress(
-            "Satellite candidate CSV filtering: candidate_keys={}, input_rows={}, kept_rows={}".format(
-                candidate_key_count,
-                len(satellite_rows),
-                len(filtered),
+            "Reading satellite candidate sidecar with chunked filter: {} | workers={} | chunk_size={}".format(
+                path,
+                workers,
+                chunk_size,
             )
         )
-    return filtered.reset_index(drop=True)
+
+    frames: List[pd.DataFrame] = []
+
+    if suffixes.endswith(".parquet"):
+        table = pd.read_parquet(path)
+        stats["chunks"] = 1
+        filtered = _filter_satellite_chunk_vectorized(table, windows_frame)
+        stats["input_rows"] = int(len(table))
+        stats["kept_rows"] = int(len(filtered))
+        if not filtered.empty:
+            frames.append(filtered)
+    else:
+        reader = pd.read_csv(path, keep_default_na=False, low_memory=False, chunksize=chunk_size)
+        if workers == 1:
+            for ordinal, chunk in enumerate(reader):
+                filtered = _filter_satellite_chunk_vectorized(chunk, windows_frame)
+                stats["chunks"] += 1
+                stats["input_rows"] += int(len(chunk))
+                stats["kept_rows"] += int(len(filtered))
+                if not filtered.empty:
+                    frames.append(filtered)
+                if progress and stats["chunks"] % 10 == 0:
+                    progress(
+                        "Satellite CSV filter progress: chunks={}, input_rows={}, kept_rows={}".format(
+                            stats["chunks"],
+                            stats["input_rows"],
+                            stats["kept_rows"],
+                        )
+                    )
+        else:
+            tasks = ((ordinal, chunk, windows_frame) for ordinal, chunk in enumerate(reader))
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                for ordinal, filtered, chunk_stats in executor.map(
+                    _filter_satellite_chunk_worker,
+                    tasks,
+                    chunksize=1,
+                ):
+                    stats["chunks"] += 1
+                    stats["input_rows"] += int(chunk_stats.get("input_rows", 0))
+                    stats["kept_rows"] += int(chunk_stats.get("kept_rows", 0))
+                    if not filtered.empty:
+                        frames.append(filtered)
+                    if progress and stats["chunks"] % 10 == 0:
+                        progress(
+                            "Satellite CSV filter progress: chunks={}, input_rows={}, kept_rows={}".format(
+                                stats["chunks"],
+                                stats["input_rows"],
+                                stats["kept_rows"],
+                            )
+                        )
+
+    if progress:
+        progress(
+            "Satellite candidate CSV filtering: candidate_keys={}, input_rows={}, kept_rows={}, chunks={}".format(
+                stats["candidate_keys"],
+                stats["input_rows"],
+                stats["kept_rows"],
+                stats["chunks"],
+            )
+        )
+
+    if not frames:
+        return pd.DataFrame(), path, stats
+    return pd.concat(frames, ignore_index=True, sort=False), path, stats
 
 
 def run_validation_fast(
@@ -132,6 +286,7 @@ def run_validation_fast(
     write_plots: bool = True,
     workers: int = base.DEFAULT_WORKERS,
     satellite_chunk_size: int = base.DEFAULT_SATELLITE_CHUNK_SIZE,
+    satellite_sidecar_chunk_size: int = DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE,
     progress=base.log_progress,
 ) -> None:
     release_dir = release_dir.resolve()
@@ -172,29 +327,26 @@ def run_validation_fast(
         input_mode = "selected_master"
 
     if input_mode == "candidate_sidecar" and not raw.empty:
-        satellite_rows, sat_path, sat_note = load_satellite_candidate_sidecar(
+        satellite_rows, sat_path, satellite_stats = load_relevant_satellite_candidate_sidecar(
             release_dir,
-            satellite_candidate_sidecar,
+            candidate_rows=raw,
+            windows=windows,
+            explicit_path=satellite_candidate_sidecar,
+            workers=workers,
+            chunk_size=satellite_sidecar_chunk_size,
             progress=progress,
         )
         if not satellite_rows.empty:
-            satellite_rows = _filter_satellite_rows_to_candidate_windows(
-                satellite_rows,
-                raw,
-                windows=windows,
-                progress=progress,
+            raw = pd.concat([raw, satellite_rows], ignore_index=True, sort=False)
+            load_note = "{}; appended {} satellite CSV rows from {}".format(
+                load_note,
+                len(satellite_rows),
+                sat_path.name if sat_path is not None else "satellite sidecar",
             )
-            if not satellite_rows.empty:
-                raw = pd.concat([raw, satellite_rows], ignore_index=True, sort=False)
-                load_note = "{}; appended {} satellite CSV rows from {}".format(
-                    load_note,
-                    len(satellite_rows),
-                    sat_path.name if sat_path is not None else "satellite sidecar",
-                )
-            else:
-                load_note = "{}; satellite CSV found but no rows matched candidate windows".format(load_note)
+        elif int(satellite_stats.get("missing_file", 0)) == 0:
+            load_note = "{}; satellite CSV found but no rows matched candidate windows".format(load_note)
         elif allow_nc_fallback:
-            satellite_rows, satellite_stats = base.load_relevant_satellite_validation_records(
+            satellite_rows, nc_stats = base.load_relevant_satellite_validation_records(
                 release_dir,
                 raw,
                 windows=windows,
@@ -205,7 +357,7 @@ def run_validation_fast(
             if progress:
                 progress(
                     "Satellite validation NC fallback: rows={satellite_rows}, station_hits={station_hits}, "
-                    "time_hits={time_hits}, value_hits={value_hits}".format(**satellite_stats)
+                    "time_hits={time_hits}, value_hits={value_hits}".format(**nc_stats)
                 )
             if not satellite_rows.empty:
                 raw = pd.concat([raw, satellite_rows], ignore_index=True, sort=False)
@@ -288,6 +440,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--figure-variables", nargs="+", default=["SSC"], choices=list(base.VARIABLES))
     parser.add_argument("--no-figures", action="store_true")
     parser.add_argument("--satellite-chunk-size", type=int, default=base.DEFAULT_SATELLITE_CHUNK_SIZE)
+    parser.add_argument(
+        "--satellite-sidecar-chunk-size",
+        type=int,
+        default=DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE,
+        help="CSV rows per chunk when filtering sed_reference_satellite_candidates.csv.gz.",
+    )
     parser.add_argument("--workers", type=int, default=base.DEFAULT_WORKERS)
     return parser.parse_args(argv)
 
@@ -312,6 +470,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         write_plots=not args.no_figures,
         workers=args.workers,
         satellite_chunk_size=args.satellite_chunk_size,
+        satellite_sidecar_chunk_size=args.satellite_sidecar_chunk_size,
     )
 
 
