@@ -13,9 +13,9 @@ It checks:
 - Export records that look 10x, 0.1x, 1000x, or 0.001x off.
 
 Outputs:
-- scripts_basin_test/output/tables/table_unit_formula_check_summary.csv
-- scripts_basin_test/output/tables/table_suspect_ssl_conversion_records.csv
-- scripts_basin_test/output/logs/unit_formula_check.log
+- scripts_basin_test/output_other/tables/table_unit_formula_check_summary.csv
+- scripts_basin_test/output_other/tables/table_suspect_ssl_conversion_records.csv
+- scripts_basin_test/output_other/logs/unit_formula_check.log
 """
 
 from __future__ import annotations
@@ -45,8 +45,6 @@ sys.path.insert(0, str(CODE_ROOT))
 
 from pipeline_paths import (  # noqa: E402
     get_output_r_root,
-    PIPELINE_OUTPUT_DIR,
-    OUTPUT_LOG_DIR,
     S2_ORGANIZED_DIR,
     S3_COLLECTED_CSV,
     S5_BASIN_CLUSTERED_CSV,
@@ -55,8 +53,9 @@ from pipeline_paths import (  # noqa: E402
 from qc_contract import Q_VAR_NAMES, SSC_VAR_NAMES, SSL_VAR_NAMES, TIME_VAR_NAMES  # noqa: E402
 
 PROJECT_ROOT = get_output_r_root(CODE_ROOT)
-TABLE_DIR = PROJECT_ROOT / PIPELINE_OUTPUT_DIR / "tables"
-LOG_PATH = PROJECT_ROOT / OUTPUT_LOG_DIR / "unit_formula_check.log"
+OUTPUT_OTHER_DIR = "scripts_basin_test/output_other"
+TABLE_DIR = PROJECT_ROOT / OUTPUT_OTHER_DIR / "tables"
+LOG_PATH = PROJECT_ROOT / OUTPUT_OTHER_DIR / "logs" / "unit_formula_check.log"
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 S5_CSV = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 S3_CSV = PROJECT_ROOT / S3_COLLECTED_CSV
@@ -406,6 +405,7 @@ def main():
     logger.info("Script path: %s", Path(__file__).resolve())
     logger.info("Code root: %s", CODE_ROOT)
     logger.info("Project root: %s", PROJECT_ROOT)
+    logger.info("Output directory: %s", PROJECT_ROOT / OUTPUT_OTHER_DIR)
     logger.info("Canonical formula: SSL_calc = Q * SSC * %.4f", SSL_FACTOR)
     input_csv = Path(args.input_csv) if args.input_csv else None
     scan_root = Path(args.scan_root) if args.scan_root else None
