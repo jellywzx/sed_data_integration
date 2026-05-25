@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """Preflight checks for SSC units and SSL conversion.
 
-Checks:
+This script is intended to live under ``tools/`` and should be run from the
+scripts_basin_test repository root as:
+
+    python tools/preflight_unit_and_formula_checks.py
+
+It checks:
 - SSC units should be mg L-1.
 - Detect mg/L, g/L, kg/m3 mixing.
-- Remind that g/L -> mg/L and kg/m3 -> mg/L both require x1000.
 - Recompute SSL_calc = Q * SSC * 0.0864 for records with Q, SSC, SSL.
 - Export records that look 10x, 0.1x, 1000x, or 0.001x off.
 
 Outputs:
-- scripts_basin_test/output/tables/table_unit_formula_check_summary.csv
-- scripts_basin_test/output/tables/table_suspect_ssl_conversion_records.csv
-- scripts_basin_test/output/logs/unit_formula_check.log
+- scripts_basin_test/output_other/tables/table_unit_formula_check_summary.csv
+- scripts_basin_test/output_other/tables/table_suspect_ssl_conversion_records.csv
+- scripts_basin_test/output_other/logs/unit_formula_check.log
 """
 
 from __future__ import annotations
@@ -36,12 +40,11 @@ except Exception:
     num2date = None
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+CODE_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(CODE_ROOT))
 
 from pipeline_paths import (  # noqa: E402
     get_output_r_root,
-    PIPELINE_OUTPUT_DIR,
-    OUTPUT_LOG_DIR,
     S2_ORGANIZED_DIR,
     S3_COLLECTED_CSV,
     S5_BASIN_CLUSTERED_CSV,
@@ -49,9 +52,10 @@ from pipeline_paths import (  # noqa: E402
 )
 from qc_contract import Q_VAR_NAMES, SSC_VAR_NAMES, SSL_VAR_NAMES, TIME_VAR_NAMES  # noqa: E402
 
-PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
-TABLE_DIR = PROJECT_ROOT / PIPELINE_OUTPUT_DIR / "tables"
-LOG_PATH = PROJECT_ROOT / OUTPUT_LOG_DIR / "unit_formula_check.log"
+PROJECT_ROOT = get_output_r_root(CODE_ROOT)
+OUTPUT_OTHER_DIR = "scripts_basin_test/output_other"
+TABLE_DIR = PROJECT_ROOT / OUTPUT_OTHER_DIR / "tables"
+LOG_PATH = PROJECT_ROOT / OUTPUT_OTHER_DIR / "logs" / "unit_formula_check.log"
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 S5_CSV = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 S3_CSV = PROJECT_ROOT / S3_COLLECTED_CSV
@@ -69,6 +73,13 @@ PATH_COLUMNS = ("path", "nc_path", "file_path", "source_path", "source_station_p
 META_COLUMNS = (
     "source", "source_family", "resolution", "cluster_id", "cluster_uid",
     "source_station_id", "source_station_uid", "station_name", "river_name",
+)
+SUSPECT_COLUMNS = (
+    "target_kind", "source", "source_family", "resolution", "cluster_id", "cluster_uid",
+    "source_station_id", "source_station_uid", "station_name", "river_name", "path",
+    "record_index", "time", "Q", "SSC", "SSL", "SSL_calc_0p0864",
+    "ratio_ssl_over_calc", "suspect_type", "target_factor", "reason",
+    "q_units", "ssc_units", "ssl_units", "q_unit_class", "ssc_unit_class", "ssl_unit_class",
 )
 
 
@@ -97,13 +108,13 @@ def setup_logger() -> logging.Logger:
 
 def unit_compact(value) -> str:
     text = clean(value).lower()
-    for old, new in {
-        "㎥": "m3", "³": "3", "⁻": "-", "¹": "1",
-        "−": "-", "–": "-", "—": "-", "_": " ",
-        "per": "/", "litre": "l", "liter": "l", "litres": "l", "liters": "l",
+    replacements = {
+        "㎥": "m3", "³": "3", "⁻": "-", "¹": "1", "−": "-", "–": "-", "—": "-",
+        "_": " ", "per": "/", "litre": "l", "liter": "l", "litres": "l", "liters": "l",
         "seconds": "s", "second": "s", "sec": "s", "days": "d", "day": "d",
         "tonnes": "t", "tonne": "t", "tons": "t",
-    }.items():
+    }
+    for old, new in replacements.items():
         text = text.replace(old, new)
     text = text.replace("^", "")
     return re.sub(r"[\s\*\(\)\[\]]+", "", text)
@@ -199,7 +210,7 @@ def resolve_path(raw: str) -> Path:
     p = Path(clean(raw)).expanduser()
     if p.is_absolute():
         return p
-    for candidate in ((ORGANIZED_ROOT / p), (PROJECT_ROOT / p), (SCRIPT_DIR / p)):
+    for candidate in ((ORGANIZED_ROOT / p), (PROJECT_ROOT / p), (CODE_ROOT / p)):
         if candidate.exists():
             return candidate.resolve()
     return (ORGANIZED_ROOT / p).resolve()
@@ -304,7 +315,7 @@ def scan_file(meta: dict, args, logger):
                 for factor, label, reason in SUSPECTS:
                     mask = valid & np.isfinite(ratio) & (ratio > 0) & (np.abs(ratio / factor - 1.0) <= args.ratio_tolerance)
                     count = int(mask.sum())
-                    file_row["n_{}".format(label)] += count
+                    file_row[f"n_{label}"] += count
                     for pos in np.where(mask)[0].tolist():
                         labels.setdefault(pos, (label, factor, reason))
                     suspect_mask |= mask
@@ -330,7 +341,7 @@ def scan_file(meta: dict, args, logger):
                         "q_unit_class": file_row["q_unit_class"], "ssc_unit_class": file_row["ssc_unit_class"], "ssl_unit_class": file_row["ssl_unit_class"],
                     })
     except Exception as exc:
-        file_row["scan_note"] = "cannot scan NetCDF: {}".format(exc)
+        file_row["scan_note"] = f"cannot scan NetCDF: {exc}"
         logger.exception("Failed scanning %s", path)
     return file_row, suspects, ratios_sample
 
@@ -361,14 +372,14 @@ def build_summary(file_rows, suspect_rows, ratio_samples):
     add("ratio_p05", "INFO", stats["p05"], "sampled ratio p05")
     add("ratio_p95", "INFO", stats["p95"], "sampled ratio p95")
     for cls, count in sorted(unit_counts.items()):
-        add("ssc_unit_class_{}".format(cls.replace(" ", "_").replace("-", "minus")), "PASS" if cls == "mg L-1" else "WARN", count, "SSC unit class counted per file")
+        add(f"ssc_unit_class_{cls.replace(' ', '_').replace('-', 'minus')}", "PASS" if cls == "mg L-1" else "WARN", count, "SSC unit class counted per file")
     add("ssc_units_all_mg_L_minus1", "PASS" if classes == {"mg L-1"} else "WARN", ", ".join(sorted(classes)) or "none", "SSC should be uniformly mg L-1")
     add("ssc_mixed_units", "WARN" if len(non_missing) > 1 else "PASS", ", ".join(sorted(non_missing)) or "none", "detects kg/m3, g/L, mg/L, or other mixing")
     add("g_L_to_mg_L_requires_x1000", "WARN" if unit_counts.get("g L-1", 0) else "PASS", unit_counts.get("g L-1", 0), "1 g/L = 1000 mg/L")
     add("kg_m3_to_mg_L_requires_x1000", "WARN" if unit_counts.get("kg m-3", 0) else "PASS", unit_counts.get("kg m-3", 0), "1 kg/m3 = 1000 mg/L")
     add("ssl_formula_factor_0p0864", "WARN" if total_sus else "PASS", total_sus, "records near 10x, 0.1x, 1000x, or 0.001x off canonical SSL")
     for _, label, _ in SUSPECTS:
-        count = sum(int(r.get("n_{}".format(label), 0)) for r in file_rows)
+        count = sum(int(r.get(f"n_{label}", 0)) for r in file_rows)
         add(label, "WARN" if count else "PASS", count, "scanned suspect records for this class")
     add("suspect_rows_written", "INFO", len(suspect_rows), "rows written to suspect CSV; may be capped by --max-suspect-records")
     return pd.DataFrame(rows)
@@ -391,6 +402,10 @@ def main():
     args._suspect_rows = []
     logger = setup_logger()
     logger.info("Starting unit/formula preflight")
+    logger.info("Script path: %s", Path(__file__).resolve())
+    logger.info("Code root: %s", CODE_ROOT)
+    logger.info("Project root: %s", PROJECT_ROOT)
+    logger.info("Output directory: %s", PROJECT_ROOT / OUTPUT_OTHER_DIR)
     logger.info("Canonical formula: SSL_calc = Q * SSC * %.4f", SSL_FACTOR)
     input_csv = Path(args.input_csv) if args.input_csv else None
     scan_root = Path(args.scan_root) if args.scan_root else None
@@ -409,7 +424,7 @@ def main():
     summary_path = TABLE_DIR / "table_unit_formula_check_summary.csv"
     suspect_path = TABLE_DIR / "table_suspect_ssl_conversion_records.csv"
     summary.to_csv(summary_path, index=False)
-    pd.DataFrame(args._suspect_rows).to_csv(suspect_path, index=False)
+    pd.DataFrame(args._suspect_rows, columns=SUSPECT_COLUMNS).to_csv(suspect_path, index=False)
     logger.info("Wrote %s", summary_path)
     logger.info("Wrote %s", suspect_path)
     logger.info("Wrote %s", LOG_PATH)
