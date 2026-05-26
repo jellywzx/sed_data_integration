@@ -93,8 +93,12 @@ RELEASE_STATION_CATALOG_CSV         = "scripts_basin_test/output/sed_reference_r
 RELEASE_SOURCE_STATION_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_station_catalog.csv"
 RELEASE_SOURCE_DATASET_CATALOG_CSV  = "scripts_basin_test/output/sed_reference_release/source_dataset_catalog.csv"
 RELEASE_OVERLAP_CANDIDATES_CSV      = "scripts_basin_test/output/sed_reference_release/sed_reference_overlap_candidates.csv.gz"
-RELEASE_SATELLITE_VALIDATION_NC     = "scripts_basin_test/output/sed_reference_release/sed_reference_satellite_validation.nc"
-RELEASE_SATELLITE_VALIDATION_CATALOG_CSV = "scripts_basin_test/output/sed_reference_release/satellite_validation_catalog.csv"
+RELEASE_SATELLITE_NC                = "scripts_basin_test/output/sed_reference_release/sed_reference_satellite.nc"
+RELEASE_SATELLITE_CATALOG_CSV       = "scripts_basin_test/output/sed_reference_release/satellite_catalog.csv"
+# Deprecated compatibility aliases. Use RELEASE_SATELLITE_NC and
+# RELEASE_SATELLITE_CATALOG_CSV for new release code.
+RELEASE_SATELLITE_VALIDATION_NC     = RELEASE_SATELLITE_NC
+RELEASE_SATELLITE_VALIDATION_CATALOG_CSV = RELEASE_SATELLITE_CATALOG_CSV
 RELEASE_CLUSTER_POINTS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_points.gpkg"
 RELEASE_SOURCE_STATIONS_GPKG        = "scripts_basin_test/output/sed_reference_release/sed_reference_source_stations.gpkg"
 RELEASE_CLUSTER_BASINS_GPKG         = "scripts_basin_test/output/sed_reference_release/sed_reference_cluster_basins.gpkg"
