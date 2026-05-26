@@ -275,9 +275,79 @@ merge_policy
 
 ---
 
-## 7. 核心规则
+## 7. Climatology 发布规则
 
-### 7.1 时间分辨率规则
+Climatology 是发布包中的独立参考层。它必须单独发布为：
+
+```text
+sed_reference_climatology.nc
+```
+
+Climatology 数据的设计原则：
+
+1. 从 `output_resolution_organized/climatology/` 单独扫描和导出。
+2. 不进入 basin tracing。
+3. 不进入 basin cluster merge。
+4. 不进入 `sed_reference_master.nc`。
+5. 不进入 `sed_reference_timeseries_daily.nc`、`sed_reference_timeseries_monthly.nc`、`sed_reference_timeseries_annual.nc`。
+6. 不使用 `cluster_uid + resolution` 作为主索引。
+7. 使用 climatology 产品内部的 `station_uid` 作为稳定站点键。
+8. 主要用于多年平均、气候态或无明确逐日/逐月/逐年时间序列语义的数据。
+9. 下游分析时应与 `daily / monthly / annual` 时间序列产品分开使用，不应自动和 matrix 文件混合。
+
+`s6` 阶段 climatology 中间产物为：
+
+```text
+scripts_basin_test/output/s6_climatology_only.nc
+scripts_basin_test/output/s6_climatology_stations.shp
+```
+
+`s8` 发布阶段应将主 NetCDF 发布为：
+
+```text
+scripts_basin_test/output/sed_reference_release/sed_reference_climatology.nc
+```
+
+Climatology 发布约束：
+
+1. `sed_reference_climatology.nc` 是 release 的核心 NetCDF 之一。
+2. 文件中的记录应只对应 `climatology` resolution 语义。
+3. release validation 应检查 climatology 记录数、时间覆盖和 resolution code 是否一致。
+4. 如果 climatology 文件缺失，完整 release 应失败。
+5. 如果 climatology 文件包含非 climatology resolution code，应视为 mixed-run 或上游分类错误，需要从较早阶段重跑。
+
+Climatology NetCDF 常见字段包括：
+
+```text
+station_uid
+source_station_path
+time
+temporal_span
+resolution
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+lat
+lon
+source
+```
+
+推荐使用方式：
+
+1. 直接读取 `sed_reference_climatology.nc`。
+2. 使用 `station_uid` 定位 climatology station。
+3. 使用 `source_station_path` 回溯原始文件。
+4. 如需与模型或 station matrix 对比，应先明确 climatology 的统计语义和模型输出的统计窗口。
+5. 不要把 climatology 自动当作 daily/monthly/annual 某个时间步的观测值。
+
+---
+
+## 8. 核心规则
+
+### 8.1 时间分辨率规则
 
 最终主分类包括：
 
@@ -305,14 +375,14 @@ daily / monthly / annual / climatology / other
 4. basin 主线默认只处理非 `climatology` 站点。
 5. s2 不直接信任输入目录名，实际以 s1 输出的 `temporal_semantics` 为准。
 
-### 7.2 Cluster 规则
+### 8.2 Cluster 规则
 
 1. 一个 `cluster` 可以包含多个原始站点。
 2. 主线最终必须同时保留 cluster 层、原始站点层和记录层。
 3. 最终记录必须能追溯到 `source_station_uid` 和原始文件路径。
 4. 发布层标准 join key 是 `cluster_uid + resolution`。
 
-### 7.3 Provenance 规则
+### 8.3 Provenance 规则
 
 最终数据需要支持以下追溯：
 
@@ -330,7 +400,7 @@ source_dataset_catalog.csv
 sed_reference_overlap_candidates.csv.gz
 ```
 
-### 7.4 多来源重叠规则
+### 8.4 多来源重叠规则
 
 如果同一个 `cluster`、同一个 `resolution`、同一个时间点存在多个来源：
 
@@ -341,7 +411,7 @@ sed_reference_overlap_candidates.csv.gz
 5. `master nc` 和 `matrix nc` 只保存胜出记录。
 6. 真正的 source-pair overlap 一致性分析应使用 `sed_reference_overlap_candidates.csv.gz`。
 
-### 7.5 Basin 发布策略
+### 8.5 Basin 发布策略
 
 当前 basin 发布策略采用保守规则：
 
@@ -370,7 +440,7 @@ basin_flag
 5. 点面判断使用 `covers()` 而不是 `contains()`，使边界点也视为在面内。
 6. `s4 / s5 / s6 / s7` 只传递和写出这些结果，不重复计算几何关系。
 
-### 7.6 Basin cluster merge 规则
+### 8.6 Basin cluster merge 规则
 
 `s5_basin_merge.py` 的高影响规则：
 
@@ -382,9 +452,9 @@ basin_flag
 
 ---
 
-## 8. 数据结构
+## 9. 数据结构
 
-### 8.1 Cluster 层
+### 9.1 Cluster 层
 
 常见关键字段：
 
@@ -403,7 +473,7 @@ point_in_basin
 n_source_stations_in_cluster
 ```
 
-### 8.2 原始站点层
+### 9.2 原始站点层
 
 常见关键字段：
 
@@ -418,7 +488,7 @@ source_station_paths
 source_station_resolutions
 ```
 
-### 8.3 观测记录层
+### 9.3 观测记录层
 
 常见关键字段：
 
@@ -436,9 +506,9 @@ is_overlap
 
 ---
 
-## 9. s4 和 s6 的生产运行建议
+## 10. s4 和 s6 的生产运行建议
 
-### 9.1 s4：Basin tracing
+### 10.1 s4：Basin tracing
 
 生产环境推荐使用 LSF 提交脚本：
 
@@ -486,7 +556,7 @@ python s4_basin_trace_watch.py
 python run_s1_s8_basin_pipeline.py --steps s4
 ```
 
-### 9.2 s6：NetCDF 导出
+### 10.2 s6：NetCDF 导出
 
 生产环境推荐使用：
 
@@ -530,11 +600,11 @@ SATVAL_N
 
 ---
 
-## 10. 空间文件说明
+## 11. 空间文件说明
 
 当前主线空间产品统一使用 `GPKG`。发布层中的标准空间文件由 `s8_publish_reference_dataset.py` 生成。
 
-### 10.1 Cluster 点位文件
+### 11.1 Cluster 点位文件
 
 文件：
 
@@ -549,7 +619,7 @@ sed_reference_release/sed_reference_cluster_points.gpkg
 2. 作为 NetCDF、catalog 与空间数据之间的多分辨率连接层。
 3. 标准 join key 是 `cluster_uid + resolution`。
 
-### 10.2 原始站点点位文件
+### 11.2 原始站点点位文件
 
 文件：
 
@@ -563,7 +633,7 @@ sed_reference_release/sed_reference_source_stations.gpkg
 1. 查看某个 `cluster_uid + resolution` 内有哪些原始站点参与。
 2. 标准 join key 是 `source_station_uid + resolution`。
 
-### 10.3 Cluster 级流域单元文件
+### 11.3 Cluster 级流域单元文件
 
 文件：
 
@@ -581,7 +651,7 @@ sed_reference_release/sed_reference_cluster_basins.gpkg
 
 ---
 
-## 11. 发布包结构
+## 12. 发布包结构
 
 完整发布目录示例：
 
@@ -624,7 +694,7 @@ scripts_basin_test/output/sed_reference_release/
 
 ---
 
-## 12. 发布数据的标准使用方式
+## 13. 发布数据的标准使用方式
 
 面向下游用户时，推荐按下面顺序使用发布包：
 
@@ -639,8 +709,9 @@ scripts_basin_test/output/sed_reference_release/
 6. 将参考时间序列与模型结果按时间对齐。
 7. 如需完整记录级 provenance，查询 `sed_reference_master.nc`。
 8. 如需原始站点和原始路径，查询 `source_station_catalog.csv`。
-9. 如需 satellite-vs-station validation 或空间诊断，读取 `sed_reference_satellite.nc` 和 `satellite_catalog.csv`。
-10. 如需真正的 source-pair overlap 指标，使用 `sed_reference_overlap_candidates.csv.gz`。
+9. 如需 climatology 参考值，单独读取 `sed_reference_climatology.nc`，不要自动混入 matrix 时间序列。
+10. 如需 satellite-vs-station validation 或空间诊断，读取 `sed_reference_satellite.nc` 和 `satellite_catalog.csv`。
+11. 如需真正的 source-pair overlap 指标，使用 `sed_reference_overlap_candidates.csv.gz`。
 
 如仓库中存在示例脚本，可参考：
 
@@ -669,7 +740,7 @@ python tools/example_reference_workflow.py \
 
 ---
 
-## 13. 推荐运行顺序
+## 14. 推荐运行顺序
 
 如果是完整重跑，推荐顺序为：
 
@@ -711,7 +782,7 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 
 ---
 
-## 14. 什么时候需要重跑
+## 15. 什么时候需要重跑
 
 | 变化 | 建议重跑范围 | 原因 |
 |---|---|---|
@@ -720,6 +791,7 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 | basin tracing 或 `basin_status` 规则变化 | 从 s4 起 | s4 重新生成 basin 诊断，s5 以后都依赖它 |
 | cluster merge 规则变化 | 从 s5 起 | cluster_id / cluster_uid 可能变化 |
 | s6 输出字段或发布 contract 变化 | 至少重跑 s6 -> s8 | master、matrix、climatology、satellite 和 release 需要保持一致 |
+| climatology 分类规则或 climatology schema 变化 | 至少重跑 s6 -> s8，必要时从 s2 起 | climatology 独立产品依赖 s2 分类目录和 s6 独立导出 |
 | satellite source family 或 satellite schema 变化 | 至少重跑 s6 -> s8 | satellite NetCDF 和 catalog 是强制 release 产物 |
 | 只改发布层命名、link mode、是否输出 GPKG | 通常只需重跑 s8 | s8 负责发布包物化和校验 |
 
@@ -734,7 +806,7 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 
 ---
 
-## 15. 依赖说明
+## 16. 依赖说明
 
 常见 Python 依赖包括：
 
@@ -758,7 +830,7 @@ matplotlib
 
 ---
 
-## 16. 代码导航
+## 17. 代码导航
 
 | 文件 | 作用 |
 |---|---|
@@ -785,7 +857,7 @@ matplotlib
 
 ---
 
-## 17. 非主线脚本说明
+## 18. 非主线脚本说明
 
 当前目录下仍保留一些历史脚本、兼容脚本或辅助脚本，例如：
 
@@ -801,6 +873,6 @@ s6_summarize_matrix_ncs.py
 
 ---
 
-## 18. 一句话总结
+## 19. 一句话总结
 
-当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。
+当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出为独立发布产品，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。
