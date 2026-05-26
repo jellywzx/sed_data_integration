@@ -169,79 +169,6 @@ annual_cmd="${PYTHON_BIN} s6_export_annual_matrix_nc.py -i ${S5_CSV} --out-dir $
 clim_cmd="${PYTHON_BIN} s6_export_climatology_to_nc.py --input-dir ${CLIM_INPUT_DIR} --output ${OUT_DIR}/s6_climatology_only.nc --output-shp ${OUT_DIR}/s6_climatology_stations.shp"
 satval_cmd="${PYTHON_BIN} s6_export_satellite_validation_to_nc.py"
 
-SUMMARY_LOG="${LOG_DIR}/s6fast_summary.$(date +%Y%m%d_%H%M%S).log"
-SUMMARY_SCRIPT="${LOG_DIR}/.s6fast_summary_check.sh"
-cat > "${SUMMARY_SCRIPT}" << 'SUMEOF'
-#!/usr/bin/env bash
-set -u
-
-summary_log="$1"
-shift
-
-{
-  echo "S6 fast summary"
-  echo "Generated: $(date '+%Y-%m-%d %H:%M:%S')"
-  echo
-  printf "%-12s %-12s %-16s %s\n" "STEP" "JOBID" "LSF_STATUS" "OUTPUT_FILES"
-  printf "%-12s %-12s %-16s %s\n" "----" "-----" "----------" "------------"
-
-  all_jobs_done=1
-  all_outputs_present=1
-
-  for spec in "$@"; do
-    IFS='|' read -r step jid lsf_out files_csv <<< "${spec}"
-
-    lsf_status="NO_LSF_LOG"
-    if [[ -f "${lsf_out}" ]]; then
-      if grep -q "Successfully completed." "${lsf_out}"; then
-        lsf_status="DONE"
-      elif grep -q "Exited with exit code" "${lsf_out}"; then
-        lsf_status="EXIT"
-      else
-        lsf_status="ENDED_UNKNOWN"
-      fi
-    fi
-
-    if [[ "${lsf_status}" != "DONE" ]]; then
-      all_jobs_done=0
-    fi
-
-    IFS=',' read -r -a files <<< "${files_csv}"
-    file_parts=()
-    for f in "${files[@]}"; do
-      if [[ -f "${f}" ]]; then
-        size="$(stat -c%s "${f}" 2>/dev/null || stat -f%z "${f}" 2>/dev/null || echo 0)"
-        if command -v numfmt >/dev/null 2>&1; then
-          size_h="$(numfmt --to=iec "${size}" 2>/dev/null || echo "${size}B")"
-        else
-          size_h="${size}B"
-        fi
-        file_parts+=("OK:$(basename "${f}"):${size_h}")
-      else
-        file_parts+=("MISSING:$(basename "${f}")")
-        all_outputs_present=0
-      fi
-    done
-
-    old_ifs="${IFS}"
-    IFS='; '
-    files_text="${file_parts[*]}"
-    IFS="${old_ifs}"
-    printf "%-12s %-12s %-16s %s\n" "${step}" "${jid}" "${lsf_status}" "${files_text}"
-  done
-
-  echo
-  if [[ ${all_jobs_done} -eq 1 && ${all_outputs_present} -eq 1 ]]; then
-    echo "RESULT: ALL_STEPS_COMPLETED_SUCCESSFULLY"
-  elif [[ ${all_jobs_done} -eq 1 ]]; then
-    echo "RESULT: ALL_STEPS_ENDED_BUT_OUTPUTS_MISSING"
-  else
-    echo "RESULT: ONE_OR_MORE_STEPS_FAILED_OR_UNKNOWN"
-  fi
-} | tee "${summary_log}"
-SUMEOF
-chmod +x "${SUMMARY_SCRIPT}"
-
 should_run() {
   local step="$1"
   if [[ -z "${RUN_ONLY}" ]]; then
@@ -284,50 +211,12 @@ echo "Submitted jobs:"
 [[ -n "${clim_jid}" ]] && echo "  clim    : ${clim_jid}"
 [[ -n "${satval_jid}" ]] && echo "  satellite: ${satval_jid}"
 
-summary_jid=""
-summary_dep_parts=()
-summary_specs=()
-if [[ -n "${merge_jid}" ]]; then
-  summary_dep_parts+=("ended(${merge_jid})")
-  summary_specs+=("merge|${merge_jid}|${LOG_DIR}/${JOB_TAG}_merge.${merge_jid}.out|${OUT_DIR}/s6_basin_merged_all.nc,${OUT_DIR}/s6_cluster_quality_order.csv")
-fi
-if [[ -n "${daily_jid}" ]]; then
-  summary_dep_parts+=("ended(${daily_jid})")
-  summary_specs+=("daily|${daily_jid}|${LOG_DIR}/${JOB_TAG}_daily.${daily_jid}.out|${MATRIX_DIR}/s6_basin_matrix_daily.nc")
-fi
-if [[ -n "${monthly_jid}" ]]; then
-  summary_dep_parts+=("ended(${monthly_jid})")
-  summary_specs+=("monthly|${monthly_jid}|${LOG_DIR}/${JOB_TAG}_monthly.${monthly_jid}.out|${MATRIX_DIR}/s6_basin_matrix_monthly.nc")
-fi
-if [[ -n "${annual_jid}" ]]; then
-  summary_dep_parts+=("ended(${annual_jid})")
-  summary_specs+=("annual|${annual_jid}|${LOG_DIR}/${JOB_TAG}_annual.${annual_jid}.out|${MATRIX_DIR}/s6_basin_matrix_annual.nc")
-fi
-if [[ -n "${clim_jid}" ]]; then
-  summary_dep_parts+=("ended(${clim_jid})")
-  summary_specs+=("clim|${clim_jid}|${LOG_DIR}/${JOB_TAG}_clim.${clim_jid}.out|${OUT_DIR}/s6_climatology_only.nc")
-fi
-if [[ -n "${satval_jid}" ]]; then
-  summary_dep_parts+=("ended(${satval_jid})")
-  summary_specs+=("satellite|${satval_jid}|${LOG_DIR}/${JOB_TAG}_satellite.${satval_jid}.out|${OUT_DIR}/s6_satellite_validation_only.nc,${OUT_DIR}/s6_satellite_validation_catalog.csv")
-fi
-
-summary_dep=""
-for dep_part in "${summary_dep_parts[@]}"; do
-  if [[ -z "${summary_dep}" ]]; then
-    summary_dep="${dep_part}"
-  else
-    summary_dep="${summary_dep} && ${dep_part}"
-  fi
-done
-
-if [[ -n "${summary_dep}" && ${#summary_specs[@]} -gt 0 ]]; then
-  summary_cmd="${SUMMARY_SCRIPT} ${SUMMARY_LOG}"
-  for spec in "${summary_specs[@]}"; do
-    summary_cmd="${summary_cmd} '${spec}'"
-  done
-  summary_jid="$(submit_job "${JOB_TAG}_summary" "1" "4000" "${summary_cmd}" "${summary_dep}")"
-  echo "  summary : ${summary_jid}"
+check_jid=""
+if [[ -z "${RUN_ONLY}" ]]; then
+  check_dep="done(${merge_jid}) && done(${daily_jid}) && done(${monthly_jid}) && done(${annual_jid}) && done(${clim_jid}) && done(${satval_jid})"
+  check_cmd="ls -lh ${OUT_DIR}/s6_basin_merged_all.nc ${OUT_DIR}/s6_cluster_quality_order.csv ${MATRIX_DIR}/s6_basin_matrix_daily.nc ${MATRIX_DIR}/s6_basin_matrix_monthly.nc ${MATRIX_DIR}/s6_basin_matrix_annual.nc ${OUT_DIR}/s6_climatology_only.nc ${OUT_DIR}/s6_satellite_validation_only.nc ${OUT_DIR}/s6_satellite_validation_catalog.csv"
+  check_jid="$(submit_job "${JOB_TAG}_check" "1" "4000" "${check_cmd}" "${check_dep}")"
+  echo "  check   : ${check_jid}"
 fi
 
 track_ids=()
@@ -337,9 +226,8 @@ track_ids=()
 [[ -n "${annual_jid}" ]] && track_ids+=("${annual_jid}")
 [[ -n "${clim_jid}" ]] && track_ids+=("${clim_jid}")
 [[ -n "${satval_jid}" ]] && track_ids+=("${satval_jid}")
-[[ -n "${summary_jid}" ]] && track_ids+=("${summary_jid}")
+[[ -n "${check_jid}" ]] && track_ids+=("${check_jid}")
 if [[ ${#track_ids[@]} -gt 0 ]]; then
   echo "Track with: bjobs -w ${track_ids[*]}"
 fi
 echo "Submit log: ${SUBMIT_LOG}"
-echo "Summary log: ${SUMMARY_LOG}"

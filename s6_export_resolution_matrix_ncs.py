@@ -719,7 +719,14 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
 def _collect_resolution_series(resolution, resolution_df, workers):
     tasks = []
     for cid, group in resolution_df.groupby("cluster_id", sort=True):
-        recs = list(zip(group["source"], group["path"], group["source_station_global_index"]))
+        recs = list(
+            zip(
+                group["source"],
+                group["observation_type"],
+                group["path"],
+                group["source_station_global_index"],
+            )
+        )
         tasks.append((int(cid), resolution, recs))
 
     series_results = {}
