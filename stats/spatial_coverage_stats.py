@@ -48,8 +48,8 @@ ROOT = get_output_r_root(PROJECT_SCRIPT_DIR)
 DEFAULT_CLUSTER_CATALOG = ROOT / S7_CLUSTER_STATION_CATALOG_CSV
 DEFAULT_SOURCE_CATALOG = ROOT / S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV
 DEFAULT_BASIN_GPKG = ROOT / S7_CLUSTER_BASINS_GPKG
-DEFAULT_TABLES_DIR = ROOT / "scripts_basin_test/output/tables"
-DEFAULT_FIGURES_DIR = ROOT / "scripts_basin_test/output/figures"
+DEFAULT_TABLES_DIR = ROOT / "scripts_basin_test/output_other/tables"
+DEFAULT_FIGURES_DIR = ROOT / "scripts_basin_test/output_other/figures"
 
 AREA_BINS = [0, 10, 100, 1000, 10000, 100000, np.inf]
 AREA_LABELS = [

@@ -37,11 +37,14 @@ import pandas as pd
 
 from cluster_spatial_catalog import (
     CLUSTER_RESOLUTIONS,
+    GEO_METADATA_COLUMNS,
     HAS_GPD,
     HAS_NC,
     RESOLUTION_CODE_TO_NAME,
     RESOLUTION_NAME_TO_CODE,
+    attach_geo_metadata_from_source_catalog,
     build_source_dataset_catalog,
+    enrich_source_station_geography,
     normalize_cluster_resolution_catalog,
     normalize_cluster_station_catalog,
     normalize_source_station_resolution_catalog,
@@ -1044,6 +1047,30 @@ def write_inventory(file_records, out_path, release_dir):
     return _write_csv(df, out_path)
 
 
+def _geo_column_validation_rows(label, frame):
+    missing = sorted(set(GEO_METADATA_COLUMNS) - set(frame.columns))
+    if missing:
+        return [
+            {
+                "check": "geo_metadata_columns_{}".format(label),
+                "status": "fail",
+                "details": "missing columns: {}".format(", ".join(missing)),
+            }
+        ]
+    total = len(frame)
+    coverage = []
+    for col in GEO_METADATA_COLUMNS:
+        nonempty = int(frame[col].fillna("").astype(str).str.strip().ne("").sum()) if total else 0
+        coverage.append("{}={}/{}".format(col, nonempty, total))
+    return [
+        {
+            "check": "geo_metadata_columns_{}".format(label),
+            "status": "pass",
+            "details": "; ".join(coverage),
+        }
+    ]
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
     lat1 = np.deg2rad(np.asarray(lat1, dtype=np.float64))
     lon1 = np.deg2rad(np.asarray(lon1, dtype=np.float64))
@@ -1310,9 +1337,9 @@ This directory is the user-facing release layer of the sediment reference datase
 
 ## Catalogs
 
-- `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, record count, and time coverage.
-- `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, and original file path.
-- `source_dataset_catalog.csv`: one row per source dataset with metadata and aggregate counts.
+- `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, geographic metadata, record count, and time coverage.
+- `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, original file path, and source NetCDF geographic metadata.
+- `source_dataset_catalog.csv`: one row per source dataset with metadata, aggregate counts, and aggregated geographic coverage fields.
 - `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
 ## Satellite validation layer
@@ -1361,6 +1388,7 @@ python3 example_reference_workflow.py \\
 
 - `cluster_uid + resolution` is the standard GIS join key for cluster points and basins.
 - `source_station_uid + resolution` is the standard GIS join key for source points.
+- Geographic fields (`country`, `continent_region`, `geographic_coverage`, `iso_a3`) are propagated from upstream source NetCDF global attributes when available; `geo_attribute_source` and `geo_attribute_confidence` describe provenance and completeness.
 - `selected_source_station_uid` is the matrix-native provenance key for each station-time cell.
 - `sed_reference_master.nc` and matrix NetCDF files keep the selected / winning record only; they do not store non-selected candidate values.
 - `is_overlap=1` marks that multiple sources competed for a cluster-resolution-time key, but it is not itself a candidate-value table.
@@ -1393,6 +1421,10 @@ def validate_release(
     cluster_station_catalog = normalize_cluster_station_catalog(cluster_station_catalog)
     cluster_resolution_catalog = normalize_cluster_resolution_catalog(station_catalog)
     source_station_catalog = normalize_source_station_resolution_catalog(source_station_catalog)
+
+    rows.extend(_geo_column_validation_rows("cluster_station_catalog", cluster_station_catalog))
+    rows.extend(_geo_column_validation_rows("station_catalog", cluster_resolution_catalog))
+    rows.extend(_geo_column_validation_rows("source_station_catalog", source_station_catalog))
 
     cluster_uid_lookup = cluster_station_catalog.set_index("cluster_uid")["master_station_index"].to_dict()
     source_key_lookup = source_station_catalog.set_index(
@@ -1946,6 +1978,21 @@ def main():
     )
     source_station_catalog = normalize_source_station_resolution_catalog(
         pd.read_csv(source_station_resolution_catalog_in, keep_default_na=False)
+    )
+    source_station_catalog = enrich_source_station_geography(source_station_catalog)
+    cluster_station_catalog = normalize_cluster_station_catalog(
+        attach_geo_metadata_from_source_catalog(
+            cluster_station_catalog,
+            source_station_catalog,
+            ("cluster_uid",),
+        )
+    )
+    station_catalog = normalize_cluster_resolution_catalog(
+        attach_geo_metadata_from_source_catalog(
+            station_catalog,
+            source_station_catalog,
+            ("cluster_uid", "resolution"),
+        )
     )
     source_dataset_catalog = build_source_dataset_catalog(source_station_catalog)
 
