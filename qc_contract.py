@@ -280,6 +280,8 @@ def read_station_metadata(ds):
         "station_name": get_first_attr_value(ds, STATION_NAME_ATTR_KEYS, limit=256),
         "river_name": get_first_attr_value(ds, RIVER_NAME_ATTR_KEYS, limit=256),
         "source_station_id": get_first_attr_value(ds, STATION_ID_ATTR_KEYS, limit=256),
+        "continent_region": get_first_attr_value(ds, ["continent_region"], limit=128),
+        "country": get_first_attr_value(ds, ["country"], limit=128),
     }
 
 
