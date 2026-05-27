@@ -62,8 +62,15 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SCRIPT_ROOT = SCRIPT_DIR.parent
-if str(SCRIPT_ROOT) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_ROOT))
+
+# Support both layouts:
+#   1) repo_root/stats/temporal_coverage_stats.py
+#   2) Output_r/scripts_basin_test/stats/temporal_coverage_stats.py
+# In layout (2), shared modules such as qc_contract.py may live under Output_r.
+for import_root in (SCRIPT_ROOT, SCRIPT_ROOT.parent):
+    path_text = str(import_root)
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
 
 from pipeline_paths import (  # noqa: E402
     RELEASE_CLIMATOLOGY_NC,

@@ -49,6 +49,7 @@ NetCDF 结构：
 import os
 import argparse
 import atexit
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -2041,6 +2042,14 @@ def main():
         nc.n_source_stations = str(n_source_stations)
         nc.n_clusters     = str(n_stations)
         nc.created        = datetime.now().isoformat(timespec="seconds")
+        nc.dataset_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            nc.pipeline_git_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(SCRIPT_DIR),
+            ).decode("utf-8").strip()
+        except Exception:
+            nc.pipeline_git_sha = "unknown"
 
         # Flush all data to disk before close to avoid HDF5 segfault when
         # freeing VL-string type IDs in nc4_HDF5_close_att.

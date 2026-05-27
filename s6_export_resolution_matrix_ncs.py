@@ -24,6 +24,7 @@ Design:
 import argparse
 import os
 import socket
+import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -712,6 +713,14 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nc.qc_stage_schema_version = "1"
         nc.n_clusters = str(n_stations)
         nc.n_time_steps = str(n_time)
+        nc.dataset_version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            nc.pipeline_git_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(SCRIPT_DIR),
+            ).decode("utf-8").strip()
+        except Exception:
+            nc.pipeline_git_sha = "unknown"
 
         nc.sync()
 
@@ -719,7 +728,14 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
 def _collect_resolution_series(resolution, resolution_df, workers):
     tasks = []
     for cid, group in resolution_df.groupby("cluster_id", sort=True):
-        recs = list(zip(group["source"], group["path"], group["source_station_global_index"]))
+        recs = list(
+            zip(
+                group["source"],
+                group["observation_type"],
+                group["path"],
+                group["source_station_global_index"],
+            )
+        )
         tasks.append((int(cid), resolution, recs))
 
     series_results = {}

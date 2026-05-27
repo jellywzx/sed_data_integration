@@ -33,6 +33,21 @@ except ImportError:
 
 
 CLUSTER_RESOLUTIONS = ("daily", "monthly", "annual")
+GEO_METADATA_COLUMNS = [
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
+]
+GEO_VALUE_COLUMNS = GEO_METADATA_COLUMNS[:4]
+GEO_ATTR_KEY_MAP = {
+    "country": ("country", "Country"),
+    "continent_region": ("continent_region", "continent", "region", "Continent_Region"),
+    "geographic_coverage": ("geographic_coverage", "Geographic_Coverage"),
+    "iso_a3": ("iso_a3", "ISO_A3", "adm0_a3", "ADM0_A3"),
+}
 RESOLUTION_CODE_TO_NAME = {
     0: "daily",
     1: "monthly",
@@ -55,6 +70,12 @@ STATION_CATALOG_COLUMNS = [
     "river_name",
     "source_station_id",
     "sources_used",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "n_source_stations_in_cluster",
     "basin_match_quality_code",
     "basin_match_quality",
@@ -88,6 +109,12 @@ RESOLUTION_CATALOG_COLUMNS = [
     "river_name",
     "source_station_id",
     "sources_used",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "lat",
     "lon",
     "basin_area",
@@ -117,6 +144,12 @@ SOURCE_RESOLUTION_CATALOG_COLUMNS = [
     "institution",
     "reference",
     "source_url",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "source_station_native_id",
     "source_station_name",
     "source_station_river_name",
@@ -170,6 +203,12 @@ SUMMARY_LAYER_COLUMNS = [
     "station_name",
     "river_name",
     "source_station_id",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "lat",
     "lon",
     "basin_area",
@@ -206,6 +245,12 @@ RESOLUTION_LAYER_COLUMNS = [
     "station_name",
     "river_name",
     "sources_used",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "lat",
     "lon",
     "basin_area",
@@ -233,6 +278,12 @@ SOURCE_LAYER_COLUMNS = [
     "river_name",
     "source_station_native_id",
     "source_station_paths",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
     "lat",
     "lon",
 ]
@@ -284,6 +335,182 @@ def _read_text_var(ds, name, size=None):
     values = ds.variables[name][:]
     arr = np.asarray(values, dtype=object).reshape(-1)
     return [_clean_text(item) for item in arr]
+
+
+def _unique_join(values):
+    out = []
+    seen = set()
+    for value in values:
+        text = _clean_text(value)
+        if not text:
+            continue
+        for part in text.split("|"):
+            part = _clean_text(part)
+            key = part.lower()
+            if part and key not in seen:
+                out.append(part)
+                seen.add(key)
+    return "|".join(out)
+
+
+def _split_catalog_paths(path_text):
+    text = _clean_text(path_text)
+    if not text:
+        return []
+    return [_clean_text(part) for part in text.split("|") if _clean_text(part)]
+
+
+def _first_attr_text(ds, keys):
+    attr_names = list(ds.ncattrs())
+    lower_lookup = dict((str(name).lower(), name) for name in attr_names)
+    for key in keys:
+        name = lower_lookup.get(str(key).lower())
+        if name is None:
+            continue
+        text = _clean_text(getattr(ds, name, ""))
+        if text:
+            return text
+    return ""
+
+
+def _empty_geo_values():
+    return dict((col, "") for col in GEO_VALUE_COLUMNS)
+
+
+def _read_geo_metadata_from_nc(path):
+    values = _empty_geo_values()
+    if not HAS_NC:
+        return values
+    path = Path(_clean_text(path))
+    if not path.is_file():
+        return values
+    try:
+        with nc4.Dataset(path, "r") as ds:
+            for field, keys in GEO_ATTR_KEY_MAP.items():
+                values[field] = _first_attr_text(ds, keys)
+    except Exception:
+        return _empty_geo_values()
+    return values
+
+
+def _geo_source_and_confidence(values, used_source_nc, had_existing):
+    n_filled = sum(1 for col in GEO_VALUE_COLUMNS if _clean_text(values.get(col, "")))
+    if n_filled == 0:
+        return "missing", "missing"
+    if used_source_nc:
+        source = "source_nc_global_attrs" if n_filled == len(GEO_VALUE_COLUMNS) else "source_nc_global_attrs_partial"
+    elif had_existing:
+        source = "existing_catalog"
+    else:
+        source = "missing"
+    confidence = "high" if n_filled == len(GEO_VALUE_COLUMNS) else "medium"
+    return source, confidence
+
+
+def _aggregate_geo_rows(frame):
+    values = dict((col, _unique_join(frame[col].tolist() if col in frame.columns else [])) for col in GEO_VALUE_COLUMNS)
+    sources = [_clean_text(v) for v in frame.get("geo_attribute_source", pd.Series(dtype=object)).tolist()]
+    confidences = [_clean_text(v) for v in frame.get("geo_attribute_confidence", pd.Series(dtype=object)).tolist()]
+    if any(v.startswith("source_nc_global_attrs") for v in sources):
+        values["geo_attribute_source"] = "source_nc_global_attrs" if all(values.get(col, "") for col in GEO_VALUE_COLUMNS) else "source_nc_global_attrs_partial"
+    elif any(v == "existing_catalog" for v in sources):
+        values["geo_attribute_source"] = "existing_catalog"
+    else:
+        values["geo_attribute_source"] = "missing" if not any(values.get(col, "") for col in GEO_VALUE_COLUMNS) else "existing_catalog"
+
+    if any(v == "high" for v in confidences) and all(values.get(col, "") for col in GEO_VALUE_COLUMNS):
+        values["geo_attribute_confidence"] = "high"
+    elif any(values.get(col, "") for col in GEO_VALUE_COLUMNS):
+        values["geo_attribute_confidence"] = "medium"
+    else:
+        values["geo_attribute_confidence"] = "missing"
+    return values
+
+
+def _ensure_geo_columns(work):
+    for col in GEO_METADATA_COLUMNS:
+        if col not in work.columns:
+            work[col] = ""
+    for col in GEO_METADATA_COLUMNS:
+        work[col] = work[col].fillna("").astype(str).str.strip()
+    return work
+
+
+def _source_catalog_needs_geo_enrichment(source_catalog):
+    if source_catalog is None or len(source_catalog) == 0:
+        return False
+    if any(col not in source_catalog.columns for col in GEO_METADATA_COLUMNS):
+        return True
+    return source_catalog["geo_attribute_source"].fillna("").astype(str).str.strip().eq("").any()
+
+
+def enrich_source_station_geography(source_catalog):
+    work = normalize_source_station_resolution_catalog(source_catalog)
+    work = _ensure_geo_columns(work)
+    path_cache = {}
+
+    for idx, row in work.iterrows():
+        existing_values = dict((col, _clean_text(row.get(col, ""))) for col in GEO_VALUE_COLUMNS)
+        values = dict(existing_values)
+        had_existing = any(existing_values.values()) or bool(_clean_text(row.get("geo_attribute_source", "")))
+        used_source_nc = False
+
+        for source_path in _split_catalog_paths(row.get("source_station_paths", "")):
+            if source_path not in path_cache:
+                path_cache[source_path] = _read_geo_metadata_from_nc(source_path)
+            meta = path_cache[source_path]
+            if any(_clean_text(meta.get(col, "")) for col in GEO_VALUE_COLUMNS):
+                used_source_nc = True
+            for col in GEO_VALUE_COLUMNS:
+                values[col] = _unique_join([values.get(col, ""), meta.get(col, "")])
+
+        existing_source = _clean_text(row.get("geo_attribute_source", ""))
+        existing_confidence = _clean_text(row.get("geo_attribute_confidence", ""))
+        if not used_source_nc and existing_source and existing_source != "missing":
+            source = existing_source
+            confidence = existing_confidence or _geo_source_and_confidence(values, False, had_existing)[1]
+        else:
+            source, confidence = _geo_source_and_confidence(values, used_source_nc, had_existing)
+        for col in GEO_VALUE_COLUMNS:
+            work.at[idx, col] = values.get(col, "")
+        work.at[idx, "geo_attribute_source"] = source
+        work.at[idx, "geo_attribute_confidence"] = confidence
+
+    return normalize_source_station_resolution_catalog(work)
+
+
+def attach_geo_metadata_from_source_catalog(target_catalog, source_station_catalog, keys):
+    keys = list(keys)
+    target = _ensure_geo_columns(target_catalog.copy())
+    if _source_catalog_needs_geo_enrichment(source_station_catalog):
+        source = enrich_source_station_geography(source_station_catalog)
+    else:
+        source = normalize_source_station_resolution_catalog(source_station_catalog)
+        source = _ensure_geo_columns(source)
+    source = source[[col for col in keys + GEO_METADATA_COLUMNS if col in source.columns]].copy()
+    if source.empty or any(col not in source.columns for col in keys):
+        return _ensure_geo_columns(target)
+
+    groupby_keys = keys[0] if len(keys) == 1 else keys
+    rows = []
+    for key_values, group in source.groupby(groupby_keys, dropna=False, sort=False):
+        if not isinstance(key_values, tuple):
+            key_values = (key_values,)
+        row = dict(zip(keys, key_values))
+        row.update(_aggregate_geo_rows(group))
+        rows.append(row)
+    if not rows:
+        return _ensure_geo_columns(target)
+
+    geo = pd.DataFrame(rows)
+    merged = target.merge(geo, on=keys, how="left", suffixes=("", "_source_geo"))
+    for col in GEO_METADATA_COLUMNS:
+        source_col = "{}_source_geo".format(col)
+        if source_col not in merged.columns:
+            continue
+        merged[col] = merged[col].where(merged[col].astype(str).str.strip().ne(""), merged[source_col])
+        merged = merged.drop(columns=[source_col])
+    return _ensure_geo_columns(merged)
 
 
 def _read_float_array(ds, name, fill_values=None, size=None):
@@ -435,6 +662,12 @@ def normalize_cluster_station_catalog(station_catalog):
         "river_name",
         "source_station_id",
         "sources_used",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
         "basin_match_quality",
         "basin_status",
         "basin_flag",
@@ -484,6 +717,12 @@ def normalize_cluster_resolution_catalog(resolution_catalog):
         "river_name",
         "source_station_id",
         "sources_used",
+    "country",
+    "continent_region",
+    "geographic_coverage",
+    "iso_a3",
+    "geo_attribute_source",
+    "geo_attribute_confidence",
         "basin_match_quality",
         "basin_status",
         "basin_flag",
@@ -932,7 +1171,11 @@ def build_source_station_resolution_catalog(master_nc, chunk_size=500000):
 
 
 def build_source_dataset_catalog(source_station_resolution_catalog):
-    source_catalog = normalize_source_station_resolution_catalog(source_station_resolution_catalog)
+    if _source_catalog_needs_geo_enrichment(source_station_resolution_catalog):
+        source_catalog = enrich_source_station_geography(source_station_resolution_catalog)
+    else:
+        source_catalog = normalize_source_station_resolution_catalog(source_station_resolution_catalog)
+        source_catalog = _ensure_geo_columns(source_catalog)
     keep_cols = ["source_name", "source_long_name", "institution", "reference", "source_url"]
     source_df = source_catalog[keep_cols].drop_duplicates(subset=["source_name"]).copy()
     source_df = source_df.sort_values("source_name").reset_index(drop=True)
@@ -947,7 +1190,13 @@ def build_source_dataset_catalog(source_station_resolution_catalog):
         )
         .reset_index()
     )
-    return source_df.merge(counts, on="source_name", how="left")
+    geo_rows = []
+    for source_name, group in source_catalog.groupby("source_name", observed=True, sort=False):
+        row = {"source_name": source_name}
+        row.update(_aggregate_geo_rows(group))
+        geo_rows.append(row)
+    geo_df = pd.DataFrame(geo_rows) if geo_rows else pd.DataFrame(columns=["source_name"] + GEO_METADATA_COLUMNS)
+    return source_df.merge(geo_df, on="source_name", how="left").merge(counts, on="source_name", how="left")
 
 
 def list_gpkg_layers(path):

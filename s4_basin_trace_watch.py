@@ -103,6 +103,7 @@ def _env_int(name, default):
 
 
 SAVE_GPKG = _env_bool("S4_SAVE_GPKG", True)
+GPKG_EXCLUDE_SATELLITE = _env_bool("S4_GPKG_EXCLUDE_SATELLITE", False)
 RESUME    = _env_bool("S4_RESUME", True)
 N_WORKERS = _env_int("S4_N_WORKERS", 24)
 BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)  # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
@@ -139,7 +140,28 @@ CSV_COLUMNS = [
     "basin_flag",
     "n_upstream_reaches",
 ]
-CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + ["geometry_wkt", "geometry_local_wkt"]
+GEOMETRY_EXPORT_COLUMNS = ["geometry_wkt", "geometry_local_wkt"]
+GPKG_EXPORT_CONTROL_COLUMNS = ["_s4_gpkg_include"]
+CSV_COLUMNS_WITH_GEOM = CSV_COLUMNS + GEOMETRY_EXPORT_COLUMNS + GPKG_EXPORT_CONTROL_COLUMNS
+SATELLITE_OBSERVATION_TYPE_TOKENS = {
+    "satellite",
+    "remote_sensing",
+    "remote_sensing_observation",
+    "satellite_observation",
+}
+
+
+def _normalize_observation_type(value):
+    text = "" if value is None else str(value).strip()
+    return text.lower().replace("-", "_").replace(" ", "_")
+
+
+def _is_satellite_observation_type(value):
+    return _normalize_observation_type(value) in SATELLITE_OBSERVATION_TYPE_TOKENS
+
+
+def _gpkg_include_for_observation_type(value):
+    return not (GPKG_EXCLUDE_SATELLITE and _is_satellite_observation_type(value))
 
 
 def _has_valid_reach_info(reach_info):
@@ -452,6 +474,9 @@ def _trace_chunk(args):
                 "n_upstream_reaches": basin_result["n_upstream_reaches"],
                 "geometry": basin_result["geometry"],
                 "geometry_local": basin_result["geometry_local"],
+                "_s4_gpkg_include": _gpkg_include_for_observation_type(
+                    station.get("observation_type")
+                ),
             }
         )
         if _shared_counter is not None:
@@ -496,6 +521,7 @@ def _build_skip_result(station):
         "n_upstream_reaches": 0,
         "geometry": None,
         "geometry_local": None,
+        "_s4_gpkg_include": _gpkg_include_for_observation_type(station.get("observation_type")),
     }
 
 
@@ -535,13 +561,49 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
             out_row["geometry_wkt"] = geometry.wkt if geometry is not None else ""
             geometry_local = row.get("geometry_local")                                          # ← 新增
             out_row["geometry_local_wkt"] = geometry_local.wkt if geometry_local is not None else ""  # ← 新增
+            out_row["_s4_gpkg_include"] = bool(row.get("_s4_gpkg_include", True))
         rows.append(out_row)
     columns = CSV_COLUMNS_WITH_GEOM if include_geometry else CSV_COLUMNS
     return pd.DataFrame(rows, columns=columns)
 
 
 def _drop_geometry_export_columns(df):
-    return df.drop(columns=["geometry_wkt", "geometry_local_wkt"], errors="ignore")
+    return df.drop(columns=GEOMETRY_EXPORT_COLUMNS + GPKG_EXPORT_CONTROL_COLUMNS, errors="ignore")
+
+
+def _drop_gpkg_control_columns(df):
+    return df.drop(columns=GPKG_EXPORT_CONTROL_COLUMNS, errors="ignore")
+
+
+def _export_control_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = "" if value is None else str(value).strip().lower()
+    if not text or text == "nan":
+        return True
+    return text in {"1", "true", "t", "yes", "y"}
+
+
+def _filter_gpkg_export_rows(result_df, logger):
+    if not GPKG_EXCLUDE_SATELLITE:
+        return result_df
+
+    column = GPKG_EXPORT_CONTROL_COLUMNS[0]
+    if column not in result_df.columns:
+        logger.warning(
+            "%s not found; cannot filter satellite rows from S4 GPKG export",
+            column,
+        )
+        return result_df
+
+    include_mask = result_df[column].map(_export_control_to_bool)
+    filtered_df = result_df.loc[include_mask].copy()
+    logger.info(
+        "S4 GPKG satellite filter excluded %d of %d rows",
+        len(result_df) - len(filtered_df),
+        len(result_df),
+    )
+    return filtered_df
 
 
 def _write_gpkg_from_wkt(result_df, wkt_column, out_path, label, logger):
@@ -628,8 +690,13 @@ def _merge_and_write_outputs(result_df, logger):
 
     if SAVE_GPKG:
         try:
+            gpkg_df = _drop_gpkg_control_columns(_filter_gpkg_export_rows(result_df, logger))
+            if len(gpkg_df) == 0:
+                logger.info("No rows remain for S4 GPKG export; skipping GPKG outputs")
+                return
+
             _write_gpkg_from_wkt(
-                result_df=result_df,
+                result_df=gpkg_df,
                 wkt_column="geometry_wkt",
                 out_path=OUT_GPKG,
                 label="basin GPKG",
@@ -638,7 +705,7 @@ def _merge_and_write_outputs(result_df, logger):
 
             if "geometry_local_wkt" in result_df.columns:
                 _write_gpkg_from_wkt(
-                    result_df=result_df,
+                    result_df=gpkg_df,
                     wkt_column="geometry_local_wkt",
                     out_path=OUT_LOCAL_GPKG,
                     label="local catchment GPKG",
@@ -694,11 +761,12 @@ def main():
         return 1
 
     logger.info(
-        "s4 config | workers=%d | batch_size=%d | resume=%s | save_gpkg=%s | maxtasksperchild=%d | shard=%d/%d | finalize_only=%s",
+        "s4 config | workers=%d | batch_size=%d | resume=%s | save_gpkg=%s | gpkg_exclude_satellite=%s | maxtasksperchild=%d | shard=%d/%d | finalize_only=%s",
         N_WORKERS,
         BATCH_SIZE,
         RESUME,
         SAVE_GPKG,
+        GPKG_EXCLUDE_SATELLITE,
         MAX_TASKS_PER_CHILD,
         SHARD_INDEX + 1,
         SHARD_COUNT,
@@ -781,6 +849,13 @@ def main():
     else:
         stations_sorted["source"] = ""
 
+    if "observation_type" in stations_sorted.columns:
+        stations_sorted["observation_type"] = (
+            stations_sorted["observation_type"].fillna("").astype(str).map(lambda x: x.strip())
+        )
+    else:
+        stations_sorted["observation_type"] = ""
+
     source_tokens = stations_sorted["source"].str.lower()
     reach_hint_mask = source_tokens.isin(REACH_HINT_SOURCE_SET)
     stations_sorted.loc[reach_hint_mask, "reported_area"] = np.nan
@@ -825,6 +900,7 @@ def main():
         "lon",
         "lat",
         "source",
+        "observation_type",
         "reported_area",
         "source_station_name",
         "source_river_name",
