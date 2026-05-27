@@ -8,6 +8,7 @@ GPKG to count which clusters actually have exported polygons.
 
 import argparse
 import json
+import urllib.request
 import math
 import sqlite3
 import sys
@@ -48,8 +49,8 @@ ROOT = get_output_r_root(PROJECT_SCRIPT_DIR)
 DEFAULT_CLUSTER_CATALOG = ROOT / S7_CLUSTER_STATION_CATALOG_CSV
 DEFAULT_SOURCE_CATALOG = ROOT / S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV
 DEFAULT_BASIN_GPKG = ROOT / S7_CLUSTER_BASINS_GPKG
-DEFAULT_TABLES_DIR = ROOT / "scripts_basin_test/output/tables"
-DEFAULT_FIGURES_DIR = ROOT / "scripts_basin_test/output/figures"
+DEFAULT_TABLES_DIR = ROOT / "scripts_basin_test/output_other/spatial_coverage_stats/tables"
+DEFAULT_FIGURES_DIR = ROOT / "scripts_basin_test/output_other/spatial_coverage_stats/figures"
 
 AREA_BINS = [0, 10, 100, 1000, 10000, 100000, np.inf]
 AREA_LABELS = [
@@ -64,6 +65,10 @@ COUNTRY_COLS = ["country", "country_name", "admin", "adm0_name", "NAME", "name",
 ISO_COLS = ["iso_a3", "ISO_A3", "adm0_a3", "ADM0_A3", "sov_a3", "SOV_A3"]
 CONTINENT_COLS = ["continent", "CONTINENT"]
 REGION_COLS = ["region", "REGION", "subregion", "SUBREGION", "region_un", "REGION_UN"]
+COASTLINE_URL = (
+    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
+    "geojson/ne_110m_coastline.geojson"
+)
 
 
 def clean_text(value):
@@ -443,6 +448,29 @@ def plot_area_histogram(df, path):
     plt.close(fig)
 
 
+def _load_coastlines(cache_dir):
+    """Load Natural Earth coastline GeoJSON (cached locally)."""
+    cache_path = cache_dir / "ne_110m_coastline.geojson"
+    if not cache_path.is_file():
+        print("Downloading world coastline data (110 m) \u2026")
+        urllib.request.urlretrieve(COASTLINE_URL, cache_path)
+    with open(cache_path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _draw_coastlines(ax, coastlines):
+    """Draw coastline lines from Natural-Earth GeoJSON onto *ax*."""
+    for feat in coastlines["features"]:
+        geom = feat["geometry"]
+        if geom["type"] == "MultiLineString":
+            segs = geom["coordinates"]
+        else:  # LineString
+            segs = [geom["coordinates"]]
+        for seg in segs:
+            xs, ys = zip(*seg)
+            ax.plot(xs, ys, color="#555555", linewidth=0.5, zorder=1)
+
+
 def plot_global_map(df, path, world_boundaries=None):
     if not HAS_MPL:
         print("Warning: matplotlib unavailable; skipping global map")
@@ -459,6 +487,14 @@ def plot_global_map(df, path, world_boundaries=None):
             world.boundary.plot(ax=ax, linewidth=0.3)
         except Exception as exc:
             print("Warning: failed to draw world boundaries: {}".format(exc))
+    try:
+        cache_dir = SCRIPT_DIR.parent / "plot"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        coastlines = _load_coastlines(cache_dir)
+        _draw_coastlines(ax, coastlines)
+    except Exception as exc:
+        print("Coastline background unavailable -- using grid only: {}".format(exc),
+              file=sys.stderr)
     unresolved = valid[~valid["is_resolved"]]
     resolved = valid[valid["is_resolved"]]
     if len(unresolved):

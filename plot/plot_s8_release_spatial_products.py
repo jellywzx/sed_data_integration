@@ -59,6 +59,16 @@ except ImportError:  # pragma: no cover - runtime dependency check
     HAS_GPD = False
 
 try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+
+    HAS_CARTOPY = True
+except ImportError:
+    ccrs = None
+    cfeature = None
+    HAS_CARTOPY = False
+
+try:
     import xarray as xr
 
     HAS_XARRAY = True
@@ -115,6 +125,19 @@ def clean_text(value: object) -> str:
         pass
     text = str(value).strip()
     return "" if text.lower() in {"nan", "none", "null", "<na>"} else text
+
+
+def _make_fig_ax():
+    if HAS_CARTOPY:
+        return plt.subplots(figsize=(11, 5.5), subplot_kw={"projection": ccrs.PlateCarree()})
+    return plt.subplots(figsize=(11, 5.5))
+
+
+def _scatter(ax, lon, lat, **kwargs):
+    if HAS_CARTOPY and hasattr(ax, "projection"):
+        ax.scatter(lon, lat, transform=ccrs.PlateCarree(), **kwargs)
+    else:
+        ax.scatter(lon, lat, **kwargs)
 
 
 def first_col(columns: Iterable[str], candidates: Sequence[str]) -> Optional[str]:
@@ -204,7 +227,15 @@ def maybe_world_boundaries(world_boundaries: str):
 
 
 def setup_map_axes(ax, title: str, world=None) -> None:
-    if world is not None:
+    if HAS_CARTOPY and hasattr(ax, "projection"):
+        try:
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.15, alpha=0.5)
+            ax.add_feature(cfeature.LAKES, linewidth=0.2, alpha=0.3)
+            ax.add_feature(cfeature.OCEAN, alpha=0.05)
+        except Exception as exc:
+            print("Warning: failed to draw cartopy features: {}".format(exc))
+    elif world is not None:
         try:
             world.boundary.plot(ax=ax, linewidth=0.3)
         except Exception as exc:
@@ -223,9 +254,9 @@ def save_point_map(points: pd.DataFrame, path: Path, title: str, label: str, wor
     if points.empty:
         print("Warning: no valid coordinates for {}; skipping {}".format(title, path))
         return
-    fig, ax = plt.subplots(figsize=(11, 5.5))
+    fig, ax = _make_fig_ax()
     setup_map_axes(ax, title, world=world)
-    ax.scatter(points["lon"], points["lat"], s=marker_size, alpha=0.55, label=label)
+    _scatter(ax, points["lon"], points["lat"], s=marker_size, alpha=0.55, label=label)
     ax.legend(loc="lower left", markerscale=2)
     fig.tight_layout()
     fig.savefig(path, dpi=300)
@@ -309,7 +340,7 @@ def plot_release_cluster_map(points: pd.DataFrame, path: Path, basins=None, worl
     if points.empty:
         print("Warning: no valid cluster coordinates; skipping {}".format(path))
         return
-    fig, ax = plt.subplots(figsize=(11, 5.5))
+    fig, ax = _make_fig_ax()
     setup_map_axes(ax, "S8 release main product: cluster status and basin polygon sidecar", world=world)
     if basins is not None and len(basins):
         try:
@@ -320,9 +351,9 @@ def plot_release_cluster_map(points: pd.DataFrame, path: Path, basins=None, worl
     resolved = points[status.eq("resolved")]
     unresolved = points[~status.eq("resolved")]
     if len(unresolved):
-        ax.scatter(unresolved["lon"], unresolved["lat"], s=8, alpha=0.45, label="unresolved/other clusters")
+        _scatter(ax, unresolved["lon"], unresolved["lat"], s=8, alpha=0.45, label="unresolved/other clusters")
     if len(resolved):
-        ax.scatter(resolved["lon"], resolved["lat"], s=8, alpha=0.65, label="resolved clusters")
+        _scatter(ax, resolved["lon"], resolved["lat"], s=8, alpha=0.65, label="resolved clusters")
     ax.legend(loc="lower left", markerscale=2)
     fig.tight_layout()
     fig.savefig(path, dpi=300)

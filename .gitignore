@@ -4,6 +4,7 @@
 *_log.txt
 *.png
 *.html
+*.geojson
 /output
 /output_other
 /output/logs/

@@ -7,7 +7,7 @@
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution, observation_type,
+    列 path, source, lat, lon, resolution, observation_type, continent_region, country,
     station_name, river_name, source_station_id, reported_area）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
 
@@ -168,6 +168,8 @@ def get_station_meta_from_nc(path):
             "station_name": "",
             "river_name": "",
             "source_station_id": "",
+            "continent_region": "",
+            "country": "",
         }
     try:
         with nc4.Dataset(path, "r") as nc:
@@ -177,6 +179,8 @@ def get_station_meta_from_nc(path):
             "station_name": "",
             "river_name": "",
             "source_station_id": "",
+            "continent_region": "",
+            "country": "",
         }
 
 
@@ -327,6 +331,8 @@ def _collect_one_nc(path, root_dir):
             "river_name": station_meta["river_name"],
             "source_station_id": station_meta["source_station_id"],
             "reported_area": reported_area if reported_area is not None else float("nan"),
+            "continent_region": station_meta.get("continent_region", ""),
+            "country": station_meta.get("country", ""),
             **reach_hints,
         }
     except (ValueError, OSError):

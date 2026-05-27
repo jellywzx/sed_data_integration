@@ -1019,12 +1019,12 @@ def parse_args(argv: Optional[Sequence[str]] = None):
     )
     ap.add_argument(
         "--tables-dir",
-        default="tables",
+        default="output_other/temporal_coverage_stats/tables",
         help="Output table directory. Relative paths are resolved under the script/repository root.",
     )
     ap.add_argument(
         "--figures-dir",
-        default="figures",
+        default="output_other/temporal_coverage_stats/figures",
         help="Output figure directory. Relative paths are resolved under the script/repository root.",
     )
     ap.add_argument(
