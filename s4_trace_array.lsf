@@ -24,11 +24,13 @@ exec >> "${LIVE_LOG}" 2>&1
 export S4_SHARD_COUNT="${S4_SHARD_COUNT:-16}"
 export S4_SHARD_INDEX="$((JOB_INDEX - 1))"
 export S4_FINALIZE_ONLY=0
+export S4_GPKG_EXCLUDE_SATELLITE="${S4_GPKG_EXCLUDE_SATELLITE:-1}"
 
 echo "[$(date '+%F %T')] live log: ${LIVE_LOG}"
 echo "[$(date '+%F %T')] start shard job: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"
 echo "[$(date '+%F %T')] host: $(hostname)"
 echo "[$(date '+%F %T')] python: ${PYTHON_BIN}"
+echo "[$(date '+%F %T')] S4_GPKG_EXCLUDE_SATELLITE=${S4_GPKG_EXCLUDE_SATELLITE}"
 
 "${PYTHON_BIN}" s4_basin_trace_watch.py
 
