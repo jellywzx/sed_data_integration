@@ -167,7 +167,7 @@ daily_cmd="${PYTHON_BIN} s6_export_daily_matrix_nc.py -i ${S5_CSV} --out-dir ${M
 monthly_cmd="${PYTHON_BIN} s6_export_monthly_matrix_nc.py -i ${S5_CSV} --out-dir ${MATRIX_DIR} --workers ${MONTHLY_WORKERS} --resolution-workers 1"
 annual_cmd="${PYTHON_BIN} s6_export_annual_matrix_nc.py -i ${S5_CSV} --out-dir ${MATRIX_DIR} --workers ${ANNUAL_WORKERS} --resolution-workers 1"
 clim_cmd="${PYTHON_BIN} s6_export_climatology_to_nc.py --input-dir ${CLIM_INPUT_DIR} --output ${OUT_DIR}/s6_climatology_only.nc --output-shp ${OUT_DIR}/s6_climatology_stations.shp"
-satval_cmd="${PYTHON_BIN} s6_export_satellite_validation_to_nc.py"
+satval_cmd="${PYTHON_BIN} -u s6_export_satellite_validation_to_nc.py --progress-log ${LOG_DIR}/s6_satellite_progress_\${LSB_JOBID}.log"
 
 SUMMARY_LOG="${LOG_DIR}/s6fast_summary.$(date +%Y%m%d_%H%M%S).log"
 SUMMARY_SCRIPT="${LOG_DIR}/.s6fast_summary_check.sh"
