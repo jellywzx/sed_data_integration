@@ -13,6 +13,9 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import sys
+from tqdm import tqdm
+
 import numpy as np
 import pandas as pd
 
@@ -28,7 +31,7 @@ from s6_basin_merge_to_nc import (
     HAS_NC,
     _read_source_meta_from_nc,
     _read_station_meta_from_nc,
-    classify_source_family,
+    classify_source_family_from_observation_type,
     load_nc_series,
 )
 
@@ -67,8 +70,8 @@ def _default_workers_for_host():
     return max(1, configured)
 
 
-def is_satellite_source(source):
-    return classify_source_family(source) == "satellite"
+def is_satellite_observation(observation_type):
+    return classify_source_family_from_observation_type(observation_type) == "satellite"
 
 
 def _normalize_resolution(value):
@@ -143,7 +146,8 @@ def _worker_load_satellite_candidate(payload):
         return {"status": "unreadable", "reason": "missing file"}
 
     source = _safe_text(payload.get("source", ""))
-    source_family = classify_source_family(source)
+    observation_type = _safe_text(payload.get("observation_type", ""))
+    source_family = classify_source_family_from_observation_type(observation_type)
     if source_family != "satellite":
         return {"status": "skip_non_satellite"}
 
@@ -159,6 +163,7 @@ def _worker_load_satellite_candidate(payload):
     station_key = (
         cluster_id,
         source,
+        observation_type,
         resolution,
         _safe_text(payload.get("candidate_path", "")),
         _safe_text(payload.get("resolved_candidate_path", "")),
@@ -194,6 +199,7 @@ def _worker_load_satellite_candidate(payload):
             "cluster_uid": "SED{:06d}".format(cluster_id) if cluster_id >= 0 else "",
             "source": source,
             "source_family": source_family,
+            "observation_type": observation_type,
             "source_station_native_id": _safe_text(source_station_native_id),
             "station_name": _safe_text(station_name),
             "river_name": _safe_text(river_name),
@@ -386,6 +392,19 @@ def _write_satellite_validation_nc(
 
 
 def main():
+    # parse optional --progress-log (no other CLI args)
+    _progress_log = ""
+    _skip_next = False
+    for _i, _a in enumerate(sys.argv[1:]):
+        if _skip_next:
+            _skip_next = False
+            continue
+        if _a == "--progress-log" and _i + 2 < len(sys.argv):
+            _progress_log = sys.argv[_i + 2]
+            _skip_next = True
+        elif _a.startswith("--progress-log="):
+            _progress_log = _a.split("=", 1)[1]
+
     if not HAS_NC or nc4 is None:
         print("Error: netCDF4 is required.")
         return 1
@@ -400,14 +419,23 @@ def main():
         return 1
 
     stations = pd.read_csv(input_path)
-    required_columns = {"source", "path", "cluster_id", "resolution"}
+    required_columns = {"source", "path", "cluster_id", "resolution", "observation_type"}
     missing = sorted(required_columns - set(stations.columns))
     if missing:
         print("Error: input missing columns: {}".format(", ".join(missing)))
         return 1
 
     stations["resolution_norm"] = stations["resolution"].map(_normalize_resolution)
-    stations["source_family"] = stations["source"].map(classify_source_family)
+    blank_observation_type = stations["observation_type"].fillna("").astype(str).str.strip().eq("")
+    if blank_observation_type.any():
+        print(
+            "Error: input has {} rows with blank observation_type; cannot classify satellite validation candidates.".format(
+                int(blank_observation_type.sum())
+            )
+        )
+        return 1
+
+    stations["source_family"] = stations["observation_type"].map(classify_source_family_from_observation_type)
     stations = stations[stations["resolution_norm"].isin(allowed_resolutions)].copy()
     stations = stations[stations["source_family"].eq("satellite")].copy()
     if len(stations) == 0:
@@ -429,6 +457,7 @@ def main():
         payloads.append(
             {
                 "source": _safe_text(row.get("source", "")),
+                "observation_type": _safe_text(row.get("observation_type", "")),
                 "cluster_id": _safe_int(row.get("cluster_id", -1), default=-1),
                 "resolution": _normalize_resolution(row.get("resolution_norm", row.get("resolution", ""))),
                 "lat": row.get("lat", np.nan),
@@ -457,8 +486,24 @@ def main():
         executor = ProcessPoolExecutor(max_workers=n_workers)
         worker_results = executor.map(_worker_load_satellite_candidate, payloads, chunksize=chunksize)
 
+    progress_fo = None
+    if _progress_log:
+        try:
+            progress_fo = open(_progress_log, "w", buffering=1)
+        except Exception:
+            pass  # fail silently — progress logging is optional
+
     try:
-        for res in worker_results:
+        _iterator = tqdm(
+            worker_results,
+            total=len(payloads),
+            desc="Satellite",
+            unit="candidate",
+            file=progress_fo or sys.stderr,
+            disable=progress_fo is None and not sys.stderr.isatty(),
+            mininterval=1.0,
+        )
+        for res in _iterator:
             status = res.get("status", "")
             if status == "ok":
                 source_meta = res.get("source_meta", {})
@@ -490,6 +535,8 @@ def main():
             elif status == "unreadable":
                 unreadable += 1
     finally:
+        if progress_fo:
+            progress_fo.close()
         if n_workers > 1:
             executor.shutdown(wait=True)
 
@@ -518,6 +565,7 @@ def main():
                 "cluster_id": station_row["cluster_id"],
                 "source": station_row["source"],
                 "source_family": station_row["source_family"],
+                "observation_type": station_row["observation_type"],
                 "resolution": station_row["resolution"],
                 "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
                 "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
