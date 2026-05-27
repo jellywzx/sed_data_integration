@@ -287,6 +287,30 @@ def _read_int_array(ds, name, fill_value=-1, size=None):
     return result
 
 
+def _read_int_array_without_auto_mask(ds, name, fill_value=-1, size=None):
+    if name not in ds.variables:
+        return np.full(int(size or 0), fill_value, dtype=np.int64)
+    var = ds.variables[name]
+    old_auto_mask = None
+    try:
+        old_auto_mask = var.mask
+    except Exception:
+        old_auto_mask = None
+    try:
+        var.set_auto_mask(False)
+        arr = np.asarray(var[:]).reshape(-1)
+    finally:
+        if old_auto_mask is not None:
+            var.set_auto_mask(old_auto_mask)
+    result = np.full(arr.shape, fill_value, dtype=np.int64)
+    try:
+        valid = np.isfinite(arr.astype(np.float64, copy=False))
+    except Exception:
+        valid = np.full(arr.shape, False, dtype=bool)
+    result[valid] = arr[valid].astype(np.int64)
+    return result
+
+
 def _ensure_removed(path):
     if not path.exists():
         return
@@ -1402,6 +1426,7 @@ def _append_satellite_release_checks(
         required_nc_variables = {
             "satellite_station_uid",
             "cluster_uid",
+            "cluster_id_station",
             "source_family",
             "station_resolution",
             "validation_only",
@@ -1451,9 +1476,15 @@ def _append_satellite_release_checks(
 
         station_uids = _read_text_var(sat_ds, "satellite_station_uid", size=n_stations)
         station_cluster_uids = _read_text_var(sat_ds, "cluster_uid", size=n_stations)
+        station_cluster_ids = _read_int_array(sat_ds, "cluster_id_station", fill_value=-1, size=n_stations)
         station_resolutions = _read_text_var(sat_ds, "station_resolution", size=n_stations)
         station_source_families = _read_text_var(sat_ds, "source_family", size=n_stations)
-        station_validation_only = _read_int_array(sat_ds, "validation_only", fill_value=0, size=n_stations)
+        station_validation_only = _read_int_array_without_auto_mask(
+            sat_ds,
+            "validation_only",
+            fill_value=0,
+            size=n_stations,
+        )
         station_merge_policies = _read_text_var(sat_ds, "merge_policy", size=n_stations)
         record_station_idx = _read_int_array(sat_ds, "satellite_station_index", fill_value=-1, size=n_records)
         record_resolutions = _read_text_var(sat_ds, "resolution", size=n_records)
@@ -1529,14 +1560,49 @@ def _append_satellite_release_checks(
         cluster_uid_set.update(station_catalog["cluster_uid"].astype(str))
         catalog_cluster_uids = set(catalog["cluster_uid"].astype(str)) if "cluster_uid" in catalog.columns else set()
         all_cluster_uids = set(station_cluster_uids) | catalog_cluster_uids
-        missing_linkage = sorted(uid for uid in all_cluster_uids if not uid or uid not in cluster_uid_set)
+        blank_cluster_uids = sorted(uid for uid in all_cluster_uids if not str(uid).strip())
+        malformed_cluster_uids = sorted(
+            uid for uid in all_cluster_uids if str(uid).strip() and not str(uid).startswith("SED")
+        )
+        nc_uid_mismatches = []
+        for uid, cluster_id in zip(station_cluster_uids, station_cluster_ids.tolist()):
+            expected_uid = "SED{:06d}".format(int(cluster_id)) if int(cluster_id) >= 0 else ""
+            if not uid or uid != expected_uid:
+                nc_uid_mismatches.append("{}!={}".format(uid or "(blank)", expected_uid or "(invalid)"))
+                if len(nc_uid_mismatches) >= 10:
+                    break
+        catalog_uid_mismatches = []
+        if {"cluster_uid", "cluster_id"}.issubset(catalog.columns):
+            catalog_cluster_ids = pd.to_numeric(catalog["cluster_id"], errors="coerce").fillna(-1).astype(int)
+            for uid, cluster_id in zip(catalog["cluster_uid"].astype(str), catalog_cluster_ids.tolist()):
+                expected_uid = "SED{:06d}".format(int(cluster_id)) if int(cluster_id) >= 0 else ""
+                if not uid or uid != expected_uid:
+                    catalog_uid_mismatches.append("{}!={}".format(uid or "(blank)", expected_uid or "(invalid)"))
+                    if len(catalog_uid_mismatches) >= 10:
+                        break
+        linked_to_main = sorted(uid for uid in all_cluster_uids if uid in cluster_uid_set)
+        satellite_only = sorted(uid for uid in all_cluster_uids if uid and uid not in cluster_uid_set)
+        linkage_failures = []
+        if blank_cluster_uids:
+            linkage_failures.append("blank cluster_uid values")
+        if malformed_cluster_uids:
+            linkage_failures.append("malformed cluster_uid values: {}".format(", ".join(malformed_cluster_uids[:10])))
+        if nc_uid_mismatches:
+            linkage_failures.append("NC cluster_uid/cluster_id mismatches: {}".format(", ".join(nc_uid_mismatches)))
+        if catalog_uid_mismatches:
+            linkage_failures.append(
+                "catalog cluster_uid/cluster_id mismatches: {}".format(", ".join(catalog_uid_mismatches))
+            )
         rows.append(
             {
                 "check": "satellite_cluster_uid_linkage",
-                "status": "pass" if not missing_linkage else "fail",
-                "details": "all satellite cluster_uid values link to release catalogs"
-                if not missing_linkage
-                else "missing cluster_uid linkage: {}".format(", ".join(missing_linkage[:10])),
+                "status": "pass" if not linkage_failures else "fail",
+                "details": (
+                    "cluster_uid/cluster_id self-consistent; main_catalog_linked={}; satellite_only_clusters={}"
+                    .format(len(linked_to_main), len(satellite_only))
+                )
+                if not linkage_failures
+                else "; ".join(linkage_failures),
             }
         )
 

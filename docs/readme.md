@@ -51,6 +51,7 @@ cluster_uid + resolution
 
 > 注意：旧命名 `sed_reference_satellite_validation.nc` 和 `satellite_validation_catalog.csv` 如仍存在，仅作为兼容别名；推荐使用新的发布级文件名 `sed_reference_satellite.nc` 和 `satellite_catalog.csv`。
 > `s8_publish_reference_dataset.py` 默认要求发布级 satellite NetCDF 和 catalog 同时存在；缺任一文件时 release 会失败。
+> Satellite-only cluster 允许不出现在主 station catalog 中；发布校验要求其 `cluster_uid / cluster_id` 自洽，并在报告中统计可联到主 catalog 的数量。
 
 ---
 
