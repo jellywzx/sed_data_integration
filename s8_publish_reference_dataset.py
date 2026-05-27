@@ -16,6 +16,8 @@ Default inputs:
   - scripts_basin_test/output/s6_matrix_by_resolution/s6_basin_matrix_monthly.nc
   - scripts_basin_test/output/s6_matrix_by_resolution/s6_basin_matrix_annual.nc
   - scripts_basin_test/output/s6_climatology_only.nc
+  - scripts_basin_test/output/s6_satellite_validation_only.nc
+  - scripts_basin_test/output/s6_satellite_validation_catalog.csv
   - scripts_basin_test/output/s7_cluster_station_catalog.csv
   - scripts_basin_test/output/s7_cluster_resolution_catalog.csv
   - scripts_basin_test/output/s7_source_station_resolution_catalog.csv
@@ -63,8 +65,8 @@ from pipeline_paths import (
     RELEASE_MATRIX_MONTHLY_NC,
     RELEASE_OVERLAP_CANDIDATES_CSV,
     RELEASE_README_MD,
-    RELEASE_SATELLITE_VALIDATION_CATALOG_CSV,
-    RELEASE_SATELLITE_VALIDATION_NC,
+    RELEASE_SATELLITE_CATALOG_CSV,
+    RELEASE_SATELLITE_NC,
     RELEASE_SOURCE_DATASET_CATALOG_CSV,
     RELEASE_SOURCE_STATION_CATALOG_CSV,
     RELEASE_SOURCE_STATIONS_GPKG,
@@ -126,8 +128,8 @@ DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR /"tools"/ "example_reference_workflow.py"
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 DEFAULT_SATELLITE_VALIDATION_NC = PROJECT_ROOT / S6_SATELLITE_VALIDATION_NC
 DEFAULT_SATELLITE_VALIDATION_CATALOG_CSV = PROJECT_ROOT / S6_SATELLITE_VALIDATION_CATALOG_CSV
-DEFAULT_RELEASE_SATELLITE_VALIDATION_NC = PROJECT_ROOT / RELEASE_SATELLITE_VALIDATION_NC
-DEFAULT_RELEASE_SATELLITE_VALIDATION_CATALOG_CSV = PROJECT_ROOT / RELEASE_SATELLITE_VALIDATION_CATALOG_CSV
+DEFAULT_RELEASE_SATELLITE_NC = PROJECT_ROOT / RELEASE_SATELLITE_NC
+DEFAULT_RELEASE_SATELLITE_CATALOG_CSV = PROJECT_ROOT / RELEASE_SATELLITE_CATALOG_CSV
 # ---- s8 built-in runtime policy ----
 # 不想每次命令行输参数，就改这里。
 
@@ -281,6 +283,30 @@ def _read_int_array(ds, name, fill_value=-1, size=None):
         arr = np.asarray(raw)
     result = np.full(arr.shape, fill_value, dtype=np.int64)
     valid = np.isfinite(arr.astype(np.float64, copy=False))
+    result[valid] = arr[valid].astype(np.int64)
+    return result
+
+
+def _read_int_array_without_auto_mask(ds, name, fill_value=-1, size=None):
+    if name not in ds.variables:
+        return np.full(int(size or 0), fill_value, dtype=np.int64)
+    var = ds.variables[name]
+    old_auto_mask = None
+    try:
+        old_auto_mask = var.mask
+    except Exception:
+        old_auto_mask = None
+    try:
+        var.set_auto_mask(False)
+        arr = np.asarray(var[:]).reshape(-1)
+    finally:
+        if old_auto_mask is not None:
+            var.set_auto_mask(old_auto_mask)
+    result = np.full(arr.shape, fill_value, dtype=np.int64)
+    try:
+        valid = np.isfinite(arr.astype(np.float64, copy=False))
+    except Exception:
+        valid = np.full(arr.shape, False, dtype=bool)
     result[valid] = arr[valid].astype(np.int64)
     return result
 
@@ -1322,6 +1348,349 @@ def _summarize_climatology_core(climatology_nc):
     return summary
 
 
+def _append_satellite_release_checks(
+    rows,
+    satellite_nc,
+    satellite_catalog_csv,
+    cluster_station_catalog,
+    station_catalog,
+):
+    sat_nc_path = Path(satellite_nc).resolve() if satellite_nc else None
+    sat_catalog_path = Path(satellite_catalog_csv).resolve() if satellite_catalog_csv else None
+    sat_nc_exists = bool(sat_nc_path and sat_nc_path.is_file())
+    sat_catalog_exists = bool(sat_catalog_path and sat_catalog_path.is_file())
+
+    rows.append(
+        {
+            "check": "satellite_nc_exists",
+            "status": "pass" if sat_nc_exists else "fail",
+            "details": str(sat_nc_path) if sat_nc_path else "(not provided)",
+        }
+    )
+    rows.append(
+        {
+            "check": "satellite_catalog_exists",
+            "status": "pass" if sat_catalog_exists else "fail",
+            "details": str(sat_catalog_path) if sat_catalog_path else "(not provided)",
+        }
+    )
+
+    if not sat_nc_exists or not sat_catalog_exists:
+        detail = "required satellite release artifacts are missing"
+        for check in (
+            "satellite_station_count",
+            "satellite_record_count",
+            "satellite_catalog_matches_nc",
+            "satellite_cluster_uid_linkage",
+            "satellite_resolution_coverage",
+            "satellite_time_range",
+            "satellite_validation_only_flags",
+        ):
+            rows.append({"check": check, "status": "fail", "details": detail})
+        return
+
+    catalog = pd.read_csv(sat_catalog_path, keep_default_na=False)
+    required_catalog_columns = {
+        "satellite_station_uid",
+        "cluster_uid",
+        "cluster_id",
+        "source",
+        "source_family",
+        "resolution",
+        "n_records",
+        "time_start",
+        "time_end",
+        "validation_only",
+        "merge_policy",
+    }
+    missing_catalog_columns = sorted(required_catalog_columns - set(catalog.columns))
+
+    with nc4.Dataset(sat_nc_path, "r") as sat_ds:
+        n_stations = len(sat_ds.dimensions.get("n_satellite_stations", []))
+        n_records = len(sat_ds.dimensions.get("n_satellite_records", []))
+        rows.append(
+            {
+                "check": "satellite_station_count",
+                "status": "pass" if n_stations > 0 else "fail",
+                "details": "n_satellite_stations={}".format(n_stations),
+            }
+        )
+        rows.append(
+            {
+                "check": "satellite_record_count",
+                "status": "pass" if n_records > 0 else "fail",
+                "details": "n_satellite_records={}".format(n_records),
+            }
+        )
+
+        required_nc_variables = {
+            "satellite_station_uid",
+            "cluster_uid",
+            "cluster_id_station",
+            "source_family",
+            "station_resolution",
+            "validation_only",
+            "merge_policy",
+            "satellite_station_index",
+            "time",
+            "resolution",
+        }
+        missing_nc_variables = sorted(required_nc_variables - set(sat_ds.variables))
+        if missing_nc_variables:
+            rows.append(
+                {
+                    "check": "satellite_catalog_matches_nc",
+                    "status": "fail",
+                    "details": "satellite NC missing variables: {}".format(", ".join(missing_nc_variables)),
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_cluster_uid_linkage",
+                    "status": "fail",
+                    "details": "satellite NC schema is incomplete",
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_resolution_coverage",
+                    "status": "fail",
+                    "details": "satellite NC schema is incomplete",
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_time_range",
+                    "status": "fail",
+                    "details": "satellite NC schema is incomplete",
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_validation_only_flags",
+                    "status": "fail",
+                    "details": "satellite NC schema is incomplete",
+                }
+            )
+            return
+
+        station_uids = _read_text_var(sat_ds, "satellite_station_uid", size=n_stations)
+        station_cluster_uids = _read_text_var(sat_ds, "cluster_uid", size=n_stations)
+        station_cluster_ids = _read_int_array(sat_ds, "cluster_id_station", fill_value=-1, size=n_stations)
+        station_resolutions = _read_text_var(sat_ds, "station_resolution", size=n_stations)
+        station_source_families = _read_text_var(sat_ds, "source_family", size=n_stations)
+        station_validation_only = _read_int_array_without_auto_mask(
+            sat_ds,
+            "validation_only",
+            fill_value=0,
+            size=n_stations,
+        )
+        station_merge_policies = _read_text_var(sat_ds, "merge_policy", size=n_stations)
+        record_station_idx = _read_int_array(sat_ds, "satellite_station_index", fill_value=-1, size=n_records)
+        record_resolutions = _read_text_var(sat_ds, "resolution", size=n_records)
+
+        match_reasons = []
+        if missing_catalog_columns:
+            match_reasons.append("catalog missing columns: {}".format(", ".join(missing_catalog_columns)))
+        if len(catalog) != n_stations:
+            match_reasons.append("catalog_rows={} n_satellite_stations={}".format(len(catalog), n_stations))
+        catalog_uids = set(catalog["satellite_station_uid"].astype(str)) if "satellite_station_uid" in catalog.columns else set()
+        nc_uids = set(station_uids)
+        if catalog_uids != nc_uids:
+            match_reasons.append("satellite_station_uid set mismatch")
+
+        if not missing_catalog_columns and len(catalog) and len(station_uids):
+            nc_station_df = pd.DataFrame(
+                {
+                    "satellite_station_uid": station_uids,
+                    "cluster_uid": station_cluster_uids,
+                    "resolution": station_resolutions,
+                    "source_family": station_source_families,
+                    "validation_only": station_validation_only,
+                    "merge_policy": station_merge_policies,
+                }
+            )
+            rec_counts = pd.Series(record_station_idx)
+            rec_counts = rec_counts[rec_counts.ge(0)]
+            count_lookup = rec_counts.value_counts().to_dict()
+            nc_station_df["n_records"] = [int(count_lookup.get(i, 0)) for i in range(len(nc_station_df))]
+            compare_cols = [
+                "cluster_uid",
+                "resolution",
+                "source_family",
+                "validation_only",
+                "merge_policy",
+                "n_records",
+            ]
+            catalog_cmp = catalog.copy()
+            catalog_cmp["validation_only"] = pd.to_numeric(
+                catalog_cmp["validation_only"], errors="coerce"
+            ).fillna(-1).astype(int)
+            catalog_cmp["n_records"] = pd.to_numeric(
+                catalog_cmp["n_records"], errors="coerce"
+            ).fillna(-1).astype(int)
+            merged = catalog_cmp.merge(
+                nc_station_df,
+                on="satellite_station_uid",
+                how="outer",
+                suffixes=("_catalog", "_nc"),
+                indicator=True,
+            )
+            if not merged["_merge"].eq("both").all():
+                match_reasons.append("catalog and NC station rows do not align one-to-one")
+            else:
+                for col in compare_cols:
+                    if not merged["{}_catalog".format(col)].astype(str).eq(
+                        merged["{}_nc".format(col)].astype(str)
+                    ).all():
+                        match_reasons.append("{} mismatch".format(col))
+                        break
+
+        rows.append(
+            {
+                "check": "satellite_catalog_matches_nc",
+                "status": "pass" if not match_reasons else "fail",
+                "details": "catalog rows match satellite NC stations"
+                if not match_reasons
+                else "; ".join(match_reasons),
+            }
+        )
+
+        cluster_uid_set = set(cluster_station_catalog["cluster_uid"].astype(str))
+        cluster_uid_set.update(station_catalog["cluster_uid"].astype(str))
+        catalog_cluster_uids = set(catalog["cluster_uid"].astype(str)) if "cluster_uid" in catalog.columns else set()
+        all_cluster_uids = set(station_cluster_uids) | catalog_cluster_uids
+        blank_cluster_uids = sorted(uid for uid in all_cluster_uids if not str(uid).strip())
+        malformed_cluster_uids = sorted(
+            uid for uid in all_cluster_uids if str(uid).strip() and not str(uid).startswith("SED")
+        )
+        nc_uid_mismatches = []
+        for uid, cluster_id in zip(station_cluster_uids, station_cluster_ids.tolist()):
+            expected_uid = "SED{:06d}".format(int(cluster_id)) if int(cluster_id) >= 0 else ""
+            if not uid or uid != expected_uid:
+                nc_uid_mismatches.append("{}!={}".format(uid or "(blank)", expected_uid or "(invalid)"))
+                if len(nc_uid_mismatches) >= 10:
+                    break
+        catalog_uid_mismatches = []
+        if {"cluster_uid", "cluster_id"}.issubset(catalog.columns):
+            catalog_cluster_ids = pd.to_numeric(catalog["cluster_id"], errors="coerce").fillna(-1).astype(int)
+            for uid, cluster_id in zip(catalog["cluster_uid"].astype(str), catalog_cluster_ids.tolist()):
+                expected_uid = "SED{:06d}".format(int(cluster_id)) if int(cluster_id) >= 0 else ""
+                if not uid or uid != expected_uid:
+                    catalog_uid_mismatches.append("{}!={}".format(uid or "(blank)", expected_uid or "(invalid)"))
+                    if len(catalog_uid_mismatches) >= 10:
+                        break
+        linked_to_main = sorted(uid for uid in all_cluster_uids if uid in cluster_uid_set)
+        satellite_only = sorted(uid for uid in all_cluster_uids if uid and uid not in cluster_uid_set)
+        linkage_failures = []
+        if blank_cluster_uids:
+            linkage_failures.append("blank cluster_uid values")
+        if malformed_cluster_uids:
+            linkage_failures.append("malformed cluster_uid values: {}".format(", ".join(malformed_cluster_uids[:10])))
+        if nc_uid_mismatches:
+            linkage_failures.append("NC cluster_uid/cluster_id mismatches: {}".format(", ".join(nc_uid_mismatches)))
+        if catalog_uid_mismatches:
+            linkage_failures.append(
+                "catalog cluster_uid/cluster_id mismatches: {}".format(", ".join(catalog_uid_mismatches))
+            )
+        rows.append(
+            {
+                "check": "satellite_cluster_uid_linkage",
+                "status": "pass" if not linkage_failures else "fail",
+                "details": (
+                    "cluster_uid/cluster_id self-consistent; main_catalog_linked={}; satellite_only_clusters={}"
+                    .format(len(linked_to_main), len(satellite_only))
+                )
+                if not linkage_failures
+                else "; ".join(linkage_failures),
+            }
+        )
+
+        allowed_resolutions = set(CLUSTER_RESOLUTIONS)
+        catalog_resolutions = set(catalog["resolution"].astype(str)) if "resolution" in catalog.columns else set()
+        station_resolution_set = set(station_resolutions)
+        record_resolution_set = set(record_resolutions)
+        observed_resolutions = catalog_resolutions | station_resolution_set | record_resolution_set
+        bad_resolutions = sorted(res for res in observed_resolutions if res not in allowed_resolutions)
+        resolution_sets_match = (
+            catalog_resolutions == station_resolution_set
+            and record_resolution_set.issubset(station_resolution_set)
+            and bool(observed_resolutions)
+        )
+        rows.append(
+            {
+                "check": "satellite_resolution_coverage",
+                "status": "pass" if not bad_resolutions and resolution_sets_match else "fail",
+                "details": "resolutions={}".format("|".join(sorted(observed_resolutions)))
+                if not bad_resolutions and resolution_sets_match
+                else "bad_resolutions={} catalog={} nc_stations={} nc_records={}".format(
+                    "|".join(bad_resolutions) if bad_resolutions else "(none)",
+                    "|".join(sorted(catalog_resolutions)) if catalog_resolutions else "(none)",
+                    "|".join(sorted(station_resolution_set)) if station_resolution_set else "(none)",
+                    "|".join(sorted(record_resolution_set)) if record_resolution_set else "(none)",
+                ),
+            }
+        )
+
+        time_var = sat_ds.variables["time"]
+        time_values = np.asarray(time_var[:], dtype=np.float64).reshape(-1)
+        finite_times = time_values[np.isfinite(time_values)]
+        nc_start = _format_num_time(
+            finite_times.min(),
+            getattr(time_var, "units", "days since 1970-01-01"),
+            getattr(time_var, "calendar", "gregorian"),
+        ) if len(finite_times) else ""
+        nc_end = _format_num_time(
+            finite_times.max(),
+            getattr(time_var, "units", "days since 1970-01-01"),
+            getattr(time_var, "calendar", "gregorian"),
+        ) if len(finite_times) else ""
+        catalog_start = ""
+        catalog_end = ""
+        if {"time_start", "time_end"}.issubset(catalog.columns):
+            starts = pd.to_datetime(catalog["time_start"], errors="coerce")
+            ends = pd.to_datetime(catalog["time_end"], errors="coerce")
+            catalog_start = _format_timestamp_text(starts.min()) if starts.notna().any() else ""
+            catalog_end = _format_timestamp_text(ends.max()) if ends.notna().any() else ""
+        time_ok = bool(nc_start and nc_end and catalog_start and catalog_end)
+        if time_ok:
+            time_ok = pd.Timestamp(nc_start).date() == pd.Timestamp(catalog_start).date()
+            time_ok = time_ok and pd.Timestamp(nc_end).date() == pd.Timestamp(catalog_end).date()
+        rows.append(
+            {
+                "check": "satellite_time_range",
+                "status": "pass" if time_ok else "fail",
+                "details": "nc=({} to {}) catalog=({} to {})".format(
+                    nc_start or "(empty)",
+                    nc_end or "(empty)",
+                    catalog_start or "(empty)",
+                    catalog_end or "(empty)",
+                ),
+            }
+        )
+
+        flags_ok = (
+            len(station_validation_only) == n_stations
+            and bool(n_stations)
+            and np.all(station_validation_only == 1)
+            and all(str(item).strip() == "validation_only" for item in station_merge_policies)
+            and all(str(item).strip() == "satellite" for item in station_source_families)
+            and getattr(sat_ds, "role", "") == "validation_only"
+        )
+        rows.append(
+            {
+                "check": "satellite_validation_only_flags",
+                "status": "pass" if flags_ok else "fail",
+                "details": "role={} validation_only_values={} merge_policies={} source_families={}".format(
+                    getattr(sat_ds, "role", "(missing)"),
+                    ",".join(str(int(v)) for v in sorted(set(station_validation_only.tolist()))),
+                    "|".join(sorted(set(station_merge_policies))) if station_merge_policies else "(none)",
+                    "|".join(sorted(set(station_source_families))) if station_source_families else "(none)",
+                ),
+            }
+        )
+
+
 def write_release_readme(out_path):
     content = """# Sediment Reference Dataset Release
 
@@ -1334,18 +1703,23 @@ This directory is the user-facing release layer of the sediment reference datase
 - `sed_reference_timeseries_monthly.nc`: monthly `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
 - `sed_reference_timeseries_annual.nc`: annual `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
 - `sed_reference_climatology.nc`: standalone climatology dataset.
+- `sed_reference_satellite.nc`: required validation-only satellite dataset, published separately from the main station-reference merge.
 
 ## Catalogs
 
 - `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, geographic metadata, record count, and time coverage.
 - `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, original file path, and source NetCDF geographic metadata.
 - `source_dataset_catalog.csv`: one row per source dataset with metadata, aggregate counts, and aggregated geographic coverage fields.
+- `satellite_catalog.csv`: one row per satellite validation station, keyed by `satellite_station_uid` with `cluster_uid / cluster_id` linkage back to the main reference cluster.
 - `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
-## Satellite validation layer
+## Satellite Dataset
 
-- `sed_reference_satellite_validation.nc` contains validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
-- These records are excluded from the main station-reference merge by default. They are intended for satellite-vs-station validation, spatial diagnostic checks, and optional downstream comparison, not for automatic station-reference merging.
+- `sed_reference_satellite.nc` contains required validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
+- `satellite_catalog.csv` describes the satellite stations and links them to the main reference clusters through `cluster_uid / cluster_id`.
+- Satellite records are excluded from the main station-reference merge and do not enter `sed_reference_master.nc` or the daily/monthly/annual matrix NetCDF files.
+- Use this dataset for satellite-vs-station validation, spatial diagnostics, and downstream comparison.
+- Legacy names such as `sed_reference_satellite_validation.nc` and `satellite_validation_catalog.csv` are compatibility aliases only; new workflows should use `sed_reference_satellite.nc` and `satellite_catalog.csv`.
 
 ## GIS sidecars
 
@@ -1362,7 +1736,8 @@ This directory is the user-facing release layer of the sediment reference datase
 5. If you need full record-level provenance, query `sed_reference_master.nc` with `cluster_uid + time + resolution`.
 6. Use `source_station_catalog.csv` to resolve `source_station_uid`, original station metadata, and original file path.
 7. For true source-pair overlap consistency metrics, use `sed_reference_overlap_candidates.csv.gz` if it is present.
-8. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
+8. Use `sed_reference_satellite.nc` and `satellite_catalog.csv` when comparing satellite observations against station-reference products.
+9. Keep climatology analyses separate and use `sed_reference_climatology.nc` directly.
 
 ## Quick example
 
@@ -1844,31 +2219,12 @@ def validate_release(
             }
         )
 
-    sat_nc_path = Path(satellite_validation_nc).resolve() if satellite_validation_nc else None
-    sat_catalog_path = (
-        Path(satellite_validation_catalog_csv).resolve()
-        if satellite_validation_catalog_csv
-        else None
-    )
-    sat_nc_exists = bool(sat_nc_path and sat_nc_path.is_file())
-    sat_catalog_exists = bool(sat_catalog_path and sat_catalog_path.is_file())
-    sat_status = "present" if sat_nc_exists else "omitted"
-    sat_details = "nc={} catalog={}".format(
-        str(sat_nc_path) if sat_nc_path else "(not provided)",
-        str(sat_catalog_path) if sat_catalog_path else "(not provided)",
-    )
-    if sat_nc_exists:
-        sat_details += "; satellite validation layer included in release"
-    else:
-        sat_details += "; satellite validation NC missing or not provided"
-    if sat_catalog_path is not None:
-        sat_details += "; catalog_exists={}".format(int(sat_catalog_exists))
-    rows.append(
-        {
-            "check": "satellite_validation_layer",
-            "status": sat_status,
-            "details": sat_details,
-        }
+    _append_satellite_release_checks(
+        rows=rows,
+        satellite_nc=satellite_validation_nc,
+        satellite_catalog_csv=satellite_validation_catalog_csv,
+        cluster_station_catalog=cluster_station_catalog,
+        station_catalog=cluster_resolution_catalog,
     )
 
     report_df = pd.DataFrame(rows)
@@ -1884,10 +2240,19 @@ def main():
     ap.add_argument("--monthly-nc", default=str(DEFAULT_MATRIX_MONTHLY))
     ap.add_argument("--annual-nc", default=str(DEFAULT_MATRIX_ANNUAL))
     ap.add_argument("--climatology-nc", default=str(DEFAULT_CLIM_NC))
-    ap.add_argument("--satellite-validation-nc", default=str(DEFAULT_SATELLITE_VALIDATION_NC))
+    ap.add_argument(
+        "--satellite-validation-nc",
+        "--satellite-nc",
+        dest="satellite_validation_nc",
+        default=str(DEFAULT_SATELLITE_VALIDATION_NC),
+        help="Required s6 satellite validation-only NetCDF to publish as sed_reference_satellite.nc",
+    )
     ap.add_argument(
         "--satellite-validation-catalog",
+        "--satellite-catalog",
+        dest="satellite_validation_catalog",
         default=str(DEFAULT_SATELLITE_VALIDATION_CATALOG_CSV),
+        help="Required s6 satellite validation catalog to publish as satellite_catalog.csv",
     )
     ap.add_argument("--cluster-station-catalog", default=str(DEFAULT_CLUSTER_STATION_CATALOG_INPUT))
     ap.add_argument("--cluster-resolution-catalog", default=str(DEFAULT_CLUSTER_RESOLUTION_CATALOG_INPUT))
@@ -1936,6 +2301,8 @@ def main():
         monthly_nc,
         annual_nc,
         climatology_nc,
+        satellite_validation_nc,
+        satellite_validation_catalog,
         cluster_station_catalog_in,
         cluster_resolution_catalog_in,
         source_station_resolution_catalog_in,
@@ -2020,47 +2387,37 @@ def main():
         )
     )
 
-    release_sat_nc_path = out_dir / Path(RELEASE_SATELLITE_VALIDATION_NC).name
-    release_sat_catalog_path = out_dir / Path(RELEASE_SATELLITE_VALIDATION_CATALOG_CSV).name
-    release_sat_nc_for_validation = None
-    release_sat_catalog_for_validation = None
-    if satellite_validation_nc.is_file():
-        sat_nc_dst = _link_or_copy_file(
-            satellite_validation_nc,
-            release_sat_nc_path,
-            mode=args.link_mode,
-            force=args.force,
+    release_sat_nc_path = out_dir / Path(RELEASE_SATELLITE_NC).name
+    release_sat_catalog_path = out_dir / Path(RELEASE_SATELLITE_CATALOG_CSV).name
+    sat_nc_dst = _link_or_copy_file(
+        satellite_validation_nc,
+        release_sat_nc_path,
+        mode=args.link_mode,
+        force=args.force,
+    )
+    file_records.append(
+        (
+            "satellite_netcdf",
+            sat_nc_dst,
+            "Required validation-only satellite observations excluded from the main station-reference merge.",
         )
-        file_records.append(
-            (
-                "satellite_validation_nc",
-                sat_nc_dst,
-                "Satellite validation-only observations excluded from main station-reference merge.",
-            )
-        )
-        release_sat_nc_for_validation = sat_nc_dst
-        print("Prepared satellite validation NC: {}".format(sat_nc_dst.name))
-    else:
-        print("Warning: satellite validation NC not found; release will omit satellite validation layer")
+    )
+    print("Prepared satellite release NC: {}".format(sat_nc_dst.name))
 
-    if satellite_validation_catalog.is_file():
-        sat_catalog_dst = _link_or_copy_file(
-            satellite_validation_catalog,
-            release_sat_catalog_path,
-            mode=args.link_mode,
-            force=args.force,
+    sat_catalog_dst = _link_or_copy_file(
+        satellite_validation_catalog,
+        release_sat_catalog_path,
+        mode=args.link_mode,
+        force=args.force,
+    )
+    file_records.append(
+        (
+            "satellite_catalog",
+            sat_catalog_dst,
+            "Required catalog for the validation-only satellite release dataset.",
         )
-        file_records.append(
-            (
-                "satellite_validation_catalog",
-                sat_catalog_dst,
-                "Satellite validation-only observations excluded from main station-reference merge.",
-            )
-        )
-        release_sat_catalog_for_validation = sat_catalog_dst
-        print("Prepared satellite validation catalog: {}".format(sat_catalog_dst.name))
-    elif satellite_validation_nc.is_file():
-        print("Warning: satellite validation catalog not found; release omits catalog sidecar")
+    )
+    print("Prepared satellite release catalog: {}".format(sat_catalog_dst.name))
 
     overlap_candidates_path = out_dir / OVERLAP_CANDIDATES_FILE_NAME
     overlap_candidates_validation_path = None
@@ -2164,8 +2521,8 @@ def main():
             source_station_catalog=source_station_catalog,
             out_csv=validation_path,
             overlap_candidates_csv=overlap_candidates_validation_path,
-            satellite_validation_nc=release_sat_nc_for_validation,
-            satellite_validation_catalog_csv=release_sat_catalog_for_validation,
+            satellite_validation_nc=sat_nc_dst,
+            satellite_validation_catalog_csv=sat_catalog_dst,
         )
         file_records.append(("report", validation_path, "Release validation report"))
         print("Validation checks: {} rows".format(len(report_df)))

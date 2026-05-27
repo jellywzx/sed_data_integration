@@ -268,7 +268,7 @@ def _write_satellite_validation_nc(
         lon_v = nc.createVariable("lon", "f4", ("n_satellite_stations",), fill_value=FILL)
         lon_v.long_name = "station longitude"
         lon_v.units = "degrees_east"
-        validation_only_v = nc.createVariable("validation_only", "i1", ("n_satellite_stations",), fill_value=np.int8(1))
+        validation_only_v = nc.createVariable("validation_only", "i1", ("n_satellite_stations",), fill_value=np.int8(-1))
         validation_only_v.long_name = "validation-only flag"
         validation_only_v.flag_values = np.array([0, 1], dtype=np.int8)
         validation_only_v.flag_meanings = "false true"
