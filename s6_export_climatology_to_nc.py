@@ -292,6 +292,23 @@ def load_nc_series(path):
         return None
 
 
+def sediment_present_mask(df):
+    if df is None or len(df) == 0:
+        return pd.Series([], dtype=bool)
+    mask = pd.Series(False, index=df.index)
+    if "SSC" in df.columns:
+        mask = mask | df["SSC"].notna()
+    if "SSL" in df.columns:
+        mask = mask | df["SSL"].notna()
+    return mask
+
+
+def filter_publishable_sediment_records(df):
+    if df is None or len(df) == 0:
+        return df
+    return df.loc[sediment_present_mask(df)].copy()
+
+
 def collect_climatology_files(input_dir):
     paths = sorted(str(p) for p in Path(input_dir).rglob("*.nc"))
     rows = []
@@ -301,6 +318,7 @@ def collect_climatology_files(input_dir):
         source = get_source_from_organized_path(path, input_dir.parent)
         station_meta = read_station_meta(path)
         series = load_nc_series(path)
+        series = filter_publishable_sediment_records(series)
         if series is None or len(series) == 0:
             continue
         temporal_span = station_meta["temporal_span"] or _build_temporal_span_from_dates(series["date"])
@@ -603,6 +621,10 @@ def main():
         nc.history = "Created {} by s6_export_climatology_to_nc.py".format(datetime.now().isoformat(timespec="seconds"))
         nc.provenance_policy = "Each climatology station is one organized climatology file; source_station_path preserves file-level provenance"
         nc.time_type_policy = "All records in this file are climatology and therefore stored separately from the basin mainline"
+        nc.release_filter_policy = (
+            "published climatology records require SSC or SSL to be non-missing; "
+            "Q-only time steps are not written"
+        )
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
         nc.n_input_files = str(n_stations)

@@ -155,6 +155,7 @@ QUALITY_ORDER_COLUMNS = [
     "valid_flag_count",
     "n_time_rows",
     "n_nonempty_rows",
+    "n_publish_rows",
     "source_family",
     "merge_eligible",
     "validation_only",
@@ -671,6 +672,29 @@ def compute_quality_score(df):
     return compute_quality_metrics(df)["quality_score"]
 
 
+def sediment_present_mask(df):
+    """Return rows publishable in the sediment reference product.
+
+    A release record must contain at least one sediment variable (SSC or SSL).
+    Q-only time steps are useful hydrologically, but are not published in this
+    sediment product.
+    """
+    if df is None or len(df) == 0:
+        return pd.Series([], dtype=bool)
+    mask = pd.Series(False, index=df.index)
+    if "SSC" in df.columns:
+        mask = mask | df["SSC"].notna()
+    if "SSL" in df.columns:
+        mask = mask | df["SSL"].notna()
+    return mask
+
+
+def filter_publishable_sediment_records(df):
+    if df is None or len(df) == 0:
+        return df
+    return df.loc[sediment_present_mask(df)].copy()
+
+
 def compute_quality_metrics(df):
     total = 0
     good = 0
@@ -687,6 +711,7 @@ def compute_quality_metrics(df):
         nonempty_rows = int(df[data_cols].notna().any(axis=1).sum())
     else:
         nonempty_rows = 0
+    publish_rows = int(sediment_present_mask(df).sum()) if data_cols else 0
 
     return {
         "quality_score": (good / total) if total > 0 else 0.0,
@@ -694,6 +719,7 @@ def compute_quality_metrics(df):
         "valid_flag_count": total,
         "n_time_rows": int(len(df)),
         "n_nonempty_rows": nonempty_rows,
+        "n_publish_rows": publish_rows,
     }
 
 
@@ -821,17 +847,18 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
     或 None。
     """
     scored = []   # list of metadata dict with df
-    all_dates = set()
     unit_issues = []
     for source, observation_type, path, source_station_index in recs:
         df, file_unit_issues = load_nc_series(path)
         if file_unit_issues:
             unit_issues.extend(file_unit_issues)
         if df is not None and len(df) > 0:
-            metrics = compute_quality_metrics(df)
-            merge_df = df.loc[df[["Q", "SSC", "SSL"]].notna().any(axis=1)].copy()
-            merge_df["_source"] = source
-            merge_df["_source_station_index"] = int(source_station_index)
+            raw_metrics = compute_quality_metrics(df)
+            merge_df = filter_publishable_sediment_records(df)
+            metrics = compute_quality_metrics(merge_df)
+            if len(merge_df) > 0:
+                merge_df["_source"] = source
+                merge_df["_source_station_index"] = int(source_station_index)
             scored.append(
                 {
                     "quality_score": metrics["quality_score"],
@@ -840,8 +867,9 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
                     "path": str(path),
                     "good_flag_count": metrics["good_flag_count"],
                     "valid_flag_count": metrics["valid_flag_count"],
-                    "n_time_rows": metrics["n_time_rows"],
-                    "n_nonempty_rows": metrics["n_nonempty_rows"],
+                    "n_time_rows": raw_metrics["n_time_rows"],
+                    "n_nonempty_rows": raw_metrics["n_nonempty_rows"],
+                    "n_publish_rows": metrics["n_publish_rows"],
                     "df": merge_df,
                     "source_family": classify_source_family_from_observation_type(observation_type),
                     "merge_eligible": int(
@@ -860,8 +888,6 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
                     ),
                 }
             )
-            if len(merge_df) > 0:
-                all_dates.update(merge_df["date"].tolist())
     if not scored:
         return (None, unit_issues)
 
@@ -885,6 +911,7 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
                 "valid_flag_count": int(item["valid_flag_count"]),
                 "n_time_rows": int(item["n_time_rows"]),
                 "n_nonempty_rows": int(item["n_nonempty_rows"]),
+                "n_publish_rows": int(item["n_publish_rows"]),
                 "source_family": item["source_family"],
                 "merge_eligible": int(item["merge_eligible"]),
                 "validation_only": int(item["merge_policy"] == "validation_only"),
@@ -901,17 +928,23 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
             cid, resolution, score_info
         )
 
-    merge_scored = [item for item in scored if int(item["merge_eligible"]) == 1]
+    merge_scored = [
+        item
+        for item in scored
+        if int(item["merge_eligible"]) == 1 and len(item["df"]) > 0
+    ]
     if not merge_scored:
         n_validation_only = sum(1 for item in scored if item.get("merge_policy") == "validation_only")
         skip_msg = (
-            "cluster {} [{}] skipped from main merge: no merge-eligible station candidates; "
+            "cluster {} [{}] skipped from main merge: no publishable sediment records; "
             "validation-only candidates={}"
         ).format(cid, resolution, n_validation_only)
         quality_log = "{}; {}".format(quality_log, skip_msg) if quality_log else skip_msg
         return (None, quality_rows, quality_log, unit_issues)
 
-    all_dates = sorted(all_dates)
+    all_dates = sorted(
+        set().union(*(set(item["df"]["date"].tolist()) for item in merge_scored))
+    )
     n = len(all_dates)
 
     dates_arr    = pd.to_datetime(all_dates)
@@ -1724,6 +1757,14 @@ def main():
          parts_source_station_idx)
 
     n_records = len(time_arr)
+    no_sediment_mask = (ssc_arr == FILL) & (ssl_arr == FILL)
+    if np.any(no_sediment_mask):
+        print(
+            "Error: publish filter failed; {} merged records have neither SSC nor SSL.".format(
+                int(np.count_nonzero(no_sediment_mask))
+            )
+        )
+        return 1
     _check_memory("数组合并后")
 
     # ── 6. 写 NC ──────────────────────────────────────────────────────────
@@ -2032,6 +2073,10 @@ def main():
                                 "source-station mapping is preserved in n_source_stations")
         nc.merge_policy = (
             "main merge excludes satellite source_family; satellite retained for validation sidecars"
+        )
+        nc.release_filter_policy = (
+            "published mainline records require SSC or SSL to be non-missing; "
+            "Q-only time steps are not written to the master product"
         )
         nc.validation_only_source_families = "satellite"
         nc.merge_excluded_source_families = "satellite"

@@ -625,7 +625,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         )
 
         count_v = nc.createVariable("n_valid_time_steps", "i4", ("n_stations",), zlib=True, complevel=4)
-        count_v.long_name = "number of time steps with at least one non-missing value"
+        count_v.long_name = "number of time steps with at least one non-missing SSC or SSL value"
         valid_counts = np.zeros(n_stations, dtype=np.int32)
 
         for station_idx, cid in enumerate(cluster_ids):
@@ -684,7 +684,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
                         dtype=object,
                     )
                 valid_counts[station_idx] = int(
-                    np.count_nonzero((q_vals != FILL) | (ssc_vals != FILL) | (ssl_vals != FILL))
+                    np.count_nonzero((ssc_vals != FILL) | (ssl_vals != FILL))
                 )
             else:
                 valid_counts[station_idx] = 0
@@ -708,6 +708,10 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nc.provenance_key = "selected_source_station_uid"
         nc.merge_policy = (
             "matrix values exclude satellite source_family by default; satellite retained separately for validation"
+        )
+        nc.release_filter_policy = (
+            "matrix cells are populated only when SSC or SSL is non-missing; "
+            "Q-only time steps are not exported"
         )
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"

@@ -73,6 +73,7 @@ BUILTIN_S4_BATCH_SIZE = 50
 BUILTIN_S4_MAXTASKSPERCHILD = 10
 BUILTIN_S4_RESUME = True
 BUILTIN_S4_SAVE_GPKG = True
+BUILTIN_S4_ARRAY_SIZE = 16
 BUILTIN_MERIT_DIR = DEFAULT_MERIT_DIR
 
 BUILTIN_S6_WORKERS = 24
@@ -88,6 +89,7 @@ BUILTIN_S8_SKIP_GPKG = False
 BUILTIN_S8_INCLUDE_BASIN_POLYGONS = True
 BUILTIN_S8_SKIP_VALIDATION = False
 BUILTIN_S8_FORCE = True
+BUILTIN_CLUSTER_POLL_SECONDS = 60
 
 
 def _quote(parts):
@@ -284,6 +286,26 @@ def build_stage_specs(args, python_bin):
         "S4_MAXTASKSPERCHILD": str(args.s4_maxtasksperchild),
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
     }
+    s4_cluster_command = {
+        "name": "submit_s4_lsf",
+        "cmd": [
+            python_bin,
+            str(SCRIPT_DIR / "submit_s4_lsf.py"),
+            "--array-size",
+            str(args.s4_array_size),
+            "--python",
+            python_bin,
+            "--wait",
+            "--poll-seconds",
+            str(args.cluster_poll_seconds),
+        ],
+        "env": s4_env,
+    }
+    s4_local_command = {
+        "name": "s4_basin_trace_watch",
+        "cmd": [python_bin, str(SCRIPT_DIR / "s4_basin_trace_watch.py")],
+        "env": s4_env,
+    }
 
     def build_matrix_cmd(script_name):
         cmd = [
@@ -364,6 +386,32 @@ def build_stage_specs(args, python_bin):
             ],
         }
     )
+    s6_cluster_cmd = [
+        python_bin,
+        str(SCRIPT_DIR / "submit_s6_fast.py"),
+        "--python",
+        python_bin,
+        "--wait",
+        "--poll-seconds",
+        str(args.cluster_poll_seconds),
+        "--s6-workers",
+        str(args.s6_workers),
+    ]
+    if matrix_workers is not None:
+        s6_cluster_cmd += ["--matrix-workers", str(matrix_workers)]
+    if matrix_resolution_workers is not None:
+        s6_cluster_cmd += ["--matrix-resolution-workers", str(matrix_resolution_workers)]
+    if args.s6_include_climatology:
+        s6_cluster_cmd.append("--s6-include-climatology")
+    if args.skip_climatology_export:
+        s6_cluster_cmd.append("--skip-climatology-export")
+    s6_cluster_commands = [
+        {
+            "name": "submit_s6_fast",
+            "cmd": s6_cluster_cmd,
+            "env": {"RUN_ONLY": ""},
+        }
+    ]
 
     cluster_basin_cmd = [
         python_bin,
@@ -495,13 +543,7 @@ def build_stage_specs(args, python_bin):
         },
         "s4": {
             "label": "trace upstream basins",
-            "commands": [
-                {
-                    "name": "s4_basin_trace_watch",
-                    "cmd": [python_bin, str(SCRIPT_DIR / "s4_basin_trace_watch.py")],
-                    "env": s4_env,
-                }
-            ],
+            "commands": [s4_local_command] if args.local_s4 else [s4_cluster_command],
         },
         "s5": {
             "label": "merge stations by basin cluster",
@@ -525,7 +567,7 @@ def build_stage_specs(args, python_bin):
         },
         "s6": {
             "label": "build basin NetCDF outputs",
-            "commands": s6_commands,
+            "commands": s6_commands if args.local_s6 else s6_cluster_commands,
         },
         "s7": {
             "label": "export GIS sidecars",
@@ -559,6 +601,22 @@ def parse_args():
     )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
     parser.add_argument(
+        "--cluster-poll-seconds",
+        type=int,
+        default=BUILTIN_CLUSTER_POLL_SECONDS,
+        help="Polling interval for Python LSF submitters used by s4/s6.",
+    )
+    parser.add_argument(
+        "--local-s4",
+        action="store_true",
+        help="Run s4_basin_trace_watch.py locally instead of submitting S4 to LSF.",
+    )
+    parser.add_argument(
+        "--local-s6",
+        action="store_true",
+        help="Run S6 component scripts locally instead of submitting S6 to LSF.",
+    )
+    parser.add_argument(
         "--strict-s1",
         action="store_true",
         default=BUILTIN_STRICT_S1,
@@ -579,6 +637,12 @@ def parse_args():
         help="Comma-separated resolutions excluded from s3. Default keeps climatology out of the basin mainline.",
     )
     parser.add_argument("--s4-workers", type=int, default=BUILTIN_S4_WORKERS, help="Worker count for s4 via S4_N_WORKERS.")
+    parser.add_argument(
+        "--s4-array-size",
+        type=int,
+        default=BUILTIN_S4_ARRAY_SIZE,
+        help="LSF array size for submit_s4_lsf.py when S4 runs in cluster mode.",
+    )
     parser.add_argument("--s4-batch-size", type=int, default=BUILTIN_S4_BATCH_SIZE, help="Batch size for s4 via S4_BATCH_SIZE.")
     parser.add_argument(
         "--s4-maxtasksperchild",

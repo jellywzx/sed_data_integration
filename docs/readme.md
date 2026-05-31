@@ -519,10 +519,11 @@ bash submit_s4_lsf.sh
 bash submit_s4_lsf.sh 16
 ```
 
-`submit_s4_lsf.sh` 会提交两阶段 LSF 流程：
+`submit_s4_lsf.sh` 是兼容入口，内部调用 `submit_s4_lsf.py`，会提交三阶段 LSF 流程：
 
 1. 先跑 `s4_trace[1-N]` 数组分片任务。
 2. 再自动提交 finalize 合并任务。
+3. 最后提交 summary 检查任务。
 
 常用环境变量：
 
@@ -558,15 +559,21 @@ python s4_basin_trace_watch.py
 python run_s1_s8_basin_pipeline.py --steps s4
 ```
 
+默认统一入口会调用 `submit_s4_lsf.py --wait` 将 S4 提交到 LSF，并等待 summary 完成后再进入下一阶段；如需回到本地执行，使用：
+
+```bash
+python run_s1_s8_basin_pipeline.py --steps s4 --local-s4
+```
+
 ### 10.2 s6：NetCDF 导出
 
 生产环境推荐使用：
 
 ```bash
-bash submit_s6_fast.sh
+python submit_s6_fast.py --wait
 ```
 
-`s6` 是一组并行任务，不是单一脚本。`submit_s6_fast.sh` 当前会并行提交：
+`bash submit_s6_fast.sh` 仍可作为兼容入口，内部会调用 Python submitter。`s6` 是一组并行任务，不是单一脚本。`submit_s6_fast.py` 当前会并行提交：
 
 | 子任务 | 脚本 | 产物 |
 |---|---|---|
@@ -577,7 +584,7 @@ bash submit_s6_fast.sh
 | clim | `s6_export_climatology_to_nc.py` | `s6_climatology_only.nc` |
 | satellite | `s6_export_satellite_validation_to_nc.py` | `s6_satellite_validation_only.nc`、`s6_satellite_validation_catalog.csv` |
 
-在未设置 `RUN_ONLY` 时，提交脚本还会额外提交一个依赖型 `check` 任务，用于检查关键输出是否齐全。
+提交脚本还会额外提交一个依赖型 `summary` 任务，用于检查关键输出是否齐全；统一入口默认调用 `submit_s6_fast.py --wait`，等 S6 集群任务完成后再进入 S7。若需回到本地顺序执行，使用 `--local-s6`。
 
 常用环境变量：
 
@@ -751,8 +758,10 @@ s1_verify_time_resolution.py
 s2_reorganize_qc_by_resolution.py
 s3_collect_qc_stations.py
 submit_s4_lsf.sh
+submit_s4_lsf.py
 s5_basin_merge.py
 submit_s6_fast.sh
+submit_s6_fast.py
 s7_export_cluster_shp.py
 s7_export_source_station_shp.py
 s7_export_cluster_basin_shp.py
@@ -845,6 +854,7 @@ matplotlib
 | `s2_reorganize_qc_by_resolution.py` | s2 按分辨率重组输入文件 |
 | `s3_collect_qc_stations.py` | s3 收集 basin 主线站点表 |
 | `s4_basin_trace_watch.py` | s4 basin tracing 主脚本 |
+| `submit_s4_lsf.py` | Python LSF submitter，提交并等待 S4 array/finalize/summary |
 | `s5_basin_merge.py` | s5 basin cluster 合并 |
 | `s6_basin_merge_to_nc.py` | s6 master NetCDF 导出 |
 | `s6_export_daily_matrix_nc.py` | s6 daily matrix NetCDF 导出 |
@@ -852,6 +862,7 @@ matplotlib
 | `s6_export_annual_matrix_nc.py` | s6 annual matrix NetCDF 导出 |
 | `s6_export_climatology_to_nc.py` | climatology 独立 NetCDF 导出 |
 | `s6_export_satellite_validation_to_nc.py` | satellite-only NetCDF 和 catalog 导出 |
+| `submit_s6_fast.py` | Python LSF submitter，并行提交并等待 S6 master/matrix/climatology/satellite/summary |
 | `s7_export_cluster_shp.py` | cluster 点位 GPKG 和 catalog 导出 |
 | `s7_export_source_station_shp.py` | source station GPKG 和 catalog 导出 |
 | `s7_export_cluster_basin_shp.py` | cluster basin polygon GPKG 导出 |
@@ -877,4 +888,4 @@ s6_summarize_matrix_ncs.py
 
 ## 19. 一句话总结
 
-当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出为独立发布产品，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。
+当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出为独立发布产品，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；主线与 climatology 发布记录必须至少包含 `SSC` 或 `SSL`，不发布 Q-only 时间步；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。

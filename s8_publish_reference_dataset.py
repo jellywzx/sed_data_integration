@@ -227,11 +227,12 @@ OVERLAP_CANDIDATE_REQUIRED_COLUMNS = set(OVERLAP_CANDIDATE_COLUMNS)
 OVERLAP_CANDIDATE_METHOD_NOTES = (
     "candidate-level values rebuilt during s8 from s6_cluster_quality_order.csv "
     "and source station NetCDF files; selected_flag follows s6 quality-rank fallback per date; "
-    "satellite candidates are retained for validation sidecars but excluded from default main merged value selection"
+    "Q-only candidate dates are excluded; satellite candidates are retained for validation sidecars "
+    "but excluded from default main merged value selection"
 )
 OVERLAP_CANDIDATE_ASSUMPTIONS = (
     "dates are normalized to YYYY-MM-DD; overlap means at least two candidate source-station rows "
-    "with any Q/SSC/SSL value for the same cluster/resolution/date; satellite candidates are retained "
+    "with SSC or SSL for the same cluster/resolution/date; satellite candidates are retained "
     "for validation sidecars but excluded from default main merged value selection"
 )
 FULL_CHAIN_RERUN_HINT = (
@@ -309,6 +310,57 @@ def _read_int_array_without_auto_mask(ds, name, fill_value=-1, size=None):
         valid = np.full(arr.shape, False, dtype=bool)
     result[valid] = arr[valid].astype(np.int64)
     return result
+
+
+def _read_numeric_chunk(var, key):
+    arr = np.ma.asarray(var[key]).astype(np.float64)
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(np.nan)
+    else:
+        arr = np.asarray(arr, dtype=np.float64)
+    arr[arr == -9999.0] = np.nan
+    return arr
+
+
+def _count_records_without_sediment(ds, chunk_size=500000):
+    missing_vars = [name for name in ("SSC", "SSL") if name not in ds.variables]
+    if missing_vars:
+        return None, None, "missing variables: {}".format(", ".join(missing_vars))
+
+    n_records = len(ds.dimensions.get("n_records", []))
+    no_sediment = 0
+    for start in range(0, n_records, chunk_size):
+        stop = min(start + chunk_size, n_records)
+        ssc = _read_numeric_chunk(ds.variables["SSC"], slice(start, stop))
+        ssl = _read_numeric_chunk(ds.variables["SSL"], slice(start, stop))
+        no_sediment += int(np.count_nonzero(~np.isfinite(ssc) & ~np.isfinite(ssl)))
+    return int(n_records), int(no_sediment), ""
+
+
+def _count_matrix_selected_cells_without_sediment(ds, row_chunk_size=256):
+    missing_vars = [
+        name
+        for name in ("SSC", "SSL", "selected_source_index")
+        if name not in ds.variables
+    ]
+    if missing_vars:
+        return None, None, "missing variables: {}".format(", ".join(missing_vars))
+
+    n_stations = len(ds.dimensions.get("n_stations", []))
+    selected_total = 0
+    selected_without_sediment = 0
+    for start in range(0, n_stations, row_chunk_size):
+        stop = min(start + row_chunk_size, n_stations)
+        selected = np.ma.asarray(ds.variables["selected_source_index"][start:stop, :]).filled(-1)
+        selected_mask = selected >= 0
+        if not np.any(selected_mask):
+            continue
+        ssc = _read_numeric_chunk(ds.variables["SSC"], (slice(start, stop), slice(None)))
+        ssl = _read_numeric_chunk(ds.variables["SSL"], (slice(start, stop), slice(None)))
+        no_sediment_mask = ~np.isfinite(ssc) & ~np.isfinite(ssl)
+        selected_total += int(np.count_nonzero(selected_mask))
+        selected_without_sediment += int(np.count_nonzero(selected_mask & no_sediment_mask))
+    return int(selected_total), int(selected_without_sediment), ""
 
 
 def _ensure_removed(path):
@@ -548,9 +600,9 @@ def _read_candidate_series(path):
                     "SSL_flag": _read_candidate_flag_var(ds, FINAL_SSL_FLAG_NAMES, n),
                 }
             )
-            df = df[df[["Q", "SSC", "SSL"]].notna().any(axis=1)].copy()
+            df = df[df[["SSC", "SSL"]].notna().any(axis=1)].copy()
             if df.empty:
-                return df, {"Q": q_units, "SSC": ssc_units, "SSL": ssl_units}, "no non-empty Q/SSC/SSL rows"
+                return df, {"Q": q_units, "SSC": ssc_units, "SSL": ssl_units}, "no non-empty SSC/SSL rows"
             df = df.drop_duplicates("date", keep="first").reset_index(drop=True)
             return df, {"Q": q_units, "SSC": ssc_units, "SSL": ssl_units}, ""
     except Exception as exc:
@@ -1704,6 +1756,7 @@ This directory is the user-facing release layer of the sediment reference datase
 - `sed_reference_timeseries_annual.nc`: annual `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
 - `sed_reference_climatology.nc`: standalone climatology dataset.
 - `sed_reference_satellite.nc`: required validation-only satellite dataset, published separately from the main station-reference merge.
+- Mainline and climatology records require at least one sediment variable (`SSC` or `SSL`) to be present; Q-only time steps are not published.
 
 ## Catalogs
 
@@ -1813,6 +1866,26 @@ def validate_release(
 
     with nc4.Dataset(master_nc, "r") as master_ds:
         master_core_summary = _summarize_master_core(master_ds)
+        master_record_count, master_no_sediment, master_sediment_detail = _count_records_without_sediment(master_ds)
+        if master_record_count is None:
+            rows.append(
+                {
+                    "check": "sediment_required_master",
+                    "status": "fail",
+                    "details": master_sediment_detail,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "check": "sediment_required_master",
+                    "status": "pass" if int(master_no_sediment) == 0 else "fail",
+                    "details": "records_without_ssc_or_ssl={}/{}".format(
+                        int(master_no_sediment),
+                        int(master_record_count),
+                    ),
+                }
+            )
         core_summaries = {
             "master": master_core_summary,
             "matrix": matrix_core_summary,
@@ -1963,6 +2036,29 @@ def validate_release(
                         }
                     )
                     continue
+
+                matrix_selected_count, matrix_no_sediment, matrix_sediment_detail = (
+                    _count_matrix_selected_cells_without_sediment(ds)
+                )
+                if matrix_selected_count is None:
+                    rows.append(
+                        {
+                            "check": "sediment_required_matrix_{}".format(resolution),
+                            "status": "fail",
+                            "details": matrix_sediment_detail,
+                        }
+                    )
+                else:
+                    rows.append(
+                        {
+                            "check": "sediment_required_matrix_{}".format(resolution),
+                            "status": "pass" if int(matrix_no_sediment) == 0 else "fail",
+                            "details": "selected_cells_without_ssc_or_ssl={}/{}".format(
+                                int(matrix_no_sediment),
+                                int(matrix_selected_count),
+                            ),
+                        }
+                    )
 
                 lats = _read_float_array(ds, "lat", fill_values=(-9999.0,), size=len(ds.dimensions["n_stations"]))
                 lons = _read_float_array(ds, "lon", fill_values=(-9999.0,), size=len(ds.dimensions["n_stations"]))
@@ -2182,6 +2278,26 @@ def validate_release(
         )
 
     with nc4.Dataset(climatology_nc, "r") as clim_ds:
+        clim_record_count, clim_no_sediment, clim_sediment_detail = _count_records_without_sediment(clim_ds)
+        if clim_record_count is None:
+            rows.append(
+                {
+                    "check": "sediment_required_climatology",
+                    "status": "fail",
+                    "details": clim_sediment_detail,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "check": "sediment_required_climatology",
+                    "status": "pass" if int(clim_no_sediment) == 0 else "fail",
+                    "details": "records_without_ssc_or_ssl={}/{}".format(
+                        int(clim_no_sediment),
+                        int(clim_record_count),
+                    ),
+                }
+            )
         station_uids = _read_text_var(clim_ds, "station_uid", size=len(clim_ds.dimensions["n_stations"]))
         unique_ok = len(station_uids) == len(set(station_uids))
         rows.append(
