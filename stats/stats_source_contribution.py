@@ -7,12 +7,29 @@ release-level provenance from sed_reference_master.nc and, when available,
 source_station_catalog.csv / source_dataset_catalog.csv.  It writes manuscript-
 ready contribution tables and simple bar figures.
 
-Default outputs are written under the release directory:
+Default outputs are written under:
+
+  scripts_basin_test/output_other/source_contribution/
 
   tables/table_source_dataset_contribution.csv
   tables/table_source_type_contribution.csv
+  tables/table_source_resolution_contribution.csv
+  tables/table_source_variable_contribution.csv
+  tables/table_top_source_contributors.csv
+  tables/table_source_contribution_cumulative.csv
+  tables/table_source_temporal_coverage.csv
+  tables/table_report_key_metrics.csv
+  tables/source_classification_template.csv
   figures/fig_source_contribution_records.png
   figures/fig_source_contribution_stations.png
+  figures/fig_source_contribution_clusters.png
+  figures/fig_source_type_records.png
+  figures/fig_source_group_records.png
+  figures/fig_source_resolution_stacked.png
+  figures/fig_source_variable_stacked.png
+  figures/fig_source_cumulative_contribution.png
+  figures/fig_source_temporal_coverage.png
+  reports/source_contribution_report.md
 
 Notes on classification
 -----------------------
@@ -37,8 +54,10 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -90,6 +109,7 @@ from pipeline_paths import (
 PROJECT_ROOT = get_output_r_root(REPO_SCRIPT_DIR)
 
 DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
+DEFAULT_SOURCE_CONTRIBUTION_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/source_contribution"
 DEFAULT_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
 DEFAULT_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
 DEFAULT_SOURCE_STATION_CATALOG = PROJECT_ROOT / RELEASE_SOURCE_STATION_CATALOG_CSV
@@ -137,6 +157,78 @@ TYPE_COLUMNS = [
     "resolutions",
     "percentage_of_total_records",
 ]
+RESOLUTION_COLUMNS = [
+    "source_name",
+    "source_type",
+    "source_group",
+    "resolution",
+    "n_source_stations",
+    "n_clusters",
+    "n_records",
+    "n_Q_records",
+    "n_SSC_records",
+    "n_SSL_records",
+    "first_year",
+    "last_year",
+    "percentage_of_total_records",
+    "percentage_within_source_records",
+]
+VARIABLE_COLUMNS = [
+    "source_name",
+    "source_type",
+    "source_group",
+    "variable",
+    "n_variable_records",
+    "n_source_records",
+    "percentage_of_total_variable_records",
+    "percentage_within_source_records",
+]
+TOP_COLUMNS = [
+    "rank_metric",
+    "rank",
+    "source_name",
+    "source_type",
+    "source_group",
+    "value",
+    "percentage_of_metric_total",
+]
+CUMULATIVE_COLUMNS = [
+    "rank",
+    "source_name",
+    "source_type",
+    "source_group",
+    "n_records",
+    "percentage_of_total_records",
+    "cumulative_records",
+    "cumulative_percentage_of_total_records",
+]
+TEMPORAL_COLUMNS = [
+    "source_name",
+    "source_type",
+    "source_group",
+    "first_year",
+    "last_year",
+    "year_span",
+    "n_records",
+    "n_source_stations",
+    "n_clusters",
+    "resolutions",
+]
+KEY_METRIC_COLUMNS = ["metric", "value", "detail"]
+CLASSIFICATION_TEMPLATE_COLUMNS = [
+    "source_name",
+    "suggested_source_type",
+    "suggested_source_group",
+    "source_long_name",
+    "institution",
+    "reference",
+    "source_url",
+]
+VARIABLE_RECORD_COLUMNS = {
+    "Q": "n_Q_records",
+    "SSC": "n_SSC_records",
+    "SSL": "n_SSL_records",
+}
 
 
 def _clean_text(value) -> str:
@@ -307,6 +399,31 @@ def _update_min_text(stats: Dict, field: str, value: str) -> None:
         stats[field] = value
 
 
+def _update_stats_from_frame(stats: Dict, sub: pd.DataFrame) -> None:
+    if sub.empty:
+        return
+    if "source_station_uid" in sub.columns and "source_station_index" in sub.columns:
+        stats["source_stations"].update(
+            _clean_text(v) or str(i) for v, i in zip(sub["source_station_uid"], sub["source_station_index"])
+        )
+    elif "source_station_uid" in sub.columns:
+        stats["source_stations"].update(_clean_text(v) for v in sub["source_station_uid"] if _clean_text(v))
+    if "cluster_uid" in sub.columns:
+        stats["clusters"].update(_clean_text(v) for v in sub["cluster_uid"] if _clean_text(v))
+    if "resolution" in sub.columns:
+        stats["resolutions"].update(_clean_text(v) for v in sub["resolution"] if _clean_text(v))
+    stats["n_records"] += int(len(sub))
+    stats["n_Q_records"] += int(sub["has_q"].sum()) if "has_q" in sub.columns else 0
+    stats["n_SSC_records"] += int(sub["has_ssc"].sum()) if "has_ssc" in sub.columns else 0
+    stats["n_SSL_records"] += int(sub["has_ssl"].sum()) if "has_ssl" in sub.columns else 0
+    if "time_num" in sub.columns:
+        valid_time = pd.to_numeric(sub["time_num"], errors="coerce")
+        valid_time = valid_time[np.isfinite(valid_time)]
+        if len(valid_time):
+            stats["time_min"] = min(stats["time_min"], float(valid_time.min()))
+            stats["time_max"] = max(stats["time_max"], float(valid_time.max()))
+
+
 def _get_dim_size(ds, candidates: Iterable[str]) -> int:
     for name in candidates:
         if name in ds.dimensions:
@@ -314,7 +431,10 @@ def _get_dim_size(ds, candidates: Iterable[str]) -> int:
     return 0
 
 
-def summarize_master_nc(master_nc: Path, chunk_size: int = 1_000_000) -> Tuple[Dict[str, Dict], str, str]:
+def summarize_master_nc(
+    master_nc: Path,
+    chunk_size: int = 1_000_000,
+) -> Tuple[Dict[str, Dict], Dict[Tuple[str, str], Dict], str, str]:
     if nc4 is None:
         raise RuntimeError("netCDF4 is required. Please install netCDF4 before running this script.")
     master_nc = Path(master_nc)
@@ -322,6 +442,7 @@ def summarize_master_nc(master_nc: Path, chunk_size: int = 1_000_000) -> Tuple[D
         raise FileNotFoundError("Missing master NetCDF: {}".format(master_nc))
 
     stats_by_source: Dict[str, Dict] = defaultdict(_empty_stats)
+    stats_by_source_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
 
     with nc4.Dataset(master_nc, "r") as ds:
         n_sources = _get_dim_size(ds, ["n_sources", "source"])
@@ -430,20 +551,22 @@ def summarize_master_nc(master_nc: Path, chunk_size: int = 1_000_000) -> Tuple[D
                     meta = station_to_source_meta[first_idx]
                     for field in ("source_long_name", "institution", "reference", "source_url"):
                         _update_min_text(stats, field, meta.get(field, ""))
-                stats["source_stations"].update(_clean_text(v) or str(i) for v, i in zip(sub["source_station_uid"], sub["source_station_index"]))
-                stats["clusters"].update(_clean_text(v) for v in sub["cluster_uid"] if _clean_text(v))
-                stats["resolutions"].update(_clean_text(v) for v in sub["resolution"] if _clean_text(v))
-                stats["n_records"] += int(len(sub))
-                stats["n_Q_records"] += int(sub["has_q"].sum())
-                stats["n_SSC_records"] += int(sub["has_ssc"].sum())
-                stats["n_SSL_records"] += int(sub["has_ssl"].sum())
-                valid_time = pd.to_numeric(sub["time_num"], errors="coerce")
-                valid_time = valid_time[np.isfinite(valid_time)]
-                if len(valid_time):
-                    stats["time_min"] = min(stats["time_min"], float(valid_time.min()))
-                    stats["time_max"] = max(stats["time_max"], float(valid_time.max()))
+                _update_stats_from_frame(stats, sub)
 
-    return stats_by_source, time_units, time_calendar
+            grouped_resolution = frame.groupby(["source_name", "resolution"], observed=True)
+            for (source_name, resolution), sub in grouped_resolution:
+                key = (source_name, resolution)
+                stats = stats_by_source_resolution[key]
+                stats["source_name"] = source_name
+                stats["resolution"] = resolution
+                first_idx = int(sub["source_station_index"].iloc[0])
+                if 0 <= first_idx < len(station_to_source_meta):
+                    meta = station_to_source_meta[first_idx]
+                    for field in ("source_long_name", "institution", "reference", "source_url"):
+                        _update_min_text(stats, field, meta.get(field, ""))
+                _update_stats_from_frame(stats, sub)
+
+    return stats_by_source, stats_by_source_resolution, time_units, time_calendar
 
 
 def _pick_existing_var(ds, candidates: Iterable[str]) -> Optional[str]:
@@ -467,7 +590,7 @@ def _derive_source_from_path(path_text: str) -> str:
     return Path(text).stem or "unknown_climatology"
 
 
-def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], str, str]:
+def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], Dict[Tuple[str, str], Dict], str, str]:
     """Best-effort climatology summary.
 
     The release climatology file is intentionally separate from the basin
@@ -475,17 +598,19 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], str
     explicitly present in the climatology NetCDF.
     """
     empty: Dict[str, Dict] = defaultdict(_empty_stats)
+    empty_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
     if nc4 is None:
-        return empty, "days since 1970-01-01", "gregorian"
+        return empty, empty_resolution, "days since 1970-01-01", "gregorian"
     climatology_nc = Path(climatology_nc)
     if not climatology_nc.is_file():
-        return empty, "days since 1970-01-01", "gregorian"
+        return empty, empty_resolution, "days since 1970-01-01", "gregorian"
 
     stats_by_source: Dict[str, Dict] = defaultdict(_empty_stats)
+    stats_by_source_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
     with nc4.Dataset(climatology_nc, "r") as ds:
         n_stations = _get_dim_size(ds, ["n_stations", "station", "stations"])
         if n_stations <= 0:
-            return empty, "days since 1970-01-01", "gregorian"
+            return empty, empty_resolution, "days since 1970-01-01", "gregorian"
 
         uid_name = _pick_existing_var(ds, ["station_uid", "source_station_uid", "source_station_id"])
         source_name_var = _pick_existing_var(ds, ["source_name", "source", "dataset", "source_dataset"])
@@ -557,7 +682,23 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], str
                 stats["time_min"] = min(stats["time_min"], time_min)
             if np.isfinite(time_max):
                 stats["time_max"] = max(stats["time_max"], time_max)
-    return stats_by_source, time_units, time_calendar
+
+            res_stats = stats_by_source_resolution[(source_name, "climatology")]
+            res_stats["source_name"] = source_name
+            res_stats["resolution"] = "climatology"
+            res_stats["source_stations"].add(_clean_text(station_uids[idx]) or "CLIM{:06d}".format(idx))
+            if cluster_text:
+                res_stats["clusters"].add(cluster_text)
+            res_stats["resolutions"].add("climatology")
+            res_stats["n_records"] += int(record_counts[idx])
+            res_stats["n_Q_records"] += int(q_counts[idx])
+            res_stats["n_SSC_records"] += int(ssc_counts[idx])
+            res_stats["n_SSL_records"] += int(ssl_counts[idx])
+            if np.isfinite(time_min):
+                res_stats["time_min"] = min(res_stats["time_min"], time_min)
+            if np.isfinite(time_max):
+                res_stats["time_max"] = max(res_stats["time_max"], time_max)
+    return stats_by_source, stats_by_source_resolution, time_units, time_calendar
 
 
 def _read_optional_csv(path: Path) -> pd.DataFrame:
@@ -728,9 +869,14 @@ def stats_to_dataset_frame(
 def merge_stats_dicts(base: Dict[str, Dict], extra: Dict[str, Dict]) -> Dict[str, Dict]:
     out = defaultdict(_empty_stats)
     for mapping in [base, extra]:
-        for source_name, stats in mapping.items():
-            target = out[source_name]
-            target["source_name"] = source_name
+        for key, stats in mapping.items():
+            target = out[key]
+            if isinstance(key, tuple):
+                target["source_name"] = key[0]
+                if len(key) > 1:
+                    target["resolution"] = key[1]
+            else:
+                target["source_name"] = key
             for field in ["source_long_name", "institution", "reference", "source_url"]:
                 _update_min_text(target, field, stats.get(field, ""))
             target["source_stations"].update(stats.get("source_stations", set()))
@@ -787,6 +933,227 @@ def build_type_frame(dataset_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def build_resolution_frame(
+    stats_by_source_resolution: Dict[Tuple[str, str], Dict],
+    dataset_df: pd.DataFrame,
+    time_units: str,
+    time_calendar: str,
+) -> pd.DataFrame:
+    rows = []
+    if dataset_df.empty:
+        return pd.DataFrame(columns=RESOLUTION_COLUMNS)
+
+    source_meta = dataset_df.set_index("source_name")[["source_type", "source_group", "n_records"]].to_dict("index")
+    total_records = int(dataset_df["n_records"].sum())
+    for key, stats in stats_by_source_resolution.items():
+        if isinstance(key, tuple):
+            source_name, resolution = key[0], key[1]
+        else:
+            source_name = stats.get("source_name", key)
+            resolution = stats.get("resolution", _format_resolution(stats.get("resolutions", [])))
+        meta = source_meta.get(source_name, {})
+        source_records = int(meta.get("n_records", 0) or 0)
+        records = int(stats.get("n_records", 0) or 0)
+        first_year = _year_from_time_num(stats.get("time_min", math.inf), time_units, time_calendar)
+        last_year = _year_from_time_num(stats.get("time_max", -math.inf), time_units, time_calendar)
+        rows.append(
+            {
+                "source_name": source_name,
+                "source_type": meta.get("source_type", ""),
+                "source_group": meta.get("source_group", ""),
+                "resolution": resolution,
+                "n_source_stations": len(stats.get("source_stations", set())),
+                "n_clusters": len(stats.get("clusters", set())),
+                "n_records": records,
+                "n_Q_records": int(stats.get("n_Q_records", 0) or 0),
+                "n_SSC_records": int(stats.get("n_SSC_records", 0) or 0),
+                "n_SSL_records": int(stats.get("n_SSL_records", 0) or 0),
+                "first_year": first_year if first_year is not None else "",
+                "last_year": last_year if last_year is not None else "",
+                "percentage_of_total_records": (records / total_records * 100.0) if total_records > 0 else 0.0,
+                "percentage_within_source_records": (records / source_records * 100.0) if source_records > 0 else 0.0,
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=RESOLUTION_COLUMNS)
+    return out.reindex(columns=RESOLUTION_COLUMNS).sort_values(
+        ["n_records", "source_name", "resolution"],
+        ascending=[False, True, True],
+    )
+
+
+def build_variable_frame(dataset_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if dataset_df.empty:
+        return pd.DataFrame(columns=VARIABLE_COLUMNS)
+    totals = {
+        var_name: int(dataset_df[col].sum()) if col in dataset_df.columns else 0
+        for var_name, col in VARIABLE_RECORD_COLUMNS.items()
+    }
+    for _, row in dataset_df.iterrows():
+        source_records = int(row.get("n_records", 0) or 0)
+        for var_name, col in VARIABLE_RECORD_COLUMNS.items():
+            count = int(row.get(col, 0) or 0)
+            total_var = totals.get(var_name, 0)
+            rows.append(
+                {
+                    "source_name": row.get("source_name", ""),
+                    "source_type": row.get("source_type", ""),
+                    "source_group": row.get("source_group", ""),
+                    "variable": var_name,
+                    "n_variable_records": count,
+                    "n_source_records": source_records,
+                    "percentage_of_total_variable_records": (count / total_var * 100.0) if total_var > 0 else 0.0,
+                    "percentage_within_source_records": (count / source_records * 100.0) if source_records > 0 else 0.0,
+                }
+            )
+    out = pd.DataFrame(rows)
+    return out.reindex(columns=VARIABLE_COLUMNS).sort_values(
+        ["variable", "n_variable_records", "source_name"],
+        ascending=[True, False, True],
+    )
+
+
+def build_top_contributors_frame(dataset_df: pd.DataFrame, top_n: int = 20) -> pd.DataFrame:
+    rows = []
+    metrics = [
+        ("records", "n_records"),
+        ("source_stations", "n_source_stations"),
+        ("clusters", "n_clusters"),
+    ]
+    for metric_name, col in metrics:
+        if dataset_df.empty or col not in dataset_df.columns:
+            continue
+        total = float(dataset_df[col].sum())
+        sub = dataset_df.sort_values([col, "source_name"], ascending=[False, True]).head(int(top_n))
+        for rank, (_, row) in enumerate(sub.iterrows(), start=1):
+            value = float(row.get(col, 0) or 0)
+            rows.append(
+                {
+                    "rank_metric": metric_name,
+                    "rank": rank,
+                    "source_name": row.get("source_name", ""),
+                    "source_type": row.get("source_type", ""),
+                    "source_group": row.get("source_group", ""),
+                    "value": value,
+                    "percentage_of_metric_total": (value / total * 100.0) if total > 0 else 0.0,
+                }
+            )
+    if not rows:
+        return pd.DataFrame(columns=TOP_COLUMNS)
+    return pd.DataFrame(rows).reindex(columns=TOP_COLUMNS)
+
+
+def build_cumulative_frame(dataset_df: pd.DataFrame) -> pd.DataFrame:
+    if dataset_df.empty:
+        return pd.DataFrame(columns=CUMULATIVE_COLUMNS)
+    out = dataset_df.sort_values(["n_records", "source_name"], ascending=[False, True]).copy()
+    total = int(out["n_records"].sum())
+    out["rank"] = np.arange(1, len(out) + 1)
+    out["cumulative_records"] = out["n_records"].cumsum()
+    out["cumulative_percentage_of_total_records"] = (
+        out["cumulative_records"] / total * 100.0 if total > 0 else 0.0
+    )
+    keep = out[
+        [
+            "rank",
+            "source_name",
+            "source_type",
+            "source_group",
+            "n_records",
+            "percentage_of_total_records",
+            "cumulative_records",
+            "cumulative_percentage_of_total_records",
+        ]
+    ].copy()
+    return keep.reindex(columns=CUMULATIVE_COLUMNS)
+
+
+def build_temporal_frame(dataset_df: pd.DataFrame) -> pd.DataFrame:
+    if dataset_df.empty:
+        return pd.DataFrame(columns=TEMPORAL_COLUMNS)
+    out = dataset_df[
+        [
+            "source_name",
+            "source_type",
+            "source_group",
+            "first_year",
+            "last_year",
+            "n_records",
+            "n_source_stations",
+            "n_clusters",
+            "resolutions",
+        ]
+    ].copy()
+    first = pd.to_numeric(out["first_year"], errors="coerce")
+    last = pd.to_numeric(out["last_year"], errors="coerce")
+    out["year_span"] = np.where(first.notna() & last.notna(), (last - first + 1).astype("Int64"), pd.NA)
+    return out.reindex(columns=TEMPORAL_COLUMNS).sort_values(
+        ["n_records", "source_name"],
+        ascending=[False, True],
+    )
+
+
+def build_key_metrics_frame(dataset_df: pd.DataFrame, cumulative_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+
+    def add(metric: str, value, detail: str = "") -> None:
+        rows.append({"metric": metric, "value": value, "detail": detail})
+
+    total_records = int(dataset_df["n_records"].sum()) if not dataset_df.empty else 0
+    add("total_source_datasets", int(dataset_df["source_name"].nunique()) if not dataset_df.empty else 0)
+    add("total_source_stations", int(dataset_df["n_source_stations"].sum()) if not dataset_df.empty else 0)
+    add("total_clusters_source_sum", int(dataset_df["n_clusters"].sum()) if not dataset_df.empty else 0)
+    add("total_records", total_records)
+    for var_name, col in VARIABLE_RECORD_COLUMNS.items():
+        add("total_{}_records".format(var_name), int(dataset_df[col].sum()) if col in dataset_df.columns else 0)
+
+    if not dataset_df.empty:
+        top = dataset_df.sort_values(["n_records", "source_name"], ascending=[False, True]).iloc[0]
+        add("top_source_by_records", top["source_name"], "{:.2f}%".format(float(top["percentage_of_total_records"])))
+        first_years = pd.to_numeric(dataset_df["first_year"], errors="coerce")
+        last_years = pd.to_numeric(dataset_df["last_year"], errors="coerce")
+        add("earliest_year", int(first_years.min()) if first_years.notna().any() else "")
+        add("latest_year", int(last_years.max()) if last_years.notna().any() else "")
+
+    for n in [1, 5, 10]:
+        if not cumulative_df.empty:
+            idx = min(n, len(cumulative_df)) - 1
+            value = float(cumulative_df.iloc[idx]["cumulative_percentage_of_total_records"])
+            add("top_{}_sources_record_share_percent".format(n), value)
+        else:
+            add("top_{}_sources_record_share_percent".format(n), 0.0)
+
+    if not rows:
+        return pd.DataFrame(columns=KEY_METRIC_COLUMNS)
+    return pd.DataFrame(rows).reindex(columns=KEY_METRIC_COLUMNS)
+
+
+def build_classification_template(dataset_df: pd.DataFrame) -> pd.DataFrame:
+    if dataset_df.empty:
+        return pd.DataFrame(columns=CLASSIFICATION_TEMPLATE_COLUMNS)
+    out = dataset_df[
+        [
+            "source_name",
+            "source_type",
+            "source_group",
+            "source_long_name",
+            "institution",
+            "reference",
+            "source_url",
+        ]
+    ].copy()
+    out = out.rename(
+        columns={
+            "source_type": "suggested_source_type",
+            "source_group": "suggested_source_group",
+        }
+    )
+    return out.reindex(columns=CLASSIFICATION_TEMPLATE_COLUMNS).sort_values("source_name")
+
+
 def write_bar_figure(df: pd.DataFrame, value_col: str, out_path: Path, title: str, top_n: int = 20) -> None:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -805,6 +1172,329 @@ def write_bar_figure(df: pd.DataFrame, value_col: str, out_path: Path, title: st
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
+
+
+def write_category_bar_figure(
+    type_df: pd.DataFrame,
+    summary_level: str,
+    out_path: Path,
+    title: str,
+    value_col: str = "n_records",
+) -> None:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_df = type_df[type_df["summary_level"] == summary_level].copy() if not type_df.empty else pd.DataFrame()
+    if plot_df.empty:
+        plot_df = pd.DataFrame({"category": ["no data"], value_col: [0]})
+    plot_df = plot_df.sort_values(value_col, ascending=True)
+
+    height = max(3.5, 0.45 * len(plot_df) + 1.5)
+    fig, ax = plt.subplots(figsize=(9, height))
+    ax.barh(plot_df["category"].astype(str), plot_df[value_col].astype(float))
+    ax.set_xlabel(value_col)
+    ax.set_ylabel(summary_level)
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def write_stacked_source_figure(
+    df: pd.DataFrame,
+    category_col: str,
+    value_col: str,
+    out_path: Path,
+    title: str,
+    top_n: int = 20,
+    category_order: Optional[List[str]] = None,
+) -> None:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if df.empty:
+        pivot = pd.DataFrame({"no data": [0]}, index=["no data"])
+    else:
+        totals = df.groupby("source_name", observed=True)[value_col].sum().sort_values(ascending=False)
+        top_sources = list(totals.head(int(top_n)).index)
+        plot_df = df[df["source_name"].isin(top_sources)].copy()
+        pivot = plot_df.pivot_table(
+            index="source_name",
+            columns=category_col,
+            values=value_col,
+            aggfunc="sum",
+            fill_value=0,
+        )
+        pivot["__total__"] = pivot.sum(axis=1)
+        pivot = pivot.sort_values("__total__", ascending=True).drop(columns=["__total__"])
+        if category_order:
+            ordered = [col for col in category_order if col in pivot.columns]
+            ordered.extend([col for col in pivot.columns if col not in ordered])
+            pivot = pivot[ordered]
+    height = max(4.0, 0.35 * len(pivot) + 1.5)
+    fig, ax = plt.subplots(figsize=(10, height))
+    left = np.zeros(len(pivot), dtype=float)
+    y = np.arange(len(pivot))
+    for col in pivot.columns:
+        values = pivot[col].astype(float).to_numpy()
+        ax.barh(y, values, left=left, label=str(col))
+        left += values
+    ax.set_yticks(y)
+    ax.set_yticklabels(pivot.index.astype(str))
+    ax.set_xlabel(value_col)
+    ax.set_ylabel("source dataset")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.3)
+    if len(pivot.columns) > 1:
+        ax.legend(loc="best")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def write_cumulative_figure(cumulative_df: pd.DataFrame, out_path: Path) -> None:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    if cumulative_df.empty:
+        ax.plot([0], [0], marker="o")
+    else:
+        ax.plot(
+            cumulative_df["rank"].astype(float),
+            cumulative_df["cumulative_percentage_of_total_records"].astype(float),
+            marker="o",
+            linewidth=1.5,
+        )
+    ax.set_xlabel("source dataset rank")
+    ax.set_ylabel("cumulative record contribution (%)")
+    ax.set_title("Cumulative source contribution by records")
+    ax.set_ylim(0, 105)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def write_temporal_coverage_figure(temporal_df: pd.DataFrame, out_path: Path, top_n: int = 20) -> None:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_df = temporal_df.copy()
+    if not plot_df.empty:
+        plot_df["first_year_num"] = pd.to_numeric(plot_df["first_year"], errors="coerce")
+        plot_df["last_year_num"] = pd.to_numeric(plot_df["last_year"], errors="coerce")
+        plot_df = plot_df[plot_df["first_year_num"].notna() & plot_df["last_year_num"].notna()]
+        plot_df = plot_df.sort_values(["n_records", "source_name"], ascending=[False, True]).head(int(top_n))
+        plot_df = plot_df.sort_values("first_year_num", ascending=True)
+    if plot_df.empty:
+        plot_df = pd.DataFrame(
+            {"source_name": ["no data"], "first_year_num": [0], "last_year_num": [0], "n_records": [0]}
+        )
+
+    height = max(4.0, 0.35 * len(plot_df) + 1.5)
+    fig, ax = plt.subplots(figsize=(10, height))
+    y = np.arange(len(plot_df))
+    ax.hlines(
+        y,
+        plot_df["first_year_num"].astype(float),
+        plot_df["last_year_num"].astype(float),
+        linewidth=3,
+    )
+    ax.scatter(plot_df["first_year_num"].astype(float), y, s=20)
+    ax.scatter(plot_df["last_year_num"].astype(float), y, s=20)
+    ax.set_yticks(y)
+    ax.set_yticklabels(plot_df["source_name"].astype(str))
+    ax.set_xlabel("year")
+    ax.set_ylabel("source dataset")
+    ax.set_title("Temporal coverage of top source datasets")
+    ax.grid(axis="x", alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def _percent(value) -> str:
+    try:
+        return "{:.2f}%".format(float(value))
+    except Exception:
+        return "NA"
+
+
+def _rel_path(path: Path, base_dir: Path) -> str:
+    return os.path.relpath(str(Path(path)), str(Path(base_dir))).replace(os.sep, "/")
+
+
+def _metric_value(metrics_df: pd.DataFrame, metric: str, default=""):
+    if metrics_df.empty:
+        return default
+    sub = metrics_df[metrics_df["metric"] == metric]
+    if sub.empty:
+        return default
+    return sub.iloc[0]["value"]
+
+
+def build_report_insights(
+    dataset_df: pd.DataFrame,
+    type_df: pd.DataFrame,
+    resolution_df: pd.DataFrame,
+    variable_df: pd.DataFrame,
+    cumulative_df: pd.DataFrame,
+) -> List[str]:
+    insights = []
+    if dataset_df.empty:
+        return ["No source contribution records were available for this run."]
+
+    top = dataset_df.sort_values(["n_records", "source_name"], ascending=[False, True]).iloc[0]
+    insights.append(
+        "Top source by records is `{}` with {:,} records ({} of all records).".format(
+            top["source_name"],
+            int(top["n_records"]),
+            _percent(top["percentage_of_total_records"]),
+        )
+    )
+    if len(cumulative_df) >= 5:
+        insights.append(
+            "The top 5 sources contribute {} of all records.".format(
+                _percent(cumulative_df.iloc[4]["cumulative_percentage_of_total_records"])
+            )
+        )
+    elif not cumulative_df.empty:
+        insights.append(
+            "All listed sources contribute {} of all records.".format(
+                _percent(cumulative_df.iloc[-1]["cumulative_percentage_of_total_records"])
+            )
+        )
+
+    source_type = type_df[type_df["summary_level"] == "source_type"] if not type_df.empty else pd.DataFrame()
+    if not source_type.empty:
+        top_type = source_type.sort_values(["n_records", "category"], ascending=[False, True]).iloc[0]
+        insights.append(
+            "Dominant source type is `{}` with {:,} records ({}).".format(
+                top_type["category"],
+                int(top_type["n_records"]),
+                _percent(top_type["percentage_of_total_records"]),
+            )
+        )
+
+    if not resolution_df.empty:
+        res = resolution_df.groupby("resolution", observed=True)["n_records"].sum().sort_values(ascending=False)
+        if len(res):
+            insights.append(
+                "Dominant resolution is `{}` with {:,} records.".format(res.index[0], int(res.iloc[0]))
+            )
+
+    if not variable_df.empty:
+        var = variable_df.groupby("variable", observed=True)["n_variable_records"].sum().sort_values(ascending=False)
+        if len(var):
+            insights.append(
+                "Best-covered variable is `{}` with {:,} valid records.".format(var.index[0], int(var.iloc[0]))
+            )
+            if len(var) > 1:
+                insights.append(
+                    "Most limited variable is `{}` with {:,} valid records.".format(var.index[-1], int(var.iloc[-1]))
+                )
+
+    first_years = pd.to_numeric(dataset_df["first_year"], errors="coerce")
+    last_years = pd.to_numeric(dataset_df["last_year"], errors="coerce")
+    if first_years.notna().any() and last_years.notna().any():
+        insights.append(
+            "Overall temporal coverage spans {} to {} across sources with parseable dates.".format(
+                int(first_years.min()),
+                int(last_years.max()),
+            )
+        )
+    return insights
+
+
+def write_markdown_report(
+    report_path: Path,
+    dataset_df: pd.DataFrame,
+    type_df: pd.DataFrame,
+    resolution_df: pd.DataFrame,
+    variable_df: pd.DataFrame,
+    cumulative_df: pd.DataFrame,
+    temporal_df: pd.DataFrame,
+    key_metrics_df: pd.DataFrame,
+    table_paths: Dict[str, Path],
+    figure_paths: Dict[str, Path],
+    input_paths: Dict[str, Path],
+) -> None:
+    report_path = Path(report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_dir = report_path.parent
+
+    insights = build_report_insights(dataset_df, type_df, resolution_df, variable_df, cumulative_df)
+    total_records = _metric_value(key_metrics_df, "total_records", 0)
+    total_sources = _metric_value(key_metrics_df, "total_source_datasets", 0)
+    total_stations = _metric_value(key_metrics_df, "total_source_stations", 0)
+    total_clusters = _metric_value(key_metrics_df, "total_clusters_source_sum", 0)
+
+    lines = [
+        "# S8 Source Contribution Statistics",
+        "",
+        "Generated: {}".format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        "",
+        "## Data Sources",
+        "",
+    ]
+    for label, path in input_paths.items():
+        lines.append("- `{}`: `{}`".format(label, path))
+    lines.extend(
+        [
+            "",
+            "## Statistical Scope",
+            "",
+            "- `n_records` counts release-level records with provenance in the master/climatology products.",
+            "- `n_Q_records`, `n_SSC_records`, and `n_SSL_records` count valid values for each variable.",
+            "- `n_source_stations` counts source station identifiers before reference clustering.",
+            "- `n_clusters` counts reference clusters touched by each source where cluster identifiers are available.",
+            "- `source_type` and `source_group` are rule-inferred unless overridden by `--source-classification-csv`.",
+            "",
+            "## Key Metrics",
+            "",
+            "- Source datasets: {:,}".format(int(float(total_sources or 0))),
+            "- Source stations summed across datasets: {:,}".format(int(float(total_stations or 0))),
+            "- Cluster counts summed across datasets: {:,}".format(int(float(total_clusters or 0))),
+            "- Total records: {:,}".format(int(float(total_records or 0))),
+            "- Top 1 record share: {}".format(
+                _percent(_metric_value(key_metrics_df, "top_1_sources_record_share_percent", 0))
+            ),
+            "- Top 5 record share: {}".format(
+                _percent(_metric_value(key_metrics_df, "top_5_sources_record_share_percent", 0))
+            ),
+            "- Top 10 record share: {}".format(
+                _percent(_metric_value(key_metrics_df, "top_10_sources_record_share_percent", 0))
+            ),
+            "",
+            "## Main Insights",
+            "",
+        ]
+    )
+    for item in insights:
+        lines.append("- {}".format(item))
+
+    lines.extend(["", "## Figures", ""])
+    for label, path in figure_paths.items():
+        lines.append("### {}".format(label))
+        lines.append("")
+        lines.append("![{}]({})".format(label, _rel_path(path, report_dir)))
+        lines.append("")
+
+    lines.extend(["## Output Tables", ""])
+    for label, path in table_paths.items():
+        lines.append("- `{}`: `{}`".format(label, _rel_path(path, report_dir)))
+
+    lines.extend(
+        [
+            "",
+            "## Notes and Limitations",
+            "",
+            "- Source classification is conservative and should be reviewed with `source_classification_template.csv` before manuscript use.",
+            "- Climatology is summarized as a standalone release product and assigned the `climatology` resolution.",
+            "- Cluster counts are source-level counts and can sum to more than the unique release cluster count because several sources can contribute to the same cluster.",
+            "- The report describes release-product statistics only and does not infer scientific causality.",
+            "",
+        ]
+    )
+    report_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> int:
@@ -846,26 +1536,56 @@ def main() -> int:
     )
     parser.add_argument(
         "--out-dir",
-        default=str(DEFAULT_RELEASE_DIR),
-        help="Output root. Tables go to out-dir/tables and figures to out-dir/figures.",
+        default=str(DEFAULT_SOURCE_CONTRIBUTION_DIR),
+        help=(
+            "Output root. Default: scripts_basin_test/output_other/source_contribution. "
+            "Tables go to out-dir/tables, figures to out-dir/figures, reports to out-dir/reports."
+        ),
+    )
+    parser.add_argument(
+        "--report-md",
+        default="",
+        help="Optional Markdown report path. Default: out-dir/reports/source_contribution_report.md.",
+    )
+    parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Skip Markdown report generation.",
+    )
+    parser.add_argument(
+        "--write-classification-template",
+        action="store_true",
+        default=True,
+        help="Write tables/source_classification_template.csv. Default: true.",
+    )
+    parser.add_argument(
+        "--no-classification-template",
+        action="store_false",
+        dest="write_classification_template",
+        help="Skip source classification template output.",
     )
     parser.add_argument("--chunk-size", type=int, default=1_000_000, help="Number of master records per processing chunk.")
     parser.add_argument("--top-n", type=int, default=20, help="Number of source datasets shown in each figure.")
     args = parser.parse_args()
 
-    master_stats, time_units, time_calendar = summarize_master_nc(Path(args.master_nc), chunk_size=args.chunk_size)
+    master_stats, master_resolution_stats, time_units, time_calendar = summarize_master_nc(
+        Path(args.master_nc),
+        chunk_size=args.chunk_size,
+    )
 
     if args.include_climatology:
-        clim_stats, clim_units, clim_calendar = summarize_climatology_nc(Path(args.climatology_nc))
+        clim_stats, clim_resolution_stats, clim_units, clim_calendar = summarize_climatology_nc(Path(args.climatology_nc))
         # If climatology has its own time axis, keep its numeric values but use master time
         # metadata only when climatology did not provide anything parseable. In normal use,
         # the master and climatology products both use days since 1970-01-01.
         stats = merge_stats_dicts(master_stats, clim_stats)
+        resolution_stats = merge_stats_dicts(master_resolution_stats, clim_resolution_stats)
         if clim_stats and (time_units == "days since 1970-01-01"):
             time_units = clim_units or time_units
             time_calendar = clim_calendar or time_calendar
     else:
         stats = master_stats
+        resolution_stats = master_resolution_stats
 
     metadata_paths = [Path(args.source_station_catalog), Path(args.source_dataset_catalog)]
     dataset_df = stats_to_dataset_frame(stats, time_units, time_calendar, metadata_paths)
@@ -877,37 +1597,119 @@ def main() -> int:
     )
 
     type_df = build_type_frame(dataset_df)
+    resolution_df = build_resolution_frame(resolution_stats, dataset_df, time_units, time_calendar)
+    variable_df = build_variable_frame(dataset_df)
+    top_df = build_top_contributors_frame(dataset_df, top_n=args.top_n)
+    cumulative_df = build_cumulative_frame(dataset_df)
+    temporal_df = build_temporal_frame(dataset_df)
+    key_metrics_df = build_key_metrics_frame(dataset_df, cumulative_df)
+    classification_template_df = build_classification_template(dataset_df)
 
     out_dir = Path(args.out_dir)
     table_dir = out_dir / "tables"
     figure_dir = out_dir / "figures"
+    report_dir = out_dir / "reports"
     table_dir.mkdir(parents=True, exist_ok=True)
     figure_dir.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_out = table_dir / "table_source_dataset_contribution.csv"
     type_out = table_dir / "table_source_type_contribution.csv"
+    resolution_out = table_dir / "table_source_resolution_contribution.csv"
+    variable_out = table_dir / "table_source_variable_contribution.csv"
+    top_out = table_dir / "table_top_source_contributors.csv"
+    cumulative_out = table_dir / "table_source_contribution_cumulative.csv"
+    temporal_out = table_dir / "table_source_temporal_coverage.csv"
+    key_metrics_out = table_dir / "table_report_key_metrics.csv"
+    classification_template_out = table_dir / "source_classification_template.csv"
     dataset_df.to_csv(dataset_out, index=False)
     type_df.to_csv(type_out, index=False)
+    resolution_df.to_csv(resolution_out, index=False)
+    variable_df.to_csv(variable_out, index=False)
+    top_df.to_csv(top_out, index=False)
+    cumulative_df.to_csv(cumulative_out, index=False)
+    temporal_df.to_csv(temporal_out, index=False)
+    key_metrics_df.to_csv(key_metrics_out, index=False)
+    if args.write_classification_template:
+        classification_template_df.to_csv(classification_template_out, index=False)
 
-    write_bar_figure(
-        dataset_df,
+    figure_paths = {
+        "Source contribution by records": figure_dir / "fig_source_contribution_records.png",
+        "Source contribution by source stations": figure_dir / "fig_source_contribution_stations.png",
+        "Source contribution by clusters": figure_dir / "fig_source_contribution_clusters.png",
+        "Source type contribution by records": figure_dir / "fig_source_type_records.png",
+        "Source group contribution by records": figure_dir / "fig_source_group_records.png",
+        "Source resolution contribution": figure_dir / "fig_source_resolution_stacked.png",
+        "Source variable coverage": figure_dir / "fig_source_variable_stacked.png",
+        "Cumulative source contribution": figure_dir / "fig_source_cumulative_contribution.png",
+        "Temporal coverage": figure_dir / "fig_source_temporal_coverage.png",
+    }
+    write_bar_figure(dataset_df, "n_records", figure_paths["Source contribution by records"], "Source dataset contribution by records", top_n=args.top_n)
+    write_bar_figure(dataset_df, "n_source_stations", figure_paths["Source contribution by source stations"], "Source dataset contribution by source stations", top_n=args.top_n)
+    write_bar_figure(dataset_df, "n_clusters", figure_paths["Source contribution by clusters"], "Source dataset contribution by clusters", top_n=args.top_n)
+    write_category_bar_figure(type_df, "source_type", figure_paths["Source type contribution by records"], "Source type contribution by records")
+    write_category_bar_figure(type_df, "source_group", figure_paths["Source group contribution by records"], "Source group contribution by records")
+    write_stacked_source_figure(
+        resolution_df,
+        "resolution",
         "n_records",
-        figure_dir / "fig_source_contribution_records.png",
-        "Source dataset contribution by records",
+        figure_paths["Source resolution contribution"],
+        "Source contribution by resolution",
         top_n=args.top_n,
+        category_order=["daily", "monthly", "annual", "climatology", "other"],
     )
-    write_bar_figure(
-        dataset_df,
-        "n_source_stations",
-        figure_dir / "fig_source_contribution_stations.png",
-        "Source dataset contribution by source stations",
+    write_stacked_source_figure(
+        variable_df,
+        "variable",
+        "n_variable_records",
+        figure_paths["Source variable coverage"],
+        "Source variable coverage by valid records",
         top_n=args.top_n,
+        category_order=["Q", "SSC", "SSL"],
     )
+    write_cumulative_figure(cumulative_df, figure_paths["Cumulative source contribution"])
+    write_temporal_coverage_figure(temporal_df, figure_paths["Temporal coverage"], top_n=args.top_n)
 
-    print("Wrote {}".format(dataset_out))
-    print("Wrote {}".format(type_out))
-    print("Wrote {}".format(figure_dir / "fig_source_contribution_records.png"))
-    print("Wrote {}".format(figure_dir / "fig_source_contribution_stations.png"))
+    table_paths = {
+        "table_source_dataset_contribution.csv": dataset_out,
+        "table_source_type_contribution.csv": type_out,
+        "table_source_resolution_contribution.csv": resolution_out,
+        "table_source_variable_contribution.csv": variable_out,
+        "table_top_source_contributors.csv": top_out,
+        "table_source_contribution_cumulative.csv": cumulative_out,
+        "table_source_temporal_coverage.csv": temporal_out,
+        "table_report_key_metrics.csv": key_metrics_out,
+    }
+    if args.write_classification_template:
+        table_paths["source_classification_template.csv"] = classification_template_out
+
+    report_path = Path(args.report_md) if args.report_md else (report_dir / "source_contribution_report.md")
+    if not args.no_report:
+        write_markdown_report(
+            report_path,
+            dataset_df,
+            type_df,
+            resolution_df,
+            variable_df,
+            cumulative_df,
+            temporal_df,
+            key_metrics_df,
+            table_paths,
+            figure_paths,
+            {
+                "master_nc": Path(args.master_nc),
+                "climatology_nc": Path(args.climatology_nc),
+                "source_station_catalog": Path(args.source_station_catalog),
+                "source_dataset_catalog": Path(args.source_dataset_catalog),
+            },
+        )
+
+    for path in table_paths.values():
+        print("Wrote {}".format(path))
+    for path in figure_paths.values():
+        print("Wrote {}".format(path))
+    if not args.no_report:
+        print("Wrote {}".format(report_path))
     return 0
 
 

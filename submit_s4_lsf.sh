@@ -37,7 +37,7 @@
 #   export S4_GPKG_EXCLUDE_SATELLITE=0     # 保留卫星站点
 #   ./submit_s4_lsf.sh
 #
-# 重新跑（清除旧 shard 文件强制重新 trace）：
+# 重新跑（清除旧 shard 文件强制重新 trace），否则如果有shard文件的情况是默认跳过：
 #   rm -rf output/s4_shards output/s4_upstream_basins.csv output/s4_upstream_basins.gpkg
 #   export S4_GPKG_EXCLUDE_SATELLITE=1
 #   ./submit_s4_lsf.sh 16
