@@ -1,77 +1,94 @@
 #!/usr/bin/env python3
-"""Generate spatial coverage tables and figures for Section 4.1.
+"""Build S8 release-level spatial coverage statistics for the ESSD manuscript.
 
-Inputs default to the s7 basin-mainline products. The script keeps cluster-level
-statistics at the s7_cluster_station_catalog.csv grain and only uses the basin
-GPKG to count which clusters actually have exported polygons.
+This script is intentionally fixed-configuration and release-product oriented.
+Run it on node113 only; it reads the S8 release package and writes statistics
+under output_other/spatial_coverage_stats/tables.
 """
 
-import argparse
-import json
-import urllib.request
 import math
+import socket
 import sqlite3
 import sys
 from pathlib import Path
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_SCRIPT_DIR = SCRIPT_DIR.parent
-if str(PROJECT_SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(PROJECT_SCRIPT_DIR))
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
 
-from pipeline_paths import (
-    S7_CLUSTER_BASINS_GPKG,
-    S7_CLUSTER_STATION_CATALOG_CSV,
-    S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV,
-    get_output_r_root,
-)
-
 try:
     import geopandas as gpd
     from shapely.geometry import Point
+
     HAS_GPD = True
-except ImportError:
+except ImportError:  # pragma: no cover - optional runtime dependency
     gpd = None
     Point = None
     HAS_GPD = False
 
-try:
-    import matplotlib.pyplot as plt
-    HAS_MPL = True
-except ImportError:
-    plt = None
-    HAS_MPL = False
 
-ROOT = get_output_r_root(PROJECT_SCRIPT_DIR)
-DEFAULT_CLUSTER_CATALOG = ROOT / S7_CLUSTER_STATION_CATALOG_CSV
-DEFAULT_SOURCE_CATALOG = ROOT / S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV
-DEFAULT_BASIN_GPKG = ROOT / S7_CLUSTER_BASINS_GPKG
-DEFAULT_TABLES_DIR = ROOT / "scripts_basin_test/output_other/spatial_coverage_stats/tables"
-DEFAULT_FIGURES_DIR = ROOT / "scripts_basin_test/output_other/spatial_coverage_stats/figures"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
 
-AREA_BINS = [0, 10, 100, 1000, 10000, 100000, np.inf]
-AREA_LABELS = [
-    "<10 km²",
-    "10–100 km²",
-    "100–1,000 km²",
-    "1,000–10,000 km²",
-    "10,000–100,000 km²",
-    ">100,000 km²",
-]
-COUNTRY_COLS = ["country", "country_name", "admin", "adm0_name", "NAME", "name", "NAME_EN"]
-ISO_COLS = ["iso_a3", "ISO_A3", "adm0_a3", "ADM0_A3", "sov_a3", "SOV_A3"]
-CONTINENT_COLS = ["continent", "CONTINENT"]
-REGION_COLS = ["region", "REGION", "subregion", "SUBREGION", "region_un", "REGION_UN"]
-COASTLINE_URL = (
-    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/"
-    "geojson/ne_110m_coastline.geojson"
+RELEASE_DIR = Path(
+    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
+    "scripts_basin_test/output/sed_reference_release"
+)
+OUTPUT_DIR = Path(
+    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
+    "scripts_basin_test/output_other/spatial_coverage_stats"
+)
+TABLES_DIR = OUTPUT_DIR / "tables"
+FIGURES_DIR = OUTPUT_DIR / "figures"
+WORLD_BOUNDARIES = (
+    "/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/"
+    "pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"
 )
 
+STATION_CATALOG = RELEASE_DIR / "station_catalog.csv"
+SOURCE_STATION_CATALOG = RELEASE_DIR / "source_station_catalog.csv"
+SATELLITE_CATALOG = RELEASE_DIR / "satellite_catalog.csv"
+CLUSTER_POINTS_GPKG = RELEASE_DIR / "sed_reference_cluster_points.gpkg"
+CLUSTER_BASINS_GPKG = RELEASE_DIR / "sed_reference_cluster_basins.gpkg"
 
-def clean_text(value):
+REQUIRED_HOST = "node113"
+PYTHON = "/share/home/dq134/.conda/envs/wzx/bin/python3"
+RUN_HINT = (
+    "ssh node113 'cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
+    "Output_r/scripts_basin_test && {py} stats/spatial_coverage_stats.py && "
+    "{py} stats/plot_spatial_coverage_stats.py'"
+).format(
+    py=PYTHON
+)
+
+AREA_COLUMN = "basin_area"
+RESOLUTION_ORDER = ("daily", "monthly", "annual")
+AREA_BINS = [0, 10, 100, 1000, 10000, 100000, np.inf]
+AREA_LABELS = [
+    "<10 km2",
+    "10-100 km2",
+    "100-1,000 km2",
+    "1,000-10,000 km2",
+    "10,000-100,000 km2",
+    ">100,000 km2",
+]
+COUNTRY_COLS = ("country", "country_name", "admin", "adm0_name", "name", "NAME", "NAME_EN")
+ISO_COLS = ("iso_a3", "ISO_A3", "adm0_a3", "ADM0_A3", "sov_a3", "SOV_A3")
+CONTINENT_COLS = ("continent", "CONTINENT", "continent_region", "region")
+REGION_COLS = ("region", "REGION", "subregion", "SUBREGION", "continent_region")
+METRIC_COLUMNS = ("section", "metric", "value", "unit", "source_file", "notes")
+
+
+def require_node113() -> None:
+    host = socket.gethostname().split(".")[0]
+    if host != REQUIRED_HOST:
+        raise SystemExit(
+            "This spatial coverage script must run on node113, not {}.\n"
+            "Use:\n  {}".format(host, RUN_HINT)
+        )
+
+
+def clean_text(value: object) -> str:
     if value is None:
         return ""
     try:
@@ -83,7 +100,8 @@ def clean_text(value):
     return "" if text.lower() in {"nan", "none", "null", "<na>"} else text
 
 
-def first_col(columns, candidates):
+def first_col(columns: Iterable[str], candidates: Sequence[str]) -> Optional[str]:
+    columns = list(columns)
     lower = {str(c).lower(): c for c in columns}
     for col in candidates:
         if col in columns:
@@ -93,8 +111,7 @@ def first_col(columns, candidates):
     return None
 
 
-def read_csv(path, required=False):
-    path = Path(path)
+def read_csv(path: Path, required: bool = True) -> pd.DataFrame:
     if not path.is_file():
         if required:
             raise FileNotFoundError("Required input not found: {}".format(path))
@@ -102,136 +119,180 @@ def read_csv(path, required=False):
     return pd.read_csv(path, keep_default_na=False)
 
 
-def add_cluster_key(df):
-    out = df.copy()
-    if "cluster_uid" in out.columns:
-        uid = out["cluster_uid"].map(clean_text)
-    else:
-        uid = pd.Series([""] * len(out), index=out.index)
-    if "cluster_id" in out.columns:
-        cid = pd.to_numeric(out["cluster_id"], errors="coerce")
-        cid_key = cid.map(lambda x: "cluster_id:{}".format(int(x)) if pd.notna(x) else "")
-    else:
-        cid_key = pd.Series([""] * len(out), index=out.index)
-    fallback = pd.Series(["row_index:{}".format(i) for i in range(len(out))], index=out.index)
-    key = uid.where(uid != "", cid_key).where(lambda s: s != "", fallback)
-    out["cluster_key"] = key.astype(str)
-    return out
-
-
-def numeric(df, col):
+def numeric(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series([np.nan] * len(df), index=df.index, dtype="float64")
     return pd.to_numeric(df[col], errors="coerce")
 
 
-def valid_latlon(df, lat_col="lat", lon_col="lon"):
+def valid_latlon(df: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon") -> pd.Series:
     lat = numeric(df, lat_col)
     lon = numeric(df, lon_col)
     return lat.between(-90, 90) & lon.between(-180, 180)
 
 
-def normalise_clusters(df, area_col):
-    out = add_cluster_key(df)
-    for col in ["lat", "lon", "basin_area", "uparea_merit", "upstream_area", "area_km2"]:
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-    for col in ["cluster_uid", "basin_status", "basin_flag", "available_resolutions", "sources_used"]:
-        if col not in out.columns:
-            out[col] = ""
-        out[col] = out[col].map(clean_text)
-    if area_col not in out.columns:
-        for fallback in ["basin_area", "uparea_merit", "upstream_area", "area_km2"]:
-            if fallback in out.columns:
-                print("Warning: --area-column '{}' not found; using '{}'".format(area_col, fallback))
-                area_col = fallback
-                break
-    if area_col not in out.columns:
-        raise ValueError("No upstream-area column found; requested '{}'".format(area_col))
-    out["area_km2"] = pd.to_numeric(out[area_col], errors="coerce")
-    out["valid_latlon"] = valid_latlon(out)
-    status = out["basin_status"].str.lower().str.strip()
-    out["is_resolved"] = status.eq("resolved")
-    out["is_unresolved"] = status.eq("unresolved")
-    return out, area_col
-
-
-def quote_ident(name):
+def quote_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def basin_polygon_keys(gpkg_path, prefix="basin"):
-    gpkg_path = Path(gpkg_path)
-    keys = set()
-    if not gpkg_path.is_file():
-        print("Warning: basin GPKG not found; polygon count will be zero: {}".format(gpkg_path))
-        return keys
+def split_values(value: object) -> List[str]:
+    values: List[str] = []
+    for part in clean_text(value).replace(",", "|").split("|"):
+        part = clean_text(part)
+        if part and part not in values:
+            values.append(part)
+    return values
+
+
+def join_values(values: Iterable[object]) -> str:
+    out: List[str] = []
+    for value in values:
+        for part in split_values(value):
+            if part not in out:
+                out.append(part)
+    return "|".join(sorted(out))
+
+
+def first_valid(values: Iterable[object]) -> object:
+    for value in values:
+        if clean_text(value) != "":
+            return value
+    return ""
+
+
+def first_positive(values: Iterable[object]) -> float:
+    vals = pd.to_numeric(pd.Series(list(values)), errors="coerce")
+    vals = vals[np.isfinite(vals) & (vals > 0)]
+    return float(vals.iloc[0]) if len(vals) else np.nan
+
+
+def status_priority(values: Iterable[object]) -> str:
+    statuses = [clean_text(v).lower() for v in values if clean_text(v)]
+    if "resolved" in statuses:
+        return "resolved"
+    if "unresolved" in statuses:
+        return "unresolved"
+    if "unknown" in statuses:
+        return "unknown"
+    return statuses[0] if statuses else "unknown"
+
+
+def resolution_sort_key(value: str) -> Tuple[int, str]:
+    value = clean_text(value).lower()
     try:
-        with sqlite3.connect(str(gpkg_path)) as conn:
-            layers = pd.read_sql_query(
-                "SELECT table_name FROM gpkg_contents WHERE data_type='features' ORDER BY table_name",
-                conn,
-            )["table_name"].astype(str).tolist()
-            layers = [x for x in layers if not prefix or x.startswith(prefix)]
-            for layer in layers:
-                cols = pd.read_sql_query("PRAGMA table_info({})".format(quote_ident(layer)), conn)["name"].astype(str).tolist()
-                keep = [c for c in ["cluster_uid", "cluster_id"] if c in cols]
-                if not keep:
-                    continue
-                sql = "SELECT {} FROM {}".format(", ".join(quote_ident(c) for c in keep), quote_ident(layer))
-                rows = add_cluster_key(pd.read_sql_query(sql, conn))
-                keys.update(rows["cluster_key"].dropna().astype(str).tolist())
-    except Exception as exc:
-        print("Warning: failed to read basin polygon keys from {}: {}".format(gpkg_path, exc))
-    return keys
+        return RESOLUTION_ORDER.index(value), value
+    except ValueError:
+        return 99, value
 
 
-def attach_geography(cluster_df, world_boundaries=None):
+def normalise_station_catalog(station_df: pd.DataFrame) -> pd.DataFrame:
+    out = station_df.copy()
+    for col in ("cluster_uid", "cluster_id", "resolution", "sources_used", "basin_status", "basin_flag"):
+        if col not in out.columns:
+            out[col] = ""
+        out[col] = out[col].map(clean_text)
+    for col in ("lat", "lon", AREA_COLUMN, "record_count", "n_source_stations_in_cluster"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    out["resolution"] = out["resolution"].str.lower()
+    out["valid_latlon"] = valid_latlon(out)
+    out["area_km2"] = numeric(out, AREA_COLUMN)
+    out["cluster_key"] = out["cluster_uid"].where(out["cluster_uid"].ne(""), out["cluster_id"].map(lambda x: "cluster_id:{}".format(x)))
+    out["cluster_resolution_key"] = out["cluster_key"] + "|" + out["resolution"]
+    return out
+
+
+def polygon_keys_by_layer(gpkg_path: Path) -> Tuple[Set[str], Dict[str, Set[str]], pd.DataFrame]:
+    all_keys: Set[str] = set()
+    by_resolution: Dict[str, Set[str]] = {r: set() for r in RESOLUTION_ORDER}
+    rows: List[Dict[str, object]] = []
+    if not gpkg_path.is_file():
+        return all_keys, by_resolution, pd.DataFrame(rows)
+
+    with sqlite3.connect(str(gpkg_path)) as conn:
+        layers = pd.read_sql_query(
+            "SELECT table_name FROM gpkg_contents WHERE data_type='features' ORDER BY table_name",
+            conn,
+        )["table_name"].astype(str).tolist()
+        for layer in layers:
+            if not layer.startswith("basin_"):
+                continue
+            cols = pd.read_sql_query("PRAGMA table_info({})".format(quote_ident(layer)), conn)["name"].astype(str).tolist()
+            key_col = first_col(cols, ("cluster_uid", "cluster_id"))
+            if key_col is None:
+                continue
+            keys = pd.read_sql_query("SELECT {} FROM {}".format(quote_ident(key_col), quote_ident(layer)), conn)[key_col]
+            layer_keys = set(keys.map(clean_text).replace("", np.nan).dropna().astype(str).tolist())
+            resolution = layer.replace("basin_", "", 1).lower()
+            all_keys.update(layer_keys)
+            if resolution in by_resolution:
+                by_resolution[resolution].update(layer_keys)
+            rows.append(
+                {
+                    "layer": layer,
+                    "resolution": resolution,
+                    "polygon_feature_count": int(len(keys)),
+                    "polygon_cluster_count": int(len(layer_keys)),
+                }
+            )
+    return all_keys, by_resolution, pd.DataFrame(rows)
+
+
+def attach_geography(cluster_df: pd.DataFrame) -> pd.DataFrame:
     out = cluster_df.copy()
     country_col = first_col(out.columns, COUNTRY_COLS)
     iso_col = first_col(out.columns, ISO_COLS)
     continent_col = first_col(out.columns, CONTINENT_COLS)
     region_col = first_col(out.columns, REGION_COLS)
+
     out["country"] = out[country_col].map(clean_text) if country_col else ""
     out["iso_a3"] = out[iso_col].map(clean_text) if iso_col else ""
     out["continent"] = out[continent_col].map(clean_text) if continent_col else ""
     out["region"] = out[region_col].map(clean_text) if region_col else ""
 
-    needs_join = (out["country"].eq("").all() or out["continent"].eq("").all()) and bool(world_boundaries)
+    boundary_path = Path(WORLD_BOUNDARIES).expanduser() if WORLD_BOUNDARIES else None
+    needs_join = boundary_path and boundary_path.is_file() and (out["country"].eq("").any() or out["continent"].eq("").any())
     if needs_join and not HAS_GPD:
-        print("Warning: geopandas unavailable; cannot join --world-boundaries")
+        print("Warning: geopandas unavailable; cannot join WORLD_BOUNDARIES")
     elif needs_join:
-        boundary_path = Path(world_boundaries)
-        if not boundary_path.is_file():
-            print("Warning: world boundaries not found: {}".format(boundary_path))
-        else:
-            try:
-                valid = out["valid_latlon"]
-                pts = gpd.GeoDataFrame(
-                    out.loc[valid].copy(),
-                    geometry=[Point(float(x), float(y)) for x, y in zip(out.loc[valid, "lon"], out.loc[valid, "lat"])],
-                    crs="EPSG:4326",
-                )
-                world = gpd.read_file(boundary_path)
-                world = world.set_crs("EPSG:4326") if world.crs is None else world.to_crs("EPSG:4326")
-                w_country = first_col(world.columns, COUNTRY_COLS)
-                w_iso = first_col(world.columns, ISO_COLS)
-                w_continent = first_col(world.columns, CONTINENT_COLS)
-                w_region = first_col(world.columns, REGION_COLS)
-                keep = [c for c in [w_country, w_iso, w_continent, w_region, "geometry"] if c is not None and c in world.columns]
-                joined = gpd.sjoin(pts, world[keep], how="left", predicate="within")
-                if w_country and out["country"].eq("").all():
-                    out.loc[joined.index, "country"] = joined[w_country].map(clean_text)
-                if w_iso and out["iso_a3"].eq("").all():
-                    out.loc[joined.index, "iso_a3"] = joined[w_iso].map(clean_text)
-                if w_continent and out["continent"].eq("").all():
-                    out.loc[joined.index, "continent"] = joined[w_continent].map(clean_text)
-                if w_region and out["region"].eq("").all():
-                    out.loc[joined.index, "region"] = joined[w_region].map(clean_text)
-            except Exception as exc:
-                print("Warning: failed to join world boundaries: {}".format(exc))
-    elif not (country_col or continent_col or region_col):
-        print("Warning: no country/region columns and no --world-boundaries; using Unknown groups")
+        try:
+            valid = out["valid_latlon"]
+            pts = gpd.GeoDataFrame(
+                out.loc[valid].copy(),
+                geometry=[Point(float(x), float(y)) for x, y in zip(out.loc[valid, "lon"], out.loc[valid, "lat"])],
+                crs="EPSG:4326",
+            )
+            world = gpd.read_file(boundary_path)
+            world = world.set_crs("EPSG:4326") if world.crs is None else world.to_crs("EPSG:4326")
+            w_country = first_col(world.columns, COUNTRY_COLS)
+            w_iso = first_col(world.columns, ISO_COLS)
+            w_continent = first_col(world.columns, CONTINENT_COLS)
+            w_region = first_col(world.columns, REGION_COLS)
+            rename = {}
+            for source, target in (
+                (w_country, "boundary_country"),
+                (w_iso, "boundary_iso_a3"),
+                (w_continent, "boundary_continent"),
+                (w_region, "boundary_region"),
+            ):
+                if source and source in world.columns:
+                    rename[source] = target
+            keep = list(rename.keys()) + ["geometry"]
+            boundary = world[keep].rename(columns=rename)
+            joined = gpd.sjoin(pts, boundary, how="left", predicate="within")
+            region_source = "boundary_region" if "boundary_region" in joined.columns else "boundary_continent"
+            for target, source in (
+                ("country", "boundary_country"),
+                ("iso_a3", "boundary_iso_a3"),
+                ("continent", "boundary_continent"),
+                ("region", region_source),
+            ):
+                if source in joined.columns:
+                    values = joined[source].map(clean_text)
+                    mask = values.ne("")
+                    out.loc[joined.index[mask], target] = values.loc[mask].values
+        except Exception as exc:
+            print("Warning: failed to join WORLD_BOUNDARIES: {}".format(exc))
 
     out["country"] = out["country"].map(clean_text).replace("", "Unknown")
     out["iso_a3"] = out["iso_a3"].map(clean_text).replace("", "UNK")
@@ -242,331 +303,640 @@ def attach_geography(cluster_df, world_boundaries=None):
     return out
 
 
-def split_values(series):
-    values = set()
-    for item in series:
-        for part in clean_text(item).replace(",", "|").split("|"):
-            part = clean_text(part)
-            if part:
-                values.add(part)
-    return values
+def build_cluster_table(station_df: pd.DataFrame, source_df: pd.DataFrame, polygon_keys: Set[str]) -> pd.DataFrame:
+    grouped = []
+    for cluster_key, group in station_df.groupby("cluster_key", dropna=False):
+        group = group.copy()
+        resolutions = sorted(set(group["resolution"].map(clean_text)), key=resolution_sort_key)
+        grouped.append(
+            {
+                "cluster_key": cluster_key,
+                "cluster_uid": clean_text(first_valid(group["cluster_uid"])),
+                "cluster_id": clean_text(first_valid(group["cluster_id"])),
+                "lat": pd.to_numeric(group["lat"], errors="coerce").dropna().iloc[0] if group["lat"].notna().any() else np.nan,
+                "lon": pd.to_numeric(group["lon"], errors="coerce").dropna().iloc[0] if group["lon"].notna().any() else np.nan,
+                "area_km2": first_positive(group["area_km2"]),
+                "basin_status": status_priority(group["basin_status"]),
+                "basin_flag": clean_text(first_valid(group["basin_flag"])),
+                "available_resolutions": "|".join(resolutions),
+                "n_available_resolutions": len(resolutions),
+                "record_count": int(pd.to_numeric(group["record_count"], errors="coerce").fillna(0).sum()),
+                "country": clean_text(first_valid(group["country"])) if "country" in group.columns else "",
+                "iso_a3": clean_text(first_valid(group["iso_a3"])) if "iso_a3" in group.columns else "",
+                "continent": clean_text(first_valid(group["continent_region"])) if "continent_region" in group.columns else "",
+                "region": clean_text(first_valid(group["continent_region"])) if "continent_region" in group.columns else "",
+                "geographic_coverage": clean_text(first_valid(group["geographic_coverage"])) if "geographic_coverage" in group.columns else "",
+                "geo_attribute_source": clean_text(first_valid(group["geo_attribute_source"])) if "geo_attribute_source" in group.columns else "",
+                "geo_attribute_confidence": clean_text(first_valid(group["geo_attribute_confidence"])) if "geo_attribute_confidence" in group.columns else "",
+                "sources_used": join_values(group["sources_used"]),
+            }
+        )
+    clusters = pd.DataFrame(grouped)
+    clusters["valid_latlon"] = valid_latlon(clusters)
+    clusters["is_resolved"] = clusters["basin_status"].eq("resolved")
+    clusters["is_unresolved"] = clusters["basin_status"].eq("unresolved")
+    clusters["is_unknown_status"] = ~(clusters["is_resolved"] | clusters["is_unresolved"])
+    clusters["has_basin_polygon"] = clusters["cluster_key"].isin(polygon_keys)
+
+    if not source_df.empty and "source_name" in source_df.columns:
+        src = source_df.copy()
+        src["cluster_key"] = src["cluster_uid"].map(clean_text).where(src["cluster_uid"].map(clean_text).ne(""), src["cluster_id"].map(clean_text))
+        src["source_name"] = src["source_name"].map(clean_text)
+        by_cluster = src[src["source_name"].ne("")].groupby("cluster_key")["source_name"].agg(join_values).reset_index()
+        by_cluster = by_cluster.rename(columns={"source_name": "source_names_from_catalog"})
+        clusters = clusters.merge(by_cluster, on="cluster_key", how="left")
+        clusters["source_names"] = clusters["source_names_from_catalog"].where(
+            clusters["source_names_from_catalog"].fillna("").ne(""), clusters["sources_used"]
+        )
+        clusters = clusters.drop(columns=["source_names_from_catalog"])
+    else:
+        clusters["source_names"] = clusters["sources_used"]
+    clusters["n_sources"] = clusters["source_names"].map(lambda x: len(split_values(x)))
+    clusters = attach_geography(clusters)
+    return clusters
 
 
-def attach_sources(cluster_df, source_df):
-    out = cluster_df.copy()
-    out["source_names"] = out["sources_used"].map(clean_text) if "sources_used" in out.columns else ""
-    if source_df.empty or "source_name" not in source_df.columns:
-        out["n_sources"] = out["source_names"].map(lambda x: len(split_values(pd.Series([x]))))
-        return out
-    src = add_cluster_key(source_df)
-    src["source_name"] = src["source_name"].map(clean_text)
-    grouped = src[src["source_name"] != ""].groupby("cluster_key")["source_name"].agg(lambda x: "|".join(sorted(set(x)))).reset_index()
-    grouped = grouped.rename(columns={"source_name": "source_names_from_catalog"})
-    out = out.merge(grouped, on="cluster_key", how="left")
-    out["source_names"] = out["source_names_from_catalog"].where(out["source_names_from_catalog"].fillna("").ne(""), out["source_names"])
-    out = out.drop(columns=["source_names_from_catalog"])
-    out["n_sources"] = out["source_names"].map(lambda x: len(split_values(pd.Series([x]))))
-    return out
+def area_values(df: pd.DataFrame) -> pd.Series:
+    values = pd.to_numeric(df["area_km2"], errors="coerce")
+    return values[np.isfinite(values) & (values > 0)]
 
 
-def group_summary(group):
-    area = group["area_km2"]
-    valid_area = area[np.isfinite(area) & (area > 0)]
+def pct(numer: float, denom: float) -> float:
+    return float(numer) / float(denom) * 100.0 if denom else np.nan
+
+
+def add_metric(rows: List[Dict[str, object]], section: str, metric: str, value: object, unit: str, source_file: str, notes: str = "") -> None:
+    rows.append(
+        {
+            "section": section,
+            "metric": metric,
+            "value": value,
+            "unit": unit,
+            "source_file": source_file,
+            "notes": notes,
+        }
+    )
+
+
+def summarise_global(clusters: pd.DataFrame, station_df: pd.DataFrame, satellite_df: pd.DataFrame) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    valid_area = area_values(clusters)
+    lat = numeric(clusters, "lat")
+    lon = numeric(clusters, "lon")
+    total = int(clusters["cluster_key"].nunique())
+    resolved = int(clusters.loc[clusters["is_resolved"], "cluster_key"].nunique())
+    unresolved = int(clusters.loc[clusters["is_unresolved"], "cluster_key"].nunique())
+    unknown = int(clusters.loc[clusters["is_unknown_status"], "cluster_key"].nunique())
+    polygons = int(clusters.loc[clusters["has_basin_polygon"], "cluster_key"].nunique())
+    unknown_country = int(clusters.loc[clusters["country"].eq("Unknown"), "cluster_key"].nunique())
+    unknown_continent = int(clusters.loc[clusters["continent"].eq("Unknown"), "cluster_key"].nunique())
+
+    add_metric(rows, "main_release", "station_catalog_rows", len(station_df), "rows", STATION_CATALOG.name)
+    add_metric(rows, "main_release", "final_cluster_count", total, "clusters", STATION_CATALOG.name)
+    for resolution in RESOLUTION_ORDER:
+        count = int(station_df.loc[station_df["resolution"].eq(resolution), "cluster_key"].nunique())
+        add_metric(rows, "main_release", "{}_cluster_count".format(resolution), count, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "resolved_cluster_count", resolved, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "resolved_cluster_percent", pct(resolved, total), "percent", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "unresolved_cluster_count", unresolved, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "unresolved_cluster_percent", pct(unresolved, total), "percent", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "unknown_status_cluster_count", unknown, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "basin_assignment", "unknown_status_cluster_percent", pct(unknown, total), "percent", STATION_CATALOG.name)
+    add_metric(rows, "basin_polygons", "basin_polygon_cluster_count", polygons, "clusters", CLUSTER_BASINS_GPKG.name)
+    add_metric(rows, "basin_polygons", "basin_polygon_cluster_percent", pct(polygons, total), "percent", CLUSTER_BASINS_GPKG.name)
+    add_metric(rows, "coordinates", "clusters_with_valid_lat_lon", int(clusters.loc[clusters["valid_latlon"], "cluster_key"].nunique()), "clusters", STATION_CATALOG.name)
+    add_metric(rows, "coordinates", "latitude_min", float(lat.min()) if lat.notna().any() else np.nan, "degrees_north", STATION_CATALOG.name)
+    add_metric(rows, "coordinates", "latitude_max", float(lat.max()) if lat.notna().any() else np.nan, "degrees_north", STATION_CATALOG.name)
+    add_metric(rows, "coordinates", "longitude_min", float(lon.min()) if lon.notna().any() else np.nan, "degrees_east", STATION_CATALOG.name)
+    add_metric(rows, "coordinates", "longitude_max", float(lon.max()) if lon.notna().any() else np.nan, "degrees_east", STATION_CATALOG.name)
+    add_metric(rows, "area", "upstream_area_valid_cluster_count", len(valid_area), "clusters", STATION_CATALOG.name)
+    add_metric(rows, "area", "upstream_area_missing_or_invalid_cluster_count", total - len(valid_area), "clusters", STATION_CATALOG.name)
+    for label, value in (
+        ("min", valid_area.min() if len(valid_area) else np.nan),
+        ("p05", valid_area.quantile(0.05) if len(valid_area) else np.nan),
+        ("p25", valid_area.quantile(0.25) if len(valid_area) else np.nan),
+        ("mean", valid_area.mean() if len(valid_area) else np.nan),
+        ("median", valid_area.median() if len(valid_area) else np.nan),
+        ("p75", valid_area.quantile(0.75) if len(valid_area) else np.nan),
+        ("p95", valid_area.quantile(0.95) if len(valid_area) else np.nan),
+        ("max", valid_area.max() if len(valid_area) else np.nan),
+    ):
+        add_metric(rows, "area", "upstream_area_{}".format(label), value, "km2", STATION_CATALOG.name)
+    add_metric(rows, "geography", "unknown_country_cluster_count", unknown_country, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "geography", "unknown_country_cluster_percent", pct(unknown_country, total), "percent", STATION_CATALOG.name)
+    add_metric(rows, "geography", "unknown_continent_cluster_count", unknown_continent, "clusters", STATION_CATALOG.name)
+    add_metric(rows, "geography", "unknown_continent_cluster_percent", pct(unknown_continent, total), "percent", STATION_CATALOG.name)
+    if not satellite_df.empty:
+        add_metric(rows, "satellite_validation", "satellite_station_rows", len(satellite_df), "rows", SATELLITE_CATALOG.name)
+        add_metric(rows, "satellite_validation", "satellite_linked_cluster_count", satellite_df["cluster_uid"].map(clean_text).nunique(), "clusters", SATELLITE_CATALOG.name)
+        add_metric(rows, "satellite_validation", "satellite_record_count", int(numeric(satellite_df, "n_records").fillna(0).sum()), "records", SATELLITE_CATALOG.name)
+    return pd.DataFrame(rows, columns=METRIC_COLUMNS)
+
+
+def group_summary(group: pd.DataFrame) -> pd.Series:
+    valid_area = area_values(group)
     lat = numeric(group, "lat")
     lon = numeric(group, "lon")
-    sources = split_values(group["source_names"]) if "source_names" in group.columns else set()
-    return pd.Series({
-        "cluster_count": int(group["cluster_key"].nunique()),
-        "resolved_cluster_count": int(group.loc[group["is_resolved"], "cluster_key"].nunique()),
-        "unresolved_cluster_count": int(group.loc[group["is_unresolved"], "cluster_key"].nunique()),
-        "basin_polygon_cluster_count": int(group.loc[group["has_basin_polygon"], "cluster_key"].nunique()),
-        "clusters_with_valid_upstream_area": int(len(valid_area)),
-        "mean_upstream_area_km2": float(valid_area.mean()) if len(valid_area) else np.nan,
-        "median_upstream_area_km2": float(valid_area.median()) if len(valid_area) else np.nan,
-        "min_lat": float(lat.min()) if lat.notna().any() else np.nan,
-        "max_lat": float(lat.max()) if lat.notna().any() else np.nan,
-        "min_lon": float(lon.min()) if lon.notna().any() else np.nan,
-        "max_lon": float(lon.max()) if lon.notna().any() else np.nan,
-        "n_sources": int(len(sources)),
-        "source_names": "|".join(sorted(sources)),
-    })
+    total = int(group["cluster_key"].nunique())
+    resolved = int(group.loc[group["is_resolved"], "cluster_key"].nunique())
+    polygons = int(group.loc[group["has_basin_polygon"], "cluster_key"].nunique())
+    return pd.Series(
+        {
+            "cluster_count": total,
+            "resolved_cluster_count": resolved,
+            "unresolved_cluster_count": int(group.loc[group["is_unresolved"], "cluster_key"].nunique()),
+            "unknown_status_cluster_count": int(group.loc[group["is_unknown_status"], "cluster_key"].nunique()),
+            "basin_polygon_cluster_count": polygons,
+            "resolved_cluster_percent": pct(resolved, total),
+            "basin_polygon_cluster_percent": pct(polygons, total),
+            "clusters_with_valid_upstream_area": int(len(valid_area)),
+            "mean_upstream_area_km2": float(valid_area.mean()) if len(valid_area) else np.nan,
+            "median_upstream_area_km2": float(valid_area.median()) if len(valid_area) else np.nan,
+            "min_lat": float(lat.min()) if lat.notna().any() else np.nan,
+            "max_lat": float(lat.max()) if lat.notna().any() else np.nan,
+            "min_lon": float(lon.min()) if lon.notna().any() else np.nan,
+            "max_lon": float(lon.max()) if lon.notna().any() else np.nan,
+            "n_sources": int(len(split_values(join_values(group["source_names"])))),
+            "source_names": join_values(group["source_names"]),
+        }
+    )
 
 
-def summarise_global(df, area_col):
-    area = df["area_km2"]
-    valid = area[np.isfinite(area) & (area > 0)]
-    lat = numeric(df, "lat")
-    lon = numeric(df, "lon")
-    rows = [
-        ("final_cluster_count", df["cluster_key"].nunique(), "clusters"),
-        ("resolved_basin_assignment_cluster_count", df.loc[df["is_resolved"], "cluster_key"].nunique(), "clusters"),
-        ("unresolved_cluster_count", df.loc[df["is_unresolved"], "cluster_key"].nunique(), "clusters"),
-        ("basin_status_unknown_or_other_cluster_count", df.loc[~df["is_resolved"] & ~df["is_unresolved"], "cluster_key"].nunique(), "clusters"),
-        ("basin_polygon_cluster_count", df.loc[df["has_basin_polygon"], "cluster_key"].nunique(), "clusters"),
-        ("clusters_with_valid_lat_lon", df.loc[df["valid_latlon"], "cluster_key"].nunique(), "clusters"),
-        ("latitude_min", lat.min() if lat.notna().any() else np.nan, "degrees_north"),
-        ("latitude_max", lat.max() if lat.notna().any() else np.nan, "degrees_north"),
-        ("longitude_min", lon.min() if lon.notna().any() else np.nan, "degrees_east"),
-        ("longitude_max", lon.max() if lon.notna().any() else np.nan, "degrees_east"),
-        ("upstream_area_valid_cluster_count", len(valid), "clusters"),
-        ("upstream_area_missing_or_invalid_cluster_count", df["cluster_key"].nunique() - len(valid), "clusters"),
-    ]
-    for name, func in [("min", np.min), ("mean", np.mean), ("median", np.median), ("max", np.max)]:
-        rows.append(("upstream_area_{}".format(name), func(valid) if len(valid) else np.nan, "km2"))
-    for q in [0.05, 0.25, 0.75, 0.95]:
-        rows.append(("upstream_area_p{:02d}".format(int(q * 100)), valid.quantile(q) if len(valid) else np.nan, "km2"))
-    out = pd.DataFrame(rows, columns=["metric", "value", "units"])
-    out["area_column"] = area_col
-    return out
+def resolution_summary(station_df: pd.DataFrame, polygon_by_resolution: Dict[str, Set[str]]) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for resolution in RESOLUTION_ORDER:
+        group = station_df[station_df["resolution"].eq(resolution)].copy()
+        keys = set(group["cluster_key"].map(clean_text))
+        polygon_keys = polygon_by_resolution.get(resolution, set())
+        valid_area = area_values(group.drop_duplicates("cluster_key"))
+        total = len(keys)
+        resolved = group.loc[group["basin_status"].str.lower().eq("resolved"), "cluster_key"].nunique()
+        rows.append(
+            {
+                "resolution": resolution,
+                "catalog_rows": int(len(group)),
+                "cluster_count": int(total),
+                "record_count": int(numeric(group, "record_count").fillna(0).sum()),
+                "resolved_cluster_count": int(resolved),
+                "unresolved_cluster_count": int(group.loc[group["basin_status"].str.lower().eq("unresolved"), "cluster_key"].nunique()),
+                "unknown_status_cluster_count": int(total - resolved - group.loc[group["basin_status"].str.lower().eq("unresolved"), "cluster_key"].nunique()),
+                "basin_polygon_cluster_count": int(len(keys & polygon_keys)),
+                "basin_polygon_cluster_percent": pct(len(keys & polygon_keys), total),
+                "valid_area_cluster_count": int(len(valid_area)),
+                "median_upstream_area_km2": float(valid_area.median()) if len(valid_area) else np.nan,
+                "mean_upstream_area_km2": float(valid_area.mean()) if len(valid_area) else np.nan,
+                "min_lat": float(numeric(group, "lat").min()) if len(group) else np.nan,
+                "max_lat": float(numeric(group, "lat").max()) if len(group) else np.nan,
+                "min_lon": float(numeric(group, "lon").min()) if len(group) else np.nan,
+                "max_lon": float(numeric(group, "lon").max()) if len(group) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def upstream_distribution(df, area_col):
-    valid = df["area_km2"][np.isfinite(df["area_km2"]) & (df["area_km2"] > 0)]
-    rows = []
-    stats = {
+def upstream_distribution(clusters: pd.DataFrame) -> pd.DataFrame:
+    valid = area_values(clusters)
+    rows: List[Dict[str, object]] = []
+    count_stats = {
         "valid_cluster_count": len(valid),
-        "missing_or_invalid_cluster_count": df["cluster_key"].nunique() - len(valid),
-        "min": valid.min() if len(valid) else np.nan,
-        "p05": valid.quantile(0.05) if len(valid) else np.nan,
-        "p25": valid.quantile(0.25) if len(valid) else np.nan,
-        "mean": valid.mean() if len(valid) else np.nan,
-        "median": valid.median() if len(valid) else np.nan,
-        "p75": valid.quantile(0.75) if len(valid) else np.nan,
-        "p95": valid.quantile(0.95) if len(valid) else np.nan,
-        "max": valid.max() if len(valid) else np.nan,
+        "missing_or_invalid_cluster_count": clusters["cluster_key"].nunique() - len(valid),
     }
-    count_stats = {"valid_cluster_count", "missing_or_invalid_cluster_count"}
-    for label, value in stats.items():
-        rows.append({
-            "section": "summary",
-            "label": label,
-            "value_km2": np.nan if label in count_stats else value,
-            "cluster_count": value if label in count_stats else np.nan,
-            "fraction_of_valid_area_clusters": np.nan,
-            "area_column": area_col,
-        })
+    for label, count in count_stats.items():
+        rows.append(
+            {
+                "section": "summary",
+                "label": label,
+                "value_km2": np.nan,
+                "cluster_count": int(count),
+                "fraction_of_valid_area_clusters": np.nan,
+            }
+        )
+    for label, value in (
+        ("min", valid.min() if len(valid) else np.nan),
+        ("p05", valid.quantile(0.05) if len(valid) else np.nan),
+        ("p25", valid.quantile(0.25) if len(valid) else np.nan),
+        ("mean", valid.mean() if len(valid) else np.nan),
+        ("median", valid.median() if len(valid) else np.nan),
+        ("p75", valid.quantile(0.75) if len(valid) else np.nan),
+        ("p95", valid.quantile(0.95) if len(valid) else np.nan),
+        ("max", valid.max() if len(valid) else np.nan),
+    ):
+        rows.append(
+            {
+                "section": "summary",
+                "label": label,
+                "value_km2": value,
+                "cluster_count": np.nan,
+                "fraction_of_valid_area_clusters": np.nan,
+            }
+        )
     cuts = pd.cut(valid, AREA_BINS, labels=AREA_LABELS, right=False, include_lowest=True) if len(valid) else pd.Series(dtype="category")
     counts = cuts.value_counts(sort=False) if len(valid) else {}
     for label in AREA_LABELS:
         count = int(counts.get(label, 0)) if len(valid) else 0
-        rows.append({
-            "section": "bin",
-            "label": label,
-            "value_km2": np.nan,
-            "cluster_count": count,
-            "fraction_of_valid_area_clusters": count / len(valid) if len(valid) else np.nan,
-            "area_column": area_col,
-        })
+        rows.append(
+            {
+                "section": "bin",
+                "label": label,
+                "value_km2": np.nan,
+                "cluster_count": count,
+                "fraction_of_valid_area_clusters": count / len(valid) if len(valid) else np.nan,
+            }
+        )
     return pd.DataFrame(rows)
 
 
-def source_type_summary(source_df):
+def source_summary(source_df: pd.DataFrame) -> pd.DataFrame:
     if source_df.empty:
         return pd.DataFrame()
-    src = add_cluster_key(source_df)
-    source_col = first_col(src.columns, ["source_type", "source_family", "source_name", "source_long_name", "institution"])
-    if source_col is None:
-        src["source_type"] = "Unknown"
-        source_col = "source_type"
-    src["source_type"] = src[source_col].map(clean_text).replace("", "Unknown")
-    if "source_station_uid" not in src.columns:
-        src["source_station_uid"] = ""
-    if "resolution" not in src.columns:
-        src["resolution"] = ""
-    if "n_records" not in src.columns:
-        src["n_records"] = 0
-    src["n_records"] = pd.to_numeric(src["n_records"], errors="coerce").fillna(0)
-    lat_col = "source_station_lat" if "source_station_lat" in src.columns else "lat"
-    lon_col = "source_station_lon" if "source_station_lon" in src.columns else "lon"
-    src["lat_num"] = numeric(src, lat_col)
-    src["lon_num"] = numeric(src, lon_col)
-
-    def one(group):
-        return pd.Series({
-            "source_type_source_column": source_col,
-            "cluster_count": int(group["cluster_key"].nunique()),
-            "source_station_count": int(group["source_station_uid"].nunique()),
-            "source_station_resolution_rows": int(len(group)),
-            "record_count": int(group["n_records"].sum()),
-            "available_resolutions": "|".join(sorted(set(clean_text(x) for x in group["resolution"] if clean_text(x)))),
-            "min_lat": group["lat_num"].min() if group["lat_num"].notna().any() else np.nan,
-            "max_lat": group["lat_num"].max() if group["lat_num"].notna().any() else np.nan,
-            "min_lon": group["lon_num"].min() if group["lon_num"].notna().any() else np.nan,
-            "max_lon": group["lon_num"].max() if group["lon_num"].notna().any() else np.nan,
-        })
-    return src.groupby("source_type", dropna=False).apply(one).reset_index().sort_values(["cluster_count", "source_type"], ascending=[False, True])
+    src = source_df.copy()
+    src["cluster_key"] = src["cluster_uid"].map(clean_text).where(src["cluster_uid"].map(clean_text).ne(""), src["cluster_id"].map(clean_text))
+    src["source_name"] = src["source_name"].map(clean_text).replace("", "Unknown")
+    for col in ("n_records", "source_station_lat", "source_station_lon"):
+        if col in src.columns:
+            src[col] = pd.to_numeric(src[col], errors="coerce")
+    rows = []
+    for source, group in src.groupby("source_name", dropna=False):
+        rows.append(
+            {
+                "source_name": source,
+                "cluster_count": int(group["cluster_key"].nunique()),
+                "source_station_count": int(group["source_station_uid"].map(clean_text).replace("", np.nan).dropna().nunique()) if "source_station_uid" in group.columns else int(len(group)),
+                "source_station_resolution_rows": int(len(group)),
+                "record_count": int(numeric(group, "n_records").fillna(0).sum()),
+                "available_resolutions": join_values(group["resolution"]) if "resolution" in group.columns else "",
+                "min_lat": float(numeric(group, "source_station_lat").min()) if "source_station_lat" in group.columns else np.nan,
+                "max_lat": float(numeric(group, "source_station_lat").max()) if "source_station_lat" in group.columns else np.nan,
+                "min_lon": float(numeric(group, "source_station_lon").min()) if "source_station_lon" in group.columns else np.nan,
+                "max_lon": float(numeric(group, "source_station_lon").max()) if "source_station_lon" in group.columns else np.nan,
+            }
+        )
+    out = pd.DataFrame(rows)
+    total_records = out["record_count"].sum()
+    total_clusters = out["cluster_count"].sum()
+    out["record_percent_of_source_catalog"] = out["record_count"].map(lambda x: pct(x, total_records))
+    out["cluster_percent_of_source_rows"] = out["cluster_count"].map(lambda x: pct(x, total_clusters))
+    return out.sort_values(["cluster_count", "record_count", "source_name"], ascending=[False, False, True])
 
 
-def json_safe(value):
-    if value is None:
-        return None
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating, float)):
-        return float(value) if math.isfinite(float(value)) else None
-    if isinstance(value, (bool, np.bool_)):
-        return bool(value)
+def _source_rows_with_cluster_geography(clusters: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
+    if source_df.empty:
+        return pd.DataFrame()
+    src = source_df.copy()
+    src["cluster_key"] = src["cluster_uid"].map(clean_text).where(src["cluster_uid"].map(clean_text).ne(""), src["cluster_id"].map(clean_text))
+    src["source_name"] = src["source_name"].map(clean_text).replace("", "Unknown")
+    src["resolution"] = src["resolution"].map(clean_text).str.lower() if "resolution" in src.columns else ""
+    src["n_records"] = numeric(src, "n_records").fillna(0)
+    for col in ("source_station_lat", "source_station_lon"):
+        if col in src.columns:
+            src[col] = pd.to_numeric(src[col], errors="coerce")
+
+    cluster_cols = [
+        "cluster_key",
+        "cluster_uid",
+        "continent",
+        "region",
+        "country",
+        "lat",
+        "lon",
+    ]
+    geo = clusters[[c for c in cluster_cols if c in clusters.columns]].copy()
+    geo = geo.rename(columns={"cluster_uid": "cluster_uid_from_cluster", "lat": "cluster_lat", "lon": "cluster_lon"})
+    merged = src.merge(geo, on="cluster_key", how="left")
+    for col in ("continent", "region", "country"):
+        if col not in merged.columns:
+            merged[col] = "Unknown"
+        merged[col] = merged[col].map(clean_text).replace("", "Unknown")
+    if "source_station_uid" not in merged.columns:
+        merged["source_station_uid"] = ""
+    return merged
+
+
+def region_source_summary(clusters: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
+    src = _source_rows_with_cluster_geography(clusters, source_df)
+    if src.empty:
+        return pd.DataFrame()
+    rows = []
+    for (continent, region, source), group in src.groupby(["continent", "region", "source_name"], dropna=False):
+        lat_col = "source_station_lat" if "source_station_lat" in group.columns else "cluster_lat"
+        lon_col = "source_station_lon" if "source_station_lon" in group.columns else "cluster_lon"
+        rows.append(
+            {
+                "continent": continent,
+                "region": region,
+                "source_name": source,
+                "cluster_count": int(group["cluster_key"].nunique()),
+                "source_station_count": int(group["source_station_uid"].map(clean_text).replace("", np.nan).dropna().nunique()),
+                "source_station_resolution_rows": int(len(group)),
+                "record_count": int(numeric(group, "n_records").fillna(0).sum()),
+                "available_resolutions": join_values(group["resolution"]) if "resolution" in group.columns else "",
+                "min_lat": float(numeric(group, lat_col).min()) if lat_col in group.columns and numeric(group, lat_col).notna().any() else np.nan,
+                "max_lat": float(numeric(group, lat_col).max()) if lat_col in group.columns and numeric(group, lat_col).notna().any() else np.nan,
+                "min_lon": float(numeric(group, lon_col).min()) if lon_col in group.columns and numeric(group, lon_col).notna().any() else np.nan,
+                "max_lon": float(numeric(group, lon_col).max()) if lon_col in group.columns and numeric(group, lon_col).notna().any() else np.nan,
+            }
+        )
+    out = pd.DataFrame(rows)
+    region_totals = out.groupby("region")["cluster_count"].sum().to_dict()
+    out["_region_total"] = out["region"].map(region_totals).fillna(0)
+    out["_unknown_region"] = out["region"].eq("Unknown").astype(int)
+    out = out.sort_values(["_unknown_region", "_region_total", "region", "cluster_count", "source_name"], ascending=[True, False, True, False, True])
+    return out.drop(columns=["_region_total", "_unknown_region"])
+
+
+def region_resolution_summary(clusters: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
+    src = _source_rows_with_cluster_geography(clusters, source_df)
+    if src.empty:
+        return pd.DataFrame()
+    rows = []
+    for (continent, region, resolution), group in src.groupby(["continent", "region", "resolution"], dropna=False):
+        rows.append(
+            {
+                "continent": continent,
+                "region": region,
+                "resolution": clean_text(resolution) or "unknown",
+                "cluster_count": int(group["cluster_key"].nunique()),
+                "source_station_count": int(group["source_station_uid"].map(clean_text).replace("", np.nan).dropna().nunique()),
+                "source_station_resolution_rows": int(len(group)),
+                "record_count": int(numeric(group, "n_records").fillna(0).sum()),
+            }
+        )
+    out = pd.DataFrame(rows)
+    region_totals = out.groupby("region")["cluster_count"].sum().to_dict()
+    out["_region_total"] = out["region"].map(region_totals).fillna(0)
+    out["_unknown_region"] = out["region"].eq("Unknown").astype(int)
+    out["_resolution_order"] = out["resolution"].map(lambda x: resolution_sort_key(x)[0])
+    out = out.sort_values(["_unknown_region", "_region_total", "region", "_resolution_order"], ascending=[True, False, True, True])
+    return out.drop(columns=["_region_total", "_unknown_region", "_resolution_order"])
+
+
+def satellite_summary(satellite_df: pd.DataFrame) -> pd.DataFrame:
+    if satellite_df.empty:
+        return pd.DataFrame()
+    sat = satellite_df.copy()
+    sat["source"] = sat["source"].map(clean_text).replace("", "Unknown") if "source" in sat.columns else "Unknown"
+    for col in ("lat", "lon", "n_records"):
+        if col in sat.columns:
+            sat[col] = pd.to_numeric(sat[col], errors="coerce")
+
+    def one(name: str, group: pd.DataFrame) -> Dict[str, object]:
+        return {
+            "summary_level": name,
+            "satellite_station_rows": int(len(group)),
+            "linked_cluster_count": int(group["cluster_uid"].map(clean_text).replace("", np.nan).dropna().nunique()) if "cluster_uid" in group.columns else 0,
+            "record_count": int(numeric(group, "n_records").fillna(0).sum()),
+            "min_lat": float(numeric(group, "lat").min()) if len(group) else np.nan,
+            "max_lat": float(numeric(group, "lat").max()) if len(group) else np.nan,
+            "min_lon": float(numeric(group, "lon").min()) if len(group) else np.nan,
+            "max_lon": float(numeric(group, "lon").max()) if len(group) else np.nan,
+            "time_start_min": pd.to_datetime(group["time_start"], errors="coerce").min().strftime("%Y-%m-%d") if "time_start" in group.columns and pd.to_datetime(group["time_start"], errors="coerce").notna().any() else "",
+            "time_end_max": pd.to_datetime(group["time_end"], errors="coerce").max().strftime("%Y-%m-%d") if "time_end" in group.columns and pd.to_datetime(group["time_end"], errors="coerce").notna().any() else "",
+        }
+
+    rows = [one("all", sat)]
+    for source, group in sat.groupby("source", dropna=False):
+        row = one("source", group)
+        row["source"] = source
+        rows.append(row)
+    out = pd.DataFrame(rows)
+    if "source" not in out.columns:
+        out["source"] = ""
+    return out[
+        [
+            "summary_level",
+            "source",
+            "satellite_station_rows",
+            "linked_cluster_count",
+            "record_count",
+            "min_lat",
+            "max_lat",
+            "min_lon",
+            "max_lon",
+            "time_start_min",
+            "time_end_max",
+        ]
+    ]
+
+
+def unknown_geography_rows(clusters: pd.DataFrame) -> pd.DataFrame:
+    mask = clusters["country"].eq("Unknown") | clusters["region"].eq("Unknown") | clusters["continent"].eq("Unknown")
+    out = clusters.loc[mask].copy()
+    keep = [
+        "cluster_key",
+        "cluster_uid",
+        "cluster_id",
+        "lat",
+        "lon",
+        "country",
+        "iso_a3",
+        "continent",
+        "region",
+        "geographic_coverage",
+        "geo_attribute_source",
+        "geo_attribute_confidence",
+        "source_names",
+        "available_resolutions",
+        "basin_status",
+        "basin_flag",
+        "area_km2",
+        "has_basin_polygon",
+        "record_count",
+    ]
+    out = out[[c for c in keep if c in out.columns]].sort_values(["source_names", "cluster_uid", "cluster_key"])
+    out["unknown_reason"] = "country_or_region_not_resolved_by_catalog_or_boundary_join"
+    return out
+
+
+def metric_lookup(metrics: pd.DataFrame) -> Dict[str, object]:
+    return dict(zip(metrics["metric"], metrics["value"]))
+
+
+def fmt_int(value: object) -> str:
     try:
-        if pd.isna(value):
-            return None
+        return "{:,}".format(int(round(float(value))))
     except Exception:
-        pass
-    return str(value)
+        return "NA"
 
 
-def write_geojson(df, path):
-    props = ["cluster_uid", "cluster_id", "country", "iso_a3", "continent", "region", "basin_status", "basin_flag", "area_km2", "has_basin_polygon", "available_resolutions", "n_sources", "source_names"]
-    features = []
-    for _, row in df[df["valid_latlon"]].iterrows():
-        properties = {"cluster_key": json_safe(row.get("cluster_key"))}
-        properties.update({col: json_safe(row.get(col)) for col in props if col in df.columns})
-        features.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [float(row["lon"]), float(row["lat"])]}, "properties": properties})
-    with Path(path).open("w", encoding="utf-8") as f:
-        json.dump({"type": "FeatureCollection", "features": features}, f, ensure_ascii=False)
-
-
-def plot_area_histogram(df, path):
-    if not HAS_MPL:
-        print("Warning: matplotlib unavailable; skipping histogram")
-        return
-    valid = df["area_km2"][np.isfinite(df["area_km2"]) & (df["area_km2"] > 0)]
-    if len(valid) == 0:
-        print("Warning: no valid upstream area values; skipping histogram")
-        return
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.hist(np.log10(valid), bins=40)
-    ticks = [1, 10, 100, 1000, 10000, 100000, 1000000]
-    ax.set_xticks([math.log10(x) for x in ticks])
-    ax.set_xticklabels(["{:g}".format(x) for x in ticks])
-    for boundary in [10, 100, 1000, 10000, 100000]:
-        ax.axvline(math.log10(boundary), linestyle="--", linewidth=0.8)
-    ax.set_xlabel("Upstream area (km², log scale)")
-    ax.set_ylabel("Cluster count")
-    ax.set_title("Distribution of upstream basin area")
-    fig.tight_layout()
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
-
-
-def _load_coastlines(cache_dir):
-    """Load Natural Earth coastline GeoJSON (cached locally)."""
-    cache_path = cache_dir / "ne_110m_coastline.geojson"
-    if not cache_path.is_file():
-        print("Downloading world coastline data (110 m) \u2026")
-        urllib.request.urlretrieve(COASTLINE_URL, cache_path)
-    with open(cache_path, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def _draw_coastlines(ax, coastlines):
-    """Draw coastline lines from Natural-Earth GeoJSON onto *ax*."""
-    for feat in coastlines["features"]:
-        geom = feat["geometry"]
-        if geom["type"] == "MultiLineString":
-            segs = geom["coordinates"]
-        else:  # LineString
-            segs = [geom["coordinates"]]
-        for seg in segs:
-            xs, ys = zip(*seg)
-            ax.plot(xs, ys, color="#555555", linewidth=0.5, zorder=1)
-
-
-def plot_global_map(df, path, world_boundaries=None):
-    if not HAS_MPL:
-        print("Warning: matplotlib unavailable; skipping global map")
-        return
-    valid = df[df["valid_latlon"]]
-    if len(valid) == 0:
-        print("Warning: no valid cluster coordinates; skipping global map")
-        return
-    fig, ax = plt.subplots(figsize=(11, 5.5))
-    if world_boundaries and HAS_GPD and Path(world_boundaries).is_file():
-        try:
-            world = gpd.read_file(world_boundaries)
-            world = world.set_crs("EPSG:4326") if world.crs is None else world.to_crs("EPSG:4326")
-            world.boundary.plot(ax=ax, linewidth=0.3)
-        except Exception as exc:
-            print("Warning: failed to draw world boundaries: {}".format(exc))
+def fmt_float(value: object, digits: int = 1) -> str:
     try:
-        cache_dir = SCRIPT_DIR.parent / "plot"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        coastlines = _load_coastlines(cache_dir)
-        _draw_coastlines(ax, coastlines)
-    except Exception as exc:
-        print("Coastline background unavailable -- using grid only: {}".format(exc),
-              file=sys.stderr)
-    unresolved = valid[~valid["is_resolved"]]
-    resolved = valid[valid["is_resolved"]]
-    if len(unresolved):
-        ax.scatter(unresolved["lon"], unresolved["lat"], s=6, alpha=0.45, label="unresolved/other")
-    if len(resolved):
-        ax.scatter(resolved["lon"], resolved["lat"], s=6, alpha=0.55, label="resolved")
-    ax.set_xlim(-180, 180)
-    ax.set_ylim(-60, 85)
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.set_title("Global distribution of final clusters")
-    ax.grid(True, linewidth=0.3, alpha=0.35)
-    ax.legend(loc="lower left", markerscale=2)
-    fig.tight_layout()
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
+        value = float(value)
+        if not math.isfinite(value):
+            return "NA"
+        return "{:.{}f}".format(value, digits)
+    except Exception:
+        return "NA"
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate spatial coverage statistics and figures.")
-    parser.add_argument("--cluster-catalog", default=str(DEFAULT_CLUSTER_CATALOG))
-    parser.add_argument("--source-catalog", default=str(DEFAULT_SOURCE_CATALOG))
-    parser.add_argument("--basin-gpkg", default=str(DEFAULT_BASIN_GPKG))
-    parser.add_argument("--tables-dir", default=str(DEFAULT_TABLES_DIR))
-    parser.add_argument("--figures-dir", default=str(DEFAULT_FIGURES_DIR))
-    parser.add_argument("--area-column", default="basin_area")
-    parser.add_argument("--world-boundaries", default="", help="Optional country/continent polygon file for spatial joins")
-    parser.add_argument("--basin-layer-prefix", default="basin")
-    parser.add_argument("--skip-figures", action="store_true")
-    parser.add_argument("--skip-map", action="store_true")
-    parser.add_argument("--no-geojson", action="store_true")
-    args = parser.parse_args()
+def write_article_summary(metrics: pd.DataFrame, area_dist: pd.DataFrame, source_df: pd.DataFrame, satellite_df: pd.DataFrame) -> None:
+    m = metric_lookup(metrics)
+    bin_rows = area_dist[area_dist["section"].eq("bin")].copy()
+    bin_text = "; ".join(
+        "{}: {} clusters ({:.1%})".format(row["label"], int(row["cluster_count"]), row["fraction_of_valid_area_clusters"])
+        for _, row in bin_rows.iterrows()
+    )
+    top_sources = source_df.head(5) if not source_df.empty else pd.DataFrame()
+    source_text = "; ".join(
+        "{}: {} clusters, {} records".format(row["source_name"], fmt_int(row["cluster_count"]), fmt_int(row["record_count"]))
+        for _, row in top_sources.iterrows()
+    )
+    sat_all = satellite_df[satellite_df["summary_level"].eq("all")].head(1) if not satellite_df.empty else pd.DataFrame()
+    if len(sat_all):
+        sat = sat_all.iloc[0]
+        satellite_text = (
+            "The satellite-validation product contains {} station rows linked to {} clusters, "
+            "with coordinates spanning {:.1f} to {:.1f} degrees latitude and {:.1f} to {:.1f} degrees longitude."
+        ).format(
+            fmt_int(sat["satellite_station_rows"]),
+            fmt_int(sat["linked_cluster_count"]),
+            float(sat["min_lat"]),
+            float(sat["max_lat"]),
+            float(sat["min_lon"]),
+            float(sat["max_lon"]),
+        )
+    else:
+        satellite_text = "The satellite-validation catalog was not available for this run."
 
-    tables_dir = Path(args.tables_dir).resolve()
-    figures_dir = Path(args.figures_dir).resolve()
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    unknown_note = ""
+    if float(m.get("unknown_country_cluster_percent", 100.0)) > 20.0 or float(m.get("unknown_continent_cluster_percent", 100.0)) > 20.0:
+        unknown_note = (
+            "\n\nNote for manuscript drafting: country/continent fields remain incomplete "
+            "for a large fraction of clusters. Do not cite regional coverage conclusions "
+            "until WORLD_BOUNDARIES is configured and the spatial join is rerun."
+        )
 
-    source_df = read_csv(args.source_catalog, required=False)
-    clusters, area_col = normalise_clusters(read_csv(args.cluster_catalog, required=True), args.area_column)
-    polygon_keys = basin_polygon_keys(args.basin_gpkg, args.basin_layer_prefix)
-    clusters["has_basin_polygon"] = clusters["cluster_key"].isin(polygon_keys)
-    clusters = attach_geography(clusters, args.world_boundaries.strip() or None)
-    clusters = attach_sources(clusters, source_df)
+    text = """# S8 spatial coverage statistics for ESSD
 
-    summary = summarise_global(clusters, area_col)
-    by_region = clusters.groupby(["continent", "region"], dropna=False).apply(group_summary).reset_index().sort_values("cluster_count", ascending=False)
-    by_country = clusters.groupby(["continent", "region", "country", "iso_a3"], dropna=False).apply(group_summary).reset_index().sort_values("cluster_count", ascending=False)
-    area_dist = upstream_distribution(clusters, area_col)
-    by_source = source_type_summary(source_df)
+## Manuscript-ready summary
 
-    summary.to_csv(tables_dir / "table_spatial_coverage_summary.csv", index=False)
-    by_region.to_csv(tables_dir / "table_spatial_coverage_by_region.csv", index=False)
-    by_country.to_csv(tables_dir / "table_spatial_coverage_by_country.csv", index=False)
-    area_dist.to_csv(tables_dir / "table_upstream_area_distribution.csv", index=False)
-    by_source.to_csv(tables_dir / "table_spatial_coverage_by_source_type.csv", index=False)
+The S8 release contains {total} final main-product clusters. Resolution-specific coverage is {daily} daily clusters, {monthly} monthly clusters, and {annual} annual clusters. Basin assignment resolved {resolved} clusters ({resolved_pct}% of all clusters), while {unresolved} clusters ({unresolved_pct}%) remain unresolved and {unknown} clusters ({unknown_pct}%) have unknown or other basin status. The published basin sidecar contains polygons for {polygons} clusters ({polygon_pct}% of all clusters).
 
-    keep = ["cluster_key", "cluster_uid", "cluster_id", "lat", "lon", "country", "iso_a3", "continent", "region", "basin_status", "basin_flag", "area_km2", "has_basin_polygon", "available_resolutions", "n_sources", "source_names"]
-    clusters[[c for c in keep if c in clusters.columns]].to_csv(tables_dir / "table_cluster_spatial_attributes.csv", index=False)
-    if not args.no_geojson:
-        write_geojson(clusters, figures_dir / "global_cluster_distribution_points.geojson")
-    if not args.skip_figures:
-        plot_area_histogram(clusters, figures_dir / "fig_upstream_area_histogram.png")
-        if not args.skip_map:
-            plot_global_map(clusters, figures_dir / "fig_global_cluster_distribution.png", args.world_boundaries.strip() or None)
+The main-product coordinates span {lat_min} to {lat_max} degrees latitude and {lon_min} to {lon_max} degrees longitude. Valid upstream basin areas are available for {area_count} clusters; the median area is {area_median} km2, with an interquartile range of {area_p25}-{area_p75} km2 and a maximum of {area_max} km2.
 
-    print("Wrote spatial coverage outputs to {} and {}".format(tables_dir, figures_dir))
-    print("Area column used: {}".format(area_col))
-    print("Final cluster count: {}".format(int(clusters["cluster_key"].nunique())))
-    print("Resolved basin assignment clusters: {}".format(int(clusters.loc[clusters["is_resolved"], "cluster_key"].nunique())))
-    print("Unresolved clusters: {}".format(int(clusters.loc[clusters["is_unresolved"], "cluster_key"].nunique())))
-    print("Clusters with basin polygons: {}".format(int(clusters.loc[clusters["has_basin_polygon"], "cluster_key"].nunique())))
+Upstream-area bins: {bin_text}
+
+Main source contributions by cluster count: {source_text}
+
+{satellite_text}{unknown_note}
+""".format(
+        total=fmt_int(m.get("final_cluster_count")),
+        daily=fmt_int(m.get("daily_cluster_count")),
+        monthly=fmt_int(m.get("monthly_cluster_count")),
+        annual=fmt_int(m.get("annual_cluster_count")),
+        resolved=fmt_int(m.get("resolved_cluster_count")),
+        resolved_pct=fmt_float(m.get("resolved_cluster_percent")),
+        unresolved=fmt_int(m.get("unresolved_cluster_count")),
+        unresolved_pct=fmt_float(m.get("unresolved_cluster_percent")),
+        unknown=fmt_int(m.get("unknown_status_cluster_count")),
+        unknown_pct=fmt_float(m.get("unknown_status_cluster_percent")),
+        polygons=fmt_int(m.get("basin_polygon_cluster_count")),
+        polygon_pct=fmt_float(m.get("basin_polygon_cluster_percent")),
+        lat_min=fmt_float(m.get("latitude_min")),
+        lat_max=fmt_float(m.get("latitude_max")),
+        lon_min=fmt_float(m.get("longitude_min")),
+        lon_max=fmt_float(m.get("longitude_max")),
+        area_count=fmt_int(m.get("upstream_area_valid_cluster_count")),
+        area_median=fmt_float(m.get("upstream_area_median")),
+        area_p25=fmt_float(m.get("upstream_area_p25")),
+        area_p75=fmt_float(m.get("upstream_area_p75")),
+        area_max=fmt_float(m.get("upstream_area_max")),
+        bin_text=bin_text or "NA",
+        source_text=source_text or "NA",
+        satellite_text=satellite_text,
+        unknown_note=unknown_note,
+    )
+    (OUTPUT_DIR / "article_spatial_coverage_summary.md").write_text(text, encoding="utf-8")
+
+
+def write_outputs(
+    clusters: pd.DataFrame,
+    station_df: pd.DataFrame,
+    source_df: pd.DataFrame,
+    satellite_df: pd.DataFrame,
+    polygon_by_resolution: Dict[str, Set[str]],
+    polygon_layer_summary: pd.DataFrame,
+) -> None:
+    TABLES_DIR.mkdir(parents=True, exist_ok=True)
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    summary = summarise_global(clusters, station_df, satellite_df)
+    by_resolution = resolution_summary(station_df, polygon_by_resolution)
+    by_region = (
+        clusters.groupby(["continent", "region"], dropna=False)
+        .apply(group_summary)
+        .reset_index()
+        .sort_values("cluster_count", ascending=False)
+    )
+    by_country = (
+        clusters.groupby(["continent", "region", "country", "iso_a3"], dropna=False)
+        .apply(group_summary)
+        .reset_index()
+        .sort_values("cluster_count", ascending=False)
+    )
+    area_dist = upstream_distribution(clusters)
+    by_source = source_summary(source_df)
+    by_region_source = region_source_summary(clusters, source_df)
+    by_region_resolution = region_resolution_summary(clusters, source_df)
+    by_satellite = satellite_summary(satellite_df)
+    unknown_geo = unknown_geography_rows(clusters)
+
+    summary.to_csv(TABLES_DIR / "table_spatial_coverage_summary.csv", index=False)
+    by_resolution.to_csv(TABLES_DIR / "table_spatial_coverage_by_resolution.csv", index=False)
+    by_region.to_csv(TABLES_DIR / "table_spatial_coverage_by_region.csv", index=False)
+    by_country.to_csv(TABLES_DIR / "table_spatial_coverage_by_country.csv", index=False)
+    area_dist.to_csv(TABLES_DIR / "table_upstream_area_distribution.csv", index=False)
+    by_source.to_csv(TABLES_DIR / "table_spatial_coverage_by_source.csv", index=False)
+    by_region_source.to_csv(TABLES_DIR / "table_spatial_coverage_by_region_source.csv", index=False)
+    by_region_resolution.to_csv(TABLES_DIR / "table_spatial_coverage_by_region_resolution.csv", index=False)
+    by_satellite.to_csv(TABLES_DIR / "table_satellite_validation_spatial_coverage.csv", index=False)
+    unknown_geo.to_csv(TABLES_DIR / "table_unknown_country_region_clusters.csv", index=False)
+    summary.to_csv(TABLES_DIR / "article_spatial_coverage_metrics.csv", index=False)
+    if not polygon_layer_summary.empty:
+        polygon_layer_summary.to_csv(TABLES_DIR / "table_basin_polygon_layers.csv", index=False)
+
+    keep = [
+        "cluster_key",
+        "cluster_uid",
+        "cluster_id",
+        "lat",
+        "lon",
+        "country",
+        "iso_a3",
+        "continent",
+        "region",
+        "geographic_coverage",
+        "basin_status",
+        "basin_flag",
+        "area_km2",
+        "has_basin_polygon",
+        "available_resolutions",
+        "n_available_resolutions",
+        "record_count",
+        "n_sources",
+        "source_names",
+        "valid_latlon",
+    ]
+    clusters[[c for c in keep if c in clusters.columns]].to_csv(TABLES_DIR / "table_cluster_spatial_attributes.csv", index=False)
+    write_article_summary(summary, area_dist, by_source, by_satellite)
+
+
+def main() -> int:
+    require_node113()
+    station_df = normalise_station_catalog(read_csv(STATION_CATALOG, required=True))
+    source_df = read_csv(SOURCE_STATION_CATALOG, required=False)
+    satellite_df = read_csv(SATELLITE_CATALOG, required=False)
+    polygon_keys, polygon_by_resolution, polygon_layer_summary = polygon_keys_by_layer(CLUSTER_BASINS_GPKG)
+    clusters = build_cluster_table(station_df, source_df, polygon_keys)
+    write_outputs(clusters, station_df, source_df, satellite_df, polygon_by_resolution, polygon_layer_summary)
+
+    total = int(clusters["cluster_key"].nunique())
+    resolved = int(clusters.loc[clusters["is_resolved"], "cluster_key"].nunique())
+    polygons = int(clusters.loc[clusters["has_basin_polygon"], "cluster_key"].nunique())
+    print("Wrote S8 spatial coverage statistics to {}".format(TABLES_DIR))
+    print("Final clusters: {}".format(total))
+    print("Resolved basin clusters: {}".format(resolved))
+    print("Clusters with published basin polygons: {}".format(polygons))
+    print("Article summary: {}".format(OUTPUT_DIR / "article_spatial_coverage_summary.md"))
     return 0
 
 
