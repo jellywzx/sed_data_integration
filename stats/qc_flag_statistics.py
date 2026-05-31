@@ -30,8 +30,19 @@ Outputs
   tables/table_qc_flag_by_year.csv
   tables/table_qc_flag_by_cluster.csv
   tables/table_qc_flag_problem_clusters.csv
+  tables/table_qc_health_kpis.csv
+  tables/table_qc_stage_effectiveness.csv
+  tables/table_qc_issue_hotspots.csv
+  tables/table_qc_yearly_trends.csv
   figures/fig_qc_flag_distribution.png
   figures/fig_qc_flag_by_source_type.png
+  figures/fig_qc_health_by_resolution.png
+  figures/fig_qc_yearly_problem_trends.png
+  figures/fig_qc_missing_trends.png
+  figures/fig_qc_stage_summary.png
+  figures/fig_qc_top_problem_sources.png
+  figures/fig_qc_top_problem_clusters.png
+  article_qc_flag_report.md
 
 Run
 ---
@@ -89,8 +100,12 @@ DEFAULT_S6_MASTER_NC = PROJECT_ROOT / S6_MERGED_NC
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 DEFAULT_TABLES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/tables"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/figures"
+DEFAULT_REPORT_PATH = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/article_qc_flag_report.md"
 
 FLAG_CODES = [0, 1, 2, 3, 8, 9]
+FINAL_VARIABLE_ORDER = ["Q", "SSC", "SSL"]
+RESOLUTION_ORDER = ["daily", "monthly", "annual", "climatology", "other"]
+HOTSPOT_MIN_TOTAL = 100
 COMMON_FLAG_MEANINGS = {
     0: "good",
     1: "derived/estimated",
@@ -139,6 +154,65 @@ SUMMARY_BASE_COLUMNS = [
     "count",
     "percentage",
     "n_total",
+]
+
+STAGE_EFFECTIVENESS_COLUMNS = [
+    "qc_stage",
+    "variable",
+    "flag_variable",
+    "n_total",
+    "flag0_count",
+    "flag0_rate",
+    "flag0_meaning",
+    "flag1_count",
+    "flag1_rate",
+    "flag1_meaning",
+    "flag2_count",
+    "flag2_rate",
+    "flag2_meaning",
+    "flag3_count",
+    "flag3_rate",
+    "flag3_meaning",
+    "flag8_count",
+    "flag8_rate",
+    "flag8_meaning",
+    "flag9_count",
+    "flag9_rate",
+    "flag9_meaning",
+    "pass_count",
+    "pass_rate",
+    "derived_or_propagated_count",
+    "derived_or_propagated_rate",
+    "suspect_count",
+    "suspect_rate",
+    "bad_count",
+    "bad_rate",
+    "not_checked_count",
+    "not_checked_rate",
+    "missing_count",
+    "missing_rate",
+]
+
+HOTSPOT_COLUMNS = [
+    "grouping_level",
+    "source_dataset",
+    "source_type",
+    "temporal_resolution",
+    "cluster_uid",
+    "cluster_id",
+    "variable",
+    "flag_variable",
+    "n_total",
+    "usable_count",
+    "problem_count",
+    "missing_count",
+    "not_checked_count",
+    "issue_count",
+    "usable_rate",
+    "problem_rate",
+    "missing_rate",
+    "not_checked_rate",
+    "issue_rate",
 ]
 
 
@@ -674,6 +748,230 @@ def _problem_cluster_table(by_cluster: pd.DataFrame, top_n: int) -> pd.DataFrame
     return agg.reset_index(drop=True)
 
 
+def _final_only(table: pd.DataFrame) -> pd.DataFrame:
+    if table.empty or "qc_level" not in table.columns:
+        return pd.DataFrame()
+    return table.loc[table["qc_level"].eq("final")].copy()
+
+
+def _count_for_flag(group: pd.DataFrame, flag: int) -> int:
+    rows = group.loc[group["flag"].eq(int(flag)), "count"]
+    if rows.empty:
+        return 0
+    return int(rows.sum())
+
+
+def _rate(count: object, total: object) -> float:
+    try:
+        total_value = float(total)
+        if total_value <= 0:
+            return 0.0
+        return round(float(count) / total_value * 100.0, 6)
+    except Exception:
+        return 0.0
+
+
+def _rate_row_from_group(group: pd.DataFrame, keys: Mapping[str, object]) -> Dict[str, object]:
+    n_total = int(group["n_total"].max()) if len(group) else 0
+    good = _count_for_flag(group, 0)
+    derived = _count_for_flag(group, 1)
+    suspect = _count_for_flag(group, 2)
+    bad = _count_for_flag(group, 3)
+    not_checked = _count_for_flag(group, 8)
+    missing = _count_for_flag(group, 9)
+    usable = good + derived
+    problem = suspect + bad
+    issue = problem + missing
+    row: Dict[str, object] = dict(keys)
+    row.update(
+        {
+            "n_total": n_total,
+            "good_count": good,
+            "derived_count": derived,
+            "suspect_count": suspect,
+            "bad_count": bad,
+            "not_checked_count": not_checked,
+            "missing_count": missing,
+            "usable_count": usable,
+            "problem_count": problem,
+            "issue_count": issue,
+            "good_rate": _rate(good, n_total),
+            "derived_rate": _rate(derived, n_total),
+            "suspect_rate": _rate(suspect, n_total),
+            "bad_rate": _rate(bad, n_total),
+            "not_checked_rate": _rate(not_checked, n_total),
+            "missing_rate": _rate(missing, n_total),
+            "usable_rate": _rate(usable, n_total),
+            "problem_rate": _rate(problem, n_total),
+            "issue_rate": _rate(issue, n_total),
+        }
+    )
+    return row
+
+
+def _rate_table(
+    table: pd.DataFrame,
+    group_cols: Sequence[str],
+    min_total: int = 0,
+) -> pd.DataFrame:
+    final = _final_only(table)
+    if final.empty:
+        return pd.DataFrame()
+
+    rows: List[Dict[str, object]] = []
+    group_cols = list(group_cols)
+    for keys, group in final.groupby(group_cols + ["variable", "flag_variable"], dropna=False, sort=True):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        key_map = dict(zip(group_cols + ["variable", "flag_variable"], keys))
+        row = _rate_row_from_group(group, key_map)
+        if int(row["n_total"]) >= int(min_total):
+            rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    sort_cols = [col for col in group_cols + ["variable"] if col in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols, kind="mergesort")
+    return out.reset_index(drop=True)
+
+
+def build_qc_health_kpis(by_resolution: pd.DataFrame) -> pd.DataFrame:
+    out = _rate_table(by_resolution, ["temporal_resolution"])
+    if out.empty:
+        return out
+    out["temporal_resolution"] = pd.Categorical(
+        out["temporal_resolution"],
+        categories=RESOLUTION_ORDER,
+        ordered=True,
+    )
+    out["variable"] = pd.Categorical(out["variable"], categories=FINAL_VARIABLE_ORDER, ordered=True)
+    return out.sort_values(["temporal_resolution", "variable"], kind="mergesort").reset_index(drop=True)
+
+
+def build_qc_yearly_trends(by_year: pd.DataFrame) -> pd.DataFrame:
+    out = _rate_table(by_year, ["year", "temporal_resolution"])
+    if out.empty:
+        return out
+    out["year"] = pd.to_numeric(out["year"], errors="coerce").fillna(-9999).astype(np.int32)
+    out = out.loc[out["year"] > 0].copy()
+    out["temporal_resolution"] = pd.Categorical(
+        out["temporal_resolution"],
+        categories=RESOLUTION_ORDER,
+        ordered=True,
+    )
+    out["variable"] = pd.Categorical(out["variable"], categories=FINAL_VARIABLE_ORDER, ordered=True)
+    return out.sort_values(["year", "temporal_resolution", "variable"], kind="mergesort").reset_index(drop=True)
+
+
+def build_qc_stage_effectiveness(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return pd.DataFrame(columns=STAGE_EFFECTIVENESS_COLUMNS)
+    stage = summary.loc[summary["qc_level"].eq("stage")].copy()
+    if stage.empty:
+        return pd.DataFrame(columns=STAGE_EFFECTIVENESS_COLUMNS)
+
+    rows: List[Dict[str, object]] = []
+    group_cols = ["qc_stage", "variable", "flag_variable"]
+    for keys, group in stage.groupby(group_cols, dropna=False, sort=True):
+        key_map = dict(zip(group_cols, keys))
+        n_total = int(group["n_total"].max()) if len(group) else 0
+        row: Dict[str, object] = dict(key_map)
+        row["n_total"] = n_total
+        for flag in FLAG_CODES:
+            count = _count_for_flag(group, flag)
+            row["flag{}_count".format(flag)] = count
+            row["flag{}_rate".format(flag)] = _rate(count, n_total)
+            meanings = group.loc[group["flag"].eq(flag), "meaning"]
+            row["flag{}_meaning".format(flag)] = meanings.iloc[0] if len(meanings) else _meaning_for(flag, COMMON_FLAG_MEANINGS)
+
+        row["pass_count"] = row["flag0_count"]
+        row["pass_rate"] = row["flag0_rate"]
+        row["derived_or_propagated_count"] = row["flag1_count"]
+        row["derived_or_propagated_rate"] = row["flag1_rate"]
+        row["suspect_count"] = row["flag2_count"]
+        row["suspect_rate"] = row["flag2_rate"]
+        row["bad_count"] = row["flag3_count"]
+        row["bad_rate"] = row["flag3_rate"]
+        row["not_checked_count"] = row["flag8_count"]
+        row["not_checked_rate"] = row["flag8_rate"]
+        row["missing_count"] = row["flag9_count"]
+        row["missing_rate"] = row["flag9_rate"]
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=STAGE_EFFECTIVENESS_COLUMNS)
+    return (
+        out.reindex(columns=STAGE_EFFECTIVENESS_COLUMNS)
+        .sort_values(["qc_stage", "variable", "flag_variable"], kind="mergesort")
+        .reset_index(drop=True)
+    )
+
+
+def _hotspot_rows_from_rate_table(
+    rate_table: pd.DataFrame,
+    grouping_level: str,
+    id_cols: Sequence[str],
+) -> pd.DataFrame:
+    if rate_table.empty:
+        return pd.DataFrame()
+    out = rate_table.copy()
+    out.insert(0, "grouping_level", grouping_level)
+    for col in ["source_dataset", "source_type", "temporal_resolution", "cluster_uid", "cluster_id"]:
+        if col not in out.columns:
+            out[col] = ""
+    keep_cols = list(HOTSPOT_COLUMNS)
+    for col in id_cols:
+        if col not in keep_cols and col in out.columns:
+            keep_cols.insert(1, col)
+    return out.loc[:, keep_cols]
+
+
+def build_qc_issue_hotspots(
+    by_source: pd.DataFrame,
+    by_resolution: pd.DataFrame,
+    by_cluster: pd.DataFrame,
+    min_total: int = HOTSPOT_MIN_TOTAL,
+) -> pd.DataFrame:
+    parts: List[pd.DataFrame] = []
+
+    source_rates = _rate_table(by_source, ["source_dataset", "source_type"], min_total=min_total)
+    parts.append(_hotspot_rows_from_rate_table(source_rates, "source", ["source_dataset", "source_type"]))
+
+    final_source = _final_only(by_source)
+    if not final_source.empty:
+        grouped = (
+            final_source.groupby(["source_type", "variable", "flag_variable", "flag"], dropna=False, as_index=False)["count"]
+            .sum()
+        )
+        totals = grouped.groupby(["source_type", "variable", "flag_variable"], dropna=False)["count"].sum().reset_index(name="n_total")
+        source_type_table = grouped.merge(totals, how="left", on=["source_type", "variable", "flag_variable"])
+        source_type_table["percentage"] = np.where(
+            source_type_table["n_total"] > 0,
+            source_type_table["count"].astype(float) / source_type_table["n_total"].astype(float) * 100.0,
+            0.0,
+        )
+        source_type_rates = _rate_table(source_type_table.assign(qc_level="final"), ["source_type"], min_total=min_total)
+        parts.append(_hotspot_rows_from_rate_table(source_type_rates, "source_type", ["source_type"]))
+
+    resolution_rates = _rate_table(by_resolution, ["temporal_resolution"], min_total=min_total)
+    parts.append(_hotspot_rows_from_rate_table(resolution_rates, "resolution", ["temporal_resolution"]))
+
+    cluster_rates = _rate_table(by_cluster, ["cluster_uid", "cluster_id"], min_total=min_total)
+    parts.append(_hotspot_rows_from_rate_table(cluster_rates, "cluster", ["cluster_uid", "cluster_id"]))
+
+    parts = [part for part in parts if part is not None and not part.empty]
+    if not parts:
+        return pd.DataFrame(columns=HOTSPOT_COLUMNS)
+    out = pd.concat(parts, ignore_index=True)
+    return out.sort_values(
+        ["issue_rate", "issue_count", "problem_rate", "n_total"],
+        ascending=[False, False, False, False],
+        kind="mergesort",
+    ).reset_index(drop=True)
+
+
 # -----------------------------------------------------------------------------
 # Figures
 # -----------------------------------------------------------------------------
@@ -696,7 +994,7 @@ def _plot_stacked_percent(
         return
 
     pivot = (
-        table.pivot_table(index=index_col, columns="flag", values="percentage", aggfunc="sum")
+        table.pivot_table(index=index_col, columns="flag", values="percentage", aggfunc="sum", observed=False)
         .fillna(0.0)
     )
     if pivot.empty:
@@ -730,6 +1028,166 @@ def _plot_stacked_percent(
     plt.close(fig)
 
 
+def _save_figure(fig, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_stacked_rate_columns(
+    table: pd.DataFrame,
+    label_col: str,
+    rate_cols: Sequence[str],
+    labels: Sequence[str],
+    output_path: Path,
+    title: str,
+    xlabel: str = "",
+    ylabel: str = "Percentage of records (%)",
+    label_rotation: int = 45,
+) -> None:
+    if plt is None:
+        print("Warning: matplotlib is not installed; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+    if table.empty:
+        print("Warning: empty table; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+
+    work = table.copy()
+    x = np.arange(len(work))
+    fig_width = max(8.0, min(20.0, 0.6 * len(work) + 4.5))
+    fig, ax = plt.subplots(figsize=(fig_width, 5.5))
+    bottom = np.zeros(len(work), dtype=float)
+    for col, label in zip(rate_cols, labels):
+        if col not in work.columns:
+            continue
+        values = pd.to_numeric(work[col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        ax.bar(x, values, bottom=bottom, label=label)
+        bottom += values
+
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(0, max(100.0, float(np.nanmax(bottom)) if len(bottom) else 100.0))
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [str(item) for item in work[label_col]],
+        rotation=label_rotation,
+        ha="right" if label_rotation else "center",
+    )
+    ax.legend(title="Metric", bbox_to_anchor=(1.02, 1.0), loc="upper left", borderaxespad=0.0)
+    _save_figure(fig, output_path)
+
+
+def _plot_yearly_rate_trends(
+    yearly: pd.DataFrame,
+    rate_col: str,
+    output_path: Path,
+    title: str,
+    ylabel: str,
+) -> None:
+    if plt is None:
+        print("Warning: matplotlib is not installed; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+    if yearly.empty or rate_col not in yearly.columns:
+        print("Warning: empty yearly table; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+
+    work = yearly.copy()
+    work["year"] = pd.to_numeric(work["year"], errors="coerce")
+    work = work.loc[work["year"].notna() & (work["year"] > 0)].copy()
+    if work.empty:
+        print("Warning: no valid years; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+    work["series_label"] = work["temporal_resolution"].astype(str) + " " + work["variable"].astype(str)
+
+    fig, ax = plt.subplots(figsize=(12.0, 6.0))
+    for label, group in work.groupby("series_label", sort=True):
+        group = group.sort_values("year")
+        ax.plot(
+            group["year"].to_numpy(dtype=float),
+            pd.to_numeric(group[rate_col], errors="coerce").fillna(0.0).to_numpy(dtype=float),
+            linewidth=1.7,
+            marker="o",
+            markersize=2.5,
+            label=str(label),
+        )
+    ax.set_title(title)
+    ax.set_xlabel("Year")
+    ax.set_ylabel(ylabel)
+    ax.set_ylim(bottom=0.0)
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend(title="Resolution / variable", bbox_to_anchor=(1.02, 1.0), loc="upper left", borderaxespad=0.0)
+    _save_figure(fig, output_path)
+
+
+def _plot_stage_summary(stage_effectiveness: pd.DataFrame, output_path: Path) -> None:
+    if stage_effectiveness.empty:
+        print("Warning: empty stage-effectiveness table; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+    work = stage_effectiveness.copy()
+    work["stage_variable"] = work["qc_stage"].astype(str) + "\n" + work["variable"].astype(str)
+    _plot_stacked_rate_columns(
+        table=work,
+        label_col="stage_variable",
+        rate_cols=["flag0_rate", "flag1_rate", "flag2_rate", "flag3_rate", "flag8_rate", "flag9_rate"],
+        labels=["flag 0", "flag 1", "flag 2", "flag 3", "flag 8", "flag 9"],
+        output_path=output_path,
+        title="Stage-specific QC flag distribution",
+        xlabel="QC stage and variable",
+    )
+
+
+def _plot_top_hotspots(
+    hotspots: pd.DataFrame,
+    grouping_level: str,
+    output_path: Path,
+    top_n: int,
+    title: str,
+) -> None:
+    if plt is None:
+        print("Warning: matplotlib is not installed; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+    if hotspots.empty:
+        print("Warning: empty hotspot table; skipping figure {}".format(output_path), file=sys.stderr)
+        return
+
+    work = hotspots.loc[hotspots["grouping_level"].eq(grouping_level)].copy()
+    if work.empty:
+        print("Warning: no {} hotspots; skipping figure {}".format(grouping_level, output_path), file=sys.stderr)
+        return
+    work = work.sort_values(
+        ["issue_rate", "issue_count", "problem_rate", "n_total"],
+        ascending=[False, False, False, False],
+        kind="mergesort",
+    ).head(max(1, int(top_n))).copy()
+
+    if grouping_level == "source":
+        group_label = work["source_dataset"].astype(str) + "\n" + work["variable"].astype(str)
+    elif grouping_level == "cluster":
+        group_label = work["cluster_uid"].astype(str) + "\n" + work["variable"].astype(str)
+    else:
+        group_label = work[grouping_level].astype(str) + "\n" + work["variable"].astype(str)
+    work["plot_label"] = group_label
+    work = work.iloc[::-1].reset_index(drop=True)
+
+    y = np.arange(len(work))
+    missing = pd.to_numeric(work["missing_rate"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    problem = pd.to_numeric(work["problem_rate"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    fig_height = max(5.0, min(14.0, 0.45 * len(work) + 2.0))
+    fig, ax = plt.subplots(figsize=(10.0, fig_height))
+    ax.barh(y, missing, label="missing")
+    ax.barh(y, problem, left=missing, label="suspect + bad")
+    ax.set_yticks(y)
+    ax.set_yticklabels([str(item) for item in work["plot_label"]])
+    ax.set_xlabel("Issue rate (%)")
+    ax.set_title(title)
+    ax.set_xlim(0, max(100.0, float(np.nanmax(missing + problem)) if len(work) else 100.0))
+    ax.grid(True, axis="x", alpha=0.25)
+    ax.legend(title="Issue component")
+    _save_figure(fig, output_path)
+
+
 def write_figures(
     records: pd.DataFrame,
     flag_arrays: Mapping[str, np.ndarray],
@@ -737,7 +1195,13 @@ def write_figures(
     meaning_maps: Mapping[str, Mapping[int, str]],
     summary: pd.DataFrame,
     by_source: pd.DataFrame,
+    health_kpis: pd.DataFrame,
+    yearly_trends: pd.DataFrame,
+    stage_effectiveness: pd.DataFrame,
+    issue_hotspots: pd.DataFrame,
     figures_dir: Path,
+    top_n_sources: int,
+    top_n_clusters: int,
 ) -> None:
     figures_dir = _ensure_dir(figures_dir)
 
@@ -789,6 +1253,52 @@ def write_figures(
         label_rotation=45,
     )
 
+    if not health_kpis.empty:
+        health = health_kpis.copy()
+        health["resolution_variable"] = health["temporal_resolution"].astype(str) + "\n" + health["variable"].astype(str) + "\nn=" + health["n_total"].apply(lambda x: f"{int(x):,}")
+        _plot_stacked_rate_columns(
+            table=health,
+            label_col="resolution_variable",
+            rate_cols=["usable_rate", "problem_rate", "missing_rate", "not_checked_rate"],
+            labels=["usable (0+1)", "problem (2+3)", "missing (9)", "not checked (8)"],
+            output_path=figures_dir / "fig_qc_health_by_resolution.png",
+            title="Final QC health by product resolution",
+            xlabel="Resolution and variable",
+        )
+
+    _plot_yearly_rate_trends(
+        yearly=yearly_trends,
+        rate_col="problem_rate",
+        output_path=figures_dir / "fig_qc_yearly_problem_trends.png",
+        title="Yearly final QC problem-rate trends",
+        ylabel="Problem rate: suspect + bad (%)",
+    )
+    _plot_yearly_rate_trends(
+        yearly=yearly_trends,
+        rate_col="missing_rate",
+        output_path=figures_dir / "fig_qc_missing_trends.png",
+        title="Yearly final QC missing-rate trends",
+        ylabel="Missing rate (%)",
+    )
+    _plot_stage_summary(
+        stage_effectiveness=stage_effectiveness,
+        output_path=figures_dir / "fig_qc_stage_summary.png",
+    )
+    _plot_top_hotspots(
+        hotspots=issue_hotspots,
+        grouping_level="source",
+        output_path=figures_dir / "fig_qc_top_problem_sources.png",
+        top_n=top_n_sources,
+        title="Top source-level QC issue hotspots",
+    )
+    _plot_top_hotspots(
+        hotspots=issue_hotspots,
+        grouping_level="cluster",
+        output_path=figures_dir / "fig_qc_top_problem_clusters.png",
+        top_n=top_n_clusters,
+        title="Top cluster-level QC issue hotspots",
+    )
+
 
 # -----------------------------------------------------------------------------
 # Output orchestration
@@ -801,6 +1311,7 @@ def write_tables(
     meaning_maps: Mapping[str, Mapping[int, str]],
     tables_dir: Path,
     problem_cluster_top_n: int,
+    hotspot_min_total: int = HOTSPOT_MIN_TOTAL,
 ) -> Dict[str, pd.DataFrame]:
     tables_dir = _ensure_dir(tables_dir)
 
@@ -830,6 +1341,31 @@ def write_tables(
     problem.to_csv(tables_dir / "table_qc_flag_problem_clusters.csv", index=False)
     tables["problem_clusters"] = problem
     print("Wrote {} ({:,} rows)".format(tables_dir / "table_qc_flag_problem_clusters.csv", len(problem)))
+
+    health_kpis = build_qc_health_kpis(tables["by_resolution"])
+    health_kpis.to_csv(tables_dir / "table_qc_health_kpis.csv", index=False)
+    tables["health_kpis"] = health_kpis
+    print("Wrote {} ({:,} rows)".format(tables_dir / "table_qc_health_kpis.csv", len(health_kpis)))
+
+    stage_effectiveness = build_qc_stage_effectiveness(tables["summary"])
+    stage_effectiveness.to_csv(tables_dir / "table_qc_stage_effectiveness.csv", index=False)
+    tables["stage_effectiveness"] = stage_effectiveness
+    print("Wrote {} ({:,} rows)".format(tables_dir / "table_qc_stage_effectiveness.csv", len(stage_effectiveness)))
+
+    issue_hotspots = build_qc_issue_hotspots(
+        by_source=tables["by_source"],
+        by_resolution=tables["by_resolution"],
+        by_cluster=tables["by_cluster"],
+        min_total=int(hotspot_min_total),
+    )
+    issue_hotspots.to_csv(tables_dir / "table_qc_issue_hotspots.csv", index=False)
+    tables["issue_hotspots"] = issue_hotspots
+    print("Wrote {} ({:,} rows)".format(tables_dir / "table_qc_issue_hotspots.csv", len(issue_hotspots)))
+
+    yearly_trends = build_qc_yearly_trends(tables["by_year"])
+    yearly_trends.to_csv(tables_dir / "table_qc_yearly_trends.csv", index=False)
+    tables["yearly_trends"] = yearly_trends
+    print("Wrote {} ({:,} rows)".format(tables_dir / "table_qc_yearly_trends.csv", len(yearly_trends)))
     return tables
 
 
@@ -849,6 +1385,330 @@ def _filter_flag_specs(
             flag_arrays.pop(name, None)
             meaning_maps.pop(name, None)
     return kept
+
+
+# -----------------------------------------------------------------------------
+# Markdown report
+# -----------------------------------------------------------------------------
+
+def _fmt_int(value: object) -> str:
+    try:
+        return "{:,}".format(int(float(value)))
+    except Exception:
+        return "NA"
+
+
+def _fmt_pct(value: object, digits: int = 1) -> str:
+    try:
+        return "{:.{}f}%".format(float(value), int(digits))
+    except Exception:
+        return "NA"
+
+
+def _markdown_table(rows: Sequence[Mapping[str, object]], columns: Sequence[str], headers: Sequence[str]) -> str:
+    if not rows:
+        return "_No rows._"
+    out = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        out.append("| " + " | ".join(str(row.get(col, "")) for col in columns) + " |")
+    return "\n".join(out)
+
+
+def _link_text(path: Path, base: Path) -> str:
+    try:
+        text = str(path.resolve().relative_to(base.resolve()))
+    except Exception:
+        text = str(path)
+    return text.replace("\\", "/")
+
+
+def _existing_link(path: Path, base: Path) -> str:
+    text = _link_text(path, base)
+    if path.is_file():
+        return "[{}]({})".format(text, text)
+    return "`{}` (not generated)".format(text)
+
+
+def _compact_final_rows(summary: pd.DataFrame) -> List[Dict[str, object]]:
+    metrics = _rate_table(summary, [])
+    if metrics.empty:
+        return []
+    metrics["variable"] = pd.Categorical(metrics["variable"], categories=FINAL_VARIABLE_ORDER, ordered=True)
+    metrics = metrics.sort_values("variable", kind="mergesort")
+    rows = []
+    for _, row in metrics.iterrows():
+        rows.append(
+            {
+                "variable": str(row["variable"]),
+                "n_total": _fmt_int(row["n_total"]),
+                "good_rate": _fmt_pct(row["good_rate"]),
+                "derived_rate": _fmt_pct(row["derived_rate"]),
+                "usable_rate": _fmt_pct(row["usable_rate"]),
+                "problem_rate": _fmt_pct(row["problem_rate"]),
+                "missing_rate": _fmt_pct(row["missing_rate"]),
+                "not_checked_rate": _fmt_pct(row["not_checked_rate"]),
+            }
+        )
+    return rows
+
+
+def _compact_health_rows(health_kpis: pd.DataFrame) -> List[Dict[str, object]]:
+    if health_kpis.empty:
+        return []
+    rows = []
+    for _, row in health_kpis.iterrows():
+        rows.append(
+            {
+                "resolution": str(row.get("temporal_resolution", "")),
+                "variable": str(row.get("variable", "")),
+                "n_total": _fmt_int(row.get("n_total")),
+                "usable_rate": _fmt_pct(row.get("usable_rate")),
+                "problem_rate": _fmt_pct(row.get("problem_rate")),
+                "missing_rate": _fmt_pct(row.get("missing_rate")),
+            }
+        )
+    return rows
+
+
+def _compact_stage_rows(stage_effectiveness: pd.DataFrame) -> List[Dict[str, object]]:
+    if stage_effectiveness.empty:
+        return []
+    rows = []
+    for _, row in stage_effectiveness.iterrows():
+        rows.append(
+            {
+                "qc_stage": str(row.get("qc_stage", "")),
+                "variable": str(row.get("variable", "")),
+                "flag_variable": str(row.get("flag_variable", "")),
+                "pass_rate": _fmt_pct(row.get("pass_rate")),
+                "suspect_rate": _fmt_pct(row.get("suspect_rate")),
+                "bad_rate": _fmt_pct(row.get("bad_rate")),
+                "not_checked_rate": _fmt_pct(row.get("not_checked_rate")),
+                "missing_rate": _fmt_pct(row.get("missing_rate")),
+            }
+        )
+    return rows
+
+
+def _compact_hotspot_rows(hotspots: pd.DataFrame, grouping_level: str, top_n: int) -> List[Dict[str, object]]:
+    if hotspots.empty:
+        return []
+    work = hotspots.loc[hotspots["grouping_level"].eq(grouping_level)].copy()
+    if work.empty:
+        return []
+    work = work.sort_values(
+        ["issue_rate", "issue_count", "problem_rate", "n_total"],
+        ascending=[False, False, False, False],
+        kind="mergesort",
+    ).head(max(1, int(top_n)))
+    rows = []
+    for _, row in work.iterrows():
+        if grouping_level == "source":
+            name = str(row.get("source_dataset", ""))
+        elif grouping_level == "cluster":
+            name = str(row.get("cluster_uid", ""))
+        elif grouping_level == "resolution":
+            name = str(row.get("temporal_resolution", ""))
+        else:
+            name = str(row.get("source_type", ""))
+        rows.append(
+            {
+                "name": name,
+                "type": str(row.get("source_type", "")),
+                "variable": str(row.get("variable", "")),
+                "n_total": _fmt_int(row.get("n_total")),
+                "issue_rate": _fmt_pct(row.get("issue_rate")),
+                "problem_rate": _fmt_pct(row.get("problem_rate")),
+                "missing_rate": _fmt_pct(row.get("missing_rate")),
+            }
+        )
+    return rows
+
+
+def _headline_findings(summary: pd.DataFrame, health_kpis: pd.DataFrame) -> List[str]:
+    metrics = _rate_table(summary, [])
+    findings: List[str] = []
+    if not metrics.empty:
+        q = metrics.loc[metrics["variable"].astype(str).eq("Q")]
+        ssc = metrics.loc[metrics["variable"].astype(str).eq("SSC")]
+        ssl = metrics.loc[metrics["variable"].astype(str).eq("SSL")]
+        if not q.empty:
+            row = q.iloc[0]
+            findings.append(
+                "Q 的 final flag 以 good 为主：good rate 为 {}，usable rate 为 {}。".format(
+                    _fmt_pct(row["good_rate"]), _fmt_pct(row["usable_rate"])
+                )
+            )
+        if not ssc.empty and not ssl.empty:
+            findings.append(
+                "SSC 和 SSL 的主要限制来自 missing：SSC missing rate 为 {}，SSL missing rate 为 {}。".format(
+                    _fmt_pct(ssc.iloc[0]["missing_rate"]), _fmt_pct(ssl.iloc[0]["missing_rate"])
+                )
+            )
+        not_checked_max = float(pd.to_numeric(metrics["not_checked_rate"], errors="coerce").fillna(0.0).max())
+        findings.append("Final flag 8 的最高比例为 {}，说明最终发布层基本没有未检查记录残留。".format(_fmt_pct(not_checked_max)))
+
+    if not health_kpis.empty:
+        usable = health_kpis.sort_values(["usable_rate", "n_total"], ascending=[False, False], kind="mergesort").head(1)
+        missing = health_kpis.sort_values(["missing_rate", "n_total"], ascending=[False, False], kind="mergesort").head(1)
+        if not usable.empty:
+            row = usable.iloc[0]
+            findings.append(
+                "{} {} 的 usable rate 最高，为 {}。".format(
+                    row.get("temporal_resolution"), row.get("variable"), _fmt_pct(row.get("usable_rate"))
+                )
+            )
+        if not missing.empty:
+            row = missing.iloc[0]
+            findings.append(
+                "{} {} 的 missing rate 最高，为 {}，适合在结果讨论中作为覆盖限制说明。".format(
+                    row.get("temporal_resolution"), row.get("variable"), _fmt_pct(row.get("missing_rate"))
+                )
+            )
+    return findings
+
+
+def write_report(
+    report_path: Path,
+    master_nc: Path,
+    quality_order_csv: Optional[Path],
+    tables_dir: Path,
+    figures_dir: Path,
+    tables: Mapping[str, pd.DataFrame],
+    top_n_sources: int,
+    top_n_clusters: int,
+    skip_stage_flags: bool,
+) -> Path:
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    base = report_path.parent
+
+    summary = tables.get("summary", pd.DataFrame())
+    health = tables.get("health_kpis", pd.DataFrame())
+    stage = tables.get("stage_effectiveness", pd.DataFrame())
+    hotspots = tables.get("issue_hotspots", pd.DataFrame())
+
+    lines: List[str] = [
+        "# S8 QC Flag Statistics Report",
+        "",
+        "本报告由 `stats/qc_flag_statistics.py` 自动生成，用于总结 S8 发布级产品的 final QC flags 和阶段性 QC flags。",
+        "",
+        "## 数据与方法",
+        "",
+        "- 输入 master NetCDF：`{}`".format(master_nc),
+        "- source type 辅助表：`{}`".format(quality_order_csv if quality_order_csv is not None else "not used"),
+        "- 输出表目录：`{}`".format(tables_dir),
+        "- 输出图目录：`{}`".format(figures_dir),
+        "- 统计口径：`usable_rate = flag 0 + flag 1`；`problem_rate = flag 2 + flag 3`；`missing_rate = flag 9`；`not_checked_rate = flag 8`。",
+        "- Final flag 含义：0=good，1=derived/estimated，2=suspect，3=bad，8=not checked，9=missing。",
+        "",
+        "## 核心结论",
+        "",
+    ]
+
+    findings = _headline_findings(summary, health)
+    if findings:
+        lines.extend(["- " + item for item in findings])
+    else:
+        lines.append("- 未生成可用的核心统计结论，请检查输入表。")
+
+    lines.extend(
+        [
+            "",
+            "### Final QC by Variable",
+            "",
+            _markdown_table(
+                _compact_final_rows(summary),
+                ["variable", "n_total", "good_rate", "derived_rate", "usable_rate", "problem_rate", "missing_rate", "not_checked_rate"],
+                ["Variable", "N", "Good", "Derived", "Usable", "Problem", "Missing", "Not checked"],
+            ),
+            "",
+            "### Resolution Difference",
+            "",
+            _markdown_table(
+                _compact_health_rows(health),
+                ["resolution", "variable", "n_total", "usable_rate", "problem_rate", "missing_rate"],
+                ["Resolution", "Variable", "N", "Usable", "Problem", "Missing"],
+            ),
+            "",
+            "## QC 阶段解释",
+            "",
+        ]
+    )
+    if skip_stage_flags:
+        lines.append("本次运行使用了 `--skip-stage-flags`，因此报告只包含 final QC flags。")
+    else:
+        lines.extend(
+            [
+                "阶段性 QC 用于解释 final flag 的来源：QC1 主要对应物理范围筛查，QC2 对应 log-IQR 异常筛查，QC3 对应 SSC-Q 一致性或 SSL 传播关系。",
+                "",
+                _markdown_table(
+                    _compact_stage_rows(stage),
+                    ["qc_stage", "variable", "flag_variable", "pass_rate", "suspect_rate", "bad_rate", "not_checked_rate", "missing_rate"],
+                    ["Stage", "Variable", "Flag var", "Flag 0", "Suspect", "Bad", "Not checked", "Missing"],
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 热点诊断",
+            "",
+            "下面的热点表按 `issue_rate = problem_rate + missing_rate` 排序；其中 `problem_rate` 只包含 suspect+bad，missing 单独保留，便于区分质量异常和观测缺失。",
+            "",
+            "### Top Sources",
+            "",
+            _markdown_table(
+                _compact_hotspot_rows(hotspots, "source", top_n_sources),
+                ["name", "type", "variable", "n_total", "issue_rate", "problem_rate", "missing_rate"],
+                ["Source", "Type", "Variable", "N", "Issue", "Problem", "Missing"],
+            ),
+            "",
+            "### Top Clusters",
+            "",
+            _markdown_table(
+                _compact_hotspot_rows(hotspots, "cluster", top_n_clusters),
+                ["name", "type", "variable", "n_total", "issue_rate", "problem_rate", "missing_rate"],
+                ["Cluster", "Type", "Variable", "N", "Issue", "Problem", "Missing"],
+            ),
+            "",
+            "## 图表建议",
+            "",
+            "- 正文 QC 概览：{}".format(_existing_link(figures_dir / "fig_qc_flag_distribution.png", base)),
+            "- 正文分辨率对比：{}".format(_existing_link(figures_dir / "fig_qc_health_by_resolution.png", base)),
+            "- 时间变化讨论：{} 和 {}".format(
+                _existing_link(figures_dir / "fig_qc_yearly_problem_trends.png", base),
+                _existing_link(figures_dir / "fig_qc_missing_trends.png", base),
+            ),
+            "- 方法/补充材料：{}".format(_existing_link(figures_dir / "fig_qc_stage_summary.png", base)),
+            "- 补充材料热点诊断：{} 和 {}".format(
+                _existing_link(figures_dir / "fig_qc_top_problem_sources.png", base),
+                _existing_link(figures_dir / "fig_qc_top_problem_clusters.png", base),
+            ),
+            "",
+            "## 输出数据索引",
+            "",
+            "- {}".format(_existing_link(tables_dir / "table_qc_flag_summary.csv", base)),
+            "- {}".format(_existing_link(tables_dir / "table_qc_health_kpis.csv", base)),
+            "- {}".format(_existing_link(tables_dir / "table_qc_stage_effectiveness.csv", base)),
+            "- {}".format(_existing_link(tables_dir / "table_qc_issue_hotspots.csv", base)),
+            "- {}".format(_existing_link(tables_dir / "table_qc_yearly_trends.csv", base)),
+            "- {}".format(_existing_link(tables_dir / "table_qc_flag_problem_clusters.csv", base)),
+            "",
+            "## 可支撑的论文表述",
+            "",
+            "- Q 数据整体质量较稳定，final good/usable 比例可作为发布级流量数据可靠性的核心证据。",
+            "- SSC/SSL 的限制主要体现为可用观测覆盖不足，而不是大量 suspect/bad；因此讨论中应把质量异常和观测缺失分开表述。",
+            "- source、cluster 热点表适合放入 supplement，用于说明少数数据源或站点簇对缺失/问题比例的贡献。",
+        ]
+    )
+
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("Wrote {}".format(report_path))
+    return report_path
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -879,6 +1739,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Output directory for figures. Default: {}".format(DEFAULT_FIGURES_DIR),
     )
     parser.add_argument(
+        "--report-path",
+        default=str(DEFAULT_REPORT_PATH),
+        help="Output Markdown QC report path. Default: {}".format(DEFAULT_REPORT_PATH),
+    )
+    parser.add_argument(
         "--skip-stage-flags",
         action="store_true",
         help="Only summarize final Q_flag/SSC_flag/SSL_flag and skip stage-specific QC flags.",
@@ -888,6 +1753,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         default=100,
         help="Number of highest suspect+bad+missing clusters to write to table_qc_flag_problem_clusters.csv. Use 0 for all.",
+    )
+    parser.add_argument(
+        "--top-n-sources",
+        type=int,
+        default=10,
+        help="Number of source-level hotspots to show in figures and the Markdown report.",
+    )
+    parser.add_argument(
+        "--top-n-clusters",
+        type=int,
+        default=None,
+        help="Number of cluster-level hotspots to show in figures and the Markdown report. Default: --problem-cluster-top-n.",
+    )
+    parser.add_argument(
+        "--hotspot-min-total",
+        type=int,
+        default=HOTSPOT_MIN_TOTAL,
+        help="Minimum n_total required for rows in table_qc_issue_hotspots.csv.",
     )
     return parser.parse_args(argv)
 
@@ -903,11 +1786,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     quality_order_csv = _resolve_path(args.quality_order_csv) if args.quality_order_csv else None
     tables_dir = _resolve_path(args.tables_dir)
     figures_dir = _resolve_path(args.figures_dir)
+    report_path = _resolve_path(args.report_path)
+    top_n_clusters = int(args.top_n_clusters) if args.top_n_clusters is not None else int(args.problem_cluster_top_n)
+    if top_n_clusters <= 0:
+        top_n_clusters = 100
 
     print("Input master NetCDF: {}".format(master_nc))
     print("Quality-order CSV: {}".format(quality_order_csv))
     print("Tables directory: {}".format(tables_dir))
     print("Figures directory: {}".format(figures_dir))
+    print("Report path: {}".format(report_path))
 
     records, flag_arrays, flag_specs, meaning_maps = read_master_records(
         master_nc=master_nc,
@@ -936,6 +1824,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         meaning_maps=meaning_maps,
         tables_dir=tables_dir,
         problem_cluster_top_n=int(args.problem_cluster_top_n),
+        hotspot_min_total=int(args.hotspot_min_total),
     )
     write_figures(
         records=records,
@@ -944,7 +1833,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         meaning_maps=meaning_maps,
         summary=tables["summary"],
         by_source=tables["by_source"],
+        health_kpis=tables["health_kpis"],
+        yearly_trends=tables["yearly_trends"],
+        stage_effectiveness=tables["stage_effectiveness"],
+        issue_hotspots=tables["issue_hotspots"],
         figures_dir=figures_dir,
+        top_n_sources=int(args.top_n_sources),
+        top_n_clusters=top_n_clusters,
+    )
+    write_report(
+        report_path=report_path,
+        master_nc=master_nc,
+        quality_order_csv=quality_order_csv,
+        tables_dir=tables_dir,
+        figures_dir=figures_dir,
+        tables=tables,
+        top_n_sources=int(args.top_n_sources),
+        top_n_clusters=top_n_clusters,
+        skip_stage_flags=bool(args.skip_stage_flags),
     )
 
     print("Done.")
