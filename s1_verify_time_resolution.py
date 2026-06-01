@@ -201,10 +201,14 @@ def _year_range_in_text(text):
         return None
     m = re.search(r"(19\d{2})\s*[-–to]+\s*(20\d{2})", text, re.I)
     if m:
-        return (m.group(1), m.group(2))
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if y1 < y2:
+            return (m.group(1), m.group(2))
     m = re.search(r"(20\d{2})\s*[-–to]+\s*(20\d{2})", text, re.I)
     if m:
-        return (m.group(1), m.group(2))
+        y1, y2 = int(m.group(1)), int(m.group(2))
+        if y1 < y2:
+            return (m.group(1), m.group(2))
     return None
 
 
@@ -306,7 +310,8 @@ def _collect_text_evidence(global_attrs, time_attrs, bounds_data):
                 t_start = pd.to_datetime(bnds_flat[0])
                 t_end = pd.to_datetime(bnds_flat[-1])
                 if hasattr(t_start, "year") and hasattr(t_end, "year"):
-                    texts.append("{}-{}".format(t_start.year, t_end.year))
+                    if t_start.year != t_end.year:
+                        texts.append("{}-{}".format(t_start.year, t_end.year))
         except Exception:
             pass
 
@@ -316,7 +321,7 @@ def _collect_text_evidence(global_attrs, time_attrs, bounds_data):
         try:
             y1 = re.search(r"(\d{4})", str(t_start))
             y2 = re.search(r"(\d{4})", str(t_end))
-            if y1 and y2:
+            if y1 and y2 and y1.group(1) != y2.group(1):
                 texts.append("{}-{}".format(y1.group(1), y2.group(1)))
         except Exception:
             pass

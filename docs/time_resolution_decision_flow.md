@@ -88,17 +88,28 @@ s1 打开每个 `.nc` 文件，按以下候选名查找时间变量：
 single point 的解释逻辑如下：
 
 1. 若声明的 `temporal_resolution` 为 `daily`，且单个时间点落在 `temporal_span` / `time_coverage` 范围内，同时该范围不超过 36 小时，则元数据语义可认为是 `daily`。
-2. 若声明的 `temporal_resolution` 为 `climatology` / `climatological`，且单个时间点与时间覆盖范围相符，或覆盖范围里能解析出年份范围，则元数据语义可认为是 `climatology`。
+2. 若声明的 `temporal_resolution` 为 `climatology` / `climatological`，且单个时间点与时间覆盖范围相符，或覆盖范围里能解析出有效的多年年份范围（`start_year < end_year`），则元数据语义可认为是 `climatology`。
 3. 若属性文本中同时出现多年范围和气候态/平均含义关键词，则解释为长期平均：
    - 年份范围示例：`1970-2021`、`2001-2020`；
    - 关键词包括 `climatology`、`climatological`、`average`、`mean`、`long-term`、`long term`、`historical`；
+   - **年份范围必须有 `start_year < end_year`**。等高年份（如 `"2013-2013"`）或反转年份（如 `"2021-1970"`）均被排除，不会被视为有效多年范围；
    - `single_point_interpretation` 形如 `long_term_average_1970_2021`。
 4. 若只有气候态/平均关键词，没有明确年份范围，则解释为：
    - `single_point_likely_climatology_year_YYYY`。
+   - **注意：** 此路径对含 `average`/`mean` 关键词的 genuine 单点日数据可能产生误判（见下方潜在问题说明）。
 5. 若只有年份范围，也解释为长期平均：
    - `long_term_average_YYYY_YYYY`。
+   - 年份范围同样必须满足 `start_year < end_year`。
 6. 否则保留为普通单点时间：
    - `single_point_time_<具体时间>`。
+
+#### 潜在问题说明
+
+`_interpret_sp_from_data()` 的第一循环（第368-375行）中，当属性文本包含 `"average"`/`"mean"` 等关键词但无法解析出有效多年年份范围时，会直接返回 `"single_point_likely_climatology_year_<单点年份>"`。此分支没有校验时间轴是否确实覆盖多年，因此对以下类型的数据可能产生误判：
+- 含 `"average"`/`"mean"` 关键词的普通单点日数据文件（如历史观测仅有一天）；
+- 属性描述中含模糊表述但实为单点观测的文件。
+
+如果此类误判出现，可通过人工审核 override (`s1_resolution_review_overrides.csv`) 修正。
 
 ## 5. 时间轴语义 time_axis_semantics
 
@@ -291,11 +302,14 @@ flowchart TD
     C -->|时间点 >= 2| G[按相邻时间差中位数分类]
     G --> H[hourly/daily/monthly/quarterly/annual/irregular]
     F --> I[读取属性、time bounds、coverage]
-    I --> J[推断 single_point_interpretation 和 metadata_semantics]
+    I --> I1{年份范围是否有效<br>start_year < end_year}
+    I1 -->|是| J[推断 single_point_interpretation 和 metadata_semantics]
+    I1 -->|否| K1[推断为 single_point_time_<date>]
     H --> K[归并 time_axis_semantics]
     D --> K
     E --> K
     F --> K
+    K1 --> K
     J --> L[合成 final_semantics]
     K --> L
     L --> M{是否与元数据冲突}

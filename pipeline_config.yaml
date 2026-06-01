@@ -1,0 +1,107 @@
+# ============================================================
+# Pipeline configuration file for run_s1_s8_basin_pipeline.py
+# ============================================================
+#
+# Usage:
+#   cd Output_r/scripts_basin_test
+#   python3 run_s1_s8_basin_pipeline.py --config-file pipeline_config.yaml
+#   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --dry-run --yes
+#
+# CLI flags override config file values:
+#   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --steps s1,s2,s3
+#
+# Generate this template:
+#   python3 run_s1_s8_basin_pipeline.py --dump-config-template
+# ============================================================
+
+cli:
+  # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
+  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
+  steps: ""
+
+  # 起始 / 结束阶段（steps 为空时生效）
+  start_at: s1
+  end_at: s8
+
+  # 试跑模式：只打印命令，不实际执行
+  dry_run: false
+  # 跳过交互确认提示（自动继续）
+  "yes": false
+
+  # s4 / s6 在本地运行（不提交 LSF）
+  local_s4: false
+  local_s6: false
+
+  # s1 返回非 0 时视为致命错误
+  strict_s1: false
+
+  # s2: 按分辨率整理
+  s2_workers: 8            # 并行 worker 数，推荐 4-16
+  s2_clear: false          # 清空旧输出目录重新组织
+
+  # s3: 收集 basin 主线测站
+  s3_workers: 32           # 并行 worker 数，推荐 8-32
+  s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
+
+  # s4: 流域追踪
+  s4_workers: 24           # S4_N_WORKERS，推荐 8-48
+  s4_array_size: 16        # LSF 阵列大小（集群模式），推荐 8-32
+  s4_batch_size: 50        # 每批站点数，推荐 20-100
+  s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
+  s4_no_resume: false      # 关闭 resume（重新跑所有 shard）
+  s4_no_gpkg: false        # 关闭 GPKG 几何输出
+
+  # MERIT Hydro 数据集路径
+  merit_dir: "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
+
+  # s6: NetCDF 导出
+  s6_workers: 24               # merge worker 数，推荐 8-40
+  s6_include_climatology: false   # 将 climatology 合并到 master NC
+  skip_climatology_export: false   # 跳过独立气候 NC 导出
+
+  # LSF 轮询 / s7 局部流域
+  cluster_poll_seconds: 60   # LSF 轮询间隔秒，推荐 30-120
+  include_local_basins: false   # 生成局部流域 GPKG
+
+  # s8: 发布
+  s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
+  s8_skip_gpkg: false           # 跳过 GPKG 发布
+  s8_skip_validation: false     # 跳过发布校验
+  s8_include_basin_polygons: true  # 包含流域多边形
+  s8_force: true                # 强制覆盖已存在的发布文件
+
+# ============================================================
+# 环境变量（仅通过 export 设置，非 CLI 参数）
+# 修改这里会自动注入到 os.environ
+# ============================================================
+env:
+  # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
+  # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
+  RUN_ONLY: ""
+
+  JOB_TAG: s6fast              # LSF 作业名前缀
+  MERGE_WORKERS: "40"          # merge worker 数，推荐 8-48
+  MERGE_METADATA_WORKERS: "32" # 元数据 worker 数，推荐 8-32
+  DAILY_WORKERS: "40"          # 日矩阵 worker 数，推荐 8-40
+  MONTHLY_WORKERS: "20"        # 月矩阵 worker 数，推荐 4-20
+  ANNUAL_WORKERS: "4"          # 年矩阵 worker 数，推荐 1-8
+
+  MERGE_N: "48"                # merge 步骤 LSF 核数，推荐 24-64
+  MERGE_MEM_MB: "240000"       # merge 步骤 LSF 内存 MB，推荐 120000-480000
+  CLIM_N: "4"                  # 气候导出 LSF 核数，推荐 2-8
+  CLIM_MEM_MB: "16000"         # 气候导出 LSF 内存 MB，推荐 8000-32000
+  SATVAL_N: "24"               # 卫星验证 LSF 核数，推荐 8-32
+  SATVAL_MEM_MB: "64000"       # 卫星验证 LSF 内存 MB，推荐 32000-128000
+
+  # s4 LSF 配置
+  S4_QUEUE: normal              # LSF 队列名
+  S4_NCORES: "24"               # 每 job 核数，推荐 8-48
+  S4_MEM: 120G                  # 每 job 内存
+  S4_PTILE: "24"                # 每节点核数
+  S4_GPKG_EXCLUDE_SATELLITE: "1"  # GPKG 排除卫星站点，1=排除
+
+  # s6 LSF 配置
+  LSF_QUEUE: ""                # LSF 队列（留空用默认）
+  LSF_PROJECT: ""              # LSF project 名称
+  LSF_EXTRA: ""                # 附加 bsub 参数
+

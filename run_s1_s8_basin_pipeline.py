@@ -580,10 +580,12 @@ def build_stage_specs(args, python_bin):
     }
 
 
-def parse_args():
+def parse_args(defaults=None):
     parser = argparse.ArgumentParser(
         description="Run the scripts_basin_test s1-s8 basin mainline in order."
     )
+    if defaults:
+        parser.set_defaults(**defaults)
     parser.add_argument("--python", help="Python 3 interpreter used to launch each step.")
     parser.add_argument(
         "--log-file",
@@ -600,6 +602,23 @@ def parse_args():
         ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them.")
+    parser.add_argument(
+        "--config-file", "-c",
+        default="",
+        help="JSON config file path. Sets both CLI arguments and environment variables (see --dump-config-template).",
+    )
+    parser.add_argument(
+        "--dump-config-template",
+        action="store_true",
+        default=False,
+        help="Print a template JSON config file and exit.",
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the interactive configuration confirmation prompt.",
+    )
     parser.add_argument(
         "--cluster-poll-seconds",
         type=int,
@@ -750,12 +769,357 @@ def _review_queue_count(path):
     return int(len(df))
 
 
+def _confirm_config(args, stages, python_bin):
+    """Print the resolved configuration and ask the user to confirm before proceeding."""
+    s4_env = {
+        "S4_N_WORKERS": str(args.s4_workers),
+        "S4_BATCH_SIZE": str(args.s4_batch_size),
+        "S4_RESUME": "true" if not args.s4_no_resume else "false",
+        "S4_SAVE_GPKG": "true" if not args.s4_no_gpkg else "false",
+        "S4_MAXTASKSPERCHILD": str(args.s4_maxtasksperchild),
+        "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
+    }
+    if args.s4_array_size != 16:
+        s4_env["S4_ARRAY_SIZE"] = str(args.s4_array_size)
+
+    # ── 读取仅能通过 export 设置的环境变量 ──
+    def _env(name, default=""):
+        return os.environ.get(name, default)
+
+    # s6 任务筛选
+    s6_run_only = _env("RUN_ONLY")
+    # LSF 队列设置
+    s4_queue = _env("S4_QUEUE", "normal")
+    s4_ncores = _env("S4_NCORES", "24")
+    s4_mem = _env("S4_MEM", "120G")
+    s4_ptile = _env("S4_PTILE", "24")
+    s4_gpkg_exclude_sat = _env("S4_GPKG_EXCLUDE_SATELLITE", "1")
+    lsf_queue = _env("LSF_QUEUE")
+    lsf_project = _env("LSF_PROJECT")
+    lsf_extra = _env("LSF_EXTRA")
+    job_tag = _env("JOB_TAG", "s6fast")
+    # s6 各子步骤 worker 数
+    merge_workers = _env("MERGE_WORKERS", "40")
+    merge_metadata_workers = _env("MERGE_METADATA_WORKERS", "32")
+    da_workers = _env("DAILY_WORKERS", "40")
+    mo_workers = _env("MONTHLY_WORKERS", "20")
+    an_workers = _env("ANNUAL_WORKERS", "4")
+    # s6 各子步骤 LSF 资源
+    merge_n = _env("MERGE_N", "48")
+    merge_mem = _env("MERGE_MEM_MB", "240000")
+    clim_n = _env("CLIM_N", "4")
+    clim_mem = _env("CLIM_MEM_MB", "16000")
+    satval_n = _env("SATVAL_N", "24")
+    satval_mem = _env("SATVAL_MEM_MB", "64000")
+
+    # ── CLI 来源的配置项 ──
+    env_lines = [
+        ("OUTPUT_R_ROOT", str(OUTPUT_R_ROOT)),
+        ("PYTHON_BIN", python_bin),
+        ("Stages", " -> ".join(stages)),
+        ("MERIT_DIR", s4_env["MERIT_DIR"]),
+        ("S4_N_WORKERS", s4_env["S4_N_WORKERS"]),
+        ("S4_BATCH_SIZE", s4_env["S4_BATCH_SIZE"]),
+        ("S4_RESUME", s4_env["S4_RESUME"]),
+        ("S4_SAVE_GPKG", s4_env["S4_SAVE_GPKG"]),
+        ("S4_MAXTASKSPERCHILD", s4_env["S4_MAXTASKSPERCHILD"]),
+        ("S4_ARRAY_SIZE", s4_env.get("S4_ARRAY_SIZE", "16 (default)")),
+        ("S4 mode", "local" if args.local_s4 else "cluster (LSF array)"),
+        ("S6 mode", "local" if args.local_s6 else "cluster (LSF)"),
+        ("Include climatology in s6 master", str(args.s6_include_climatology)),
+        ("Skip climatology export", str(args.skip_climatology_export)),
+        ("s3 exclude resolutions", args.s3_exclude_resolutions),
+        ("s8 force overwrite", str(args.s8_force)),
+        ("s8 skip validation", str(args.s8_skip_validation)),
+        ("s8 include basin polygons", str(args.s8_include_basin_polygons)),
+        ("Log file", str(args.log_file)),
+    ]
+
+    # ── 仅能通过 export 设置的环境变量 ──
+    env_only_lines = [
+        ("S6: RUN_ONLY", s6_run_only if s6_run_only else "all (no filter)"),
+        ("S6: JOB_TAG", job_tag),
+        ("S6: MERGE_WORKERS", merge_workers),
+        ("S6: MERGE_METADATA_WORKERS", merge_metadata_workers),
+        ("S6: DAILY_WORKERS", da_workers),
+        ("S6: MONTHLY_WORKERS", mo_workers),
+        ("S6: ANNUAL_WORKERS", an_workers),
+        ("S6: MERGE_N / MERGE_MEM_MB", "{} / {}".format(merge_n, merge_mem)),
+        ("S6: CLIM_N / CLIM_MEM_MB", "{} / {}".format(clim_n, clim_mem)),
+        ("S6: SATVAL_N / SATVAL_MEM_MB", "{} / {}".format(satval_n, satval_mem)),
+        ("S4: QUEUE / NCORES / MEM / PTILE", "{} / {} / {} / {}".format(s4_queue, s4_ncores, s4_mem, s4_ptile)),
+        ("S4: GPKG_EXCLUDE_SATELLITE", s4_gpkg_exclude_sat),
+        ("LSF: QUEUE / PROJECT / EXTRA", "{} / {} / {}".format(lsf_queue if lsf_queue else "(default)", lsf_project if lsf_project else "(empty)", lsf_extra if lsf_extra else "(empty)")),
+    ]
+
+    hints = [
+        ("Stages", "--steps s1,s2,s3,s5,s6  or  --start-at s4 --end-at s8"),
+        ("MERIT_DIR", "--merit-dir /path/to/MERIT_Hydro"),
+        ("S4_N_WORKERS", "--s4-workers N"),
+        ("S4_BATCH_SIZE", "--s4-batch-size N"),
+        ("S4_RESUME", "--s4-no-resume (to disable resume)"),
+        ("S4_SAVE_GPKG", "--s4-no-gpkg (to disable GPKG export)"),
+        ("S4 mode", "--local-s4 (run locally instead of LSF)"),
+        ("S6 mode", "--local-s6 (run locally instead of LSF)"),
+        ("Include climatology in s6 master", "--s6-include-climatology"),
+        ("Skip climatology export", "--skip-climatology-export"),
+        ("s8 skip validation", "--s8-skip-validation"),
+        ("[env] S6: RUN_ONLY", "export RUN_ONLY=merge,matrix_daily,..."),
+        ("[env] S6: JOB_TAG", "export JOB_TAG=my_tag"),
+        ("[env] S6: DAILY_WORKERS / ...", "export DAILY_WORKERS=40"),
+        ("[env] S4: S4_QUEUE / S4_NCORES / ...", "export S4_QUEUE=normal"),
+        ("[env] LSF: LSF_QUEUE / LSF_PROJECT", "export LSF_QUEUE=normal"),
+    ]
+
+    separator = "=" * 64
+    print(separator)
+    print("Pipeline Configuration Summary".center(64))
+    print(separator)
+    print("  >>> CLI-configured settings <<<")
+    print(separator)
+    for key, value in env_lines:
+        print(f"  {key:<30s} {value}")
+    print(separator)
+    print("  >>> Env-only settings (export VAR=...) <<<")
+    for key, value in env_only_lines:
+        print(f"  {key:<30s} {value}")
+    print(separator)
+    print("How to modify each setting:")
+    for key, hint in hints:
+        print(f"  {key:<30s} {hint}")
+    print(separator)
+
+    if args.yes:
+        return True
+
+    try:
+        response = input("Proceed with this configuration? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        response = "n"
+    if response and response not in ("y", "yes", ""):
+        print("Aborted by user.", file=sys.stderr)
+        return False
+    return True
+
+
+_CONFIG_FIELDS = [
+    # (dest_name, argparse_flag)
+    ("steps", "--steps"),
+    ("start_at", "--start-at"),
+    ("end_at", "--end-at"),
+    ("dry_run", "--dry-run"),
+    ("yes", "--yes"),
+    ("config_file", "--config-file"),
+    ("local_s4", "--local-s4"),
+    ("local_s6", "--local-s6"),
+    ("strict_s1", "--strict-s1"),
+    ("s2_workers", "--s2-workers"),
+    ("s2_clear", "--s2-clear"),
+    ("s3_workers", "--s3-workers"),
+    ("s3_exclude_resolutions", "--s3-exclude-resolutions"),
+    ("s4_workers", "--s4-workers"),
+    ("s4_array_size", "--s4-array-size"),
+    ("s4_batch_size", "--s4-batch-size"),
+    ("s4_maxtasksperchild", "--s4-maxtasksperchild"),
+    ("s4_no_resume", "--s4-no-resume"),
+    ("s4_no_gpkg", "--s4-no-gpkg"),
+    ("merit_dir", "--merit-dir"),
+    ("s6_workers", "--s6-workers"),
+    ("s6_include_climatology", "--s6-include-climatology"),
+    ("skip_climatology_export", "--skip-climatology-export"),
+    ("matrix_workers", "--matrix-workers"),
+    ("matrix_resolution_workers", "--matrix-resolution-workers"),
+    ("cluster_poll_seconds", "--cluster-poll-seconds"),
+    ("include_local_basins", "--include-local-basins"),
+    ("s8_link_mode", "--s8-link-mode"),
+    ("s8_skip_gpkg", "--s8-skip-gpkg"),
+    ("s8_skip_validation", "--s8-skip-validation"),
+    ("s8_include_basin_polygons", "--s8-include-basin-polygons"),
+    ("s8_force", "--s8-force"),
+    ("python", "--python"),
+    ("log_file", "--log-file"),
+]
+
+
+def _write_config_template():
+    """Print a YAML config template with all supported keys."""
+    import sys
+    yaml_text = r"""# ============================================================
+# Pipeline configuration file for run_s1_s8_basin_pipeline.py
+# ============================================================
+#
+# Usage:
+#   cd Output_r/scripts_basin_test
+#   python3 run_s1_s8_basin_pipeline.py --config-file pipeline_config.yaml
+#   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --dry-run --yes
+#
+# CLI flags override config file values:
+#   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --steps s1,s2,s3
+#
+# Generate this template:
+#   python3 run_s1_s8_basin_pipeline.py --dump-config-template
+# ============================================================
+
+cli:
+  # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
+  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
+  steps: ""
+
+  # 起始 / 结束阶段（steps 为空时生效）
+  start_at: s1
+  end_at: s8
+
+  # 试跑模式：只打印命令，不实际执行
+  dry_run: false
+  # 跳过交互确认提示（自动继续）
+  "yes": false
+
+  # s4 / s6 在本地运行（不提交 LSF）
+  local_s4: false
+  local_s6: false
+
+  # s1 返回非 0 时视为致命错误
+  strict_s1: false
+
+  # s2: 按分辨率整理
+  s2_workers: 8            # 并行 worker 数，推荐 4-16
+  s2_clear: false          # 清空旧输出目录重新组织
+
+  # s3: 收集 basin 主线测站
+  s3_workers: 32           # 并行 worker 数，推荐 8-32
+  s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
+
+  # s4: 流域追踪
+  s4_workers: 24           # S4_N_WORKERS，推荐 8-48
+  s4_array_size: 16        # LSF 阵列大小（集群模式），推荐 8-32
+  s4_batch_size: 50        # 每批站点数，推荐 20-100
+  s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
+  s4_no_resume: false      # 关闭 resume（重新跑所有 shard）
+  s4_no_gpkg: false        # 关闭 GPKG 几何输出
+
+  # MERIT Hydro 数据集路径
+  merit_dir: "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
+
+  # s6: NetCDF 导出
+  s6_workers: 24               # merge worker 数，推荐 8-40
+  s6_include_climatology: false   # 将 climatology 合并到 master NC
+  skip_climatology_export: false   # 跳过独立气候 NC 导出
+
+  # LSF 轮询 / s7 局部流域
+  cluster_poll_seconds: 60   # LSF 轮询间隔秒，推荐 30-120
+  include_local_basins: false   # 生成局部流域 GPKG
+
+  # s8: 发布
+  s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
+  s8_skip_gpkg: false           # 跳过 GPKG 发布
+  s8_skip_validation: false     # 跳过发布校验
+  s8_include_basin_polygons: true  # 包含流域多边形
+  s8_force: true                # 强制覆盖已存在的发布文件
+
+# ============================================================
+# 环境变量（仅通过 export 设置，非 CLI 参数）
+# 修改这里会自动注入到 os.environ
+# ============================================================
+env:
+  # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
+  # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
+  RUN_ONLY: ""
+
+  JOB_TAG: s6fast              # LSF 作业名前缀
+  MERGE_WORKERS: "40"          # merge worker 数，推荐 8-48
+  MERGE_METADATA_WORKERS: "32" # 元数据 worker 数，推荐 8-32
+  DAILY_WORKERS: "40"          # 日矩阵 worker 数，推荐 8-40
+  MONTHLY_WORKERS: "20"        # 月矩阵 worker 数，推荐 4-20
+  ANNUAL_WORKERS: "4"          # 年矩阵 worker 数，推荐 1-8
+
+  MERGE_N: "48"                # merge 步骤 LSF 核数，推荐 24-64
+  MERGE_MEM_MB: "240000"       # merge 步骤 LSF 内存 MB，推荐 120000-480000
+  CLIM_N: "4"                  # 气候导出 LSF 核数，推荐 2-8
+  CLIM_MEM_MB: "16000"         # 气候导出 LSF 内存 MB，推荐 8000-32000
+  SATVAL_N: "24"               # 卫星验证 LSF 核数，推荐 8-32
+  SATVAL_MEM_MB: "64000"       # 卫星验证 LSF 内存 MB，推荐 32000-128000
+
+  # s4 LSF 配置
+  S4_QUEUE: normal              # LSF 队列名
+  S4_NCORES: "24"               # 每 job 核数，推荐 8-48
+  S4_MEM: 120G                  # 每 job 内存
+  S4_PTILE: "24"                # 每节点核数
+  S4_GPKG_EXCLUDE_SATELLITE: "1"  # GPKG 排除卫星站点，1=排除
+
+  # s6 LSF 配置
+  LSF_QUEUE: ""                # LSF 队列（留空用默认）
+  LSF_PROJECT: ""              # LSF project 名称
+  LSF_EXTRA: ""                # 附加 bsub 参数
+"""
+    print(yaml_text)
+    sys.exit(0)
+def _load_config_file(config_path):
+    """Load YAML/JSON config, set os.environ from 'env' section, return the 'cli' dict."""
+    config_path = Path(config_path)
+    if not config_path.is_file():
+        raise SystemExit("Config file not found: {}".format(config_path))
+    cfg = None
+    # Try YAML first, fallback to JSON
+    try:
+        import yaml
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except (ImportError, yaml.YAMLError):
+        try:
+            import json
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as exc:
+            raise SystemExit("Failed to parse config file {}: {}".format(config_path, exc))
+
+    if cfg is None:
+        raise SystemExit("Config file {} is empty or invalid.".format(config_path))
+
+    # ── Apply env vars ──
+    env_section = cfg.get("env", {})
+    if env_section:
+        for key, value in env_section.items():
+            if value is not None and str(value).strip():
+                os.environ[key] = str(value)
+
+    # ── Return CLI section (coerce keys to strings, values to types argparse expects) ──
+    cli_section = cfg.get("cli", {}) or {}
+    # YAML parses "yes" as boolean True; coerce all keys back to strings
+    cli_section = {str(k): v for k, v in cli_section.items()}
+    # Argparse set_defaults expects non-string values for store_true/store_false
+    # actions, but strings for everything else.  Keep native types as-is and let
+    # argparse handle coercion.
+    print("Loaded config file: {}".format(config_path))
+    return cli_section
+
+
 def main():
-    args = parse_args()
+    # ── Pre-parse: check for --dump-config-template or --config-file ──
+    pre_args = [a for a in sys.argv[1:] if not a.startswith("--config-file=") and a not in ("--config-file", "-c")]
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--dump-config-template", action="store_true", default=False)
+    pre_parser.add_argument("--config-file", "-c", default="")
+    pre_parsed, _ = pre_parser.parse_known_args()
+
+    if pre_parsed.dump_config_template:
+        _write_config_template()
+
+    if pre_parsed.config_file:
+        cli_overrides = _load_config_file(pre_parsed.config_file)
+        args = parse_args(defaults=cli_overrides)
+        print("Applied {} CLI defaults from config file (CLI flags take precedence).".format(
+            sum(1 for d in cli_overrides if hasattr(args, d))
+        ))
+    else:
+        args = parse_args()
     python_bin = resolve_python(args.python)
     stages = _resolve_selected_stages(args)
     outputs = stage_outputs()
     specs = build_stage_specs(args, python_bin)
+
+    if not _confirm_config(args, stages, python_bin):
+        return 1
+
     log_path = Path(args.log_file).expanduser().resolve()
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -769,6 +1133,50 @@ def main():
         _print_and_log(log_fp, "MERIT dir:               {}".format(merit_dir))
         _print_and_log(log_fp, "Stages:                  {}".format(" -> ".join(stages)))
         _print_and_log(log_fp, "Combined log:            {}".format(log_path))
+        def _env(name, default=""):
+            return os.environ.get(name, default)
+        s6_run_only = _env("RUN_ONLY")
+        _print_and_log(log_fp, "S4 mode:                 {}".format("local" if args.local_s4 else "cluster (LSF)"))
+        _print_and_log(log_fp, "S6 mode:                 {}".format("local" if args.local_s6 else "cluster (LSF)"))
+        _print_and_log(log_fp, "S6 RUN_ONLY:             {}".format(s6_run_only if s6_run_only else "all (no filter)"))
+        _print_and_log(log_fp, "Include climatology in s6 master: {}".format(args.s6_include_climatology))
+        _print_and_log(log_fp, "Skip climatology export: {}".format(args.skip_climatology_export))
+        _print_and_log(log_fp, "MERIT dir (resolved):    {}".format(merit_dir))
+        _print_and_log(log_fp, "S4_RESUME:               {}".format(not args.s4_no_resume))
+        _print_and_log(log_fp, "S4_N_WORKERS:            {}".format(args.s4_workers))
+        _print_and_log(log_fp, "S4_BATCH_SIZE:           {}".format(args.s4_batch_size))
+        _print_and_log(log_fp, "S4_SAVE_GPKG:            {}".format(not args.s4_no_gpkg))
+        _print_and_log(log_fp, "S4_MAXTASKSPERCHILD:     {}".format(args.s4_maxtasksperchild))
+        _print_and_log(log_fp, "S4_ARRAY_SIZE:           {}".format(args.s4_array_size))
+        _print_and_log(log_fp, "s3 exclude resolutions:  {}".format(args.s3_exclude_resolutions))
+        _print_and_log(log_fp, "s8 force overwrite:      {}".format(args.s8_force))
+        _print_and_log(log_fp, "s8 skip validation:      {}".format(args.s8_skip_validation))
+        _print_and_log(log_fp, "s8 include basin poly:   {}".format(args.s8_include_basin_polygons))
+        _print_and_log(log_fp, "local s4:                {}".format(args.local_s4))
+        _print_and_log(log_fp, "local s6:                {}".format(args.local_s6))
+        # ── 仅能通过 export 设置的环境变量 ──
+        _print_and_log(log_fp, "--- env-only settings ---")
+        _print_and_log(log_fp, "RUN_ONLY:                {}".format(s6_run_only if s6_run_only else "all (no filter)"))
+        _print_and_log(log_fp, "JOB_TAG:                 {}".format(_env("JOB_TAG", "s6fast")))
+        _print_and_log(log_fp, "MERGE_WORKERS:           {}".format(_env("MERGE_WORKERS", "40")))
+        _print_and_log(log_fp, "MERGE_METADATA_WORKERS:  {}".format(_env("MERGE_METADATA_WORKERS", "32")))
+        _print_and_log(log_fp, "DAILY_WORKERS:           {}".format(_env("DAILY_WORKERS", "40")))
+        _print_and_log(log_fp, "MONTHLY_WORKERS:         {}".format(_env("MONTHLY_WORKERS", "20")))
+        _print_and_log(log_fp, "ANNUAL_WORKERS:          {}".format(_env("ANNUAL_WORKERS", "4")))
+        _print_and_log(log_fp, "MERGE_N:                 {}".format(_env("MERGE_N", "48")))
+        _print_and_log(log_fp, "MERGE_MEM_MB:            {}".format(_env("MERGE_MEM_MB", "240000")))
+        _print_and_log(log_fp, "CLIM_N:                  {}".format(_env("CLIM_N", "4")))
+        _print_and_log(log_fp, "CLIM_MEM_MB:             {}".format(_env("CLIM_MEM_MB", "16000")))
+        _print_and_log(log_fp, "SATVAL_N:                {}".format(_env("SATVAL_N", "24")))
+        _print_and_log(log_fp, "SATVAL_MEM_MB:           {}".format(_env("SATVAL_MEM_MB", "64000")))
+        _print_and_log(log_fp, "S4_QUEUE:                {}".format(_env("S4_QUEUE", "normal")))
+        _print_and_log(log_fp, "S4_NCORES:               {}".format(_env("S4_NCORES", "24")))
+        _print_and_log(log_fp, "S4_MEM:                  {}".format(_env("S4_MEM", "120G")))
+        _print_and_log(log_fp, "S4_PTILE:                {}".format(_env("S4_PTILE", "24")))
+        _print_and_log(log_fp, "S4_GPKG_EXCLUDE_SATELLITE: {}".format(_env("S4_GPKG_EXCLUDE_SATELLITE", "1")))
+        _print_and_log(log_fp, "LSF_QUEUE:               {}".format(_env("LSF_QUEUE") or "(empty)"))
+        _print_and_log(log_fp, "LSF_PROJECT:             {}".format(_env("LSF_PROJECT") or "(empty)"))
+        _print_and_log(log_fp, "LSF_EXTRA:               {}".format(_env("LSF_EXTRA") or "(empty)"))
         _print_and_log(log_fp, "")
 
         pipeline_start = time.time()
