@@ -29,6 +29,18 @@ Default outputs are written under:
   figures/fig_source_variable_stacked.png
   figures/fig_source_cumulative_contribution.png
   figures/fig_source_temporal_coverage.png
+  figures/fig_satellite_contribution_records.png
+  figures/fig_satellite_contribution_stations.png
+  figures/fig_satellite_contribution_clusters.png
+  figures/fig_satellite_resolution_stacked.png
+  figures/fig_satellite_variable_stacked.png
+  figures/fig_satellite_temporal_coverage.png
+  figures/fig_climatology_contribution_records.png
+  figures/fig_climatology_contribution_stations.png
+  figures/fig_climatology_contribution_clusters.png
+  figures/fig_climatology_resolution_stacked.png
+  figures/fig_climatology_variable_stacked.png
+  figures/fig_climatology_temporal_coverage.png
   reports/source_contribution_report.md
 
 Notes on classification
@@ -69,10 +81,19 @@ try:
 except ImportError:  # pragma: no cover - runtime dependency check
     nc4 = None
 
-import matplotlib
+try:
+    import matplotlib
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+    MATPLOTLIB_IMPORT_ERROR = ""
+except Exception as exc:  # pragma: no cover - runtime environment dependent
+    matplotlib = None
+    plt = None
+    HAS_MATPLOTLIB = False
+    MATPLOTLIB_IMPORT_ERROR = str(exc)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -101,6 +122,8 @@ from pipeline_paths import (
     RELEASE_CLIMATOLOGY_NC,
     RELEASE_DATASET_DIR,
     RELEASE_MASTER_NC,
+    RELEASE_SATELLITE_CATALOG_CSV,
+    RELEASE_SATELLITE_NC,
     RELEASE_SOURCE_DATASET_CATALOG_CSV,
     RELEASE_SOURCE_STATION_CATALOG_CSV,
     get_output_r_root,
@@ -112,6 +135,8 @@ DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
 DEFAULT_SOURCE_CONTRIBUTION_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/source_contribution"
 DEFAULT_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
 DEFAULT_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
+DEFAULT_SATELLITE_NC = PROJECT_ROOT / RELEASE_SATELLITE_NC
+DEFAULT_SATELLITE_CATALOG = PROJECT_ROOT / RELEASE_SATELLITE_CATALOG_CSV
 DEFAULT_SOURCE_STATION_CATALOG = PROJECT_ROOT / RELEASE_SOURCE_STATION_CATALOG_CSV
 DEFAULT_SOURCE_DATASET_CATALOG = PROJECT_ROOT / RELEASE_SOURCE_DATASET_CATALOG_CSV
 
@@ -337,6 +362,36 @@ def _read_int_slice(ds, name: str, start: int, stop: int, fill_value: int = -1) 
     return out[:size]
 
 
+def _read_text_slice(ds, name: str, start: int, stop: int) -> List[str]:
+    size = int(stop) - int(start)
+    if name not in ds.variables:
+        return [""] * size
+    values = ds.variables[name][start:stop]
+    try:
+        if getattr(values, "dtype", None) is not None and values.dtype.kind in {"S", "U"} and values.ndim > 1:
+            arr = nc4.chartostring(values)
+        else:
+            arr = np.asarray(values, dtype=object)
+    except Exception:
+        arr = np.asarray(values, dtype=object)
+    result = [_clean_text(item) for item in np.asarray(arr, dtype=object).reshape(-1)]
+    if len(result) < size:
+        result.extend([""] * (size - len(result)))
+    return result[:size]
+
+
+def _read_resolution_slice(ds, name: str, start: int, stop: int) -> List[str]:
+    size = int(stop) - int(start)
+    if name not in ds.variables:
+        return ["other"] * size
+    dtype = getattr(ds.variables[name], "dtype", None)
+    if dtype is not None and np.dtype(dtype).kind in {"i", "u", "f"}:
+        codes = _read_int_slice(ds, name, start, stop, fill_value=-1)
+        return [RESOLUTION_CODE_TO_NAME.get(int(code), "other") for code in codes]
+    values = _read_text_slice(ds, name, start, stop)
+    return [_clean_text(value) or "other" for value in values]
+
+
 def _format_resolution(values: Iterable[str]) -> str:
     order = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4}
     cleaned = sorted(
@@ -381,6 +436,7 @@ def _empty_stats() -> Dict:
         "institution": "",
         "reference": "",
         "source_url": "",
+        "products": set(),
         "source_stations": set(),
         "clusters": set(),
         "resolutions": set(),
@@ -546,6 +602,7 @@ def summarize_master_nc(
             for source_name, sub in grouped:
                 stats = stats_by_source[source_name]
                 stats["source_name"] = source_name
+                stats["products"].add("master")
                 first_idx = int(sub["source_station_index"].iloc[0])
                 if 0 <= first_idx < len(station_to_source_meta):
                     meta = station_to_source_meta[first_idx]
@@ -559,6 +616,7 @@ def summarize_master_nc(
                 stats = stats_by_source_resolution[key]
                 stats["source_name"] = source_name
                 stats["resolution"] = resolution
+                stats["products"].add("master")
                 first_idx = int(sub["source_station_index"].iloc[0])
                 if 0 <= first_idx < len(station_to_source_meta):
                     meta = station_to_source_meta[first_idx]
@@ -608,21 +666,57 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], Dic
     stats_by_source: Dict[str, Dict] = defaultdict(_empty_stats)
     stats_by_source_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
     with nc4.Dataset(climatology_nc, "r") as ds:
+        n_sources = _get_dim_size(ds, ["n_sources", "source"])
         n_stations = _get_dim_size(ds, ["n_stations", "station", "stations"])
         if n_stations <= 0:
             return empty, empty_resolution, "days since 1970-01-01", "gregorian"
 
         uid_name = _pick_existing_var(ds, ["station_uid", "source_station_uid", "source_station_id"])
         source_name_var = _pick_existing_var(ds, ["source_name", "source", "dataset", "source_dataset"])
+        source_index_var = _pick_existing_var(ds, ["source_index", "station_source_index"])
         path_var = _pick_existing_var(ds, ["source_station_path", "source_station_paths", "path"])
         cluster_var = _pick_existing_var(ds, ["cluster_uid", "cluster_id"])
 
         station_uids = _read_text_var(ds, uid_name, size=n_stations) if uid_name else ["CLIM{:06d}".format(i) for i in range(n_stations)]
         paths = _read_text_var(ds, path_var, size=n_stations) if path_var else [""] * n_stations
-        if source_name_var:
+        source_names_by_index = []
+        source_meta_by_index = []
+        if source_name_var and n_sources > 0 and ds.variables[source_name_var].shape[0] == n_sources:
+            source_names_by_index = _read_text_var(ds, source_name_var, size=n_sources)
+            source_long_names = _read_text_var(ds, "source_long_name", size=n_sources)
+            institutions = _read_text_var(ds, "institution", size=n_sources)
+            references = _read_text_var(ds, "reference", size=n_sources)
+            source_urls = _read_text_var(ds, "source_url", size=n_sources)
+            for source_idx in range(n_sources):
+                source_meta_by_index.append(
+                    {
+                        "source_long_name": source_long_names[source_idx] if source_idx < len(source_long_names) else "",
+                        "institution": institutions[source_idx] if source_idx < len(institutions) else "",
+                        "reference": references[source_idx] if source_idx < len(references) else "",
+                        "source_url": source_urls[source_idx] if source_idx < len(source_urls) else "",
+                    }
+                )
+
+        if source_names_by_index and source_index_var:
+            source_indices = _read_int_var(ds, source_index_var, size=n_stations, fill_value=-1)
+            source_names = [
+                source_names_by_index[int(source_idx)]
+                if 0 <= int(source_idx) < len(source_names_by_index)
+                else _derive_source_from_path(paths[idx])
+                for idx, source_idx in enumerate(source_indices)
+            ]
+            source_meta = [
+                source_meta_by_index[int(source_idx)]
+                if 0 <= int(source_idx) < len(source_meta_by_index)
+                else {}
+                for source_idx in source_indices
+            ]
+        elif source_name_var:
             source_names = _read_text_var(ds, source_name_var, size=n_stations)
+            source_meta = [{} for _ in range(n_stations)]
         else:
             source_names = [_derive_source_from_path(path) for path in paths]
+            source_meta = [{} for _ in range(n_stations)]
         clusters = _read_text_var(ds, cluster_var, size=n_stations) if cluster_var else [""] * n_stations
 
         q_name = _pick_existing_var(ds, ["Q", "discharge", "streamflow"])
@@ -669,6 +763,9 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], Dic
             source_name = _clean_text(source_names[idx]) or "unknown_climatology"
             stats = stats_by_source[source_name]
             stats["source_name"] = source_name
+            stats["products"].add("climatology")
+            for field in ("source_long_name", "institution", "reference", "source_url"):
+                _update_min_text(stats, field, source_meta[idx].get(field, "") if idx < len(source_meta) else "")
             stats["source_stations"].add(_clean_text(station_uids[idx]) or "CLIM{:06d}".format(idx))
             cluster_text = _clean_text(clusters[idx])
             if cluster_text:
@@ -686,6 +783,9 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], Dic
             res_stats = stats_by_source_resolution[(source_name, "climatology")]
             res_stats["source_name"] = source_name
             res_stats["resolution"] = "climatology"
+            res_stats["products"].add("climatology")
+            for field in ("source_long_name", "institution", "reference", "source_url"):
+                _update_min_text(res_stats, field, source_meta[idx].get(field, "") if idx < len(source_meta) else "")
             res_stats["source_stations"].add(_clean_text(station_uids[idx]) or "CLIM{:06d}".format(idx))
             if cluster_text:
                 res_stats["clusters"].add(cluster_text)
@@ -698,6 +798,125 @@ def summarize_climatology_nc(climatology_nc: Path) -> Tuple[Dict[str, Dict], Dic
                 res_stats["time_min"] = min(res_stats["time_min"], time_min)
             if np.isfinite(time_max):
                 res_stats["time_max"] = max(res_stats["time_max"], time_max)
+    return stats_by_source, stats_by_source_resolution, time_units, time_calendar
+
+
+def summarize_satellite_nc(
+    satellite_nc: Path,
+    chunk_size: int = 1_000_000,
+) -> Tuple[Dict[str, Dict], Dict[Tuple[str, str], Dict], str, str]:
+    """Summarize the validation-only satellite sidecar release product."""
+    empty: Dict[str, Dict] = defaultdict(_empty_stats)
+    empty_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
+    if nc4 is None:
+        return empty, empty_resolution, "days since 1970-01-01", "gregorian"
+    satellite_nc = Path(satellite_nc)
+    if not satellite_nc.is_file():
+        return empty, empty_resolution, "days since 1970-01-01", "gregorian"
+
+    stats_by_source: Dict[str, Dict] = defaultdict(_empty_stats)
+    stats_by_source_resolution: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
+
+    with nc4.Dataset(satellite_nc, "r") as ds:
+        n_sources = _get_dim_size(ds, ["n_sources", "source"])
+        n_stations = _get_dim_size(ds, ["n_satellite_stations", "n_stations", "station"])
+        n_records = _get_dim_size(ds, ["n_satellite_records", "n_records", "record"])
+        if n_stations <= 0 or n_records <= 0:
+            return empty, empty_resolution, "days since 1970-01-01", "gregorian"
+
+        source_names_by_index = _read_text_var(ds, "source_name", size=n_sources)
+        source_long_names = _read_text_var(ds, "source_long_name", size=n_sources)
+        institutions = _read_text_var(ds, "institution", size=n_sources)
+        references = _read_text_var(ds, "reference", size=n_sources)
+        source_urls = _read_text_var(ds, "source_url", size=n_sources)
+        source_meta_by_index = []
+        for source_idx in range(n_sources):
+            source_meta_by_index.append(
+                {
+                    "source_long_name": source_long_names[source_idx] if source_idx < len(source_long_names) else "",
+                    "institution": institutions[source_idx] if source_idx < len(institutions) else "",
+                    "reference": references[source_idx] if source_idx < len(references) else "",
+                    "source_url": source_urls[source_idx] if source_idx < len(source_urls) else "",
+                }
+            )
+
+        station_uids = _read_text_var(ds, "satellite_station_uid", size=n_stations)
+        station_sources = _read_text_var(ds, "source", size=n_stations)
+        station_source_index = _read_int_var(ds, "source_index", size=n_stations, fill_value=-1)
+        cluster_uids = _read_text_var(ds, "cluster_uid", size=n_stations)
+        cluster_ids = _read_int_var(ds, "cluster_id_station", size=n_stations, fill_value=-1)
+        if not any(cluster_uids):
+            cluster_uids = ["SED{:06d}".format(int(cid)) if cid >= 0 else "" for cid in cluster_ids]
+
+        station_to_source_name = []
+        station_to_source_meta = []
+        for source_idx, station_source in zip(station_source_index, station_sources):
+            if 0 <= int(source_idx) < len(source_names_by_index):
+                source_name = source_names_by_index[int(source_idx)]
+                meta = source_meta_by_index[int(source_idx)]
+            else:
+                source_name = station_source or "unknown_satellite"
+                meta = {}
+            station_to_source_name.append(source_name or "unknown_satellite")
+            station_to_source_meta.append(meta)
+
+        time_var = ds.variables.get("time")
+        time_units = getattr(time_var, "units", "days since 1970-01-01") if time_var is not None else "days since 1970-01-01"
+        time_calendar = getattr(time_var, "calendar", "gregorian") if time_var is not None else "gregorian"
+
+        for start in range(0, n_records, int(chunk_size)):
+            stop = min(start + int(chunk_size), n_records)
+            station_index = _read_int_slice(ds, "satellite_station_index", start, stop, fill_value=-1)
+            resolutions = _read_resolution_slice(ds, "resolution", start, stop)
+            time_values = _read_float_slice(ds, "time", start, stop)
+            if time_values is None:
+                time_values = np.full(stop - start, np.nan, dtype=np.float64)
+
+            q = _read_float_slice(ds, "Q", start, stop)
+            ssc = _read_float_slice(ds, "SSC", start, stop)
+            ssl = _read_float_slice(ds, "SSL", start, stop)
+            chunk_len = stop - start
+            frame = pd.DataFrame(
+                {
+                    "source_station_index": station_index,
+                    "resolution": resolutions,
+                    "time_num": time_values,
+                    "has_q": _has_data(q, chunk_len),
+                    "has_ssc": _has_data(ssc, chunk_len),
+                    "has_ssl": _has_data(ssl, chunk_len),
+                }
+            )
+            frame = frame[frame["source_station_index"].between(0, len(station_uids) - 1)]
+            if frame.empty:
+                continue
+
+            frame["source_name"] = frame["source_station_index"].map(lambda idx: station_to_source_name[int(idx)])
+            frame["source_station_uid"] = frame["source_station_index"].map(lambda idx: station_uids[int(idx)])
+            frame["cluster_uid"] = frame["source_station_index"].map(lambda idx: cluster_uids[int(idx)])
+
+            for source_name, sub in frame.groupby("source_name", observed=True):
+                stats = stats_by_source[source_name]
+                stats["source_name"] = source_name
+                stats["products"].add("satellite")
+                first_idx = int(sub["source_station_index"].iloc[0])
+                if 0 <= first_idx < len(station_to_source_meta):
+                    meta = station_to_source_meta[first_idx]
+                    for field in ("source_long_name", "institution", "reference", "source_url"):
+                        _update_min_text(stats, field, meta.get(field, ""))
+                _update_stats_from_frame(stats, sub)
+
+            for (source_name, resolution), sub in frame.groupby(["source_name", "resolution"], observed=True):
+                stats = stats_by_source_resolution[(source_name, resolution)]
+                stats["source_name"] = source_name
+                stats["resolution"] = resolution
+                stats["products"].add("satellite")
+                first_idx = int(sub["source_station_index"].iloc[0])
+                if 0 <= first_idx < len(station_to_source_meta):
+                    meta = station_to_source_meta[first_idx]
+                    for field in ("source_long_name", "institution", "reference", "source_url"):
+                        _update_min_text(stats, field, meta.get(field, ""))
+                _update_stats_from_frame(stats, sub)
+
     return stats_by_source, stats_by_source_resolution, time_units, time_calendar
 
 
@@ -715,6 +934,7 @@ def _source_text(row: pd.Series) -> str:
         row.get("institution", ""),
         row.get("reference", ""),
         row.get("source_url", ""),
+        row.get("source_products", ""),
     ]
     return " ".join(_clean_text(v) for v in fields).lower()
 
@@ -723,8 +943,15 @@ def classify_source(row: pd.Series) -> Tuple[str, str]:
     """Conservative fallback classifier for manuscript grouping."""
     text = _source_text(row)
     resolutions = _clean_text(row.get("resolutions", "")).lower()
+    products = set(part for part in _clean_text(row.get("source_products", "")).lower().split("|") if part)
 
-    if "climatology" in resolutions and not any(res in resolutions for res in ["daily", "monthly", "annual"]):
+    if "satellite" in products and not (products - {"satellite"}):
+        return "satellite", "satellite products"
+
+    if (
+        ("climatology" in products and not (products - {"climatology"}))
+        or ("climatology" in resolutions and not any(res in resolutions for res in ["daily", "monthly", "annual"]))
+    ):
         return "climatology", "global compilations"
 
     satellite_tokens = [
@@ -777,6 +1004,10 @@ def classify_source(row: pd.Series) -> Tuple[str, str]:
 
 def apply_source_classification(dataset_df: pd.DataFrame, classification_csv: Optional[Path]) -> pd.DataFrame:
     out = dataset_df.copy()
+    if out.empty:
+        out["source_type"] = []
+        out["source_group"] = []
+        return out
     inferred = out.apply(classify_source, axis=1, result_type="expand")
     out["source_type"] = inferred[0]
     out["source_group"] = inferred[1]
@@ -826,6 +1057,7 @@ def stats_to_dataset_frame(
                 "first_year": first_year if first_year is not None else "",
                 "last_year": last_year if last_year is not None else "",
                 "resolutions": _format_resolution(stats["resolutions"]),
+                "source_products": _format_resolution(stats.get("products", set())),
             }
         )
 
@@ -882,6 +1114,7 @@ def merge_stats_dicts(base: Dict[str, Dict], extra: Dict[str, Dict]) -> Dict[str
             target["source_stations"].update(stats.get("source_stations", set()))
             target["clusters"].update(stats.get("clusters", set()))
             target["resolutions"].update(stats.get("resolutions", set()))
+            target["products"].update(stats.get("products", set()))
             for field in ["n_records", "n_Q_records", "n_SSC_records", "n_SSL_records"]:
                 target[field] += int(stats.get(field, 0) or 0)
             if np.isfinite(stats.get("time_min", math.inf)):
@@ -1311,11 +1544,261 @@ def write_temporal_coverage_figure(temporal_df: pd.DataFrame, out_path: Path, to
     plt.close(fig)
 
 
+def force_product_classification(dataset_df: pd.DataFrame, source_type: str, source_group: str) -> pd.DataFrame:
+    out = dataset_df.copy()
+    if out.empty:
+        return out
+    out["source_type"] = source_type
+    out["source_group"] = source_group
+    return out
+
+
+def prepare_product_frames(
+    stats_by_source: Dict[str, Dict],
+    stats_by_source_resolution: Dict[Tuple[str, str], Dict],
+    time_units: str,
+    time_calendar: str,
+    metadata_paths: Iterable[Path],
+    classification_csv: Optional[Path],
+    forced_source_type: str,
+    forced_source_group: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    dataset_df = stats_to_dataset_frame(stats_by_source, time_units, time_calendar, metadata_paths)
+    dataset_df = apply_source_classification(dataset_df, classification_csv)
+    dataset_df = force_product_classification(dataset_df, forced_source_type, forced_source_group)
+    dataset_df = dataset_df.reindex(columns=DATASET_COLUMNS).sort_values(
+        ["n_records", "source_name"],
+        ascending=[False, True],
+    )
+    resolution_df = build_resolution_frame(stats_by_source_resolution, dataset_df, time_units, time_calendar)
+    variable_df = build_variable_frame(dataset_df)
+    temporal_df = build_temporal_frame(dataset_df)
+    return dataset_df, resolution_df, variable_df, temporal_df
+
+
+def write_product_figure_set(
+    product_label: str,
+    filename_prefix: str,
+    figure_dir: Path,
+    dataset_df: pd.DataFrame,
+    resolution_df: pd.DataFrame,
+    variable_df: pd.DataFrame,
+    temporal_df: pd.DataFrame,
+    top_n: int = 20,
+) -> Dict[str, Path]:
+    title_label = product_label.capitalize()
+    paths = {
+        "{} contribution by records".format(title_label): figure_dir / "fig_{}_contribution_records.png".format(filename_prefix),
+        "{} contribution by source stations".format(title_label): figure_dir / "fig_{}_contribution_stations.png".format(filename_prefix),
+        "{} contribution by clusters".format(title_label): figure_dir / "fig_{}_contribution_clusters.png".format(filename_prefix),
+        "{} resolution contribution".format(title_label): figure_dir / "fig_{}_resolution_stacked.png".format(filename_prefix),
+        "{} variable coverage".format(title_label): figure_dir / "fig_{}_variable_stacked.png".format(filename_prefix),
+        "{} temporal coverage".format(title_label): figure_dir / "fig_{}_temporal_coverage.png".format(filename_prefix),
+    }
+    write_bar_figure(dataset_df, "n_records", paths["{} contribution by records".format(title_label)], "{} source contribution by records".format(title_label), top_n=top_n)
+    write_bar_figure(dataset_df, "n_source_stations", paths["{} contribution by source stations".format(title_label)], "{} source contribution by source stations".format(title_label), top_n=top_n)
+    write_bar_figure(dataset_df, "n_clusters", paths["{} contribution by clusters".format(title_label)], "{} source contribution by clusters".format(title_label), top_n=top_n)
+    write_stacked_source_figure(
+        resolution_df,
+        "resolution",
+        "n_records",
+        paths["{} resolution contribution".format(title_label)],
+        "{} source contribution by resolution".format(title_label),
+        top_n=top_n,
+        category_order=["daily", "monthly", "annual", "climatology", "other"],
+    )
+    write_stacked_source_figure(
+        variable_df,
+        "variable",
+        "n_variable_records",
+        paths["{} variable coverage".format(title_label)],
+        "{} variable coverage by valid records".format(title_label),
+        top_n=top_n,
+        category_order=["Q", "SSC", "SSL"],
+    )
+    write_temporal_coverage_figure(temporal_df, paths["{} temporal coverage".format(title_label)], top_n=top_n)
+    return paths
+
+
 def _percent(value) -> str:
     try:
         return "{:.2f}%".format(float(value))
     except Exception:
         return "NA"
+
+
+def _int_text(value) -> str:
+    try:
+        if pd.isna(value):
+            return "0"
+        return "{:,}".format(int(float(value)))
+    except Exception:
+        return "NA"
+
+
+def _safe_md(value) -> str:
+    text = "" if value is None else str(value).strip()
+    if text.lower() in {"nan", "none", "null", "<na>"}:
+        text = ""
+    return text.replace("|", "\\|")
+
+
+def _markdown_table(rows: List[Dict[str, object]], columns: List[str], headers: List[str]) -> str:
+    if not rows:
+        return "_No rows._"
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_safe_md(row.get(col, "")) for col in columns) + " |")
+    return "\n".join(lines)
+
+
+def _compact_dataset_rows(dataset_df: pd.DataFrame, sort_col: str, top_n: int = 12) -> List[Dict[str, object]]:
+    if dataset_df.empty or sort_col not in dataset_df.columns:
+        return []
+    work = dataset_df.copy()
+    work[sort_col] = pd.to_numeric(work[sort_col], errors="coerce").fillna(0)
+    work = work.sort_values([sort_col, "source_name"], ascending=[False, True], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "source": row.get("source_name", ""),
+                "type": row.get("source_type", ""),
+                "group": row.get("source_group", ""),
+                "stations": _int_text(row.get("n_source_stations", 0)),
+                "clusters": _int_text(row.get("n_clusters", 0)),
+                "records": _int_text(row.get("n_records", 0)),
+                "record_share": _percent(row.get("percentage_of_total_records", 0)),
+                "q": _int_text(row.get("n_Q_records", 0)),
+                "ssc": _int_text(row.get("n_SSC_records", 0)),
+                "ssl": _int_text(row.get("n_SSL_records", 0)),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "resolutions": row.get("resolutions", ""),
+            }
+        )
+    return rows
+
+
+def _compact_type_rows(type_df: pd.DataFrame, summary_level: str) -> List[Dict[str, object]]:
+    if type_df.empty:
+        return []
+    work = type_df[type_df["summary_level"].eq(summary_level)].copy()
+    if work.empty:
+        return []
+    work = work.sort_values(["n_records", "category"], ascending=[False, True], kind="mergesort")
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "category": row.get("category", ""),
+                "sources": _int_text(row.get("n_source_datasets", 0)),
+                "stations": _int_text(row.get("n_source_stations", 0)),
+                "clusters": _int_text(row.get("n_clusters", 0)),
+                "records": _int_text(row.get("n_records", 0)),
+                "record_share": _percent(row.get("percentage_of_total_records", 0)),
+                "q": _int_text(row.get("n_Q_records", 0)),
+                "ssc": _int_text(row.get("n_SSC_records", 0)),
+                "ssl": _int_text(row.get("n_SSL_records", 0)),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "resolutions": row.get("resolutions", ""),
+            }
+        )
+    return rows
+
+
+def _compact_resolution_rows(resolution_df: pd.DataFrame, top_n: int = 20) -> List[Dict[str, object]]:
+    if resolution_df.empty:
+        return []
+    work = resolution_df.copy()
+    work["n_records"] = pd.to_numeric(work["n_records"], errors="coerce").fillna(0)
+    work = work.sort_values(["n_records", "source_name"], ascending=[False, True], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "source": row.get("source_name", ""),
+                "resolution": row.get("resolution", ""),
+                "type": row.get("source_type", ""),
+                "stations": _int_text(row.get("n_source_stations", 0)),
+                "clusters": _int_text(row.get("n_clusters", 0)),
+                "records": _int_text(row.get("n_records", 0)),
+                "global_share": _percent(row.get("percentage_of_total_records", 0)),
+                "within_source": _percent(row.get("percentage_within_source_records", 0)),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+            }
+        )
+    return rows
+
+
+def _compact_variable_rows(variable_df: pd.DataFrame, top_n: int = 20) -> List[Dict[str, object]]:
+    if variable_df.empty:
+        return []
+    work = variable_df.copy()
+    work["n_variable_records"] = pd.to_numeric(work["n_variable_records"], errors="coerce").fillna(0)
+    work = work.sort_values(["n_variable_records", "source_name"], ascending=[False, True], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "source": row.get("source_name", ""),
+                "variable": row.get("variable", ""),
+                "type": row.get("source_type", ""),
+                "variable_records": _int_text(row.get("n_variable_records", 0)),
+                "source_records": _int_text(row.get("n_source_records", 0)),
+                "variable_share": _percent(row.get("percentage_of_total_variable_records", 0)),
+                "within_source": _percent(row.get("percentage_within_source_records", 0)),
+            }
+        )
+    return rows
+
+
+def _compact_cumulative_rows(cumulative_df: pd.DataFrame) -> List[Dict[str, object]]:
+    if cumulative_df.empty:
+        return []
+    rows: List[Dict[str, object]] = []
+    work = cumulative_df.copy()
+    work["cumulative_percentage_of_total_records"] = pd.to_numeric(work["cumulative_percentage_of_total_records"], errors="coerce")
+    for threshold in [50, 75, 90, 95, 99]:
+        sub = work[work["cumulative_percentage_of_total_records"] >= threshold]
+        if sub.empty:
+            continue
+        row = sub.iloc[0]
+        rows.append(
+            {
+                "threshold": "{}%".format(threshold),
+                "rank": _int_text(row.get("rank", 0)),
+                "source": row.get("source_name", ""),
+                "cumulative_records": _int_text(row.get("cumulative_records", 0)),
+                "cumulative_share": _percent(row.get("cumulative_percentage_of_total_records", 0)),
+            }
+        )
+    return rows
+
+
+def _compact_temporal_rows(temporal_df: pd.DataFrame, top_n: int = 12) -> List[Dict[str, object]]:
+    if temporal_df.empty:
+        return []
+    work = temporal_df.copy()
+    work["n_records"] = pd.to_numeric(work["n_records"], errors="coerce").fillna(0)
+    work = work.sort_values(["n_records", "source_name"], ascending=[False, True], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "source": row.get("source_name", ""),
+                "type": row.get("source_type", ""),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "years": _int_text(row.get("year_span", 0)),
+                "records": _int_text(row.get("n_records", 0)),
+                "stations": _int_text(row.get("n_source_stations", 0)),
+                "clusters": _int_text(row.get("n_clusters", 0)),
+                "resolutions": row.get("resolutions", ""),
+            }
+        )
+    return rows
 
 
 def _rel_path(path: Path, base_dir: Path) -> str:
@@ -1442,7 +1925,7 @@ def write_markdown_report(
             "",
             "## Statistical Scope",
             "",
-            "- `n_records` counts release-level records with provenance in the master/climatology products.",
+            "- `n_records` counts release-level records with provenance in the master/satellite/climatology products.",
             "- `n_Q_records`, `n_SSC_records`, and `n_SSL_records` count valid values for each variable.",
             "- `n_source_stations` counts source station identifiers before reference clustering.",
             "- `n_clusters` counts reference clusters touched by each source where cluster identifiers are available.",
@@ -1471,6 +1954,97 @@ def write_markdown_report(
     for item in insights:
         lines.append("- {}".format(item))
 
+    lines.extend(
+        [
+            "",
+            "## Contribution Concentration",
+            "",
+            _markdown_table(
+                _compact_cumulative_rows(cumulative_df),
+                ["threshold", "rank", "source", "cumulative_records", "cumulative_share"],
+                ["Cumulative threshold", "Rank reached", "Source at threshold", "Cumulative records", "Cumulative share"],
+            ),
+            "",
+            "This concentration table is useful for explaining how strongly the release is dominated by the largest source datasets. It should be read together with the cluster and station tables, because record dominance does not necessarily imply the broadest spatial footprint.",
+            "",
+            "## Dataset Rankings",
+            "",
+            "### Top Sources by Records",
+            "",
+            _markdown_table(
+                _compact_dataset_rows(dataset_df, "n_records", top_n=12),
+                ["source", "type", "group", "stations", "clusters", "records", "record_share", "q", "ssc", "ssl", "span", "resolutions"],
+                ["Source", "Type", "Group", "Stations", "Clusters", "Records", "Share", "Q", "SSC", "SSL", "Span", "Resolutions"],
+            ),
+            "",
+            "### Top Sources by Source Stations",
+            "",
+            _markdown_table(
+                _compact_dataset_rows(dataset_df, "n_source_stations", top_n=12),
+                ["source", "type", "group", "stations", "clusters", "records", "record_share", "q", "ssc", "ssl", "span", "resolutions"],
+                ["Source", "Type", "Group", "Stations", "Clusters", "Records", "Share", "Q", "SSC", "SSL", "Span", "Resolutions"],
+            ),
+            "",
+            "### Top Sources by Clusters",
+            "",
+            _markdown_table(
+                _compact_dataset_rows(dataset_df, "n_clusters", top_n=12),
+                ["source", "type", "group", "stations", "clusters", "records", "record_share", "q", "ssc", "ssl", "span", "resolutions"],
+                ["Source", "Type", "Group", "Stations", "Clusters", "Records", "Share", "Q", "SSC", "SSL", "Span", "Resolutions"],
+            ),
+            "",
+            "## Source Classes",
+            "",
+            "### Source Type Contribution",
+            "",
+            _markdown_table(
+                _compact_type_rows(type_df, "source_type"),
+                ["category", "sources", "stations", "clusters", "records", "record_share", "q", "ssc", "ssl", "span", "resolutions"],
+                ["Type", "Sources", "Stations", "Clusters", "Records", "Share", "Q", "SSC", "SSL", "Span", "Resolutions"],
+            ),
+            "",
+            "### Source Group Contribution",
+            "",
+            _markdown_table(
+                _compact_type_rows(type_df, "source_group"),
+                ["category", "sources", "stations", "clusters", "records", "record_share", "q", "ssc", "ssl", "span", "resolutions"],
+                ["Group", "Sources", "Stations", "Clusters", "Records", "Share", "Q", "SSC", "SSL", "Span", "Resolutions"],
+            ),
+            "",
+            "Classification is intentionally conservative. The generated `source_classification_template.csv` should be reviewed before using the type/group proportions as final manuscript statements.",
+            "",
+            "## Resolution and Variable Structure",
+            "",
+            "### Top Source-Resolution Rows",
+            "",
+            _markdown_table(
+                _compact_resolution_rows(resolution_df, top_n=20),
+                ["source", "resolution", "type", "stations", "clusters", "records", "global_share", "within_source", "span"],
+                ["Source", "Resolution", "Type", "Stations", "Clusters", "Records", "Global share", "Within source", "Span"],
+            ),
+            "",
+            "### Top Source-Variable Rows",
+            "",
+            _markdown_table(
+                _compact_variable_rows(variable_df, top_n=20),
+                ["source", "variable", "type", "variable_records", "source_records", "variable_share", "within_source"],
+                ["Source", "Variable", "Type", "Variable records", "Source records", "Variable share", "Within source"],
+            ),
+            "",
+            "The variable table helps distinguish sources that contribute dense discharge records from those that also carry SSC or SSL observations. This distinction is important because Q coverage can dominate total records even when sediment-variable coverage is much smaller.",
+            "",
+            "## Temporal Span by Source",
+            "",
+            _markdown_table(
+                _compact_temporal_rows(temporal_df, top_n=15),
+                ["source", "type", "span", "years", "records", "stations", "clusters", "resolutions"],
+                ["Source", "Type", "Span", "Years", "Records", "Stations", "Clusters", "Resolutions"],
+            ),
+            "",
+            "Temporal span is source-level and should be interpreted with record density. Long calendar span with few records is not equivalent to dense continuous sampling.",
+        ]
+    )
+
     lines.extend(["", "## Figures", ""])
     for label, path in figure_paths.items():
         lines.append("### {}".format(label))
@@ -1489,6 +2063,7 @@ def write_markdown_report(
             "",
             "- Source classification is conservative and should be reviewed with `source_classification_template.csv` before manuscript use.",
             "- Climatology is summarized as a standalone release product and assigned the `climatology` resolution.",
+            "- Satellite observations are summarized from the validation-only release sidecar and kept available as separate satellite figures.",
             "- Cluster counts are source-level counts and can sum to more than the unique release cluster count because several sources can contribute to the same cluster.",
             "- The report describes release-product statistics only and does not infer scientific causality.",
             "",
@@ -1518,6 +2093,16 @@ def main() -> int:
         help="Optional release climatology NetCDF path.",
     )
     parser.add_argument(
+        "--satellite-nc",
+        default=str(DEFAULT_SATELLITE_NC),
+        help="Optional release satellite validation-only NetCDF path.",
+    )
+    parser.add_argument(
+        "--satellite-catalog",
+        default=str(DEFAULT_SATELLITE_CATALOG),
+        help="Optional release satellite_catalog.csv path used to enrich satellite metadata.",
+    )
+    parser.add_argument(
         "--include-climatology",
         action="store_true",
         default=True,
@@ -1528,6 +2113,18 @@ def main() -> int:
         action="store_false",
         dest="include_climatology",
         help="Exclude standalone climatology NetCDF from contribution summaries.",
+    )
+    parser.add_argument(
+        "--include-satellite",
+        action="store_true",
+        default=True,
+        help="Include validation-only satellite NetCDF when present. Default: true.",
+    )
+    parser.add_argument(
+        "--exclude-satellite",
+        action="store_false",
+        dest="include_satellite",
+        help="Exclude validation-only satellite NetCDF from contribution summaries.",
     )
     parser.add_argument(
         "--source-classification-csv",
@@ -1573,23 +2170,39 @@ def main() -> int:
         chunk_size=args.chunk_size,
     )
 
+    satellite_stats: Dict[str, Dict] = defaultdict(_empty_stats)
+    satellite_resolution_stats: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
+    satellite_units = time_units
+    satellite_calendar = time_calendar
+    if args.include_satellite:
+        satellite_stats, satellite_resolution_stats, satellite_units, satellite_calendar = summarize_satellite_nc(
+            Path(args.satellite_nc),
+            chunk_size=args.chunk_size,
+        )
+
+    clim_stats: Dict[str, Dict] = defaultdict(_empty_stats)
+    clim_resolution_stats: Dict[Tuple[str, str], Dict] = defaultdict(_empty_stats)
+    clim_units = time_units
+    clim_calendar = time_calendar
     if args.include_climatology:
         clim_stats, clim_resolution_stats, clim_units, clim_calendar = summarize_climatology_nc(Path(args.climatology_nc))
-        # If climatology has its own time axis, keep its numeric values but use master time
-        # metadata only when climatology did not provide anything parseable. In normal use,
-        # the master and climatology products both use days since 1970-01-01.
-        stats = merge_stats_dicts(master_stats, clim_stats)
-        resolution_stats = merge_stats_dicts(master_resolution_stats, clim_resolution_stats)
-        if clim_stats and (time_units == "days since 1970-01-01"):
-            time_units = clim_units or time_units
-            time_calendar = clim_calendar or time_calendar
-    else:
-        stats = master_stats
-        resolution_stats = master_resolution_stats
 
-    metadata_paths = [Path(args.source_station_catalog), Path(args.source_dataset_catalog)]
-    dataset_df = stats_to_dataset_frame(stats, time_units, time_calendar, metadata_paths)
+    stats = merge_stats_dicts(master_stats, satellite_stats)
+    stats = merge_stats_dicts(stats, clim_stats)
+    resolution_stats = merge_stats_dicts(master_resolution_stats, satellite_resolution_stats)
+    resolution_stats = merge_stats_dicts(resolution_stats, clim_resolution_stats)
+    # If sidecars have their own time axis, keep their numeric values but use
+    # master time metadata only when sidecars did not provide anything parseable.
+    if satellite_stats and (time_units == "days since 1970-01-01"):
+        time_units = satellite_units or time_units
+        time_calendar = satellite_calendar or time_calendar
+    if clim_stats and (time_units == "days since 1970-01-01"):
+        time_units = clim_units or time_units
+        time_calendar = clim_calendar or time_calendar
+
     classification_csv = Path(args.source_classification_csv) if args.source_classification_csv else None
+    metadata_paths = [Path(args.source_station_catalog), Path(args.source_dataset_catalog), Path(args.satellite_catalog)]
+    dataset_df = stats_to_dataset_frame(stats, time_units, time_calendar, metadata_paths)
     dataset_df = apply_source_classification(dataset_df, classification_csv)
     dataset_df = dataset_df.reindex(columns=DATASET_COLUMNS).sort_values(
         ["n_records", "source_name"],
@@ -1604,6 +2217,48 @@ def main() -> int:
     temporal_df = build_temporal_frame(dataset_df)
     key_metrics_df = build_key_metrics_frame(dataset_df, cumulative_df)
     classification_template_df = build_classification_template(dataset_df)
+
+    satellite_dataset_df = pd.DataFrame(columns=DATASET_COLUMNS)
+    satellite_resolution_df = pd.DataFrame(columns=RESOLUTION_COLUMNS)
+    satellite_variable_df = pd.DataFrame(columns=VARIABLE_COLUMNS)
+    satellite_temporal_df = pd.DataFrame(columns=TEMPORAL_COLUMNS)
+    if args.include_satellite:
+        (
+            satellite_dataset_df,
+            satellite_resolution_df,
+            satellite_variable_df,
+            satellite_temporal_df,
+        ) = prepare_product_frames(
+            satellite_stats,
+            satellite_resolution_stats,
+            satellite_units,
+            satellite_calendar,
+            [Path(args.satellite_catalog)],
+            classification_csv,
+            "satellite",
+            "satellite products",
+        )
+
+    climatology_dataset_df = pd.DataFrame(columns=DATASET_COLUMNS)
+    climatology_resolution_df = pd.DataFrame(columns=RESOLUTION_COLUMNS)
+    climatology_variable_df = pd.DataFrame(columns=VARIABLE_COLUMNS)
+    climatology_temporal_df = pd.DataFrame(columns=TEMPORAL_COLUMNS)
+    if args.include_climatology:
+        (
+            climatology_dataset_df,
+            climatology_resolution_df,
+            climatology_variable_df,
+            climatology_temporal_df,
+        ) = prepare_product_frames(
+            clim_stats,
+            clim_resolution_stats,
+            clim_units,
+            clim_calendar,
+            metadata_paths,
+            classification_csv,
+            "climatology",
+            "global compilations",
+        )
 
     out_dir = Path(args.out_dir)
     table_dir = out_dir / "tables"
@@ -1644,31 +2299,60 @@ def main() -> int:
         "Cumulative source contribution": figure_dir / "fig_source_cumulative_contribution.png",
         "Temporal coverage": figure_dir / "fig_source_temporal_coverage.png",
     }
-    write_bar_figure(dataset_df, "n_records", figure_paths["Source contribution by records"], "Source dataset contribution by records", top_n=args.top_n)
-    write_bar_figure(dataset_df, "n_source_stations", figure_paths["Source contribution by source stations"], "Source dataset contribution by source stations", top_n=args.top_n)
-    write_bar_figure(dataset_df, "n_clusters", figure_paths["Source contribution by clusters"], "Source dataset contribution by clusters", top_n=args.top_n)
-    write_category_bar_figure(type_df, "source_type", figure_paths["Source type contribution by records"], "Source type contribution by records")
-    write_category_bar_figure(type_df, "source_group", figure_paths["Source group contribution by records"], "Source group contribution by records")
-    write_stacked_source_figure(
-        resolution_df,
-        "resolution",
-        "n_records",
-        figure_paths["Source resolution contribution"],
-        "Source contribution by resolution",
-        top_n=args.top_n,
-        category_order=["daily", "monthly", "annual", "climatology", "other"],
-    )
-    write_stacked_source_figure(
-        variable_df,
-        "variable",
-        "n_variable_records",
-        figure_paths["Source variable coverage"],
-        "Source variable coverage by valid records",
-        top_n=args.top_n,
-        category_order=["Q", "SSC", "SSL"],
-    )
-    write_cumulative_figure(cumulative_df, figure_paths["Cumulative source contribution"])
-    write_temporal_coverage_figure(temporal_df, figure_paths["Temporal coverage"], top_n=args.top_n)
+    if HAS_MATPLOTLIB:
+        write_bar_figure(dataset_df, "n_records", figure_paths["Source contribution by records"], "Source dataset contribution by records", top_n=args.top_n)
+        write_bar_figure(dataset_df, "n_source_stations", figure_paths["Source contribution by source stations"], "Source dataset contribution by source stations", top_n=args.top_n)
+        write_bar_figure(dataset_df, "n_clusters", figure_paths["Source contribution by clusters"], "Source dataset contribution by clusters", top_n=args.top_n)
+        write_category_bar_figure(type_df, "source_type", figure_paths["Source type contribution by records"], "Source type contribution by records")
+        write_category_bar_figure(type_df, "source_group", figure_paths["Source group contribution by records"], "Source group contribution by records")
+        write_stacked_source_figure(
+            resolution_df,
+            "resolution",
+            "n_records",
+            figure_paths["Source resolution contribution"],
+            "Source contribution by resolution",
+            top_n=args.top_n,
+            category_order=["daily", "monthly", "annual", "climatology", "other"],
+        )
+        write_stacked_source_figure(
+            variable_df,
+            "variable",
+            "n_variable_records",
+            figure_paths["Source variable coverage"],
+            "Source variable coverage by valid records",
+            top_n=args.top_n,
+            category_order=["Q", "SSC", "SSL"],
+        )
+        write_cumulative_figure(cumulative_df, figure_paths["Cumulative source contribution"])
+        write_temporal_coverage_figure(temporal_df, figure_paths["Temporal coverage"], top_n=args.top_n)
+    else:
+        print("Warning: matplotlib is unavailable; skipping source-contribution figures: {}".format(MATPLOTLIB_IMPORT_ERROR), file=sys.stderr)
+    if HAS_MATPLOTLIB and args.include_satellite:
+        figure_paths.update(
+            write_product_figure_set(
+                "satellite",
+                "satellite",
+                figure_dir,
+                satellite_dataset_df,
+                satellite_resolution_df,
+                satellite_variable_df,
+                satellite_temporal_df,
+                top_n=args.top_n,
+            )
+        )
+    if HAS_MATPLOTLIB and args.include_climatology:
+        figure_paths.update(
+            write_product_figure_set(
+                "climatology",
+                "climatology",
+                figure_dir,
+                climatology_dataset_df,
+                climatology_resolution_df,
+                climatology_variable_df,
+                climatology_temporal_df,
+                top_n=args.top_n,
+            )
+        )
 
     table_paths = {
         "table_source_dataset_contribution.csv": dataset_out,
@@ -1698,6 +2382,8 @@ def main() -> int:
             figure_paths,
             {
                 "master_nc": Path(args.master_nc),
+                "satellite_nc": Path(args.satellite_nc),
+                "satellite_catalog": Path(args.satellite_catalog),
                 "climatology_nc": Path(args.climatology_nc),
                 "source_station_catalog": Path(args.source_station_catalog),
                 "source_dataset_catalog": Path(args.source_dataset_catalog),
@@ -1706,8 +2392,11 @@ def main() -> int:
 
     for path in table_paths.values():
         print("Wrote {}".format(path))
-    for path in figure_paths.values():
-        print("Wrote {}".format(path))
+    if HAS_MATPLOTLIB:
+        for path in figure_paths.values():
+            print("Wrote {}".format(path))
+    else:
+        print("Skipped figure writing because matplotlib is unavailable.")
     if not args.no_report:
         print("Wrote {}".format(report_path))
     return 0

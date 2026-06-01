@@ -79,6 +79,8 @@ from pipeline_paths import (
     RELEASE_MASTER_NC,
     S6_MERGED_NC,
     S6_QUALITY_ORDER_CSV,
+    RELEASE_SATELLITE_NC,
+    RELEASE_CLIMATOLOGY_NC,
 )
 from qc_contract import STANDARD_QC_STAGE_NAMES, STANDARD_QC_STAGE_NAME_TO_SPEC
 
@@ -98,6 +100,8 @@ PROJECT_ROOT = ROOT_DIR
 DEFAULT_RELEASE_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
 DEFAULT_S6_MASTER_NC = PROJECT_ROOT / S6_MERGED_NC
 DEFAULT_QUALITY_ORDER_CSV = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
+DEFAULT_SATELLITE_NC = PROJECT_ROOT / RELEASE_SATELLITE_NC
+DEFAULT_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
 DEFAULT_TABLES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/tables"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/figures"
 DEFAULT_REPORT_PATH = PROJECT_ROOT / "scripts_basin_test/output_other/qc_flag_statistics/article_qc_flag_report.md"
@@ -550,6 +554,197 @@ def read_master_records(
 
 # -----------------------------------------------------------------------------
 # Provenance enrichment
+
+
+def read_climatology_records(
+    climatology_nc: Path,
+    include_stage_flags: bool = True,
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], List[Dict[str, str]], Dict[str, Dict[int, str]]]:
+    """Read record-level metadata and QC flags from the climatology release NetCDF.
+
+    The climatology NC has a structure similar to the master NC but:
+      - no cluster_id / cluster_uid variables (climatology stations are not clustered)
+      - no source_station_index
+      - resolution code is always 3 (climatology)
+    """
+    if nc4 is None:
+        raise RuntimeError("netCDF4 is required. Install it with: pip install netCDF4")
+    if not climatology_nc.is_file():
+        raise FileNotFoundError("Climatology NetCDF not found: {}".format(climatology_nc))
+
+    with nc4.Dataset(climatology_nc, "r") as ds:
+        if "n_records" in ds.dimensions:
+            n_records = len(ds.dimensions["n_records"])
+        else:
+            raise ValueError("Cannot infer n_records from {}".format(climatology_nc))
+
+        station_index = _read_int_var(ds, "station_index", n_records, fill_value=-1)
+        resolution_code = _read_int_var(ds, "resolution", n_records, fill_value=3)
+        source_dataset = _read_text_var(ds, "source", n_records, default="unknown")
+        year = _read_year_array(ds, n_records)
+
+        # Climatology NC has no cluster_id / cluster_uid
+        # Fill with defaults
+        record_cluster_ids = np.full(n_records, -1, dtype=np.int64)
+        record_cluster_uids = [""] * n_records
+
+        records = pd.DataFrame(
+            {
+                "record_index": np.arange(n_records, dtype=np.int64),
+                "station_index": station_index.astype(np.int64),
+                "cluster_id": record_cluster_ids,
+                "cluster_uid": record_cluster_uids,
+                "source_station_index": np.full(n_records, -1, dtype=np.int64),
+                "source_dataset": [_clean_text(x, default="unknown") for x in source_dataset],
+                "temporal_resolution": [RESOLUTION_CODE_TO_NAME.get(int(x), "other") for x in resolution_code],
+                "resolution_code": resolution_code.astype(np.int16),
+                "year": year.astype(np.int32),
+                "source_type": "climatology",
+                "_source_family": "climatology",
+            }
+        )
+
+        flag_arrays: Dict[str, np.ndarray] = {}
+        flag_specs: List[Dict[str, str]] = []
+        meaning_maps: Dict[str, Dict[int, str]] = {}
+
+        for spec in FINAL_FLAG_SPECS:
+            flag_variable = spec["flag_variable"]
+            if flag_variable not in ds.variables:
+                raise ValueError(
+                    "Required final QC flag variable '{}' is missing from {}".format(
+                        flag_variable, climatology_nc
+                    )
+                )
+            flag_arrays[flag_variable] = _read_flag_var(ds, flag_variable, n_records, fill_value=9)
+            flag_specs.append(dict(spec))
+            meaning_maps[flag_variable] = dict(COMMON_FLAG_MEANINGS)
+
+        if include_stage_flags:
+            for flag_variable in STANDARD_QC_STAGE_NAMES:
+                if flag_variable not in ds.variables:
+                    continue
+                fill_value = int(
+                    STANDARD_QC_STAGE_NAME_TO_SPEC.get(flag_variable, {}).get("fill_value", 9)
+                )
+                flag_arrays[flag_variable] = _read_flag_var(ds, flag_variable, n_records,
+                                                            fill_value=fill_value)
+                flag_specs.append(
+                    {
+                        "qc_level": "stage",
+                        "qc_stage": _stage_label(flag_variable),
+                        "variable": _stage_variable(flag_variable),
+                        "flag_variable": flag_variable,
+                    }
+                )
+                var = ds.variables[flag_variable]
+                meaning_map = _parse_flag_meanings(
+                    getattr(var, "flag_values", None),
+                    getattr(var, "flag_meanings", None),
+                )
+                if not meaning_map:
+                    meaning_map = _stage_meaning_map_from_contract(flag_variable)
+                meaning_maps[flag_variable] = meaning_map or dict(COMMON_FLAG_MEANINGS)
+
+    return records, flag_arrays, flag_specs, meaning_maps
+
+
+def read_satellite_records(
+    satellite_nc: Path,
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], List[Dict[str, str]], Dict[str, Dict[int, str]]]:
+    """Read record-level metadata and QC flags from the satellite release NetCDF.
+
+    The satellite NC has a different structure from the master NC:
+      - n_satellite_records / n_satellite_stations instead of n_records / n_stations
+      - resolution is a text variable (daily/monthly), not an int code
+      - source, source_family, cluster_uid, source_station_index are per-station
+        text variables expanded via satellite_station_index
+      - cluster_id is already per-record
+      - only final flags (Q_flag, SSC_flag, SSL_flag); no stage flags
+    """
+    if nc4 is None:
+        raise RuntimeError("netCDF4 is required. Install it with: pip install netCDF4")
+    if not satellite_nc.is_file():
+        raise FileNotFoundError("Satellite NetCDF not found: {}".format(satellite_nc))
+
+    with nc4.Dataset(satellite_nc, "r") as ds:
+        if "n_satellite_records" in ds.dimensions:
+            n_records = len(ds.dimensions["n_satellite_records"])
+        else:
+            raise ValueError("Cannot infer n_records from {}".format(satellite_nc))
+
+        if "n_satellite_stations" in ds.dimensions:
+            n_stations = len(ds.dimensions["n_satellite_stations"])
+        else:
+            n_stations = 0
+
+        # Per-record indices
+        satellite_station_index = _read_int_var(ds, "satellite_station_index", n_records, fill_value=-1)
+
+        # Per-station text variables - expand to per-record
+        sources = _read_text_var(ds, "source", n_stations, default="unknown")
+        source_dataset = _lookup_by_index(satellite_station_index, sources, default="unknown")
+        source_dataset = [_clean_text(x, default="unknown") for x in source_dataset]
+
+        source_families = _read_text_var(ds, "source_family", n_stations, default="unknown")
+        source_family = _lookup_by_index(satellite_station_index, source_families, default="unknown")
+        source_family = [_clean_text(x, default="unknown") for x in source_family]
+
+        src_station_indices = _read_int_var(ds, "source_station_index", n_stations, fill_value=-1)
+        source_station_index = _lookup_by_index(satellite_station_index, src_station_indices.tolist(), default=-1)
+
+        # cluster_id is per-record for satellite
+        cluster_id = _read_int_var(ds, "cluster_id", n_records, fill_value=-1)
+
+        cluster_uids_station = _read_text_var(ds, "cluster_uid", n_stations, default="")
+        cluster_uid = _lookup_by_index(satellite_station_index, cluster_uids_station, default="")
+        cluster_uid = [_clean_text(x) for x in cluster_uid]
+
+        # Resolution is stored as text in satellite NC
+        resolution_text = _read_text_var(ds, "resolution", n_records, default="other")
+        RESOLUTION_TEXT_TO_CODE = {
+            "daily": 0,
+            "monthly": 1,
+            "annual": 2,
+            "climatology": 3,
+        }
+        resolution_code = [RESOLUTION_TEXT_TO_CODE.get(x, 4) for x in resolution_text]
+
+        year = _read_year_array(ds, n_records)
+
+        records = pd.DataFrame(
+            {
+                "record_index": np.arange(n_records, dtype=np.int64),
+                "station_index": satellite_station_index.astype(np.int64),
+                "cluster_id": pd.to_numeric(pd.Series(cluster_id), errors="coerce").fillna(-1).astype(np.int64),
+                "cluster_uid": cluster_uid,
+                "source_station_index": pd.to_numeric(pd.Series(source_station_index), errors="coerce").fillna(-1).astype(np.int64),
+                "source_dataset": source_dataset,
+                "temporal_resolution": resolution_text,
+                "resolution_code": np.array(resolution_code, dtype=np.int16),
+                "year": year.astype(np.int32),
+                "source_type": "satellite",
+                "_source_family": source_family,
+            }
+        )
+
+        flag_arrays: Dict[str, np.ndarray] = {}
+        flag_specs: List[Dict[str, str]] = []
+        meaning_maps: Dict[str, Dict[int, str]] = {}
+
+        for spec in FINAL_FLAG_SPECS:
+            flag_variable = spec["flag_variable"]
+            if flag_variable not in ds.variables:
+                raise ValueError(
+                    "Required final QC flag variable '{}' is missing from {}".format(
+                        flag_variable, satellite_nc
+                    )
+                )
+            flag_arrays[flag_variable] = _read_flag_var(ds, flag_variable, n_records, fill_value=9)
+            flag_specs.append(dict(spec))
+            meaning_maps[flag_variable] = dict(COMMON_FLAG_MEANINGS)
+
+    return records, flag_arrays, flag_specs, meaning_maps
 # -----------------------------------------------------------------------------
 
 def attach_source_type(records: pd.DataFrame, quality_order_csv: Optional[Path]) -> pd.DataFrame:
@@ -1797,17 +1992,56 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print("Figures directory: {}".format(figures_dir))
     print("Report path: {}".format(report_path))
 
-    records, flag_arrays, flag_specs, meaning_maps = read_master_records(
-        master_nc=master_nc,
-        include_stage_flags=not args.skip_stage_flags,
-    )
-    flag_specs = _filter_flag_specs(
-        flag_specs=flag_specs,
-        flag_arrays=flag_arrays,
-        meaning_maps=meaning_maps,
-        skip_stage_flags=bool(args.skip_stage_flags),
-    )
-    records = attach_source_type(records, quality_order_csv)
+
+    # ── Auto-detect NC type (master, satellite, or climatology) ─────────────
+    with nc4.Dataset(master_nc, "r") as ds_check:
+        if "n_satellite_records" in ds_check.dimensions:
+            nc_type = "satellite"
+        elif "cluster_id" in ds_check.variables:
+            nc_type = "master"
+        else:
+            nc_type = "climatology"
+    print("Detected NetCDF type: {}".format(nc_type))
+
+    if nc_type == "satellite":
+        records, flag_arrays, flag_specs, meaning_maps = read_satellite_records(
+            satellite_nc=master_nc,
+        )
+        # Satellite has no stage flags — force skip
+        args.skip_stage_flags = True
+        flag_specs = _filter_flag_specs(
+            flag_specs=flag_specs,
+            flag_arrays=flag_arrays,
+            meaning_maps=meaning_maps,
+            skip_stage_flags=True,
+        )
+    elif nc_type == "climatology":
+        records, flag_arrays, flag_specs, meaning_maps = read_climatology_records(
+            climatology_nc=master_nc,
+            include_stage_flags=not args.skip_stage_flags,
+        )
+        flag_specs = _filter_flag_specs(
+            flag_specs=flag_specs,
+            flag_arrays=flag_arrays,
+            meaning_maps=meaning_maps,
+            skip_stage_flags=bool(args.skip_stage_flags),
+        )
+    else:
+        records, flag_arrays, flag_specs, meaning_maps = read_master_records(
+            master_nc=master_nc,
+            include_stage_flags=not args.skip_stage_flags,
+        )
+        flag_specs = _filter_flag_specs(
+            flag_specs=flag_specs,
+            flag_arrays=flag_arrays,
+            meaning_maps=meaning_maps,
+            skip_stage_flags=bool(args.skip_stage_flags),
+        )
+        records = attach_source_type(records, quality_order_csv)
+
+    # ── For satellite/climatology: source_type already set in reader ─────────
+    # Drop temporary column added by readers (if present)
+    records = records.drop(columns=["_source_family"], errors="ignore")
 
     print(
         "Loaded {:,} records, {} flag variables: {}".format(

@@ -2356,6 +2356,177 @@ def _peak_active_text(by_year_df: pd.DataFrame, resolution: str) -> str:
     return "{:,} active units in {:d}".format(int(row["active_units"]), int(row["year"]))
 
 
+def _format_report_float(value, digits: int = 1) -> str:
+    try:
+        if pd.isna(value):
+            return "NA"
+        return "{:.{}f}".format(float(value), int(digits))
+    except Exception:
+        return "NA"
+
+
+def _format_report_pct(value, digits: int = 1) -> str:
+    return "{}%".format(_format_report_float(value, digits=digits))
+
+
+def _safe_markdown(value) -> str:
+    text = _clean_text(value)
+    return text.replace("|", "\\|")
+
+
+def _markdown_table(rows: Sequence[Dict[str, object]], columns: Sequence[str], headers: Sequence[str]) -> str:
+    if not rows:
+        return "No rows available for this run."
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(_safe_markdown(row.get(col, "")) for col in columns) + " |")
+    return "\n".join(lines)
+
+
+def _compact_temporal_summary_rows(summary_df: pd.DataFrame) -> List[Dict[str, object]]:
+    if summary_df.empty:
+        return []
+    rows: List[Dict[str, object]] = []
+    for _, row in summary_df.iterrows():
+        rows.append(
+            {
+                "resolution": row.get("resolution", ""),
+                "product": row.get("product", ""),
+                "unit_type": row.get("unit_type", ""),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "units": _format_int(row.get("active_units", 0)),
+                "clusters": _format_int(row.get("active_clusters", row.get("active_units", 0))),
+                "records": _format_int(row.get("record_count_any", row.get("records_any", 0))),
+                "median_years": _format_report_float(row.get("median_record_length_years")),
+                "max_years": _format_report_float(row.get("max_record_length_years")),
+                "gt50": _format_int(row.get("n_gt_50_years", 0)),
+                "gt100": _format_int(row.get("n_gt_100_years", 0)),
+            }
+        )
+    return rows
+
+
+def _compact_temporal_variable_rows(by_variable_df: pd.DataFrame) -> List[Dict[str, object]]:
+    if by_variable_df.empty:
+        return []
+    work = by_variable_df.copy()
+    work["resolution"] = pd.Categorical(work["resolution"], categories=_resolution_sequence(work["resolution"].unique()), ordered=True)
+    work = work.sort_values(["resolution", "variable"], kind="mergesort")
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "resolution": row.get("resolution", ""),
+                "variable": row.get("variable", ""),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "active_units": _format_int(row.get("active_units", 0)),
+                "records": _format_int(row.get("record_count", 0)),
+                "peak_units": "{} in {}".format(_format_int(row.get("peak_active_units", 0)), row.get("peak_active_year", "")),
+                "peak_records": "{} in {}".format(_format_int(row.get("peak_records", 0)), row.get("peak_record_year", "")),
+            }
+        )
+    return rows
+
+
+def _compact_year_peak_rows(by_year_df: pd.DataFrame) -> List[Dict[str, object]]:
+    if by_year_df.empty:
+        return []
+    rows: List[Dict[str, object]] = []
+    for resolution in _resolution_sequence(by_year_df["resolution"].unique()):
+        sub = by_year_df[by_year_df["resolution"].eq(resolution)].copy()
+        if sub.empty:
+            continue
+        sub["active_units"] = pd.to_numeric(sub["active_units"], errors="coerce").fillna(0)
+        sub["records_any"] = pd.to_numeric(sub["records_any"], errors="coerce").fillna(0)
+        peak_units = sub.sort_values(["active_units", "year"], ascending=[False, True], kind="mergesort").iloc[0]
+        peak_records = sub.sort_values(["records_any", "year"], ascending=[False, True], kind="mergesort").iloc[0]
+        rows.append(
+            {
+                "resolution": resolution,
+                "years": "{}-{}".format(int(pd.to_numeric(sub["year"], errors="coerce").min()), int(pd.to_numeric(sub["year"], errors="coerce").max())),
+                "peak_units": "{} in {}".format(_format_int(peak_units.get("active_units", 0)), int(peak_units.get("year", 0))),
+                "peak_records": "{} in {}".format(_format_int(peak_records.get("records_any", 0)), int(peak_records.get("year", 0))),
+                "total_records": _format_int(sub["records_any"].sum()),
+            }
+        )
+    return rows
+
+
+def _compact_long_record_rows(unit_df: pd.DataFrame) -> List[Dict[str, object]]:
+    long_df = build_long_records_by_resolution(unit_df)
+    if long_df.empty:
+        return []
+    rows: List[Dict[str, object]] = []
+    for _, row in long_df.iterrows():
+        rows.append(
+            {
+                "resolution": row.get("resolution", ""),
+                "units": _format_int(row.get("n_units", 0)),
+                "median": _format_report_float(row.get("median_record_length_years")),
+                "max": _format_report_float(row.get("max_record_length_years")),
+                "gt10": "{} ({})".format(_format_int(row.get("n_gt_10_years", 0)), _format_report_pct(row.get("pct_gt_10_years", 0))),
+                "gt30": "{} ({})".format(_format_int(row.get("n_gt_30_years", 0)), _format_report_pct(row.get("pct_gt_30_years", 0))),
+                "gt50": "{} ({})".format(_format_int(row.get("n_gt_50_years", 0)), _format_report_pct(row.get("pct_gt_50_years", 0))),
+                "gt100": "{} ({})".format(_format_int(row.get("n_gt_100_years", 0)), _format_report_pct(row.get("pct_gt_100_years", 0))),
+            }
+        )
+    return rows
+
+
+def _compact_temporal_source_rows(source_df: pd.DataFrame, top_n: int = 15) -> List[Dict[str, object]]:
+    if source_df.empty:
+        return []
+    work = source_df.copy()
+    if "record_count" not in work.columns:
+        work["record_count"] = work.get("record_count_any", 0)
+    if "clusters" not in work.columns:
+        work["clusters"] = work.get("linked_clusters", "")
+    work["record_count"] = pd.to_numeric(work.get("record_count", 0), errors="coerce").fillna(0)
+    work["_clusters_num"] = pd.to_numeric(work.get("clusters", 0), errors="coerce").fillna(0)
+    work = work.sort_values(["record_count", "_clusters_num"], ascending=[False, False], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "source": row.get("source_name", row.get("source", "")),
+                "resolution": row.get("resolution", ""),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "stations": _format_int(row.get("source_stations", row.get("satellite_stations", row.get("stations", 0)))),
+                "clusters": _format_int(row.get("clusters", row.get("linked_clusters", ""))),
+                "records": _format_int(row.get("record_count", row.get("record_count_any", 0))),
+                "median_years": _format_report_float(row.get("median_record_length_years")),
+                "max_years": _format_report_float(row.get("max_record_length_years")),
+            }
+        )
+    return rows
+
+
+def _compact_region_temporal_rows(region_df: pd.DataFrame, top_n: int = 15) -> List[Dict[str, object]]:
+    if region_df.empty:
+        return []
+    work = region_df.copy()
+    work["record_count"] = pd.to_numeric(work.get("record_count", 0), errors="coerce").fillna(0)
+    work = work.sort_values(["record_count", "clusters"], ascending=[False, False], kind="mergesort").head(top_n)
+    rows: List[Dict[str, object]] = []
+    for _, row in work.iterrows():
+        rows.append(
+            {
+                "region": row.get("continent_region", ""),
+                "country": row.get("country", ""),
+                "resolution": row.get("resolution", ""),
+                "span": "{}-{}".format(row.get("first_year", ""), row.get("last_year", "")),
+                "clusters": _format_int(row.get("clusters", 0)),
+                "records": _format_int(row.get("record_count", 0)),
+                "median_years": _format_report_float(row.get("median_record_length_years")),
+                "max_years": _format_report_float(row.get("max_record_length_years")),
+            }
+        )
+    return rows
+
+
 def write_article_summary(
     out_path: Path,
     summary_rows: List[Dict[str, object]],
@@ -2496,6 +2667,9 @@ def write_article_report(
     clim_summary = extra_tables.get("climatology_temporal_summary", pd.DataFrame())
     sat_summary = extra_tables.get("satellite_temporal_summary", pd.DataFrame())
     sat_source = extra_tables.get("satellite_by_source", pd.DataFrame())
+    by_variable = build_temporal_coverage_by_variable(by_year_df, summary_rows)
+    by_source = build_temporal_coverage_by_source()
+    by_region = build_temporal_coverage_by_region_resolution()
 
     lines = [
         "# Temporal coverage results for the S8 ESSD release",
@@ -2534,6 +2708,38 @@ def write_article_report(
     lines.extend(
         [
             "",
+            "### Product-Level Coverage Detail",
+            "",
+            _markdown_table(
+                _compact_temporal_summary_rows(summary_df),
+                ["resolution", "product", "unit_type", "span", "units", "clusters", "records", "median_years", "max_years", "gt50", "gt100"],
+                ["Resolution", "Product", "Unit", "Span", "Units", "Clusters", "Records", "Median yr", "Max yr", ">50 yr", ">100 yr"],
+            ),
+            "",
+            "### Variable Coverage",
+            "",
+            _markdown_table(
+                _compact_temporal_variable_rows(by_variable),
+                ["resolution", "variable", "span", "active_units", "records", "peak_units", "peak_records"],
+                ["Resolution", "Variable", "Span", "Active units", "Records", "Peak active units", "Peak records"],
+            ),
+            "",
+            "### Yearly Peaks",
+            "",
+            _markdown_table(
+                _compact_year_peak_rows(by_year_df),
+                ["resolution", "years", "peak_units", "peak_records", "total_records"],
+                ["Resolution", "Years", "Peak active units", "Peak records", "Total records"],
+            ),
+            "",
+            "### Long-Record Diagnostics",
+            "",
+            _markdown_table(
+                _compact_long_record_rows(unit_df),
+                ["resolution", "units", "median", "max", "gt10", "gt30", "gt50", "gt100"],
+                ["Resolution", "Units", "Median yr", "Max yr", ">10 yr", ">30 yr", ">50 yr", ">100 yr"],
+            ),
+            "",
             "Daily coverage is the strongest long-record component of the release, with "
             "{} clusters longer than 50 years and {} clusters longer than 100 years. Monthly coverage has many clusters but shorter median spans, while annual coverage contains fewer clusters but includes several very long records.".format(
                 _format_int(daily.get("n_gt_50_years", 0) if daily else 0),
@@ -2545,6 +2751,26 @@ def write_article_report(
                 _peak_active_text(by_year_df, "monthly"),
                 _peak_active_text(by_year_df, "annual"),
             ),
+            "",
+            "## Source and Regional Temporal Coverage",
+            "",
+            "### Top Source-Resolution Contributions",
+            "",
+            _markdown_table(
+                _compact_temporal_source_rows(by_source, top_n=15),
+                ["source", "resolution", "span", "stations", "clusters", "records", "median_years", "max_years"],
+                ["Source", "Resolution", "Span", "Stations", "Clusters", "Records", "Median yr", "Max yr"],
+            ),
+            "",
+            "### Top Region-Resolution Contributions",
+            "",
+            _markdown_table(
+                _compact_region_temporal_rows(by_region, top_n=15),
+                ["region", "country", "resolution", "span", "clusters", "records", "median_years", "max_years"],
+                ["Region", "Country", "Resolution", "Span", "Clusters", "Records", "Median yr", "Max yr"],
+            ),
+            "",
+            "These source and region tables separate record volume from span length. A source can dominate total records through dense daily sampling even when its spatial footprint is narrower than a source with many short station records.",
             "",
             "## Climatology Product",
             "",
@@ -2601,6 +2827,33 @@ def write_article_report(
             )
         )
         lines.append("")
+
+    lines.extend(
+        [
+            "### Climatology Source Detail",
+            "",
+            _markdown_table(
+                _compact_temporal_source_rows(extra_tables.get("climatology_by_source", pd.DataFrame()), top_n=12),
+                ["source", "resolution", "span", "stations", "clusters", "records", "median_years", "max_years"],
+                ["Source", "Resolution", "Span", "Stations", "Clusters", "Records", "Median yr", "Max yr"],
+            ),
+            "",
+            "### Satellite Source Detail",
+            "",
+            _markdown_table(
+                _compact_temporal_source_rows(sat_source, top_n=12),
+                ["source", "resolution", "span", "stations", "clusters", "records", "median_years", "max_years"],
+                ["Source", "Resolution", "Span", "Stations", "Clusters", "Records", "Median yr", "Max yr"],
+            ),
+            "",
+            "## Interpretation Notes",
+            "",
+            "- Daily, monthly, annual, climatology, and satellite products use different units; compare trends within product groups before comparing across product groups.",
+            "- `active_units` measures whether a unit has at least one valid record in a year, while `records` measures sampling density.",
+            "- Long-record counts are useful evidence for model evaluation, but sparse annual records should be interpreted by record count and calendar span together.",
+            "",
+        ]
+    )
 
     lines.extend(
         [

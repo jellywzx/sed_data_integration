@@ -26,6 +26,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 try:
     import geopandas as gpd
@@ -471,19 +472,50 @@ def fig_spatial_coverage_by_region_resolution(by_region_resolution: pd.DataFrame
     save_figure(fig, "fig_spatial_coverage_by_region_resolution")
 
 
-def fig_upstream_area_distribution(area_dist: pd.DataFrame) -> None:
+def fig_upstream_area_distribution(area_dist: pd.DataFrame, ax: plt.Axes = None, scientific_notation: bool = False) -> None:
     bins = area_dist[area_dist["section"].eq("bin")].copy()
     bins["cluster_count"] = numeric(bins, "cluster_count")
-    fig, ax = plt.subplots(figsize=(8.4, 4.9))
-    ax.bar(bins["label"], bins["cluster_count"], color="#6f9eaf")
-    ax.set_ylabel("Cluster count")
-    ax.set_xlabel("Upstream basin area")
-    ax.set_title("Distribution of upstream basin area")
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8.4, 4.9))
+        standalone = True
+    else:
+        standalone = False
+
+    if scientific_notation:
+        # Extract numeric upper bounds from bin labels for scientific x-axis labels
+        bin_vals = []
+        for label in bins["label"]:
+            clean = label.replace(",", "").replace(" km2", "")
+            if "<" in clean:
+                val = float(clean.replace("<", ""))
+            elif ">" in clean:
+                val = float(clean.replace(">", ""))
+            elif "-" in clean:
+                val = float(clean.split("-")[1])
+            else:
+                val = float(clean)
+            bin_vals.append(val)
+        x_pos = np.arange(len(bins))
+        ax.bar(x_pos, bins["cluster_count"], color="#6f9eaf")
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(["{:.0e}".format(v).replace("e+0", "e").replace("e+", "e").replace("e0", "e") for v in bin_vals])
+    else:
+        ax.bar(bins["label"], bins["cluster_count"], color="#6f9eaf")
+        ax.tick_params(axis="x", rotation=25)
+        for tick in ax.get_xticklabels():
+            tick.set_ha("right")
+
+    if standalone:
+        ax.set_ylabel("Cluster count")
+        ax.set_xlabel("Upstream basin area")
+        ax.set_title("Distribution of upstream basin area")
+    else:
+        ax.tick_params(axis="both", labelsize=6)
+        ax.set_ylabel("Cluster count", fontsize=6)
     ax.grid(axis="y", linewidth=0.3, alpha=0.55)
-    ax.tick_params(axis="x", rotation=25)
-    for tick in ax.get_xticklabels():
-        tick.set_ha("right")
-    save_figure(fig, "fig_upstream_area_distribution")
+
+    if standalone:
+        save_figure(fig, "fig_upstream_area_distribution")
 
 
 def fig_source_spatial_contribution(by_source: pd.DataFrame) -> None:
@@ -502,11 +534,22 @@ def fig_source_spatial_contribution(by_source: pd.DataFrame) -> None:
     save_figure(fig, "fig_source_spatial_contribution")
 
 
-def fig_satellite_validation_spatial_distribution(satellite: pd.DataFrame) -> None:
+def fig_satellite_validation_spatial_distribution(satellite: pd.DataFrame, ax: plt.Axes = None) -> None:
     df = satellite[valid_latlon(satellite)].copy()
     if "source" not in df.columns:
         df["source"] = "Unknown"
-    fig, ax = setup_map_ax("Satellite-validation station distribution")
+    if ax is None:
+        fig, ax = setup_map_ax("Satellite-validation station distribution")
+        standalone = True
+    else:
+        standalone = False
+        draw_background(ax)
+        ax.set_xlim(-180, 180)
+        ax.set_ylim(-60, 85)
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.grid(True, linewidth=0.3, color="#cccccc", alpha=0.6)
+
     for source, group in df.groupby("source", dropna=False):
         source = clean_text(source) or "Unknown"
         color = SOURCE_COLORS.get(source, "#777777")
@@ -521,7 +564,8 @@ def fig_satellite_validation_spatial_distribution(satellite: pd.DataFrame) -> No
             zorder=3,
         )
     ax.legend(loc="lower left", fontsize=8, frameon=True, markerscale=2.3)
-    save_figure(fig, "fig_satellite_validation_spatial_distribution")
+    if standalone:
+        save_figure(fig, "fig_satellite_validation_spatial_distribution")
 
 
 def fig_main_vs_satellite_spatial_coverage(clusters: pd.DataFrame, satellite: pd.DataFrame) -> None:
@@ -553,8 +597,8 @@ def fig_main_vs_satellite_spatial_coverage(clusters: pd.DataFrame, satellite: pd
 
 
 
-def fig_climatology_spatial_coverage() -> None:
-    """Map of climatology stations colored by record resolution type."""
+def fig_climatology_spatial_coverage(ax: plt.Axes = None) -> None:
+    """Map of climatology stations colored by record temporal resolution."""
     if not HAS_XARRAY or not CLIMATOLOGY_NC.is_file():
         print('Warning: xarray unavailable or climatology NC not found; skipping climatology map')
         return
@@ -564,7 +608,18 @@ def fig_climatology_spatial_coverage() -> None:
     res_flags = ds['resolution'].values
     res_labels = [RESOLUTION_FLAG_MEANINGS.get(int(f), 'other') for f in res_flags]
 
-    fig, ax = setup_map_ax('Climatology stations by record temporal resolution')
+    if ax is None:
+        fig, ax = setup_map_ax('Climatology stations by record temporal resolution')
+        standalone = True
+    else:
+        standalone = False
+        draw_background(ax)
+        ax.set_xlim(-180, 180)
+        ax.set_ylim(-60, 85)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
+        ax.grid(True, linewidth=0.3, color='#cccccc', alpha=0.6)
+
     for res_type in ['daily', 'monthly', 'annual', 'climatology', 'other']:
         mask = [r == res_type for r in res_labels]
         if not any(mask):
@@ -583,7 +638,8 @@ def fig_climatology_spatial_coverage() -> None:
         )
     ax.legend(loc='lower left', fontsize=8, frameon=True, markerscale=1.5)
     ds.close()
-    save_figure(fig, 'fig_climatology_spatial_coverage')
+    if standalone:
+        save_figure(fig, 'fig_climatology_spatial_coverage')
 
 
 def fig_timeseries_spatial_coverage() -> None:
@@ -682,6 +738,111 @@ def fig_climatology_vs_timeseries_coverage() -> None:
     save_figure(fig, 'fig_climatology_vs_timeseries_coverage')
 
 
+
+
+def draw_bubble_map(ax: plt.Axes, clusters: pd.DataFrame) -> None:
+    """Draw a global bubble map on the given axes, adapted from plot_global_bubble_map.py."""
+    df = clusters[valid_latlon(clusters)].copy()
+    has_area = numeric(df, "area_km2").notna() & (numeric(df, "area_km2") > 0)
+
+    draw_background(ax)
+    ax.set_xlim(-180, 180)
+    ax.set_ylim(-60, 85)
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(True, linewidth=0.3, alpha=0.35, zorder=0)
+
+    # Marker size proportional to sqrt(area)
+    sizes = np.where(
+        has_area,
+        np.sqrt(np.clip(numeric(df, "area_km2"), 10, None)) * 0.18,
+        4.0,
+    )
+
+    BUBBLE_COLORS = {
+        "resolved":   "#2196F3",
+        "unresolved": "#FF9800",
+        "unknown":    "#9E9E9E",
+    }
+
+    for status in ["resolved", "unresolved", "unknown"]:
+        mask = (df["basin_status"] == status) if status != "unknown" else ~df["basin_status"].isin(["resolved", "unresolved"])
+        if not mask.any():
+            continue
+        ax.scatter(
+            df.loc[mask, "lon"],
+            df.loc[mask, "lat"],
+            s=sizes[mask.values],
+            c=BUBBLE_COLORS.get(status, "#777777"),
+            alpha=0.5,
+            label=status,
+            edgecolors="none",
+            zorder=2,
+        )
+
+    ax.legend(
+        loc="lower left", markerscale=1.8, framealpha=0.85,
+        title="Basin status", fontsize=8,
+    )
+
+    n_total = len(df)
+    n_resolved = int((df["basin_status"] == "resolved").sum())
+    n_unresolved = int((df["basin_status"] == "unresolved").sum())
+    n_unknown = n_total - n_resolved - n_unresolved
+    stats_lines = [
+        "Total clusters:  {}".format(n_total),
+        "Resolved:        {}".format(n_resolved),
+        "Unresolved:     {}".format(n_unresolved),
+    ]
+    if n_unknown > 0:
+        stats_lines.append("Unknown:         {}".format(n_unknown))
+    stats_text = "\n".join(stats_lines)
+
+    ax.text(
+        0.98, 0.02, stats_text,
+        transform=ax.transAxes, fontsize=8,
+        verticalalignment="bottom", horizontalalignment="right",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.85),
+    )
+
+
+def fig_composite_spatial_coverage(clusters: pd.DataFrame, area_dist: pd.DataFrame, satellite: pd.DataFrame) -> None:
+    """3-panel composite figure: (a) bubble map + upstream inset, (b) climatology, (c) satellite."""
+    fig = plt.figure(figsize=(14, 10))
+    gs = gridspec.GridSpec(2, 2, height_ratios=[1.3, 1], wspace=0.12, hspace=0.18)
+
+    # --- Panel (a): global bubble map + upstream area inset ---
+    ax_a = fig.add_subplot(gs[0, :])
+    draw_bubble_map(ax_a, clusters)
+    ax_a.text(0.01, 0.97, "(a)", transform=ax_a.transAxes, fontsize=14, fontweight="bold",
+              va="top", ha="left", bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
+
+    # Inset: upstream area distribution
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+    ax_inset = inset_axes(ax_a, width="32%", height="30%", loc="lower right",
+                          bbox_to_anchor=(0, 0, 1, 1), bbox_transform=ax_a.transAxes)
+    fig_upstream_area_distribution(area_dist, ax=ax_inset, scientific_notation=True)
+    ax_inset.set_title("Upstream area distribution", fontsize=8)
+
+    # --- Panel (b): climatology spatial coverage ---
+    ax_b = fig.add_subplot(gs[1, 0])
+    fig_climatology_spatial_coverage(ax=ax_b)
+    ax_b.text(0.01, 0.97, "(b)", transform=ax_b.transAxes, fontsize=14, fontweight="bold",
+              va="top", ha="left", bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
+
+    # --- Panel (c): satellite validation spatial distribution ---
+    ax_c = fig.add_subplot(gs[1, 1])
+    if satellite.empty:
+        ax_c.text(0.5, 0.5, "No satellite validation data", transform=ax_c.transAxes,
+                  ha="center", va="center", fontsize=12, color="#888888")
+    else:
+        fig_satellite_validation_spatial_distribution(satellite, ax=ax_c)
+    ax_c.text(0.01, 0.97, "(c)", transform=ax_c.transAxes, fontsize=14, fontweight="bold",
+              va="top", ha="left", bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
+
+    save_figure(fig, "fig_composite_spatial_coverage")
+
+
 def main() -> int:
     require_node113()
     clusters = read_csv(TABLES_DIR / "table_cluster_spatial_attributes.csv", required=True)
@@ -707,6 +868,7 @@ def main() -> int:
         fig_satellite_validation_spatial_distribution(satellite)
         fig_main_vs_satellite_spatial_coverage(clusters, satellite)
 
+    fig_composite_spatial_coverage(clusters, area_dist, satellite)
     fig_climatology_spatial_coverage()
     fig_timeseries_spatial_coverage()
     fig_climatology_vs_timeseries_coverage()
