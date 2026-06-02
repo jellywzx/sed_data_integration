@@ -6,7 +6,7 @@ reads only files inside ``--release-dir`` and writes validation diagnostics into
 ``--out-dir``.
 """
 
-from __future__ import annotations
+
 
 import argparse
 import itertools
@@ -59,8 +59,8 @@ RELEASE_ONLY_ASSUMPTIONS = (
     "s8 release products are treated as the only allowed inputs"
 )
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_RELEASE_DIR = SCRIPT_DIR / "output" / "sed_reference_release"
-DEFAULT_OUT_DIR = SCRIPT_DIR / "output" / "validation_results"
+DEFAULT_RELEASE_DIR = SCRIPT_DIR.parent / "output" / "sed_reference_release"
+DEFAULT_OUT_DIR = SCRIPT_DIR.parent / "output_other" / "s10_final_validation"
 # Default runtime configuration.  Edit these constants if a different default
 # release/output path or worker count is needed; no CLI arguments are required
 # for the standard workflow.
@@ -386,7 +386,7 @@ def inspect_netcdf(path: Path) -> Tuple[List[Dict[str, object]], Dict[str, str]]
         return rows, units
 
     try:
-        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True)
+        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True, engine="h5netcdf")
     except Exception as exc:
         rows.append(
             {
@@ -881,7 +881,7 @@ def _load_master_records(
     if xr is None:
         return pd.DataFrame(), "xarray not available for master NetCDF reading"
     try:
-        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True)
+        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True, engine="h5netcdf")
     except Exception as exc:
         return pd.DataFrame(), "cannot open master NetCDF: {}".format(exc)
 
@@ -1030,7 +1030,9 @@ def _load_overlap_candidates(release_dir: Path, progress: Optional[Callable[[str
     if progress:
         progress("Reading candidate-level overlap sidecar {}".format(path.name))
     try:
-        candidates = pd.read_csv(path, keep_default_na=False)
+        _cand_needed = {'cluster_uid','cluster_id','resolution','time','date','source','source_family','source_station_uid','candidate_rank','candidate_quality_score','selected_flag','is_overlap','n_candidates_at_time','Q','SSC','SSL','candidate_group_key'}
+        _cand_avail = [c for c in header.columns if c in _cand_needed]
+        candidates = pd.read_csv(path, keep_default_na=False, usecols=_cand_avail, low_memory=False)
     except Exception as exc:
         return pd.DataFrame(), "cannot read {}: {}".format(OVERLAP_CANDIDATES_FILE, exc)
     for var in VARIABLES:

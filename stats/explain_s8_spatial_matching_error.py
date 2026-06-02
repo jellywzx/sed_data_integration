@@ -7,7 +7,7 @@ This release-product diagnostic defaults to the publication package table:
 
 and writes a separate output directory:
 
-    scripts_basin_test/output/spatial_match_error_release_product
+    scripts_basin_test/output_other/explain_s8_basin_matching_error
 
 The main statistics are computed after excluding satellite / reach-scale sources
 such as RiverSed, GSED, and Dethier. Those products are valid observations, but
@@ -44,7 +44,7 @@ Edit the USER CONFIGURATION block if your paths are non-standard, then run:
 No command-line arguments are required.
 """
 
-from __future__ import annotations
+# from __future__ import annotations  # removed for Python 3.6 compat
 
 import os
 import re
@@ -67,7 +67,7 @@ except Exception:  # pragma: no cover - plotting is optional
 # USER CONFIGURATION
 # =============================================================================
 INPUT_CSV_PATH = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release/station_catalog.csv"
-OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/spatial_match_error_release_product"
+OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/explain_s8_basin_matching_error"
 
 # Number of rows exported in each manual-review queue.
 TOP_N_MANUAL_REVIEW = 100
@@ -91,7 +91,7 @@ REMOTE_SOURCE_DISPLAY_ORDER = ["RiverSed", "GSED", "Dethier", "deither", "source
 AREA_SUPPORTED_QUALITIES = {"area_matched", "area_approximate"}
 UNRESOLVED_FLAGS = {"large_offset", "area_mismatch", "geometry_inconsistent", "no_match"}
 DEFAULT_RELEASE_RELATIVE_PATH = Path("scripts_basin_test/output/sed_reference_release/station_catalog.csv")
-DEFAULT_OUT_SUBDIR_NAME = "spatial_match_error_release_product"
+DEFAULT_OUT_SUBDIR_NAME = "explain_s8_basin_matching_error"
 
 
 # =============================================================================
@@ -142,7 +142,7 @@ def _repo_default_out_dir(input_path: Optional[Path] = None) -> Path:
         if input_path.parent.name == "sed_reference_release":
             return input_path.parent.parent / DEFAULT_OUT_SUBDIR_NAME
         return input_path.parent / DEFAULT_OUT_SUBDIR_NAME
-    return Path("scripts_basin_test/output") / DEFAULT_OUT_SUBDIR_NAME
+    return Path("scripts_basin_test/output_other") / DEFAULT_OUT_SUBDIR_NAME
 
 
 def _resolve_configured_input() -> Path:
