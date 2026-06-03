@@ -4,6 +4,7 @@
 
 与原版 s4（空间聚类）不同，本脚本使用 basin tracer 的输出来定义聚类：
   - 仅 basin_status=resolved 且 basin_id 一致的站点允许进入合并候选；
+  - observation_type=Satellite 的站点保留为 singleton，不参与合并候选；
   - 同一 cluster 内任意两站点都必须满足：
       距离 <= 5 km，且 upstream area 相对误差 <= 10%（默认）；
   - 采用 complete-linkage 风格，避免链式跨阈值合并；
@@ -211,9 +212,11 @@ def main():
     else:
         print("Merge params source: CLI override")
     print(
-        "Basin map: n_station={}, n_success={}, n_basins={}, n_clusters_from_basins={}, n_remapped={}".format(
+        "Basin map: n_station={}, n_success={}, n_satellite_excluded_from_merge={}, "
+        "n_basins={}, n_clusters_from_basins={}, n_remapped={}".format(
             stats["n_station"],
             stats["n_success"],
+            stats.get("n_satellite_excluded_from_merge", 0),
             stats["n_basins"],
             stats["n_clusters_from_basins"],
             stats["n_changed"],

@@ -34,6 +34,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import shutil
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -62,6 +63,7 @@ DEFAULT_RELEASE_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
 DEFAULT_RELEASE_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
 DEFAULT_TABLES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary/tables"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary/figures"
+DEFAULT_REPORT_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary"
 
 VARIABLES = ("Q", "SSC", "SSL")
 FLAG_COLUMNS = {"Q": "Q_flag", "SSC": "SSC_flag", "SSL": "SSL_flag"}
@@ -644,8 +646,16 @@ def main(argv=None):
     if args.good_only:
         print("\nNote: --good-only was used; counts require the corresponding variable flag == 0.")
     else:
+
         print("\nNote: counts use non-missing values regardless of QC flag. Use --good-only for flag==0 counts.")
 
+    # Copy the ESSD report markdown to the output directory
+    report_src = SCRIPT_DIR / "variable_coverage_results_report_ESSD.md"
+    if report_src.is_file():
+        report_dst = DEFAULT_REPORT_DIR / report_src.name
+        report_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(report_src), str(report_dst))
+        print("Copied report: {}".format(report_dst))
     return 0
 
 
