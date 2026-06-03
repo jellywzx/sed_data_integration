@@ -6,17 +6,39 @@ station_id -> basin-merged cluster_id 映射。
 
 合并规则：
 1) 仅 basin_status=resolved 且 basin_id 有效的站点可参与合并；
-2) 同一 basin 内仅当 cluster 间所有跨组 pair 都满足：
+2) observation_type=Satellite 的站点保留为 singleton，不参与合并候选；
+3) 同一 basin 内仅当 cluster 间所有跨组 pair 都满足：
    - 距离 <= max_station_distance_m
    - upstream area 对称相对误差 <= max_upstream_rel_error
    才允许合并（complete-linkage 风格）；
-3) 不满足条件的站点保留 singleton（cluster_id=station_id）。
+4) 不满足条件的站点保留 singleton（cluster_id=station_id）。
 """
 
 import math
 from pathlib import Path
 
 import pandas as pd
+
+
+SATELLITE_OBSERVATION_TYPES = frozenset(
+    [
+        "satellite",
+        "remote_sensing",
+        "remote_sensing_observation",
+        "satellite_observation",
+    ]
+)
+
+
+def _normalize_observation_type(value) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    return text.replace("-", "_").replace(" ", "_")
+
+
+def _is_satellite_observation_type(value) -> bool:
+    return _normalize_observation_type(value) in SATELLITE_OBSERVATION_TYPES
 
 
 def _haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -78,6 +100,7 @@ def load_station_to_basin_cluster_map(
       stats: {
         "n_station": int,   # 输入中唯一 station 数
         "n_success": int,   # resolved 且有 basin_id 的 station 数
+        "n_satellite_excluded_from_merge": int,
         "n_basins": int,    # 唯一 basin 数
         "n_clusters_from_basins": int,  # basin 侧最终聚类数量
         "n_changed": int,   # station_id 被重映射数量
@@ -99,6 +122,7 @@ def load_station_to_basin_cluster_map(
         return {}, {
             "n_station": 0,
             "n_success": 0,
+            "n_satellite_excluded_from_merge": 0,
             "n_basins": 0,
             "n_clusters_from_basins": 0,
             "n_changed": 0,
@@ -119,7 +143,10 @@ def load_station_to_basin_cluster_map(
                     sorted(missing)
                 )
             )
-        station_loc = station_df[["station_id", "lat", "lon"]].dropna(subset=["station_id"]).copy()
+        station_cols = ["station_id", "lat", "lon"]
+        if "observation_type" in station_df.columns:
+            station_cols.append("observation_type")
+        station_loc = station_df[station_cols].dropna(subset=["station_id"]).copy()
         station_loc["station_id"] = station_loc["station_id"].astype(int)
         station_loc = station_loc.drop_duplicates(subset=["station_id"], keep="first")
         df = df.merge(station_loc, on="station_id", how="left", suffixes=("", "_station"))
@@ -131,6 +158,16 @@ def load_station_to_basin_cluster_map(
                 else:
                     df[c] = df[station_c]
                 df = df.drop(columns=[station_c])
+        if "observation_type_station" in df.columns:
+            if "observation_type" in df.columns:
+                existing = df["observation_type"].fillna("").astype(str).str.strip()
+                df["observation_type"] = df["observation_type"].where(
+                    existing.ne(""),
+                    df["observation_type_station"],
+                )
+            else:
+                df["observation_type"] = df["observation_type_station"]
+            df = df.drop(columns=["observation_type_station"])
 
     resolved_mask = (
         df["basin_status"].fillna("").astype(str).str.strip().str.lower().eq("resolved")
@@ -141,14 +178,21 @@ def load_station_to_basin_cluster_map(
     ok["basin_id"] = pd.to_numeric(ok["basin_id"], errors="coerce")
     ok = ok.dropna(subset=["basin_id"]).copy()
     ok["basin_id"] = ok["basin_id"].astype("int64")
+    if "observation_type" in ok.columns:
+        satellite_candidate_mask = ok["observation_type"].map(_is_satellite_observation_type)
+        n_satellite_excluded_from_merge = int(satellite_candidate_mask.sum())
+        merge_ok = ok.loc[~satellite_candidate_mask].copy()
+    else:
+        n_satellite_excluded_from_merge = 0
+        merge_ok = ok
 
     mapping = {sid: sid for sid in df["station_id"].unique().tolist()}
     n_clusters_from_basins = 0
-    if len(ok) > 0 and upstream_area_col in ok.columns:
-        ok["lat"] = pd.to_numeric(ok.get("lat"), errors="coerce")
-        ok["lon"] = pd.to_numeric(ok.get("lon"), errors="coerce")
-        ok[upstream_area_col] = pd.to_numeric(ok[upstream_area_col], errors="coerce")
-        candidates = ok.dropna(subset=["lat", "lon", upstream_area_col]).copy()
+    if len(merge_ok) > 0 and upstream_area_col in merge_ok.columns:
+        merge_ok["lat"] = pd.to_numeric(merge_ok.get("lat"), errors="coerce")
+        merge_ok["lon"] = pd.to_numeric(merge_ok.get("lon"), errors="coerce")
+        merge_ok[upstream_area_col] = pd.to_numeric(merge_ok[upstream_area_col], errors="coerce")
+        candidates = merge_ok.dropna(subset=["lat", "lon", upstream_area_col]).copy()
 
         for _, grp in candidates.groupby("basin_id"):
             rows = grp[["station_id", "lat", "lon", upstream_area_col]].drop_duplicates(
@@ -196,6 +240,7 @@ def load_station_to_basin_cluster_map(
     stats = {
         "n_station": int(df["station_id"].nunique()),
         "n_success": int(ok["station_id"].nunique()),
+        "n_satellite_excluded_from_merge": int(n_satellite_excluded_from_merge),
         "n_basins": int(ok["basin_id"].nunique()),
         "n_clusters_from_basins": int(n_clusters_from_basins),
         "n_changed": n_changed,
