@@ -69,6 +69,7 @@ import math
 import os
 import sys
 from collections import defaultdict
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -2399,6 +2400,30 @@ def main() -> int:
         print("Skipped figure writing because matplotlib is unavailable.")
     if not args.no_report:
         print("Wrote {}".format(report_path))
+    # =============================================================================
+    # Copy outputs to the docs/reports directory
+    # =============================================================================
+    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy CSV tables
+    for table_path in table_paths.values():
+        if table_path.is_file():
+            shutil.copy2(str(table_path), str(reports_dir / table_path.name))
+
+    # Copy markdown report
+    if not args.no_report and report_path.is_file():
+        shutil.copy2(str(report_path), str(reports_dir / report_path.name))
+
+    # Copy figures if directory exists
+    if figure_dir.is_dir():
+        figs_dst = reports_dir / "figures"
+        if figs_dst.is_dir():
+            shutil.rmtree(str(figs_dst))
+        shutil.copytree(str(figure_dir), str(figs_dst))
+
+    print(f"Copied all outputs (tables, report, figures) -> {reports_dir}")
+
     return 0
 
 

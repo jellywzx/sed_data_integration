@@ -43,6 +43,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -982,6 +983,17 @@ def main() -> int:
     print(f"- {summary_csv}")
     print(f"- {membership_csv}")
     print(f"- {report_md}")
+
+    # -----------------------------------------------------------------
+    # Copy markdown report to docs/reports
+    # -----------------------------------------------------------------
+    docs_reports_dir = scripts_root / "docs" / "reports"
+    try:
+        shutil.copy2(report_md, docs_reports_dir)
+        print("Copied {} -> {}".format(report_md, docs_reports_dir))
+    except Exception as exc:
+        print("Warning: could not copy {} to {}: {}".format(report_md, docs_reports_dir, exc), file=sys.stderr)
+
 
     return 0
 

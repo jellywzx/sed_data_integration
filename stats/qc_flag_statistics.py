@@ -60,6 +60,7 @@ Optional examples
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
@@ -2088,6 +2089,44 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     print("Done.")
+    # =============================================================================
+    # Copy outputs to the docs/reports directory
+    # =============================================================================
+    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy CSV tables
+    table_files = [
+        "table_qc_flag_summary.csv",
+        "table_qc_flag_by_source.csv",
+        "table_qc_flag_by_resolution.csv",
+        "table_qc_flag_by_variable.csv",
+        "table_qc_flag_by_year.csv",
+        "table_qc_flag_by_cluster.csv",
+        "table_qc_flag_problem_clusters.csv",
+        "table_qc_health_kpis.csv",
+        "table_qc_stage_effectiveness.csv",
+        "table_qc_issue_hotspots.csv",
+        "table_qc_yearly_trends.csv",
+    ]
+    for fname in table_files:
+        src = tables_dir / fname
+        if src.is_file():
+            shutil.copy2(str(src), str(reports_dir / fname))
+
+    # Copy markdown report
+    if report_path.is_file():
+        shutil.copy2(str(report_path), str(reports_dir / report_path.name))
+
+    # Copy figures recursively
+    if figures_dir.is_dir():
+        figs_dst = reports_dir / "figures"
+        if figs_dst.is_dir():
+            shutil.rmtree(str(figs_dst))
+        shutil.copytree(str(figures_dir), str(figs_dst))
+
+    print(f"Copied all outputs (tables, report, figures) -> {reports_dir}")
+
     return 0
 
 

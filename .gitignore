@@ -5,6 +5,7 @@
 *.png
 *.html
 *.geojson
+/test/
 /output
 /output_other
 /output/logs/

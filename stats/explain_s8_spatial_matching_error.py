@@ -47,6 +47,7 @@ No command-line arguments are required.
 # from __future__ import annotations  # removed for Python 3.6 compat
 
 import os
+import shutil
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -1183,6 +1184,52 @@ def main() -> int:
     print(f"  - {out_dir / 'reported_area_match_status_counts.csv'}")
     print(f"  - {out_dir / 'spatial_match_threshold_sensitivity.csv'}")
     print(f"  - {out_dir / 'figures'}")
+    # =============================================================================
+    # Copy markdown-format outputs to the docs/reports directory
+    # =============================================================================
+    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    md_extensions = {".md", ".txt", ".csv"}
+    md_files = [
+        "spatial_match_error_summary.txt",
+        "remote_sensing_exclusion_summary.txt",
+        "spatial_match_error_table.csv",
+        "spatial_match_status_counts.csv",
+        "spatial_match_flag_counts.csv",
+        "spatial_match_quality_counts.csv",
+        "spatial_match_error_class_counts.csv",
+        "spatial_match_distance_bins.csv",
+        "spatial_match_area_error_bins.csv",
+        "spatial_match_status_by_reported_area_presence.csv",
+        "spatial_match_threshold_sensitivity.csv",
+        "manual_review_top_large_offsets.csv",
+        "manual_review_area_mismatch.csv",
+        "manual_review_geometry_inconsistent.csv",
+        "manual_review_high_risk.csv",
+        "remote_sensing_exclusion_summary.csv",
+        "reported_area_match_status_counts.csv",
+        "reported_area_match_flag_counts.csv",
+        "reported_area_match_quality_counts.csv",
+        "reported_area_spatial_error_class_counts.csv",
+        "reported_area_match_status_quality_counts.csv",
+        "reported_area_area_error_bin_quality_counts.csv",
+        "reported_area_spatial_match_rows.csv",
+    ]
+    for fname in md_files:
+        src = out_dir / fname
+        if src.is_file():
+            shutil.copy2(str(src), str(reports_dir / fname))
+    
+    # Copy figures directory recursively
+    figs_src = out_dir / "figures"
+    if figs_src.is_dir():
+        figs_dst = reports_dir / "figures"
+        if figs_dst.is_dir():
+            shutil.rmtree(str(figs_dst))
+        shutil.copytree(str(figs_src), str(figs_dst))
+    
+    print(f"Copied md/txt/csv outputs and figures -> {reports_dir}")
+
     return 0
 
 

@@ -9,6 +9,7 @@ reads only files inside ``--release-dir`` and writes validation diagnostics into
 
 
 import argparse
+import shutil
 import itertools
 import math
 import os
@@ -1815,6 +1816,13 @@ def run_validation(
     )
     if progress:
         progress("Wrote {}".format(summary_path))
+        # Copy summary markdown to docs/reports
+        docs_reports_dir = SCRIPT_DIR.parent / "docs" / "reports"
+        try:
+            shutil.copy2(summary_path, docs_reports_dir)
+            progress("Copied {} -> {}".format(summary_path, docs_reports_dir))
+        except Exception as exc:
+            progress("Warning: could not copy {} to {}: {}".format(summary_path, docs_reports_dir, exc))
         progress("s10 validation complete")
 
 

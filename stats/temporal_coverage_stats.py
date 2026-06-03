@@ -41,6 +41,7 @@ climatology is intentionally exported outside the basin-cluster mainline.
 from __future__ import annotations
 
 import argparse
+import shutil
 import math
 import sys
 from pathlib import Path
@@ -3129,6 +3130,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report_output = write_article_report(report_path, summary_rows, by_year_df, unit_df, extra_tables=extra_tables)
     print("Wrote detailed report:")
     print("  {}".format(report_output))
+
+    # ---------------------------------------------------------------------------
+    # Copy markdown outputs to doc/reports
+    # ---------------------------------------------------------------------------
+    docs_reports_dir = SCRIPT_ROOT / "docs" / "reports"
+    for md_path in (summary_output, report_output):
+        try:
+            shutil.copy2(md_path, docs_reports_dir)
+            print("Copied {} -> {}".format(md_path, docs_reports_dir))
+        except Exception as exc:
+            print("Warning: could not copy {} to {}: {}".format(md_path, docs_reports_dir, exc), file=sys.stderr)
 
     if not args.skip_figures:
         figures_dir = _resolve_under_script_root(args.figures_dir)

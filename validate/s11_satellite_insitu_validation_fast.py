@@ -15,6 +15,7 @@ chunk scanner unless ``--no-nc-fallback`` is set.
 """
 
 import argparse
+import shutil
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -29,6 +30,10 @@ SATELLITE_CANDIDATE_SIDECAR_FILES = (
     "sed_reference_satellite_candidates.csv.gz",
 )
 DEFAULT_SATELLITE_SIDECAR_CHUNK_SIZE = 200000
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_OUT_DIR = SCRIPT_DIR.parent / "output_other" / "s11_satellite_insitu_validation"
+
 
 
 def _find_sidecar(release_dir: Path, names) -> Optional[Path]:
@@ -423,11 +428,20 @@ def run_validation_fast(
     if progress:
         progress("fast s11 validation complete")
 
+    # Copy summary markdown to docs/reports
+    docs_reports_dir = base.SCRIPT_DIR.parent / "docs" / "reports"
+    try:
+        shutil.copy2(summary_path, docs_reports_dir)
+        if progress:
+            progress("Copied {} -> {}".format(summary_path, docs_reports_dir))
+    except Exception as exc:
+        if progress:
+            progress("Warning: could not copy {} to {}: {}".format(summary_path, docs_reports_dir, exc))
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fast satellite/reach-scale validation against in-situ records.")
     parser.add_argument("--release-dir", default=str(base.DEFAULT_RELEASE_DIR), help="Path to sed_reference_release.")
-    parser.add_argument("--out-dir", default=str(base.DEFAULT_OUT_DIR), help="Output directory for validation tables and figures.")
+    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Output directory for validation tables and figures.")
     parser.add_argument("--candidate-sidecar", help="Optional in-situ candidate sidecar path.")
     parser.add_argument("--satellite-candidate-sidecar", help="Optional satellite candidate sidecar path.")
     parser.add_argument("--source-taxonomy-csv", help="Optional source taxonomy override CSV.")
