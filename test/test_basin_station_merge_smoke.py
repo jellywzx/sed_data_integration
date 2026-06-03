@@ -21,6 +21,9 @@ def _build_inputs():
             {"station_id": 9, "basin_id": 6, "basin_status": "resolved", "uparea_merit": 100.0},
             {"station_id": 10, "basin_id": 6, "basin_status": "resolved", "uparea_merit": 109.0},
             {"station_id": 11, "basin_id": 6, "basin_status": "resolved", "uparea_merit": 119.0},
+            {"station_id": 12, "basin_id": 7, "basin_status": "resolved", "uparea_merit": 100.0},
+            {"station_id": 13, "basin_id": 7, "basin_status": "resolved", "uparea_merit": 101.0},
+            {"station_id": 14, "basin_id": 7, "basin_status": "resolved", "uparea_merit": 103.0},
         ]
     )
     station_df = pd.DataFrame(
@@ -37,6 +40,24 @@ def _build_inputs():
             {"station_id": 9, "lat": 3.0, "lon": 0.00},
             {"station_id": 10, "lat": 3.0, "lon": 0.02},
             {"station_id": 11, "lat": 3.0, "lon": 0.04},
+            {
+                "station_id": 12,
+                "lat": 4.0,
+                "lon": 0.00,
+                "observation_type": "Satellite",
+            },
+            {
+                "station_id": 13,
+                "lat": 4.0,
+                "lon": 0.01,
+                "observation_type": "In-situ station data",
+            },
+            {
+                "station_id": 14,
+                "lat": 4.0,
+                "lon": 0.02,
+                "observation_type": "In-situ station data",
+            },
         ]
     )
     return basin_df, station_df
@@ -67,10 +88,14 @@ def main():
     assert mapping[8] == 8
     # f) A-B compatible, B-C compatible, A-C incompatible -> not all three merged
     assert mapping[9] == 9 and mapping[10] == 9 and mapping[11] == 11
+    # g) satellite is excluded from merge candidates and cannot become cluster rep
+    assert mapping[12] == 12
+    assert mapping[13] == 13 and mapping[14] == 13
 
     assert stats["max_station_distance_m"] == 5000.0
     assert stats["max_upstream_rel_error"] == 0.10
     assert stats["upstream_area_col"] == "uparea_merit"
+    assert stats["n_satellite_excluded_from_merge"] == 1
     print("smoke test passed")
 
 

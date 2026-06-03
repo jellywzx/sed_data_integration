@@ -358,7 +358,7 @@
 
 `satellite` 的工作流是：
 
-**前半段可以像普通时间序列一样进入 `s3/s4/s5` 获取 cluster 归属，但在 `s6` 默认从主 merge 中分流出去，单独导出为 validation-only 产品，并在 `s8` 作为独立 sidecar 发布。**
+**前半段可以进入 `s3/s4/s5` 保留站点和流域元数据，但 `s5` 不再让 satellite 参与 basin cluster 合并；satellite 行保留为独立 singleton，随后在 `s6` 默认从主 merge 中分流出去，单独导出为 validation-only 产品，并在 `s8` 作为独立 sidecar 发布。**
 
 ---
 
@@ -368,7 +368,7 @@
 |---|---|---|---|---|
 | `climatology` | 否 | 否 | 否，走独立 climatology 导出 | 是，独立发布 |
 | `daily/monthly/annual` | 是 | 是 | 是 | 是，属于主合同 |
-| `satellite` | 是 | 是 | 默认否，走 validation-only 支线 | 是，作为 validation sidecar |
+| `satellite` | 是 | 保留行但不参与 basin cluster 合并 | 默认否，走 validation-only 支线 | 是，作为 validation sidecar |
 
 ---
 
@@ -378,4 +378,4 @@
 
 1. `climatology`：**时间语义上先分出去，绕开 basin 主线，独立导出**
 2. `daily/monthly/annual`：**标准 basin 主线数据，完整走 `s3 -> s8`**
-3. `satellite`：**先拿 cluster 归属，再在 `s6` 默认分流到 validation-only 支线**
+3. `satellite`：**保留为 S5 singleton，再在 `s6` 默认分流到 validation-only 支线**
