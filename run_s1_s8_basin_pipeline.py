@@ -832,6 +832,18 @@ def _confirm_config(args, stages, python_bin):
         ("s8 force overwrite", str(args.s8_force)),
         ("s8 skip validation", str(args.s8_skip_validation)),
         ("s8 include basin polygons", str(args.s8_include_basin_polygons)),
+        ("s2 workers", str(args.s2_workers)),
+        ("s2 clear", str(args.s2_clear)),
+        ("s3 workers", str(args.s3_workers)),
+        ("s6 workers", str(args.s6_workers)),
+        ("matrix workers", str(args.matrix_workers)),
+        ("matrix resolution workers", str(args.matrix_resolution_workers)),
+        ("s8 link mode", str(args.s8_link_mode)),
+        ("s8 skip gpkg", str(args.s8_skip_gpkg)),
+        ("include local basins", str(args.include_local_basins)),
+        ("strict s1", str(args.strict_s1)),
+        ("cluster poll seconds", str(args.cluster_poll_seconds)),
+        ("dry run", str(args.dry_run)),
         ("Log file", str(args.log_file)),
     ]
 
@@ -869,6 +881,25 @@ def _confirm_config(args, stages, python_bin):
         ("[env] S6: DAILY_WORKERS / ...", "export DAILY_WORKERS=40"),
         ("[env] S4: S4_QUEUE / S4_NCORES / ...", "export S4_QUEUE=normal"),
         ("[env] LSF: LSF_QUEUE / LSF_PROJECT", "export LSF_QUEUE=normal"),
+        ("s2 workers", "--s2-workers N"),
+        ("s2 clear", "--s2-clear (clear old output before reorganizing)"),
+        ("s3 workers", "--s3-workers N"),
+        ("s3 exclude resolutions", "--s3-exclude-resolutions"),
+        ("s4 array size", "--s4-array-size N"),
+        ("s4 maxtasksperchild", "--s4-maxtasksperchild N"),
+        ("s6 workers", "--s6-workers N"),
+        ("matrix workers", "--matrix-workers N"),
+        ("matrix resolution workers", "--matrix-resolution-workers N"),
+        ("s8 link mode", "--s8-link-mode hardlink|symlink|copy"),
+        ("s8 skip gpkg", "--s8-skip-gpkg"),
+        ("include local basins", "--include-local-basins"),
+        ("strict s1", "--strict-s1"),
+        ("cluster poll seconds", "--cluster-poll-seconds N"),
+        ("dry run", "--dry-run"),
+        ("s8 force overwrite", "--s8-no-force (to disable force)"),
+        ("s8 include basin polygons", "--s8-no-basin-polygons (to exclude basin polygons)"),
+        ("Python", "--python /path/to/python3"),
+        ("Log file", "--log-file PATH"),
     ]
 
     separator = "=" * 64
@@ -1154,6 +1185,18 @@ def main():
         _print_and_log(log_fp, "s8 include basin poly:   {}".format(args.s8_include_basin_polygons))
         _print_and_log(log_fp, "local s4:                {}".format(args.local_s4))
         _print_and_log(log_fp, "local s6:                {}".format(args.local_s6))
+        _print_and_log(log_fp, "s2 workers:              {}".format(args.s2_workers))
+        _print_and_log(log_fp, "s2 clear:                {}".format(args.s2_clear))
+        _print_and_log(log_fp, "s3 workers:              {}".format(args.s3_workers))
+        _print_and_log(log_fp, "s6 workers:              {}".format(args.s6_workers))
+        _print_and_log(log_fp, "matrix workers:          {}".format(args.matrix_workers))
+        _print_and_log(log_fp, "matrix resolution workers: {}".format(args.matrix_resolution_workers))
+        _print_and_log(log_fp, "s8 link mode:            {}".format(args.s8_link_mode))
+        _print_and_log(log_fp, "s8 skip gpkg:            {}".format(args.s8_skip_gpkg))
+        _print_and_log(log_fp, "include local basins:    {}".format(args.include_local_basins))
+        _print_and_log(log_fp, "strict s1:               {}".format(args.strict_s1))
+        _print_and_log(log_fp, "cluster poll seconds:    {}".format(args.cluster_poll_seconds))
+        _print_and_log(log_fp, "dry run:                 {}".format(args.dry_run))
         # ── 仅能通过 export 设置的环境变量 ──
         _print_and_log(log_fp, "--- env-only settings ---")
         _print_and_log(log_fp, "RUN_ONLY:                {}".format(s6_run_only if s6_run_only else "all (no filter)"))
