@@ -821,8 +821,19 @@ def load_nc_series(path):
                 df[field_name] = stage_qc[field_name]
             df["date"] = pd.to_datetime(df["date"]).dt.date
             for col in ["Q", "SSC", "SSL"]:
-                df.loc[df[col] == FILL,    col] = np.nan
-                df.loc[df[col] == -9999.0, col] = np.nan
+                values = pd.to_numeric(df[col], errors="coerce")
+                df[col] = values
+                df.loc[np.isclose(values, FILL, rtol=1e-5, atol=1e-5), col] = np.nan
+                df.loc[np.isclose(values, -9999.0, rtol=1e-5, atol=1e-5), col] = np.nan
+
+            for value_col, flag_col in [
+                ("Q", "Q_flag"),
+                ("SSC", "SSC_flag"),
+                ("SSL", "SSL_flag"),
+            ]:
+                if value_col in df.columns and flag_col in df.columns:
+                    flag_values = pd.to_numeric(df[flag_col], errors="coerce")
+                    df.loc[flag_values.isin([3, 9]), value_col] = np.nan
             return df, unit_issues
     except UnitValidationError as exc:
         return None, list(exc.issues)
