@@ -65,6 +65,7 @@ BUILTIN_STRICT_S1 = False
 
 BUILTIN_S2_WORKERS = 8
 BUILTIN_S2_CLEAR = False
+BUILTIN_S2_DATASET = ""
 BUILTIN_S3_WORKERS = 32
 BUILTIN_S3_EXCLUDE_RESOLUTIONS = "climatology"
 
@@ -211,6 +212,31 @@ def _parse_steps_arg(steps_text):
     if not selected:
         raise SystemExit("--steps was provided but no valid step was parsed.")
     return selected
+
+
+def _split_multi_value(value):
+    """Normalize list-like config/CLI values into a flat argument list."""
+    if value is None:
+        return []
+    raw_values = value if isinstance(value, (list, tuple, set)) else [value]
+    result = []
+    for raw in raw_values:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        for token in shlex.split(text):
+            for piece in token.split(","):
+                piece = piece.strip()
+                if piece:
+                    result.append(piece)
+    return result
+
+
+def _optional_multi_arg(flag, value):
+    values = _split_multi_value(value)
+    return [flag] + values if values else []
 
 
 def _resolve_selected_stages(args):
@@ -517,6 +543,7 @@ def build_stage_specs(args, python_bin):
                         "-j",
                         str(args.s2_workers),
                     ]
+                    + _optional_multi_arg("--dataset", args.s2_dataset)
                     + (["--clear-all"] if args.s2_clear else []),
                 }
             ],
@@ -584,8 +611,6 @@ def parse_args(defaults=None):
     parser = argparse.ArgumentParser(
         description="Run the scripts_basin_test s1-s8 basin mainline in order."
     )
-    if defaults:
-        parser.set_defaults(**defaults)
     parser.add_argument("--python", help="Python 3 interpreter used to launch each step.")
     parser.add_argument(
         "--log-file",
@@ -648,6 +673,15 @@ def parse_args(defaults=None):
         action="store_true",
         default=BUILTIN_S2_CLEAR,
         help="Pass --clear-all to s2.",
+    )
+    parser.add_argument(
+        "--s2-dataset",
+        nargs="+",
+        default=BUILTIN_S2_DATASET,
+        help=(
+            "Limit s2 to selected dataset(s). Supports multiple values and comma-separated values, "
+            "for example: --s2-dataset Huanghe GloRiSe/SS."
+        ),
     )
     parser.add_argument("--s3-workers", type=int, default=BUILTIN_S3_WORKERS, help="Worker count for s3.")
     parser.add_argument(
@@ -749,6 +783,8 @@ def parse_args(defaults=None):
         default=BUILTIN_S8_FORCE,
         help="Do not pass --force to s8_publish_reference_dataset.py.",
     )
+    if defaults:
+        parser.set_defaults(**defaults)
     return parser.parse_args()
 
 
@@ -834,6 +870,7 @@ def _confirm_config(args, stages, python_bin):
         ("s8 include basin polygons", str(args.s8_include_basin_polygons)),
         ("s2 workers", str(args.s2_workers)),
         ("s2 clear", str(args.s2_clear)),
+        ("s2 dataset filter", ", ".join(_split_multi_value(args.s2_dataset)) or "all"),
         ("s3 workers", str(args.s3_workers)),
         ("s6 workers", str(args.s6_workers)),
         ("matrix workers", str(args.matrix_workers)),
@@ -883,6 +920,7 @@ def _confirm_config(args, stages, python_bin):
         ("[env] LSF: LSF_QUEUE / LSF_PROJECT", "export LSF_QUEUE=normal"),
         ("s2 workers", "--s2-workers N"),
         ("s2 clear", "--s2-clear (clear old output before reorganizing)"),
+        ("s2 dataset filter", "--s2-dataset Huanghe GloRiSe/SS"),
         ("s3 workers", "--s3-workers N"),
         ("s3 exclude resolutions", "--s3-exclude-resolutions"),
         ("s4 array size", "--s4-array-size N"),
@@ -946,6 +984,7 @@ _CONFIG_FIELDS = [
     ("strict_s1", "--strict-s1"),
     ("s2_workers", "--s2-workers"),
     ("s2_clear", "--s2-clear"),
+    ("s2_dataset", "--s2-dataset"),
     ("s3_workers", "--s3-workers"),
     ("s3_exclude_resolutions", "--s3-exclude-resolutions"),
     ("s4_workers", "--s4-workers"),
@@ -1005,6 +1044,10 @@ cli:
   # 跳过交互确认提示（自动继续）
   "yes": false
 
+  # 运行解释器和总日志
+  python: ""   # 留空=自动选择可用的 Python 3
+  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
+
   # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
   local_s6: false
@@ -1015,6 +1058,7 @@ cli:
   # s2: 按分辨率整理
   s2_workers: 8            # 并行 worker 数，推荐 4-16
   s2_clear: false          # 清空旧输出目录重新组织
+  s2_dataset: ""           # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32
@@ -1033,6 +1077,8 @@ cli:
 
   # s6: NetCDF 导出
   s6_workers: 24               # merge worker 数，推荐 8-40
+  matrix_workers:              # 每个 resolution matrix 导出的总 worker；留空=脚本默认
+  matrix_resolution_workers:   # 每个 resolution 内部 worker；留空=脚本默认
   s6_include_climatology: false   # 将 climatology 合并到 master NC
   skip_climatology_export: false   # 跳过独立气候 NC 导出
 
@@ -1187,6 +1233,7 @@ def main():
         _print_and_log(log_fp, "local s6:                {}".format(args.local_s6))
         _print_and_log(log_fp, "s2 workers:              {}".format(args.s2_workers))
         _print_and_log(log_fp, "s2 clear:                {}".format(args.s2_clear))
+        _print_and_log(log_fp, "s2 dataset filter:       {}".format(", ".join(_split_multi_value(args.s2_dataset)) or "all"))
         _print_and_log(log_fp, "s3 workers:              {}".format(args.s3_workers))
         _print_and_log(log_fp, "s6 workers:              {}".format(args.s6_workers))
         _print_and_log(log_fp, "matrix workers:          {}".format(args.matrix_workers))
