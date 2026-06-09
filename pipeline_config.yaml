@@ -17,7 +17,7 @@
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
   # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
-  steps: ""
+  steps: "s2,s6,s7,s8"
 
   # 起始 / 结束阶段（steps 为空时生效）
   start_at: s1
@@ -27,6 +27,10 @@ cli:
   dry_run: false
   # 跳过交互确认提示（自动继续）
   "yes": false
+
+  # 运行解释器和总日志
+  python: ""   # 留空=自动选择可用的 Python 3
+  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
 
   # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
@@ -38,6 +42,7 @@ cli:
   # s2: 按分辨率整理
   s2_workers: 8            # 并行 worker 数，推荐 4-16
   s2_clear: false          # 清空旧输出目录重新组织
+  s2_dataset: [EUSEDcollab, GFQA_v2, USGS, HYBAM]      # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32
@@ -56,6 +61,8 @@ cli:
 
   # s6: NetCDF 导出
   s6_workers: 24               # merge worker 数，推荐 8-40
+  matrix_workers:              # 每个 resolution matrix 导出的总 worker；留空=脚本默认
+  matrix_resolution_workers:   # 每个 resolution 内部 worker；留空=脚本默认
   s6_include_climatology: false   # 将 climatology 合并到 master NC
   skip_climatology_export: false   # 跳过独立气候 NC 导出
 
@@ -104,4 +111,3 @@ env:
   LSF_QUEUE: ""                # LSF 队列（留空用默认）
   LSF_PROJECT: ""              # LSF project 名称
   LSF_EXTRA: ""                # 附加 bsub 参数
-

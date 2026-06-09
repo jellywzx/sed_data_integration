@@ -1880,7 +1880,9 @@ def write_tables(
         "satellite_record_lengths_by_station",
         "satellite_by_linked_cluster",
     ):
-        extra_tables.get(key, pd.DataFrame()).to_csv(outputs[key], index=False)
+        df = extra_tables.get(key)
+        if df is not None and len(df):
+            df.to_csv(outputs[key], index=False)
     return outputs
 
 
@@ -2942,9 +2944,9 @@ def parse_args(argv: Optional[Sequence[str]] = None):
         help="Include standalone climatology stations in fig_active_clusters_by_year.png.",
     )
     ap.add_argument(
-        "--include-satellite",
+        "--exclude-satellite",
         action="store_true",
-        help="Include satellite-validation temporal statistics and figures.",
+        help="Exclude satellite-validation temporal statistics and figures (included by default).",
     )
     ap.add_argument(
         "--skip-satellite-nc",
@@ -3026,7 +3028,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     extra_tables["climatology_by_source"] = clim_by_source
     extra_tables["climatology_record_lengths_by_station"] = clim_station
 
-    if args.include_satellite:
+    if not args.exclude_satellite:
         satellite_nc_path, satellite_catalog_path = resolve_satellite_paths(args)
         if satellite_catalog_path is None:
             print("Warning: satellite_catalog.csv not found; satellite statistics will be skipped.", file=sys.stderr)

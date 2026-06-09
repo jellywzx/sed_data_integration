@@ -114,7 +114,7 @@ STANDARD_QC_STAGE_SPECS = (
     },
     {
         "name": "SSC_qc3",
-        "aliases": ["SSC_qc3", "SSC_flag_qc3_ssc_q"],
+        "aliases": ["SSC_qc3", "SSC_flag_qc3_ssc_q", "SSC_flag_qc3_ssc_q_consistency"],
         "fill_value": 9,
         "flag_values": np.array([0, 2, 8, 9], dtype=np.int8),
         "flag_meanings": "pass suspect not_checked missing",

@@ -2,6 +2,20 @@ import numpy as np
 import pandas as pd
 
 import s6_basin_merge_to_nc as s6
+from qc_contract import read_standardized_qc_stage_arrays
+
+
+class _FakeVar:
+    def __init__(self, values):
+        self._values = np.asarray(values, dtype=np.int8)
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+
+class _FakeDataset:
+    def __init__(self, variables):
+        self.variables = dict(variables)
 
 
 def _series(rows):
@@ -17,6 +31,19 @@ def _series(rows):
         if field_name not in frame:
             frame[field_name] = s6.STANDARD_QC_STAGE_NAME_TO_SPEC[field_name]["fill_value"]
     return frame
+
+
+def test_bayern_ssc_qc3_consistency_alias_maps_to_standard_qc3():
+    ds = _FakeDataset(
+        {
+            "SSC_flag_qc3_ssc_q_consistency": _FakeVar([0, 2, 8, 9]),
+        }
+    )
+
+    arrays = read_standardized_qc_stage_arrays(ds, size=4)
+
+    assert "SSC_qc3" in arrays
+    assert arrays["SSC_qc3"].tolist() == [0, 2, 8, 9]
 
 
 def _with_series(frames, func):

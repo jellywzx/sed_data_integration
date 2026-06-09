@@ -4,8 +4,8 @@ Generate variable coverage tables and distribution figures for manuscript
 Section 4.3 / Table 2 / Figure 6.
 
 Default inputs:
-  - scripts_basin_test/output/s6_basin_merged_all.nc
-  - scripts_basin_test/output/s6_climatology_only.nc
+  - scripts_basin_test/output/sed_reference_release/sed_reference_master.nc
+  - scripts_basin_test/output/sed_reference_release/sed_reference_climatology.nc
 
 Default outputs, relative to this stats/ directory:
   - tables/table_variable_summary_statistics.csv
@@ -20,13 +20,15 @@ Notes:
   - By default, statistics are not restricted to flag == 0. Use --good-only to
     require the corresponding Q_flag / SSC_flag / SSL_flag to be 0.
   - For log10 statistics and log-scale figures, only positive values are used.
-  - The basin mainline file is cluster based. The standalone climatology file is
-    unclustered, so its spatial unit count represents climatology source stations.
+  - The release master file is cluster based. The standalone release climatology
+    file is unclustered, so its spatial unit count represents climatology source
+    stations when included.
 """
 
 import argparse
 import sys
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -42,8 +44,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline_paths import (  # noqa: E402
-    S6_MERGED_NC,
-    S6_CLIMATOLOGY_NC,
     RELEASE_MASTER_NC,
     RELEASE_CLIMATOLOGY_NC,
     get_output_r_root,
@@ -55,15 +55,15 @@ except ImportError:  # pragma: no cover - checked at runtime
     nc4 = None
 
 
-PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
+PROJECT_ROOT = get_output_r_root(REPO_ROOT)
 
-DEFAULT_MASTER_NC = PROJECT_ROOT / S6_MERGED_NC
-DEFAULT_CLIMATOLOGY_NC = PROJECT_ROOT / S6_CLIMATOLOGY_NC
-DEFAULT_RELEASE_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
-DEFAULT_RELEASE_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
+DEFAULT_MASTER_NC = PROJECT_ROOT / RELEASE_MASTER_NC
+DEFAULT_CLIMATOLOGY_NC = PROJECT_ROOT / RELEASE_CLIMATOLOGY_NC
 DEFAULT_TABLES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary/tables"
 DEFAULT_FIGURES_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary/figures"
 DEFAULT_REPORT_DIR = PROJECT_ROOT / "scripts_basin_test/output_other/variable_coverage_summary"
+DEFAULT_REPORT_MD = DEFAULT_REPORT_DIR / "variable_coverage_results_report_ESSD.md"
+DEFAULT_DOCS_REPORTS_DIR = REPO_ROOT / "docs" / "reports"
 
 VARIABLES = ("Q", "SSC", "SSL")
 FLAG_COLUMNS = {"Q": "Q_flag", "SSC": "SSC_flag", "SSL": "SSL_flag"}
@@ -91,6 +91,7 @@ OUTPUT_FILES = {
     "summary_statistics": "table_variable_summary_statistics.csv",
     "coverage_by_resolution": "table_variable_coverage_by_resolution.csv",
     "colocated_coverage": "table_colocated_variable_coverage.csv",
+    "report": "variable_coverage_results_report_ESSD.md",
     "Q": "fig_Q_distribution.png",
     "SSC": "fig_SSC_distribution.png",
     "SSL": "fig_SSL_distribution.png",
@@ -462,6 +463,215 @@ def write_csv(df, path):
     return path
 
 
+def _fmt_int(value):
+    try:
+        if pd.isna(value):
+            return ""
+        return "{:,}".format(int(value))
+    except Exception:
+        return ""
+
+
+def _fmt_pct(value):
+    try:
+        if pd.isna(value):
+            return ""
+        return "{:.2f}%".format(float(value))
+    except Exception:
+        return ""
+
+
+def _fmt_float(value):
+    try:
+        if pd.isna(value):
+            return ""
+        value = float(value)
+    except Exception:
+        return ""
+    if value == 0:
+        return "0"
+    if abs(value) >= 1.0e6 or abs(value) < 1.0e-3:
+        return "{:.3g}".format(value)
+    return "{:.3f}".format(value)
+
+
+def _markdown_table(headers, rows):
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(str(item) for item in row) + " |")
+    return "\n".join(lines)
+
+
+def write_markdown_report(
+    path,
+    master_nc,
+    climatology_nc,
+    summary_df,
+    coverage_df,
+    colocated_df,
+    summary_path,
+    coverage_path,
+    colocated_path,
+    figure_paths,
+    units,
+    good_only=False,
+):
+    """Write a compact manuscript-facing Markdown report for the current run."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    coverage_rows = []
+    for _, row in coverage_df.iterrows():
+        coverage_rows.append(
+            [
+                row["resolution"],
+                _fmt_int(row["n_records_total"]),
+                _fmt_int(row["n_clusters_total"]),
+                _fmt_int(row["Q_records"]),
+                _fmt_pct(row["Q_record_coverage_pct"]),
+                _fmt_int(row["SSC_records"]),
+                _fmt_pct(row["SSC_record_coverage_pct"]),
+                _fmt_int(row["SSL_records"]),
+                _fmt_pct(row["SSL_record_coverage_pct"]),
+            ]
+        )
+
+    all_coverage = coverage_df[coverage_df["resolution"] == "all"].iloc[0]
+    all_colocated = colocated_df[colocated_df["resolution"] == "all"]
+    colocated_rows = []
+    for combo in COMBINATION_ORDER:
+        matches = all_colocated[all_colocated["combination"] == combo]
+        if matches.empty:
+            continue
+        row = matches.iloc[0]
+        colocated_rows.append(
+            [
+                combo,
+                row["combination_type"],
+                _fmt_int(row["n_records"]),
+                _fmt_pct(row["pct_of_all_records"]),
+                _fmt_int(row["n_clusters"]),
+                _fmt_pct(row["pct_of_clusters"]),
+            ]
+        )
+
+    summary_rows = []
+    all_summary = summary_df[summary_df["resolution"] == "all"]
+    for var_name in VARIABLES:
+        matches = all_summary[all_summary["variable"] == var_name]
+        if matches.empty:
+            continue
+        row = matches.iloc[0]
+        summary_rows.append(
+            [
+                var_name,
+                _fmt_int(row["n_nonmissing_records"]),
+                _fmt_int(row["n_nonmissing_clusters"]),
+                _fmt_float(row["mean"]),
+                _fmt_float(row["median"]),
+                _fmt_float(row["p05"]),
+                _fmt_float(row["p95"]),
+                _fmt_float(row["p99"]),
+                units.get(var_name, ""),
+            ]
+        )
+
+    figure_rows = [[path.name, str(path)] for path in figure_paths]
+    table_rows = [
+        ["Summary statistics", str(summary_path)],
+        ["Coverage by resolution", str(coverage_path)],
+        ["Colocated coverage", str(colocated_path)],
+    ]
+
+    lines = [
+        "# Variable Coverage and Summary Statistics Report",
+        "",
+        "Generated by: `variable_coverage_and_summary_stats.py`",
+        "Date: {}".format(datetime.now().strftime("%Y-%m-%d")),
+        "Dataset: `output/sed_reference_release`",
+        "QC filter: {}".format("flag == 0 only" if good_only else "non-missing values regardless of QC flag"),
+        "",
+        "## Input NetCDF Files",
+        "",
+        _markdown_table(
+            ["Input", "Path"],
+            [
+                ["Release master", str(master_nc)],
+                ["Release climatology", str(climatology_nc)],
+            ],
+        ),
+        "",
+        "## Coverage by Temporal Resolution",
+        "",
+        _markdown_table(
+            [
+                "Resolution",
+                "Records",
+                "Spatial units",
+                "Q records",
+                "Q %",
+                "SSC records",
+                "SSC %",
+                "SSL records",
+                "SSL %",
+            ],
+            coverage_rows,
+        ),
+        "",
+        "## All-Resolution Summary Statistics",
+        "",
+        _markdown_table(
+            ["Variable", "Records", "Spatial units", "Mean", "Median", "P05", "P95", "P99", "Unit"],
+            summary_rows,
+        ),
+        "",
+        "## Co-Located Variable Coverage",
+        "",
+        _markdown_table(
+            ["Combination", "Type", "Records", "% all records", "Spatial units", "% units"],
+            colocated_rows,
+        ),
+        "",
+        "## Abstract-Ready Coverage Summary",
+        "",
+    ]
+    for var_name in VARIABLES:
+        lines.append(
+            "- {}: {} records across {} spatial units".format(
+                var_name,
+                _fmt_int(all_coverage["{}_records".format(var_name)]),
+                _fmt_int(all_coverage["{}_clusters".format(var_name)]),
+            )
+        )
+    q_ssc_records = all_colocated.loc[all_colocated["combination"] == "Q + SSC", "n_records"].iloc[0]
+    complete_records = all_colocated.loc[all_colocated["combination"] == "Q + SSC + SSL", "n_records"].iloc[0]
+    lines.extend(
+        [
+            "- Q + SSC co-located records: {}".format(_fmt_int(q_ssc_records)),
+            "- Q + SSC + SSL complete records: {}".format(_fmt_int(complete_records)),
+            "",
+            "## Output Files",
+            "",
+            _markdown_table(["Type", "Path"], table_rows),
+            "",
+            _markdown_table(["Figure", "Path"], figure_rows),
+            "",
+            "## Notes",
+            "",
+            "- Non-missing means finite values that do not match NetCDF fill values.",
+            "- Log10 summary statistics use positive values only.",
+            "- The release master file is cluster based; the standalone release climatology file is station based.",
+            "",
+        ]
+    )
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 def _plot_values_for_variable(sub, var_name, use_log10):
     present_col = "has_{}".format(var_name)
     if present_col not in sub.columns or len(sub) == 0:
@@ -523,9 +733,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate Q/SSC/SSL variable coverage tables and distribution figures."
     )
-    parser.add_argument("--master-nc", default=str(DEFAULT_MASTER_NC), help="Main basin-merged NetCDF file")
-    parser.add_argument("--climatology-nc", default=str(DEFAULT_CLIMATOLOGY_NC), help="Standalone climatology NetCDF file")
-    parser.add_argument("--release-inputs", action="store_true", help="Use sed_reference_release master/climatology files as inputs")
+    parser.add_argument("--master-nc", default=str(DEFAULT_MASTER_NC), help="Release master NetCDF file")
+    parser.add_argument("--climatology-nc", default=str(DEFAULT_CLIMATOLOGY_NC), help="Standalone release climatology NetCDF file")
     parser.add_argument("--no-climatology", action="store_true", help="Do not include standalone climatology NetCDF")
     parser.add_argument(
         "--allow-duplicate-climatology",
@@ -534,6 +743,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--tables-dir", default=str(DEFAULT_TABLES_DIR), help="Output directory for CSV tables")
     parser.add_argument("--figures-dir", default=str(DEFAULT_FIGURES_DIR), help="Output directory for distribution figures")
+    parser.add_argument("--report-md", default=str(DEFAULT_REPORT_MD), help="Output Markdown report path")
+    parser.add_argument(
+        "--docs-reports-dir",
+        default=str(DEFAULT_DOCS_REPORTS_DIR),
+        help="Directory that receives a copy of the Markdown report",
+    )
     parser.add_argument("--good-only", action="store_true", help="Count only records with the corresponding variable flag == 0")
     parser.add_argument("--q-log-scale", action="store_true", help="Plot Q distribution on log10 scale, matching SSC/SSL treatment")
     parser.add_argument("--bins", type=int, default=60, help="Histogram bin count")
@@ -550,10 +765,6 @@ def main(argv=None):
 
     master_nc = Path(args.master_nc)
     climatology_nc = Path(args.climatology_nc)
-    if args.release_inputs:
-        master_nc = DEFAULT_RELEASE_MASTER_NC
-        climatology_nc = DEFAULT_RELEASE_CLIMATOLOGY_NC
-
     if not master_nc.is_file():
         print("Error: master NetCDF not found: {}".format(master_nc), file=sys.stderr)
         return 1
@@ -631,6 +842,30 @@ def main(argv=None):
     for path in figure_paths:
         print("  {}".format(path))
 
+    report_path = write_markdown_report(
+        Path(args.report_md),
+        master_nc,
+        climatology_nc,
+        summary_df,
+        coverage_df,
+        colocated_df,
+        summary_path,
+        coverage_path,
+        colocated_path,
+        figure_paths,
+        units,
+        good_only=bool(args.good_only),
+    )
+    print("Wrote report:")
+    print("  {}".format(report_path))
+
+    docs_reports_dir = Path(args.docs_reports_dir)
+    docs_reports_dir.mkdir(parents=True, exist_ok=True)
+    docs_report_path = docs_reports_dir / report_path.name
+    shutil.copy2(str(report_path), str(docs_report_path))
+    print("Copied report:")
+    print("  {}".format(docs_report_path))
+
     print("\nAbstract-ready coverage summary (all resolutions):")
     for var_name in VARIABLES:
         print(
@@ -648,14 +883,6 @@ def main(argv=None):
     else:
 
         print("\nNote: counts use non-missing values regardless of QC flag. Use --good-only for flag==0 counts.")
-
-    # Copy the ESSD report markdown to the output directory
-    report_src = SCRIPT_DIR / "variable_coverage_results_report_ESSD.md"
-    if report_src.is_file():
-        report_dst = DEFAULT_REPORT_DIR / report_src.name
-        report_dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(report_src), str(report_dst))
-        print("Copied report: {}".format(report_dst))
     return 0
 
 

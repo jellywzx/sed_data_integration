@@ -75,8 +75,24 @@ def read_csv_required(path: Path) -> pd.DataFrame:
             "Required input not found: {}\n"
             "Run the spatial and temporal coverage statistics scripts first.".format(path)
         )
-    return pd.read_csv(path, keep_default_na=False)
+    try:
+        return pd.read_csv(path, keep_default_na=False)
+    except pd.errors.EmptyDataError:
+        raise ValueError(
+            "Required input is empty: {}\n"
+            "Check that upstream scripts (temporal_coverage_stats.py) were run with "
+            "the --exclude-satellite flag (satellite skipped by default unless excluded) if satellite data is expected.".format(path)
+        )
 
+
+def read_csv_optional(path: Path) -> pd.DataFrame:
+    """Read a CSV file, returning an empty DataFrame if missing or empty."""
+    try:
+        if not path.is_file():
+            return pd.DataFrame()
+        return pd.read_csv(path, keep_default_na=False)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError):
+        return pd.DataFrame()
 
 def numeric(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
@@ -164,17 +180,18 @@ def merge_source_contributions(spatial_df: pd.DataFrame, temporal_df: pd.DataFra
 
 def load_other_product_sources() -> Tuple[pd.DataFrame, pd.DataFrame]:
     climatology = read_csv_required(CLIMATOLOGY_SOURCE_TABLE).copy()
-    satellite = read_csv_required(SATELLITE_SOURCE_TABLE).copy()
+    satellite = read_csv_optional(SATELLITE_SOURCE_TABLE).copy()
+
+    if not satellite.empty:
+        sat_required = {"source", "linked_clusters", "record_count_any", "first_year", "last_year"}
+        sat_missing = sorted(sat_required.difference(satellite.columns))
+        if sat_missing:
+            raise ValueError("Satellite source table is missing columns: {}".format(", ".join(sat_missing)))
 
     clim_required = {"source", "stations", "record_count_any", "first_year", "last_year"}
-    sat_required = {"source", "linked_clusters", "record_count_any", "first_year", "last_year"}
     clim_missing = sorted(clim_required.difference(climatology.columns))
-    sat_missing = sorted(sat_required.difference(satellite.columns))
     if clim_missing:
         raise ValueError("Climatology source table is missing columns: {}".format(", ".join(clim_missing)))
-    if sat_missing:
-        raise ValueError("Satellite source table is missing columns: {}".format(", ".join(sat_missing)))
-
     climatology = pd.DataFrame(
         {
             "source_name": climatology["source"].astype(str).str.strip(),
@@ -184,15 +201,18 @@ def load_other_product_sources() -> Tuple[pd.DataFrame, pd.DataFrame]:
             "last_year": numeric(climatology, "last_year"),
         }
     )
-    satellite = pd.DataFrame(
-        {
-            "source_name": satellite["source"].astype(str).str.strip(),
-            "contribution_count": numeric(satellite, "linked_clusters").fillna(0),
-            "record_count": numeric(satellite, "record_count_any").fillna(0),
-            "first_year": numeric(satellite, "first_year"),
-            "last_year": numeric(satellite, "last_year"),
-        }
-    )
+    if satellite.empty:
+        satellite = pd.DataFrame(columns=["source_name", "contribution_count", "record_count", "first_year", "last_year"])
+    else:
+        satellite = pd.DataFrame(
+            {
+                "source_name": satellite["source"].astype(str).str.strip(),
+                "contribution_count": numeric(satellite, "linked_clusters").fillna(0),
+                "record_count": numeric(satellite, "record_count_any").fillna(0),
+                "first_year": numeric(satellite, "first_year"),
+                "last_year": numeric(satellite, "last_year"),
+            }
+        )
     climatology = climatology[climatology["source_name"].ne("")]
     satellite = satellite[satellite["source_name"].ne("")]
     climatology = climatology.sort_values(["contribution_count", "source_name"], ascending=[True, False]).reset_index(drop=True)
@@ -213,13 +233,19 @@ def annotate_cluster_counts(ax, df: pd.DataFrame, y: np.ndarray, pad_fraction: f
     if pd.isna(max_cluster) or max_cluster <= 0:
         return
     pad = max_cluster * pad_fraction
-    for ypos, value in zip(y, df["cluster_count"]):
+    has_temporal = "temporal_record_count" in df.columns
+    for i, (ypos, value) in enumerate(zip(y, df["cluster_count"])):
         if pd.isna(value):
             continue
+        label = format_count(value)
+        if has_temporal:
+            t_count = df.iloc[i].get("temporal_record_count")
+            if pd.notna(t_count) and float(t_count) > 0:
+                label += " / " + format_compact_count(t_count)
         ax.text(
             float(value) + pad,
             ypos,
-            format_count(value),
+            label,
             va="center",
             ha="left",
             fontsize=8.5,
@@ -256,15 +282,21 @@ def annotate_cluster_counts_on_twin(
     if pd.isna(max_cluster) or max_cluster <= 0:
         return
     pad = max_cluster * pad_fraction
-    for ypos, value in zip(y, df["cluster_count"]):
+    has_temporal = "temporal_record_count" in df.columns
+    for i, (ypos, value) in enumerate(zip(y, df["cluster_count"])):
         if pd.isna(value):
             continue
+        label = format_count(value)
+        if has_temporal:
+            t_count = df.iloc[i].get("temporal_record_count")
+            if pd.notna(t_count) and float(t_count) > 0:
+                label += " / " + format_compact_count(t_count)
         display_xy = source_ax.transData.transform((float(value) + pad, ypos))
         label_x, label_y = label_ax.transData.inverted().transform(display_xy)
         label_ax.text(
             label_x,
             label_y,
-            format_count(value),
+            label,
             va="center",
             ha="left",
             fontsize=8.5,
@@ -334,7 +366,6 @@ def plot_other_product_panel(
             zorder=4,
         )
         _set_year_limits(ax_year, time_df)
-        annotate_temporal_records(ax_year, time_df.rename(columns={"record_count": "temporal_record_count"}), y)
 
     ax_year.set_xlabel("Year", color=TEMPORAL_LINE_COLOR)
     ax_year.tick_params(axis="x", colors=TEMPORAL_LINE_COLOR)
@@ -342,9 +373,13 @@ def plot_other_product_panel(
     ax_year.spines["top"].set_color(TEMPORAL_LINE_COLOR)
 
     label_pad = max_count * 0.012 if pd.notna(max_count) and max_count > 0 else 0.0
-    for ypos, value in zip(y, df["contribution_count"]):
+    for i, (ypos, value) in enumerate(zip(y, df["contribution_count"])):
         if pd.isna(value):
             continue
+        label = format_count(value)
+        r_count = df.iloc[i].get("record_count")
+        if pd.notna(r_count) and float(r_count) > 0:
+            label += " / " + format_compact_count(r_count)
         if pd.notna(max_count) and max_count > 0 and float(value) >= max_count * 0.22:
             label_value = float(value) - label_pad
             ha = "right"
@@ -360,7 +395,7 @@ def plot_other_product_panel(
         ax_year.text(
             label_x,
             label_y,
-            format_count(value),
+            label,
             va="center",
             ha=ha,
             fontsize=8.5,
@@ -422,7 +457,6 @@ def plot_combined_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
         year_min = int(np.floor(time_df["first_year"].min() / 10.0) * 10)
         year_max = int(np.ceil(time_df["last_year"].max() / 10.0) * 10)
         ax_time.set_xlim(year_min - 2, year_max + 9)
-        annotate_temporal_records(ax_time, time_df, y)
 
     ax_time.set_xlabel("Year")
     ax_time.set_title("Temporal span")
@@ -433,6 +467,7 @@ def plot_combined_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
     fig.suptitle("Source contributions to spatial coverage and temporal span", y=0.98)
     legend_handles = [
         Patch(facecolor=SPATIAL_COLOR, edgecolor="none", label="clusters"),
+        Patch(facecolor=SPATIAL_COLOR, edgecolor="#2f4f6f", linewidth=0.5, label="clusters / records"),
         Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.5, label="temporal span"),
         Line2D(
             [0],
@@ -448,7 +483,7 @@ def plot_combined_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
     fig.legend(
         handles=legend_handles,
         loc="lower center",
-        ncol=3,
+        ncol=4,
         frameon=False,
         bbox_to_anchor=(0.56, 0.005),
     )
@@ -526,7 +561,6 @@ def plot_overlay_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
             zorder=4,
         )
         _set_year_limits(ax_year, time_df)
-        annotate_temporal_records(ax_year, time_df, y)
     annotate_cluster_counts_on_twin(ax_cluster, ax_year, df, y)
 
     ax_year.set_xlabel("Year", color=TEMPORAL_LINE_COLOR)
@@ -537,6 +571,7 @@ def plot_overlay_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
     ax_cluster.set_title("Source contributions to spatial coverage and temporal span")
     legend_handles = [
         Patch(facecolor=SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="clusters"),
+        Patch(facecolor=SPATIAL_COLOR, alpha=0.72, edgecolor="#2f4f6f", linewidth=0.5, label="clusters / records"),
         Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
         Line2D(
             [0],
@@ -552,7 +587,7 @@ def plot_overlay_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
     fig.legend(
         handles=legend_handles,
         loc="lower center",
-        ncol=3,
+        ncol=4,
         frameon=False,
         bbox_to_anchor=(0.58, 0.01),
     )
@@ -593,6 +628,7 @@ def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite
     legend_handles = [
         Patch(facecolor="#54a24b", alpha=0.48, edgecolor="none", label="climatology stations"),
         Patch(facecolor="#9c755f", alpha=0.48, edgecolor="none", label="satellite linked clusters"),
+        Patch(facecolor=SPATIAL_COLOR, alpha=0.48, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
         Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
         Line2D(
             [0],
@@ -608,7 +644,7 @@ def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite
     fig.legend(
         handles=legend_handles,
         loc="lower center",
-        ncol=4,
+        ncol=5,
         frameon=False,
         bbox_to_anchor=(0.56, 0.0),
     )
