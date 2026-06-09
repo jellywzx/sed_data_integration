@@ -33,10 +33,16 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import shutil
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_IMPORT_ERROR = None
+except ImportError as exc:  # pragma: no cover - depends on runtime system libs
+    plt = None
+    MATPLOTLIB_IMPORT_ERROR = exc
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -91,6 +97,10 @@ OUTPUT_FILES = {
     "summary_statistics": "table_variable_summary_statistics.csv",
     "coverage_by_resolution": "table_variable_coverage_by_resolution.csv",
     "colocated_coverage": "table_colocated_variable_coverage.csv",
+    "summary_statistics_analysis_grade": "table_variable_summary_statistics_analysis_grade.csv",
+    "coverage_by_resolution_analysis_grade": "table_variable_coverage_by_resolution_analysis_grade.csv",
+    "colocated_coverage_analysis_grade": "table_colocated_variable_coverage_analysis_grade.csv",
+    "extreme_value_review_points": "table_extreme_value_review_points.csv",
     "report": "variable_coverage_results_report_ESSD.md",
     "Q": "fig_Q_distribution.png",
     "SSC": "fig_SSC_distribution.png",
@@ -288,15 +298,20 @@ def _merge_units(unit_dicts):
     return merged
 
 
-def add_presence_columns(df, good_only=False):
+def add_presence_columns(df, good_only=False, allowed_flags=None):
     out = df.copy()
+    if good_only:
+        allowed_flags = (0,)
+    elif allowed_flags is not None:
+        allowed_flags = tuple(int(flag) for flag in allowed_flags)
+
     for var_name in VARIABLES:
         values = out[var_name].to_numpy(dtype=np.float64)
         present = np.isfinite(values)
-        if good_only:
+        if allowed_flags is not None:
             flag_name = FLAG_COLUMNS[var_name]
             if flag_name in out.columns:
-                present = present & (out[flag_name].to_numpy(dtype=np.int64) == 0)
+                present = present & np.isin(out[flag_name].to_numpy(dtype=np.int64), allowed_flags)
             else:
                 present = np.zeros(len(out), dtype=bool)
         out["has_{}".format(var_name)] = present
@@ -518,6 +533,11 @@ def write_markdown_report(
     figure_paths,
     units,
     good_only=False,
+    analysis_summary_df=None,
+    analysis_coverage_df=None,
+    analysis_colocated_df=None,
+    analysis_table_paths=None,
+    analysis_flag_meaning="flag in [0, 1]",
 ):
     """Write a compact manuscript-facing Markdown report for the current run."""
     path = Path(path)
@@ -579,20 +599,110 @@ def write_markdown_report(
             ]
         )
 
-    figure_rows = [[path.name, str(path)] for path in figure_paths]
-    table_rows = [
-        ["Summary statistics", str(summary_path)],
-        ["Coverage by resolution", str(coverage_path)],
-        ["Colocated coverage", str(colocated_path)],
-    ]
+    analysis_coverage_rows = []
+    if analysis_coverage_df is not None and not analysis_coverage_df.empty:
+        for _, row in analysis_coverage_df.iterrows():
+            analysis_coverage_rows.append(
+                [
+                    row["resolution"],
+                    _fmt_int(row["n_records_total"]),
+                    _fmt_int(row["n_clusters_total"]),
+                    _fmt_int(row["Q_records"]),
+                    _fmt_pct(row["Q_record_coverage_pct"]),
+                    _fmt_int(row["SSC_records"]),
+                    _fmt_pct(row["SSC_record_coverage_pct"]),
+                    _fmt_int(row["SSL_records"]),
+                    _fmt_pct(row["SSL_record_coverage_pct"]),
+                ]
+            )
 
+    analysis_summary_rows = []
+    if analysis_summary_df is not None and not analysis_summary_df.empty:
+        all_analysis_summary = analysis_summary_df[analysis_summary_df["resolution"] == "all"]
+        for var_name in VARIABLES:
+            matches = all_analysis_summary[all_analysis_summary["variable"] == var_name]
+            if matches.empty:
+                continue
+            row = matches.iloc[0]
+            analysis_summary_rows.append(
+                [
+                    var_name,
+                    _fmt_int(row["n_nonmissing_records"]),
+                    _fmt_int(row["n_nonmissing_clusters"]),
+                    _fmt_float(row["mean"]),
+                    _fmt_float(row["median"]),
+                    _fmt_float(row["p05"]),
+                    _fmt_float(row["p95"]),
+                    _fmt_float(row["p99"]),
+                    units.get(var_name, ""),
+                ]
+            )
+
+    figure_rows = [[path.name, str(path)] for path in figure_paths if path is not None]
+    table_rows = [
+        ["Summary statistics (all non-missing)", str(summary_path)],
+        ["Coverage by resolution (all non-missing)", str(coverage_path)],
+        ["Colocated coverage (all non-missing)", str(colocated_path)],
+    ]
+    if analysis_table_paths:
+        table_rows.extend(
+            [
+                ["Summary statistics (analysis-grade)", str(analysis_table_paths["summary"])],
+                ["Coverage by resolution (analysis-grade)", str(analysis_table_paths["coverage"])],
+                ["Colocated coverage (analysis-grade)", str(analysis_table_paths["colocated"])],
+            ]
+        )
+    review_points_path = Path(summary_path).parent / OUTPUT_FILES["extreme_value_review_points"]
+    if review_points_path.is_file():
+        table_rows.append(["Extreme value review points", str(review_points_path)])
+
+    review_point_rows = []
+    if review_points_path.is_file():
+        try:
+            review_df = pd.read_csv(review_points_path)
+            if not review_df.empty:
+                current_flag = pd.to_numeric(review_df.get("current_flag"), errors="coerce")
+                review_df = review_df.copy()
+                review_df["_current_flag_analysis_grade"] = current_flag.isin([0, 1])
+                review_df["_current_flag_suspect_bad"] = current_flag.isin([2, 3])
+                review_df["_current_flag_missing_or_unknown"] = current_flag.isna() | current_flag.isin([9])
+                grouped = (
+                    review_df.groupby(["source", "severity"], dropna=False)
+                    .agg(
+                        points=("variable", "size"),
+                        current_flag_analysis_grade=("_current_flag_analysis_grade", "sum"),
+                        current_flag_suspect_bad=("_current_flag_suspect_bad", "sum"),
+                        current_flag_missing_or_unknown=("_current_flag_missing_or_unknown", "sum"),
+                    )
+                    .reset_index()
+                    .sort_values(["source", "severity"])
+                )
+                for _, row in grouped.iterrows():
+                    review_point_rows.append(
+                        [
+                            row["source"],
+                            row["severity"],
+                            _fmt_int(row["points"]),
+                            _fmt_int(row["current_flag_analysis_grade"]),
+                            _fmt_int(row["current_flag_suspect_bad"]),
+                            _fmt_int(row["current_flag_missing_or_unknown"]),
+                        ]
+                    )
+        except Exception as exc:
+            review_point_rows.append(["read_error", str(exc), "", "", "", ""])
+
+    primary_filter = "flag == 0" if good_only else "all non-missing values"
+    analysis_filter = "flag == 0" if good_only else analysis_flag_meaning
     lines = [
         "# Variable Coverage and Summary Statistics Report",
         "",
         "Generated by: `variable_coverage_and_summary_stats.py`",
         "Date: {}".format(datetime.now().strftime("%Y-%m-%d")),
         "Dataset: `output/sed_reference_release`",
-        "QC filter: {}".format("flag == 0 only" if good_only else "non-missing values regardless of QC flag"),
+        "QC filter: primary tables count {}; analysis-grade tables require {}.".format(
+            primary_filter,
+            analysis_filter,
+        ),
         "",
         "## Input NetCDF Files",
         "",
@@ -628,16 +738,71 @@ def write_markdown_report(
             summary_rows,
         ),
         "",
-        "## Co-Located Variable Coverage",
-        "",
-        _markdown_table(
-            ["Combination", "Type", "Records", "% all records", "Spatial units", "% units"],
-            colocated_rows,
-        ),
-        "",
-        "## Abstract-Ready Coverage Summary",
-        "",
     ]
+
+    if analysis_coverage_rows and analysis_summary_rows:
+        lines.extend(
+            [
+                "## Analysis-Grade Coverage by Temporal Resolution",
+                "",
+                _markdown_table(
+                    [
+                        "Resolution",
+                        "Records",
+                        "Spatial units",
+                        "Q records",
+                        "Q %",
+                        "SSC records",
+                        "SSC %",
+                        "SSL records",
+                        "SSL %",
+                    ],
+                    analysis_coverage_rows,
+                ),
+                "",
+                "## Analysis-Grade Summary Statistics",
+                "",
+                _markdown_table(
+                    ["Variable", "Records", "Spatial units", "Mean", "Median", "P05", "P95", "P99", "Unit"],
+                    analysis_summary_rows,
+                ),
+                "",
+            ]
+        )
+
+    if review_point_rows:
+        lines.extend(
+            [
+                "## Extreme Value Review Points",
+                "",
+                _markdown_table(
+                    [
+                        "Source",
+                        "Severity",
+                        "Points",
+                        "Current flag 0/1",
+                        "Current flag 2/3",
+                        "Current flag missing/9",
+                    ],
+                    review_point_rows,
+                ),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## Co-Located Variable Coverage",
+            "",
+            _markdown_table(
+                ["Combination", "Type", "Records", "% all records", "Spatial units", "% units"],
+                colocated_rows,
+            ),
+            "",
+            "## Abstract-Ready Coverage Summary",
+            "",
+        ]
+    )
     for var_name in VARIABLES:
         lines.append(
             "- {}: {} records across {} spatial units".format(
@@ -662,6 +827,7 @@ def write_markdown_report(
             "## Notes",
             "",
             "- Non-missing means finite values that do not match NetCDF fill values.",
+            "- Analysis-grade means finite values whose corresponding variable flag is allowed by the report filter.",
             "- Log10 summary statistics use positive values only.",
             "- The release master file is cluster based; the standalone release climatology file is station based.",
             "",
@@ -686,6 +852,9 @@ def _plot_values_for_variable(sub, var_name, use_log10):
 
 
 def plot_distribution(df, var_name, units, out_path, bins=60, dpi=300, q_log_scale=False):
+    if plt is None:
+        return None
+
     use_log10 = var_name in ("SSC", "SSL") or (var_name == "Q" and q_log_scale)
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
 
@@ -803,31 +972,56 @@ def main(argv=None):
             record_tables.append(clim_df)
             unit_dicts.append(clim_units)
 
-    records = pd.concat(record_tables, ignore_index=True)
-    records = add_presence_columns(records, good_only=args.good_only)
+    records_raw = pd.concat(record_tables, ignore_index=True)
+    records = add_presence_columns(records_raw, good_only=args.good_only)
+    analysis_allowed_flags = (0,) if args.good_only else (0, 1)
+    records_analysis = add_presence_columns(records_raw, allowed_flags=analysis_allowed_flags)
     units = _merge_units(unit_dicts)
 
     summary_df = compute_variable_summary(records, units)
     coverage_df = compute_coverage_by_resolution(records)
     colocated_df = compute_colocated_coverage(records)
+    analysis_summary_df = compute_variable_summary(records_analysis, units)
+    analysis_coverage_df = compute_coverage_by_resolution(records_analysis)
+    analysis_colocated_df = compute_colocated_coverage(records_analysis)
 
     summary_path = write_csv(summary_df, tables_dir / OUTPUT_FILES["summary_statistics"])
     coverage_path = write_csv(coverage_df, tables_dir / OUTPUT_FILES["coverage_by_resolution"])
     colocated_path = write_csv(colocated_df, tables_dir / OUTPUT_FILES["colocated_coverage"])
+    analysis_summary_path = write_csv(
+        analysis_summary_df,
+        tables_dir / OUTPUT_FILES["summary_statistics_analysis_grade"],
+    )
+    analysis_coverage_path = write_csv(
+        analysis_coverage_df,
+        tables_dir / OUTPUT_FILES["coverage_by_resolution_analysis_grade"],
+    )
+    analysis_colocated_path = write_csv(
+        analysis_colocated_df,
+        tables_dir / OUTPUT_FILES["colocated_coverage_analysis_grade"],
+    )
 
     figure_paths = []
-    for var_name in VARIABLES:
-        figure_paths.append(
-            plot_distribution(
-                records,
-                var_name,
-                units,
-                figures_dir / OUTPUT_FILES[var_name],
-                bins=max(1, int(args.bins)),
-                dpi=max(72, int(args.dpi)),
-                q_log_scale=bool(args.q_log_scale),
-            )
+    if plt is None:
+        print(
+            "Warning: matplotlib is unavailable; skipping figure refresh: {}".format(
+                MATPLOTLIB_IMPORT_ERROR
+            ),
+            file=sys.stderr,
         )
+    else:
+        for var_name in VARIABLES:
+            figure_paths.append(
+                plot_distribution(
+                    records,
+                    var_name,
+                    units,
+                    figures_dir / OUTPUT_FILES[var_name],
+                    bins=max(1, int(args.bins)),
+                    dpi=max(72, int(args.dpi)),
+                    q_log_scale=bool(args.q_log_scale),
+                )
+            )
 
     all_coverage = coverage_df[coverage_df["resolution"] == "all"].iloc[0]
     all_colocated = colocated_df[colocated_df["resolution"] == "all"]
@@ -838,6 +1032,9 @@ def main(argv=None):
     print("  {}".format(summary_path))
     print("  {}".format(coverage_path))
     print("  {}".format(colocated_path))
+    print("  {}".format(analysis_summary_path))
+    print("  {}".format(analysis_coverage_path))
+    print("  {}".format(analysis_colocated_path))
     print("Wrote figures:")
     for path in figure_paths:
         print("  {}".format(path))
@@ -855,6 +1052,15 @@ def main(argv=None):
         figure_paths,
         units,
         good_only=bool(args.good_only),
+        analysis_summary_df=analysis_summary_df,
+        analysis_coverage_df=analysis_coverage_df,
+        analysis_colocated_df=analysis_colocated_df,
+        analysis_table_paths={
+            "summary": analysis_summary_path,
+            "coverage": analysis_coverage_path,
+            "colocated": analysis_colocated_path,
+        },
+        analysis_flag_meaning="flag in [0, 1]",
     )
     print("Wrote report:")
     print("  {}".format(report_path))
