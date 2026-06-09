@@ -35,15 +35,16 @@ Run examples:
 
 Outputs:
 
-    output/sed_reference_release/tables/source_dataset_layer_summary.csv
-    output/sed_reference_release/tables/source_dataset_layer_membership.csv
-    output/sed_reference_release/tables/source_dataset_layer_report.md
+    output_other/count_main_side_source/source_dataset_layer_summary.csv
+    output_other/count_main_side_source/source_dataset_layer_membership.csv
+    output_other/count_main_side_source/source_dataset_layer_report.md
 """
 
 from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -662,7 +663,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--out-dir",
-        default="output/sed_reference_release/tables",
+        default="output_other/count_main_side_source",
         help="Output directory relative to scripts_basin_test root.",
     )
     args = ap.parse_args()
@@ -989,6 +990,7 @@ def main() -> int:
     # -----------------------------------------------------------------
     docs_reports_dir = scripts_root / "docs" / "reports"
     try:
+        docs_reports_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(report_md, docs_reports_dir)
         print("Copied {} -> {}".format(report_md, docs_reports_dir))
     except Exception as exc:
