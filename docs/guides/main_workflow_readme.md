@@ -192,7 +192,12 @@ Satellite 数据的设计原则：
 4. 不进入 `sed_reference_master.nc`。
 5. 不进入 `sed_reference_timeseries_daily.nc`、`sed_reference_timeseries_monthly.nc`、`sed_reference_timeseries_annual.nc`。
 6. 使用场景是 satellite-vs-station validation、spatial diagnostics 和 downstream comparison。
-7. 如果 satellite NetCDF 或 satellite catalog 缺失，发布流程应失败，而不是生成不完整 release。
+7. **不要将 satellite NetCDF 当作完整的 Q/SSC/SSL 时序数据使用。** 其中不同卫星源覆盖的变量不同：
+   - Dethier: Q/SSC/SSL 齐全（100%）
+   - GSED: 仅含 SSC（55.2%），Q 和 SSL 为 0
+   - RiverSed: 仅含 SSC（0.2%），Q 和 SSL 为 0
+   整体 Q/SSC/SSL 覆盖率仅为 0.81% / 8.15% / 0.81%。使用前务必按 source × variable 过滤。
+8. 如果 satellite NetCDF 或 satellite catalog 缺失，发布流程应失败，而不是生成不完整 release。
 
 `s6` 阶段当前 satellite 中间产物为：
 

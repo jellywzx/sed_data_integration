@@ -17,17 +17,6 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import pandas as pd
 
-try:
-    import geopandas as gpd
-    from shapely.geometry import Point
-
-    HAS_GPD = True
-except ImportError:  # pragma: no cover - optional runtime dependency
-    gpd = None
-    Point = None
-    HAS_GPD = False
-
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 
@@ -41,10 +30,6 @@ OUTPUT_DIR = Path(
 )
 TABLES_DIR = OUTPUT_DIR / "tables"
 FIGURES_DIR = OUTPUT_DIR / "figures"
-WORLD_BOUNDARIES = (
-    "/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/"
-    "pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"
-)
 
 STATION_CATALOG = RELEASE_DIR / "station_catalog.csv"
 SOURCE_STATION_CATALOG = RELEASE_DIR / "source_station_catalog.csv"
@@ -250,50 +235,6 @@ def attach_geography(cluster_df: pd.DataFrame) -> pd.DataFrame:
     out["iso_a3"] = out[iso_col].map(clean_text) if iso_col else ""
     out["continent"] = out[continent_col].map(clean_text) if continent_col else ""
     out["region"] = out[region_col].map(clean_text) if region_col else ""
-
-    boundary_path = Path(WORLD_BOUNDARIES).expanduser() if WORLD_BOUNDARIES else None
-    needs_join = boundary_path and boundary_path.is_file() and (out["country"].eq("").any() or out["continent"].eq("").any())
-    if needs_join and not HAS_GPD:
-        print("Warning: geopandas unavailable; cannot join WORLD_BOUNDARIES")
-    elif needs_join:
-        try:
-            valid = out["valid_latlon"]
-            pts = gpd.GeoDataFrame(
-                out.loc[valid].copy(),
-                geometry=[Point(float(x), float(y)) for x, y in zip(out.loc[valid, "lon"], out.loc[valid, "lat"])],
-                crs="EPSG:4326",
-            )
-            world = gpd.read_file(boundary_path)
-            world = world.set_crs("EPSG:4326") if world.crs is None else world.to_crs("EPSG:4326")
-            w_country = first_col(world.columns, COUNTRY_COLS)
-            w_iso = first_col(world.columns, ISO_COLS)
-            w_continent = first_col(world.columns, CONTINENT_COLS)
-            w_region = first_col(world.columns, REGION_COLS)
-            rename = {}
-            for source, target in (
-                (w_country, "boundary_country"),
-                (w_iso, "boundary_iso_a3"),
-                (w_continent, "boundary_continent"),
-                (w_region, "boundary_region"),
-            ):
-                if source and source in world.columns:
-                    rename[source] = target
-            keep = list(rename.keys()) + ["geometry"]
-            boundary = world[keep].rename(columns=rename)
-            joined = gpd.sjoin(pts, boundary, how="left", predicate="within")
-            region_source = "boundary_region" if "boundary_region" in joined.columns else "boundary_continent"
-            for target, source in (
-                ("country", "boundary_country"),
-                ("iso_a3", "boundary_iso_a3"),
-                ("continent", "boundary_continent"),
-                ("region", region_source),
-            ):
-                if source in joined.columns:
-                    values = joined[source].map(clean_text)
-                    mask = values.ne("")
-                    out.loc[joined.index[mask], target] = values.loc[mask].values
-        except Exception as exc:
-            print("Warning: failed to join WORLD_BOUNDARIES: {}".format(exc))
 
     out["country"] = out["country"].map(clean_text).replace("", "Unknown")
     out["iso_a3"] = out["iso_a3"].map(clean_text).replace("", "UNK")
@@ -744,7 +685,7 @@ def unknown_geography_rows(clusters: pd.DataFrame) -> pd.DataFrame:
         "record_count",
     ]
     out = out[[c for c in keep if c in out.columns]].sort_values(["source_names", "cluster_uid", "cluster_key"])
-    out["unknown_reason"] = "country_or_region_not_resolved_by_catalog_or_boundary_join"
+    out["unknown_reason"] = "country_or_region_not_resolved_in_release_catalog"
     return out
 
 
@@ -971,7 +912,7 @@ def write_article_summary(
         unknown_note = (
             "\n\nNote for manuscript drafting: country/continent fields remain incomplete "
             "for a large fraction of clusters. Do not cite regional coverage conclusions "
-            "until WORLD_BOUNDARIES is configured and the spatial join is rerun."
+            "until S6/S8 release geography enrichment is rerun."
         )
 
     lines = [
@@ -1114,7 +1055,7 @@ def write_article_summary(
         "## Diagnostics and Limitations",
         "",
         "- Unknown country/region rows written for review: {}".format(fmt_int(len(unknown_geo))),
-        "- Regional summaries depend on catalog geography plus the configured world-boundary join; unknown geography should be reviewed before strong continent/country claims.",
+        "- Regional summaries depend on S8 release catalog geography; unknown geography should be reviewed before strong continent/country claims.",
         "- Cluster counts by source are not additive across sources because multiple datasets can contribute to the same merged cluster.",
         "",
         "## Output Tables",
