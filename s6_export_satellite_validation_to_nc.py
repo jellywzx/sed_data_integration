@@ -19,6 +19,17 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
+from global_attr_provenance import (
+    merge_global_attrs_for_paths,
+    set_global_attr_policy,
+    write_global_attr_payload_variables,
+    write_promoted_global_attr_variables,
+)
+from geo_boundary_enrichment import (
+    boundary_options_from_argv,
+    enrich_global_attr_payloads,
+    geo_values_from_payload,
+)
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S5_BASIN_CLUSTERED_CSV,
@@ -157,6 +168,7 @@ def _worker_load_satellite_candidate(payload):
 
     station_name, river_name, source_station_native_id = _read_station_meta_from_nc(str(resolved_path))
     source_long_name, institution, reference, source_url = _read_source_meta_from_nc(str(resolved_path))
+    global_attr_payload = merge_global_attrs_for_paths([str(resolved_path)])
 
     resolution = _normalize_resolution(payload.get("resolution", ""))
     cluster_id = _safe_int(payload.get("cluster_id", -1), default=-1)
@@ -210,6 +222,7 @@ def _worker_load_satellite_candidate(payload):
             "resolved_candidate_path": str(resolved_path),
             "validation_only": 1,
             "merge_policy": "validation_only",
+            "global_attr_payload": global_attr_payload,
         },
         "source_meta": {
             "source": source,
@@ -257,6 +270,11 @@ def _write_satellite_validation_nc(
         candidate_path_v = _str_station_var("candidate_path", "candidate path text from s5")
         resolved_path_v = _str_station_var("resolved_candidate_path", "resolved absolute candidate path")
         merge_policy_v = _str_station_var("merge_policy", "merge policy for this station")
+
+        station_global_attr_payloads = [
+            row.get("global_attr_payload") or merge_global_attrs_for_paths([row.get("resolved_candidate_path", "")])
+            for row in station_rows
+        ]
 
         cluster_id_v = nc.createVariable("cluster_id_station", "i4", ("n_satellite_stations",))
         cluster_id_v.long_name = "cluster id from s5 for this source station"
@@ -324,6 +342,20 @@ def _write_satellite_validation_nc(
         station_source_index_v[:] = np.asarray([source_to_idx.get(row["source"], -1) for row in station_rows], dtype=np.int32)
         validation_only_v[:] = np.ones(n_stations, dtype=np.int8)
 
+        write_global_attr_payload_variables(
+            nc,
+            "n_satellite_stations",
+            "satellite_station",
+            station_global_attr_payloads,
+            "satellite validation station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_satellite_stations",
+            station_global_attr_payloads,
+            subject="satellite validation station",
+        )
+
         lat_vals = np.asarray(
             [row["lat"] if row["lat"] is not None else np.nan for row in station_rows], dtype=np.float32
         )
@@ -381,6 +413,7 @@ def _write_satellite_validation_nc(
         nc.source = "Exported from s5_basin_clustered_stations.csv satellite candidates and source NetCDF files"
         nc.Conventions = "CF-1.8"
         nc.qc_stage_schema_version = "1"
+        set_global_attr_policy(nc)
         nc.history = "Created {} by s6_export_satellite_validation_to_nc.py".format(
             datetime.now().isoformat(timespec="seconds")
         )
@@ -394,6 +427,7 @@ def _write_satellite_validation_nc(
 def main():
     # parse optional --progress-log (no other CLI args)
     _progress_log = ""
+    _geo_options = boundary_options_from_argv(sys.argv[1:])
     _skip_next = False
     for _i, _a in enumerate(sys.argv[1:]):
         if _skip_next:
@@ -547,6 +581,20 @@ def main():
         return 1
 
     record_rows.sort(key=lambda item: (item["satellite_station_index"], item["time"]))
+    station_global_attr_payloads = [
+        row.get("global_attr_payload") or merge_global_attrs_for_paths([row.get("resolved_candidate_path", "")])
+        for row in station_rows
+    ]
+    enrich_global_attr_payloads(
+        station_global_attr_payloads,
+        [row.get("lat", np.nan) for row in station_rows],
+        [row.get("lon", np.nan) for row in station_rows],
+        subject="s6 satellite validation stations",
+        **_geo_options,
+    )
+    for station_row, payload in zip(station_rows, station_global_attr_payloads):
+        station_row["global_attr_payload"] = payload
+
     _write_satellite_validation_nc(
         output_path,
         station_rows=station_rows,
@@ -558,29 +606,29 @@ def main():
     for station_index, station_row in enumerate(station_rows):
         recs = station_record_map.get(station_index, [])
         time_start, time_end = _time_bounds([item["date"] for item in recs])
-        catalog_rows.append(
-            {
-                "satellite_station_uid": station_row["satellite_station_uid"],
-                "cluster_uid": station_row["cluster_uid"],
-                "cluster_id": station_row["cluster_id"],
-                "source": station_row["source"],
-                "source_family": station_row["source_family"],
-                "observation_type": station_row["observation_type"],
-                "resolution": station_row["resolution"],
-                "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
-                "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
-                "station_name": station_row["station_name"],
-                "river_name": station_row["river_name"],
-                "source_station_native_id": station_row["source_station_native_id"],
-                "candidate_path": station_row["candidate_path"],
-                "resolved_candidate_path": station_row["resolved_candidate_path"],
-                "n_records": int(len(recs)),
-                "time_start": time_start,
-                "time_end": time_end,
-                "validation_only": 1,
-                "merge_policy": "validation_only",
-            }
-        )
+        row = {
+            "satellite_station_uid": station_row["satellite_station_uid"],
+            "cluster_uid": station_row["cluster_uid"],
+            "cluster_id": station_row["cluster_id"],
+            "source": station_row["source"],
+            "source_family": station_row["source_family"],
+            "observation_type": station_row["observation_type"],
+            "resolution": station_row["resolution"],
+            "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
+            "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
+            "station_name": station_row["station_name"],
+            "river_name": station_row["river_name"],
+            "source_station_native_id": station_row["source_station_native_id"],
+            "candidate_path": station_row["candidate_path"],
+            "resolved_candidate_path": station_row["resolved_candidate_path"],
+            "n_records": int(len(recs)),
+            "time_start": time_start,
+            "time_end": time_end,
+            "validation_only": 1,
+            "merge_policy": "validation_only",
+        }
+        row.update(geo_values_from_payload(station_row.get("global_attr_payload", {})))
+        catalog_rows.append(row)
 
     catalog_df = pd.DataFrame(catalog_rows)
     catalog_df = catalog_df.sort_values(

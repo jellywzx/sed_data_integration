@@ -65,6 +65,17 @@ from basin_policy import (
     MATCH_QUALITY_CODES,
     MATCH_QUALITY_MEANINGS,
 )
+from global_attr_provenance import (
+    global_attr_payloads_for_path_groups,
+    set_global_attr_policy,
+    write_global_attr_payload_variables,
+    write_promoted_global_attr_variables,
+)
+from geo_boundary_enrichment import (
+    add_geo_boundary_args,
+    boundary_options_from_args,
+    enrich_global_attr_payloads,
+)
 from pipeline_paths import (
     get_output_r_root,
     get_log_path,
@@ -1143,6 +1154,7 @@ def main():
         action="store_true",
         help="可选覆盖：默认主合并排除 satellite source_family；开启后允许 satellite 参与主合并。",
     )
+    add_geo_boundary_args(ap)
     args = ap.parse_args()
 
     global STRICT_UNIT_CHECK
@@ -1566,6 +1578,8 @@ def main():
         (field_name, [""] * n_source_stations) for field_name in SOURCE_STATION_TEXT_FIELDS
     )
     cluster_source_station_counts = np.zeros(n_stations, dtype=np.int32)
+    source_station_path_groups = []
+    station_path_groups = [[] for _ in range(n_stations)]
 
     for idx, info in enumerate(source_station_rows):
         source_station_cluster_index[idx] = int(info["cluster_idx"])
@@ -1583,6 +1597,27 @@ def main():
         for field_name in SOURCE_STATION_TEXT_FIELDS:
             source_station_text_arrays[field_name][idx] = source_station_text_meta.get(field_name, "")
         cluster_source_station_counts[int(info["cluster_idx"])] += 1
+        paths_for_source_station = sorted(info["paths"])
+        source_station_path_groups.append(paths_for_source_station)
+        station_path_groups[int(info["cluster_idx"])].extend(paths_for_source_station)
+
+    source_station_global_attr_payloads = global_attr_payloads_for_path_groups(source_station_path_groups)
+    station_global_attr_payloads = global_attr_payloads_for_path_groups(station_path_groups)
+    geo_options = boundary_options_from_args(args)
+    enrich_global_attr_payloads(
+        source_station_global_attr_payloads,
+        source_station_lats,
+        source_station_lons,
+        subject="s6 master source stations",
+        **geo_options,
+    )
+    enrich_global_attr_payloads(
+        station_global_attr_payloads,
+        lats,
+        lons,
+        subject="s6 master cluster stations",
+        **geo_options,
+    )
 
     print("Source-station map: {} unique source stations across {} clusters".format(
         n_source_stations, n_stations
@@ -1880,6 +1915,20 @@ def main():
         nss_v.long_name = "number of unique source stations mapped into this cluster"
         nss_v[:] = cluster_source_station_counts
 
+        write_global_attr_payload_variables(
+            nc,
+            "n_stations",
+            "station",
+            station_global_attr_payloads,
+            "merged cluster station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_stations",
+            station_global_attr_payloads,
+            subject="merged cluster station",
+        )
+
         # ── n_source_stations 查找表（原始站点完整映射）───────────────────────
         ss_uid_v = nc.createVariable("source_station_uid", str, ("n_source_stations",))
         ss_uid_v.long_name = "stable source-station identifier used inside the merged reference dataset"
@@ -1963,6 +2012,21 @@ def main():
             text_var.long_name = ss_text_attrs[field_name][0]
             text_var.comment = ss_text_attrs[field_name][1]
             text_var[:] = np.array(source_station_text_arrays[field_name], dtype=object)
+
+        write_global_attr_payload_variables(
+            nc,
+            "n_source_stations",
+            "source_station",
+            source_station_global_attr_payloads,
+            "source station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_source_stations",
+            source_station_global_attr_payloads,
+            var_prefix="source_station_",
+            subject="source station",
+        )
 
         # ── n_sources 查找表（每个数据集一行，供引用/机构信息查询）──────────────
         sn_lk = nc.createVariable("source_name", str, ("n_sources",))
@@ -2093,6 +2157,7 @@ def main():
         nc.merge_excluded_source_families = "satellite"
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
+        set_global_attr_policy(nc)
         nc.basin_csv      = str(inp_path)
         nc.n_input_station_rows = str(len(stations))
         nc.n_source_stations = str(n_source_stations)

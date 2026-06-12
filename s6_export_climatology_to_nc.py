@@ -25,6 +25,17 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from global_attr_provenance import (
+    global_attr_payloads_for_path_groups,
+    set_global_attr_policy,
+    write_global_attr_payload_variables,
+    write_promoted_global_attr_variables,
+)
+from geo_boundary_enrichment import (
+    add_geo_boundary_args,
+    boundary_options_from_args,
+    enrich_global_attr_payloads,
+)
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S6_CLIMATOLOGY_NC,
@@ -355,6 +366,7 @@ def main():
     ap.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR), help="organized climatology directory")
     ap.add_argument("--output", default=str(DEFAULT_OUTPUT), help="output climatology nc")
     ap.add_argument("--output-shp", default=str(DEFAULT_OUTPUT_SHP), help="output climatology point shapefile")
+    add_geo_boundary_args(ap)
     args = ap.parse_args()
 
     if not HAS_NC:
@@ -466,6 +478,15 @@ def main():
         references[sidx] = meta["reference"]
         source_urls[sidx] = meta["source_url"]
 
+    station_global_attr_payloads = global_attr_payloads_for_path_groups([[path] for path in path_arr])
+    enrich_global_attr_payloads(
+        station_global_attr_payloads,
+        lat_arr,
+        lon_arr,
+        subject="s6 climatology stations",
+        **boundary_options_from_args(args),
+    )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with nc4.Dataset(output_path, "w", format="NETCDF4") as nc:
         nc.createDimension("n_stations", n_stations)
@@ -540,6 +561,20 @@ def main():
         path_v = nc.createVariable("source_station_path", str, ("n_stations",))
         path_v.long_name = "absolute path of the organized climatology nc"
         path_v[:] = np.array(path_arr, dtype=object)
+
+        write_global_attr_payload_variables(
+            nc,
+            "n_stations",
+            "station",
+            station_global_attr_payloads,
+            "climatology station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_stations",
+            station_global_attr_payloads,
+            subject="climatology station",
+        )
 
         sname_v = nc.createVariable("source_name", str, ("n_sources",))
         sname_v[:] = np.array(unique_sources, dtype=object)
@@ -627,6 +662,7 @@ def main():
         )
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
+        set_global_attr_policy(nc)
         nc.n_input_files = str(n_stations)
 
         nc.sync()

@@ -44,9 +44,7 @@ from cluster_spatial_catalog import (
     HAS_NC,
     RESOLUTION_CODE_TO_NAME,
     RESOLUTION_NAME_TO_CODE,
-    attach_geo_metadata_from_source_catalog,
     build_source_dataset_catalog,
-    enrich_source_station_geography,
     normalize_cluster_resolution_catalog,
     normalize_cluster_station_catalog,
     normalize_source_station_resolution_catalog,
@@ -1149,6 +1147,200 @@ def _geo_column_validation_rows(label, frame):
     ]
 
 
+def _ensure_release_geo_columns(frame):
+    work = frame.copy()
+    for col in GEO_METADATA_COLUMNS:
+        if col not in work.columns:
+            work[col] = ""
+    for col in GEO_METADATA_COLUMNS:
+        work[col] = work[col].fillna("").astype(str).str.strip()
+    return work
+
+
+def _finalize_release_geo_provenance(frame):
+    work = _ensure_release_geo_columns(frame)
+    for idx, row in work.iterrows():
+        n_values = sum(1 for col in GEO_METADATA_COLUMNS[:4] if _clean_text(row.get(col, "")))
+        source = _clean_text(row.get("geo_attribute_source", ""))
+        confidence = _clean_text(row.get("geo_attribute_confidence", ""))
+        method = _clean_text(row.get("geo_attribute_method", ""))
+        if not source:
+            source = "missing" if n_values == 0 else "existing_catalog"
+        if not confidence:
+            if n_values == len(GEO_METADATA_COLUMNS[:4]):
+                confidence = "high"
+            elif n_values:
+                confidence = "medium"
+            else:
+                confidence = "missing"
+        if not method and source.startswith("source_nc_global_attrs"):
+            method = "upstream_global_attrs"
+        work.at[idx, "geo_attribute_source"] = source
+        work.at[idx, "geo_attribute_confidence"] = confidence
+        work.at[idx, "geo_attribute_method"] = method
+    return work
+
+
+def _geo_lookup_from_nc(nc_path, key_var, var_prefix=""):
+    lookup = {}
+    path = Path(nc_path) if nc_path else Path("")
+    if nc4 is None or not path.is_file():
+        return lookup
+    try:
+        with nc4.Dataset(str(path), "r") as ds:
+            if key_var not in ds.variables:
+                return lookup
+            missing = ["{}{}".format(var_prefix, col) for col in GEO_METADATA_COLUMNS if "{}{}".format(var_prefix, col) not in ds.variables]
+            if missing:
+                return lookup
+            keys = _read_text_var(ds, key_var)
+            size = len(keys)
+            columns = {}
+            for col in GEO_METADATA_COLUMNS:
+                var_name = "{}{}".format(var_prefix, col)
+                columns[col] = _read_text_var(ds, var_name, size=size)
+            for idx, key in enumerate(keys):
+                key = _clean_text(key)
+                if not key:
+                    continue
+                lookup[key] = dict((col, columns[col][idx] if idx < len(columns[col]) else "") for col in GEO_METADATA_COLUMNS)
+    except Exception:
+        return {}
+    return lookup
+
+
+def _fill_geo_from_lookup(frame, key_col, lookup):
+    work = _ensure_release_geo_columns(frame)
+    if key_col not in work.columns or not lookup:
+        return _finalize_release_geo_provenance(work)
+    for idx, row in work.iterrows():
+        values = lookup.get(_clean_text(row.get(key_col, "")))
+        if not values:
+            continue
+        for col in GEO_METADATA_COLUMNS:
+            work.at[idx, col] = _clean_text(values.get(col, ""))
+    return _finalize_release_geo_provenance(work)
+
+
+def _fill_resolution_geo_from_lookups(frame, lookups_by_resolution):
+    work = _ensure_release_geo_columns(frame)
+    if "resolution" not in work.columns:
+        return _finalize_release_geo_provenance(work)
+    for resolution, lookup in sorted(lookups_by_resolution.items()):
+        if not lookup:
+            continue
+        mask = work["resolution"].fillna("").astype(str).str.strip().eq(str(resolution))
+        if not mask.any():
+            continue
+        filled = _fill_geo_from_lookup(work.loc[mask].copy(), "cluster_uid", lookup)
+        work.loc[mask, GEO_METADATA_COLUMNS] = filled[GEO_METADATA_COLUMNS].to_numpy()
+    return _finalize_release_geo_provenance(work)
+
+
+def _geo_catalog_nc_consistency_rows(label, frame, key_col, nc_lookup):
+    if not nc_lookup:
+        return [
+            {
+                "check": "geo_catalog_nc_consistency_{}".format(label),
+                "status": "fail",
+                "details": "S6 NetCDF lookup is empty or missing promoted geo variables",
+            }
+        ]
+    missing_cols = sorted(set([key_col] + GEO_METADATA_COLUMNS) - set(frame.columns))
+    if missing_cols:
+        return [
+            {
+                "check": "geo_catalog_nc_consistency_{}".format(label),
+                "status": "fail",
+                "details": "catalog missing columns: {}".format(", ".join(missing_cols)),
+            }
+        ]
+    mismatches = []
+    missing_keys = []
+    checked = 0
+    for _, row in frame.iterrows():
+        key = _clean_text(row.get(key_col, ""))
+        if not key:
+            continue
+        nc_values = nc_lookup.get(key)
+        if nc_values is None:
+            missing_keys.append(key)
+            if len(missing_keys) >= 10:
+                continue
+            continue
+        checked += 1
+        for col in GEO_METADATA_COLUMNS:
+            catalog_value = _clean_text(row.get(col, ""))
+            nc_value = _clean_text(nc_values.get(col, ""))
+            if catalog_value != nc_value:
+                mismatches.append("{}:{} catalog={!r} nc={!r}".format(key, col, catalog_value, nc_value))
+                break
+        if len(mismatches) >= 10:
+            break
+    status = "pass" if not mismatches and not missing_keys else "fail"
+    details = "checked={} keys".format(checked)
+    if missing_keys:
+        details += "; missing_keys={}{}".format(
+            ",".join(missing_keys[:10]),
+            "..." if len(missing_keys) > 10 else "",
+        )
+    if mismatches:
+        details += "; mismatches={}{}".format(
+            " | ".join(mismatches[:10]),
+            "..." if len(mismatches) > 10 else "",
+        )
+    return [
+        {
+            "check": "geo_catalog_nc_consistency_{}".format(label),
+            "status": status,
+            "details": details,
+        }
+    ]
+
+
+def _global_attr_payload_validation_rows(label, nc_path, expected_vars):
+    path = Path(nc_path) if nc_path else Path("")
+    if not path.is_file():
+        return [
+            {
+                "check": "upstream_global_attrs_{}".format(label),
+                "status": "fail",
+                "details": "missing NetCDF: {}".format(path),
+            }
+        ]
+    try:
+        with nc4.Dataset(str(path), "r") as ds:
+            missing = [name for name in expected_vars if name not in ds.variables]
+            if missing:
+                return [
+                    {
+                        "check": "upstream_global_attrs_{}".format(label),
+                        "status": "fail",
+                        "details": "missing variables: {}".format(", ".join(missing)),
+                    }
+                ]
+            details = []
+            for name in expected_vars:
+                var = ds.variables[name]
+                dims = "x".join(var.dimensions)
+                details.append("{}[{}]".format(name, dims))
+            return [
+                {
+                    "check": "upstream_global_attrs_{}".format(label),
+                    "status": "pass",
+                    "details": "; ".join(details),
+                }
+            ]
+    except Exception as exc:
+        return [
+            {
+                "check": "upstream_global_attrs_{}".format(label),
+                "status": "fail",
+                "details": "failed to inspect NetCDF: {}".format(exc),
+            }
+        ]
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
     lat1 = np.deg2rad(np.asarray(lat1, dtype=np.float64))
     lon1 = np.deg2rad(np.asarray(lon1, dtype=np.float64))
@@ -1853,6 +2045,97 @@ def validate_release(
     rows.extend(_geo_column_validation_rows("cluster_station_catalog", cluster_station_catalog))
     rows.extend(_geo_column_validation_rows("station_catalog", cluster_resolution_catalog))
     rows.extend(_geo_column_validation_rows("source_station_catalog", source_station_catalog))
+    master_station_geo_lookup = _geo_lookup_from_nc(master_nc, "cluster_uid")
+    master_source_geo_lookup = _geo_lookup_from_nc(master_nc, "source_station_uid", var_prefix="source_station_")
+    rows.extend(
+        _geo_catalog_nc_consistency_rows(
+            "cluster_station_catalog_master",
+            cluster_station_catalog,
+            "cluster_uid",
+            master_station_geo_lookup,
+        )
+    )
+    rows.extend(
+        _geo_catalog_nc_consistency_rows(
+            "source_station_catalog_master",
+            source_station_catalog,
+            "source_station_uid",
+            master_source_geo_lookup,
+        )
+    )
+    for resolution, matrix_path in sorted(matrix_paths.items()):
+        matrix_geo_lookup = _geo_lookup_from_nc(matrix_path, "cluster_uid")
+        subset = cluster_resolution_catalog[
+            cluster_resolution_catalog["resolution"].fillna("").astype(str).str.strip().eq(str(resolution))
+        ].copy()
+        rows.extend(
+            _geo_catalog_nc_consistency_rows(
+                "station_catalog_matrix_{}".format(resolution),
+                subset,
+                "cluster_uid",
+                matrix_geo_lookup,
+            )
+        )
+    if satellite_validation_nc and satellite_validation_catalog_csv and Path(satellite_validation_catalog_csv).is_file():
+        satellite_catalog = pd.read_csv(satellite_validation_catalog_csv, keep_default_na=False)
+        rows.extend(_geo_column_validation_rows("satellite_catalog", satellite_catalog))
+        rows.extend(
+            _geo_catalog_nc_consistency_rows(
+                "satellite_catalog",
+                satellite_catalog,
+                "satellite_station_uid",
+                _geo_lookup_from_nc(satellite_validation_nc, "satellite_station_uid"),
+            )
+        )
+    rows.extend(
+        _global_attr_payload_validation_rows(
+            "master",
+            master_nc,
+            (
+                "station_global_attrs_json",
+                "station_global_attr_names",
+                "station_global_attr_count",
+                "source_station_global_attrs_json",
+                "source_station_global_attr_names",
+                "source_station_global_attr_count",
+            ),
+        )
+    )
+    for resolution, matrix_path in sorted(matrix_paths.items()):
+        rows.extend(
+            _global_attr_payload_validation_rows(
+                "matrix_{}".format(resolution),
+                matrix_path,
+                (
+                    "station_global_attrs_json",
+                    "station_global_attr_names",
+                    "station_global_attr_count",
+                ),
+            )
+        )
+    rows.extend(
+        _global_attr_payload_validation_rows(
+            "climatology",
+            climatology_nc,
+            (
+                "station_global_attrs_json",
+                "station_global_attr_names",
+                "station_global_attr_count",
+            ),
+        )
+    )
+    if satellite_validation_nc:
+        rows.extend(
+            _global_attr_payload_validation_rows(
+                "satellite",
+                satellite_validation_nc,
+                (
+                    "satellite_station_global_attrs_json",
+                    "satellite_station_global_attr_names",
+                    "satellite_station_global_attr_count",
+                ),
+            )
+        )
 
     cluster_uid_lookup = cluster_station_catalog.set_index("cluster_uid")["master_station_index"].to_dict()
     source_key_lookup = source_station_catalog.set_index(
@@ -2462,22 +2745,23 @@ def main():
     source_station_catalog = normalize_source_station_resolution_catalog(
         pd.read_csv(source_station_resolution_catalog_in, keep_default_na=False)
     )
-    source_station_catalog = enrich_source_station_geography(source_station_catalog)
+    master_station_geo_lookup = _geo_lookup_from_nc(master_nc, "cluster_uid")
+    master_source_geo_lookup = _geo_lookup_from_nc(master_nc, "source_station_uid", var_prefix="source_station_")
+    matrix_geo_lookups = {
+        "daily": _geo_lookup_from_nc(daily_nc, "cluster_uid"),
+        "monthly": _geo_lookup_from_nc(monthly_nc, "cluster_uid"),
+        "annual": _geo_lookup_from_nc(annual_nc, "cluster_uid"),
+    }
+    source_station_catalog = normalize_source_station_resolution_catalog(
+        _fill_geo_from_lookup(source_station_catalog, "source_station_uid", master_source_geo_lookup)
+    )
     cluster_station_catalog = normalize_cluster_station_catalog(
-        attach_geo_metadata_from_source_catalog(
-            cluster_station_catalog,
-            source_station_catalog,
-            ("cluster_uid",),
-        )
+        _fill_geo_from_lookup(cluster_station_catalog, "cluster_uid", master_station_geo_lookup)
     )
     station_catalog = normalize_cluster_resolution_catalog(
-        attach_geo_metadata_from_source_catalog(
-            station_catalog,
-            source_station_catalog,
-            ("cluster_uid", "resolution"),
-        )
+        _fill_resolution_geo_from_lookups(station_catalog, matrix_geo_lookups)
     )
-    source_dataset_catalog = build_source_dataset_catalog(source_station_catalog)
+    source_dataset_catalog = _finalize_release_geo_provenance(build_source_dataset_catalog(source_station_catalog))
 
     station_catalog_path = _write_csv(station_catalog, out_dir / Path(RELEASE_STATION_CATALOG_CSV).name)
     source_station_catalog_path = _write_csv(
@@ -2520,12 +2804,16 @@ def main():
     )
     print("Prepared satellite release NC: {}".format(sat_nc_dst.name))
 
-    sat_catalog_dst = _link_or_copy_file(
-        satellite_validation_catalog,
-        release_sat_catalog_path,
-        mode=args.link_mode,
-        force=args.force,
+    satellite_geo_lookup = _geo_lookup_from_nc(
+        satellite_validation_nc,
+        "satellite_station_uid",
     )
+    sat_catalog_df = _fill_geo_from_lookup(
+        pd.read_csv(satellite_validation_catalog, keep_default_na=False),
+        "satellite_station_uid",
+        satellite_geo_lookup,
+    )
+    sat_catalog_dst = _write_csv(sat_catalog_df, release_sat_catalog_path)
     file_records.append(
         (
             "satellite_catalog",
