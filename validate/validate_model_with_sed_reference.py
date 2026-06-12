@@ -115,9 +115,10 @@ DEFAULT_START_DATE = "1995-01-01"               # 验证起始日期（空 = 不
 DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不限制）
 
 # --- 其他 ---
-DEFAULT_OUTPUT_DIR = "../output_other/validate_model_with_sed_reference"     # 输出目录路径（必填）
+DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/validate_model_with_sed_reference"     # 输出目录路径（必填）
 DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
 DEFAULT_MAKE_PLOTS = True                      # 是否输出逐对比 PNG 图
+DEFAULT_PLOT_ONLY = True                     # 仅重绘出图，跳过计算
 DEFAULT_NUM_WORKERS = 8                        # 并行进程数（0 = 自动选 CPU 核心数的一半）
 
 DEFAULT_MERIT_HYDRO_DIR = "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"  # MERIT Hydro 河网数据目录（区域图使用）
@@ -506,6 +507,74 @@ def maybe_plot_compare(compare_df: pd.DataFrame, title: str, ylabel: str, out_pn
     fig.savefig(out_png, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+
+
+def regenerate_all_plots(output_dir: Path) -> None:
+    """Re-generate all station compare PNGs from existing compare CSV files.
+    Skips the entire model/reference loading pipeline -- only reads CSV and plots.
+    Set DEFAULT_PLOT_ONLY = True to use this mode.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_dir)
+    station_dirs = sorted(output_dir.iterdir())
+    total = 0
+    skipped = 0
+    for sd in station_dirs:
+        if not sd.is_dir():
+            continue
+        # Find all compare_*.csv in this station dir
+        csv_files = sorted(sd.glob("compare_*.csv"))
+        if not csv_files:
+            skipped += 1
+            continue
+        for csv_path in csv_files:
+            # Determine variable name and resolution from filename
+            stem = csv_path.stem  # e.g. compare_Q_daily
+            parts = stem.split("_")
+            if len(parts) < 3:
+                continue
+            var_name = parts[1]
+            resolution = "_".join(parts[2:])
+            out_png = csv_path.with_suffix(".png")
+
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                continue
+
+            # Find reference and model columns dynamically
+            ref_cols = [c for c in df.columns if "reference" in c.lower()]
+            model_cols = [c for c in df.columns if "model" in c.lower()]
+            if not ref_cols or not model_cols:
+                continue
+            ref_col = ref_cols[0]
+            model_col = model_cols[0]
+
+            # Build title from station dir name + variable
+            station_label = sd.name
+            if "_" in station_label:
+                parts_label = station_label.split("_", 1)
+                station_label = parts_label[1] if len(parts_label) > 1 else station_label
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(pd.to_datetime(df["time"]), df[ref_col], color="tab:red", linewidth=2, label="Reference")
+            ax.plot(pd.to_datetime(df["time"]), df[model_col], color="tab:blue", linewidth=2, label="Model")
+            ax.set_title("%s %s" % (station_label, var_name))
+            ax.set_xlabel("Time")
+            ax.set_ylabel(var_name)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            fig.savefig(out_png, dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            total += 1
+
+    print("[INFO] Regenerated %d station plots from existing CSV files." % total)
+    if skipped:
+        print("[INFO] %d station directories had no compare CSV files." % skipped)
 
 # ============================================================
 # Parallel worker for station validation
@@ -972,7 +1041,7 @@ def plot_model_domain(
             ax.annotate(
                 label,
                 (s_lon180, s_lat),
-                fontsize=6,
+                fontsize=9,
                 xytext=(5, 4),
                 textcoords="offset points",
                 alpha=0.85,
@@ -980,11 +1049,11 @@ def plot_model_domain(
             )
 
     # --- Labels, legend, grid ---
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
+    ax.set_xlabel("Longitude", fontsize=12)
+    ax.set_ylabel("Latitude", fontsize=12)
     ax.set_title(
         "Model Domain Overview\nValidation: %s to %s" % (valid_start.date(), valid_end.date()) if map_type == "global" \
-            else "Model Domain Overview \u2014 Regional\nValidation: %s to %s" % (valid_start.date(), valid_end.date()), fontsize=13
+            else "Model Domain Overview \u2014 Regional\nValidation: %s to %s" % (valid_start.date(), valid_end.date()), fontsize=15
     )
     # Apply region cropping: only zoom for regional map, global map always shows full globe
     if map_type == "region" and (region_lat_min is not None or region_lat_max is not None or region_lon_min is not None or region_lon_max is not None):
@@ -1001,8 +1070,9 @@ def plot_model_domain(
     else:
         ax.set_xlim(-180, 180)
         ax.set_ylim(-90, 90)
+    ax.tick_params(axis="both", labelsize=10)
     ax.grid(True, alpha=0.2, linewidth=0.3)
-    legend = ax.legend(loc="lower left", fontsize=7, markerscale=0.8, framealpha=0.8)
+    legend = ax.legend(loc="lower left", fontsize=10, markerscale=0.8, framealpha=0.8)
     for lh in legend.legend_handles:
         lh._sizes = [20]
 
@@ -1177,6 +1247,7 @@ def main() -> None:
         "make_plots": DEFAULT_MAKE_PLOTS,         
         "num_workers": DEFAULT_NUM_WORKERS,         
         "merit_hydro_dir": DEFAULT_MERIT_HYDRO_DIR,
+        "plot_only": DEFAULT_PLOT_ONLY,
     }                                              
     # 
 
@@ -1349,6 +1420,13 @@ def main() -> None:
         region_lon_min=cfg.get("region_lon_min"),
         region_lon_max=cfg.get("region_lon_max"),
     )
+
+    # --- PLOT_ONLY mode: skip heavy computation ---
+    if cfg.get("plot_only", False):
+        print("[INFO] PLOT_ONLY mode: regenerating station plots from existing CSV files...")
+        regenerate_all_plots(Path(cfg["output_dir"]))
+        print("[INFO] Done. Set DEFAULT_PLOT_ONLY = False to re-run full validation.")
+        return
 
     print("[INFO] Loading reference matrix (%.1f GB)... " % (1.8), end="", flush=True)
 
