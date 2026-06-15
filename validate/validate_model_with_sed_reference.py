@@ -118,7 +118,8 @@ DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不
 DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/validate_model_with_sed_reference"     # 输出目录路径（必填）
 DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
 DEFAULT_MAKE_PLOTS = True                      # 是否输出逐对比 PNG 图
-DEFAULT_PLOT_ONLY = True                     # 仅重绘出图，跳过计算
+DEFAULT_PLOT_ONLY = False                     # 仅重绘出图，跳过计算
+DEFAULT_MAP_ONLY = True                     # 仅绘制概览图和空间分布图，跳过站点验证计算
 DEFAULT_NUM_WORKERS = 8                        # 并行进程数（0 = 自动选 CPU 核心数的一半）
 
 DEFAULT_MERIT_HYDRO_DIR = "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"  # MERIT Hydro 河网数据目录（区域图使用）
@@ -508,7 +509,6 @@ def maybe_plot_compare(compare_df: pd.DataFrame, title: str, ylabel: str, out_pn
     plt.close(fig)
 
 
-
 def regenerate_all_plots(output_dir: Path) -> None:
     """Re-generate all station compare PNGs from existing compare CSV files.
     Skips the entire model/reference loading pipeline -- only reads CSV and plots.
@@ -769,7 +769,6 @@ def _validate_one_station(args_tuple):
             )
 
     return metrics_list, var_status_list
-
 
 
 _LAND_POLYGONS_CACHE: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None
@@ -1041,7 +1040,7 @@ def plot_model_domain(
             ax.annotate(
                 label,
                 (s_lon180, s_lat),
-                fontsize=9,
+                fontsize=14,
                 xytext=(5, 4),
                 textcoords="offset points",
                 alpha=0.85,
@@ -1072,7 +1071,7 @@ def plot_model_domain(
         ax.set_ylim(-90, 90)
     ax.tick_params(axis="both", labelsize=10)
     ax.grid(True, alpha=0.2, linewidth=0.3)
-    legend = ax.legend(loc="lower left", fontsize=10, markerscale=0.8, framealpha=0.8)
+    legend = ax.legend(loc="lower left", fontsize=14, markerscale=0.8, framealpha=0.8)
     for lh in legend.legend_handles:
         lh._sizes = [20]
 
@@ -1084,8 +1083,6 @@ def plot_model_domain(
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     print("[INFO] Model domain overview saved: %s" % out_path)
-
-
 
 
 def plot_model_spatial_mean(
@@ -1214,8 +1211,6 @@ def plot_model_spatial_mean(
     print("[INFO] Time-mean spatial map saved: %s" % out_path, flush=True)
 
 
-
-
 def main() -> None:
     #  Assemble configuration 
     cfg = {                                       
@@ -1248,6 +1243,7 @@ def main() -> None:
         "num_workers": DEFAULT_NUM_WORKERS,         
         "merit_hydro_dir": DEFAULT_MERIT_HYDRO_DIR,
         "plot_only": DEFAULT_PLOT_ONLY,
+        "map_only": DEFAULT_MAP_ONLY,
     }                                              
     # 
 
@@ -1406,6 +1402,13 @@ def main() -> None:
         merit_hydro_dir=cfg.get("merit_hydro_dir"),
     )
 
+
+    # --- MAP_ONLY mode: only plot domain overview maps, skip everything else ---
+    if cfg.get("map_only", False):
+        print("[INFO] MAP_ONLY mode: domain overview maps done.")
+        print("[INFO] Set DEFAULT_MAP_ONLY = False to run full validation.")
+        return
+
     print("[INFO] Candidate stations in region: %d" % sum(1 for r in candidate_rows if r.get("candidate_status") == "candidate"))
 
     # --- Plot time-mean spatial distribution ---
@@ -1420,6 +1423,7 @@ def main() -> None:
         region_lon_min=cfg.get("region_lon_min"),
         region_lon_max=cfg.get("region_lon_max"),
     )
+
 
     # --- PLOT_ONLY mode: skip heavy computation ---
     if cfg.get("plot_only", False):
