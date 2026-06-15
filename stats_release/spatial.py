@@ -52,6 +52,41 @@ from stats_release.reporting import (
     sorted_markdown_table,
 )
 
+# ---- Canonical geo name lookup (iso_a3 -> (country, continent_region)) ----
+# Used by _canonicalize_geo() to resolve country/region name conflicts.
+# Sources: UN M49 standard country/region names; continent-level names are
+# preferred when raw data mixes continental and sub-regional granularity.
+# Raw text variants are still preserved as provenance aliases.
+_CANONICAL_GEO: dict[str, tuple[str, str]] = {
+    "USA": ("United States", "North America"),
+    "MEX": ("Mexico", "North America"),
+    "CAN": ("Canada", "North America"),
+    "CAN|USA": ("Canada|United States", "North America"),
+    "DNK": ("Denmark", "Europe"),
+    "DEU": ("Germany", "Europe"),
+    "GBR": ("United Kingdom", "Europe"),
+    "FRA": ("France", "Europe"),
+    "ESP": ("Spain", "Europe"),
+    "PRT": ("Portugal", "Europe"),
+    "BEL": ("Belgium", "Europe"),
+    "ITA": ("Italy", "Europe"),
+    "GRC": ("Greece", "Europe"),
+    "CZE": ("Czech Republic", "Europe"),
+    "POL": ("Poland", "Europe"),
+    "SVN": ("Slovenia", "Europe"),
+    "RUS": ("Russia", "Europe"),
+    "CHN": ("China", "Asia"),
+    "JPN": ("Japan", "Asia"),
+    "THA": ("Thailand", "Asia"),
+    "VNM": ("Vietnam", "Asia"),
+    "MMR": ("Myanmar", "Asia"),
+    "BRA": ("Brazil", "South America"),
+    "ECU": ("Ecuador", "South America"),
+    "PER": ("Peru", "South America"),
+    "VEN": ("Venezuela", "South America"),
+    "COG": ("Republic of the Congo", "Africa"),
+}
+
 
 def _valid_latlon(frame: pd.DataFrame, lat_col="lat", lon_col="lon") -> pd.Series:
     lat = numeric_series(frame, lat_col)
@@ -260,16 +295,25 @@ def _canonicalize_geo(clusters: pd.DataFrame) -> tuple:
     for geo_key, group in work.groupby("_geo_key", dropna=False, sort=False):
         countries = sorted(set(v for v in group["country"].map(clean_text) if v))
         regions = sorted(set(v for v in group["continent_region"].map(clean_text) if v))
+        # Prefer static canonical lookup when iso_a3 key is known
+        lookup = _CANONICAL_GEO.get(geo_key) if geo_key in _CANONICAL_GEO else None
+        if lookup:
+            country_canonical, continent_region_canonical = lookup
+            has_alias_conflict = 0
+        else:
+            country_canonical = _mode_text(group["country"])
+            continent_region_canonical = _mode_text(group["continent_region"])
+            has_alias_conflict = int(len(countries) > 1 or len(regions) > 1)
         rows.append(
             {
                 "_geo_key": geo_key,
                 "iso_a3": _mode_text(group["iso_a3"], ""),
-                "country_canonical": _mode_text(group["country"]),
-                "continent_region_canonical": _mode_text(group["continent_region"]),
+                "country_canonical": country_canonical,
+                "continent_region_canonical": continent_region_canonical,
                 "country_aliases": "|".join(countries),
                 "continent_region_aliases": "|".join(regions),
                 "cluster_count": int(group["cluster_uid"].nunique()),
-                "has_alias_conflict": int(len(countries) > 1 or len(regions) > 1),
+                "has_alias_conflict": has_alias_conflict,
             }
         )
     aliases = pd.DataFrame(rows)
@@ -723,7 +767,7 @@ def build_detailed_spatial_report(ctx, stats: dict, tables_dir: Path, figures_di
         lines,
         "Country Alias Review",
         aliases,
-        columns=["country_raw", "country_canonical", "iso_a3", "continent_region", "cluster_count", "has_alias_conflict"],
+        columns=["country_aliases", "country_canonical", "iso_a3", "continent_region", "cluster_count", "has_alias_conflict"],
         sort_by="cluster_count",
         max_rows=15,
     )
