@@ -59,12 +59,12 @@ def _count_product(ctx, file_name: str, label: str, chunk_size: int) -> pd.DataF
     path = ctx.require_input(ctx.release_file(file_name), required=False)
     if path is None:
         return pd.DataFrame(
-            [{"product": label, "variable": var, "n_records": 0, "n_present": 0, "n_good": 0, "n_usable": 0} for var in VARIABLES]
+            [{"product": label, "variable": var, "n_records": 0, "n_present": 0, "n_good": 0, "n_estimated": 0, "n_usable": 0} for var in VARIABLES]
         )
     rows = []
     with ctx.open_dataset(file_name, required=True) as ds:
         n_records = netcdf_record_count(ds)
-        counts = {var: {"n_records": n_records, "n_present": 0, "n_good": 0, "n_usable": 0} for var in VARIABLES}
+        counts = {var: {"n_records": n_records, "n_present": 0, "n_good": 0, "n_estimated": 0, "n_usable": 0} for var in VARIABLES}
         for start in range(0, n_records, chunk_size):
             stop = min(start + chunk_size, n_records)
             slc = slice(start, stop)
@@ -79,12 +79,14 @@ def _count_product(ctx, file_name: str, label: str, chunk_size: int) -> pd.DataF
                     flags = np.ma.asarray(ds.variables[flag_name][slc]).filled(9).reshape(-1)
                     counts[var]["n_good"] += int(np.count_nonzero(present & (flags == 0)))
                     counts[var]["n_usable"] += int(np.count_nonzero(present & np.isin(flags, [0, 1])))
+                    counts[var]["n_estimated"] += int(np.count_nonzero(present & (flags == 1)))
         for var in VARIABLES:
             row = {"product": label, "variable": var}
             row.update(counts[var])
             n = row["n_records"]
             row["present_percent"] = round(100.0 * row["n_present"] / n, 6) if n else 0.0
             row["good_percent"] = round(100.0 * row["n_good"] / n, 6) if n else 0.0
+            row["estimated_percent"] = round(100.0 * row["n_estimated"] / n, 6) if n else 0.0
             row["usable_percent"] = round(100.0 * row["n_usable"] / n, 6) if n else 0.0
             rows.append(row)
     return pd.DataFrame(rows)
@@ -292,11 +294,12 @@ def _count_satellite_by_source(ctx, chunk_size: int) -> pd.DataFrame:
                         continue
                     mask = source_values == source
                     key = (source, var)
-                    item = counts.setdefault(key, {"n_records": 0, "n_present": 0, "n_good": 0, "n_usable": 0})
+                    item = counts.setdefault(key, {"n_records": 0, "n_present": 0, "n_good": 0, "n_estimated": 0, "n_usable": 0})
                     item["n_records"] += int(np.count_nonzero(mask))
                     item["n_present"] += int(np.count_nonzero(mask & present))
                     item["n_good"] += int(np.count_nonzero(mask & present & (flags == 0)))
                     item["n_usable"] += int(np.count_nonzero(mask & present & np.isin(flags, [0, 1])))
+                    item["n_estimated"] += int(np.count_nonzero(mask & present & (flags == 1)))
     rows = []
     for (source, var), item in sorted(counts.items()):
         row = {"product": "satellite", "source_name": source, "variable": var}
@@ -304,6 +307,7 @@ def _count_satellite_by_source(ctx, chunk_size: int) -> pd.DataFrame:
         n = row["n_records"]
         row["present_percent"] = round(100.0 * row["n_present"] / n, 6) if n else 0.0
         row["good_percent"] = round(100.0 * row["n_good"] / n, 6) if n else 0.0
+        row["estimated_percent"] = round(100.0 * row["n_estimated"] / n, 6) if n else 0.0
         row["usable_percent"] = round(100.0 * row["n_usable"] / n, 6) if n else 0.0
         rows.append(row)
     return pd.DataFrame(rows)
@@ -489,7 +493,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         "",
         sorted_markdown_table(
             coverage,
-            columns=["product", "variable", "n_records", "n_present", "n_good", "n_usable", "present_percent", "good_percent", "usable_percent"],
+            columns=["product", "variable", "n_records", "n_present", "n_good", "n_estimated", "n_usable", "present_percent", "good_percent", "estimated_percent", "usable_percent"],
             max_rows=18,
         ),
     ]
@@ -563,7 +567,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         lines,
         "Satellite Source by Variable",
         satellite,
-        columns=["source_name", "variable", "n_records", "n_present", "n_good", "n_usable", "present_percent", "good_percent", "usable_percent"],
+        columns=["source_name", "variable", "n_records", "n_present", "n_good", "n_estimated", "n_usable", "present_percent", "good_percent", "estimated_percent", "usable_percent"],
         sort_by="n_records",
         max_rows=18,
         note="Validation-only satellite products may contain many rows with no Q or SSL values; keep this table near any satellite analysis.",
@@ -594,7 +598,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
             "",
             "## Interpretation Notes",
             "",
-            "- `good_percent` can be misleading when a release intentionally marks derived SSL as estimated; use `usable_percent` alongside final flags.",
+            "- `good_percent` can be misleading when a release intentionally marks derived SSL as estimated; always check `estimated_percent` to distinguish estimated data (acceptable) from truly missing/problematic data. The gap `usable_percent - good_percent` is explained by `estimated_percent`.",
             "- Satellite rows MUST be filtered by source and variable before use because validation-sidecar variable density is source-dependent and highly variable (see Satellite Product Coverage Warning above).",
             "- Extreme review points are candidates for manual inspection, not automatic removal rules.",
         ]

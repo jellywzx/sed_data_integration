@@ -359,6 +359,7 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
   - `n_records`: 总记录数
   - `n_present`: 有值（finite）的记录数
   - `n_good`: 有值且 QC flag = 0 (good) 的记录数
+  - `n_estimated`: 有值且 QC flag = 1 (estimated) 的记录数（good 和 usable 之间的差值来源）
   - `n_usable`: 有值且 QC flag ∈ {0,1} (good + estimated) 的记录数
   - 以及对应的百分比
 
