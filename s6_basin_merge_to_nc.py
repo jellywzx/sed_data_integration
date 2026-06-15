@@ -54,6 +54,7 @@ import sys
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,17 @@ from tqdm import tqdm
 from basin_policy import (
     MATCH_QUALITY_CODES,
     MATCH_QUALITY_MEANINGS,
+)
+from global_attr_provenance import (
+    global_attr_payloads_for_path_groups,
+    set_global_attr_policy,
+    write_global_attr_payload_variables,
+    write_promoted_global_attr_variables,
+)
+from geo_boundary_enrichment import (
+    add_geo_boundary_args,
+    boundary_options_from_args,
+    enrich_global_attr_payloads,
 )
 from pipeline_paths import (
     get_output_r_root,
@@ -1143,6 +1155,7 @@ def main():
         action="store_true",
         help="可选覆盖：默认主合并排除 satellite source_family；开启后允许 satellite 参与主合并。",
     )
+    add_geo_boundary_args(ap)
     args = ap.parse_args()
 
     global STRICT_UNIT_CHECK
@@ -1566,6 +1579,8 @@ def main():
         (field_name, [""] * n_source_stations) for field_name in SOURCE_STATION_TEXT_FIELDS
     )
     cluster_source_station_counts = np.zeros(n_stations, dtype=np.int32)
+    source_station_path_groups = []
+    station_path_groups = [[] for _ in range(n_stations)]
 
     for idx, info in enumerate(source_station_rows):
         source_station_cluster_index[idx] = int(info["cluster_idx"])
@@ -1583,6 +1598,27 @@ def main():
         for field_name in SOURCE_STATION_TEXT_FIELDS:
             source_station_text_arrays[field_name][idx] = source_station_text_meta.get(field_name, "")
         cluster_source_station_counts[int(info["cluster_idx"])] += 1
+        paths_for_source_station = sorted(info["paths"])
+        source_station_path_groups.append(paths_for_source_station)
+        station_path_groups[int(info["cluster_idx"])].extend(paths_for_source_station)
+
+    source_station_global_attr_payloads = global_attr_payloads_for_path_groups(source_station_path_groups)
+    station_global_attr_payloads = global_attr_payloads_for_path_groups(station_path_groups)
+    geo_options = boundary_options_from_args(args)
+    enrich_global_attr_payloads(
+        source_station_global_attr_payloads,
+        source_station_lats,
+        source_station_lons,
+        subject="s6 master source stations",
+        **geo_options,
+    )
+    enrich_global_attr_payloads(
+        station_global_attr_payloads,
+        lats,
+        lons,
+        subject="s6 master cluster stations",
+        **geo_options,
+    )
 
     print("Source-station map: {} unique source stations across {} clusters".format(
         n_source_stations, n_stations
@@ -1761,6 +1797,110 @@ def main():
     is_overlap_arr    = np.concatenate(parts_overlap)
     record_source_arr = np.concatenate(parts_source)
     record_source_station_idx_arr = np.concatenate(parts_source_station_idx)
+# ── 5c. Trim inactive metadata dimensions ──────────────────────────────────
+    # After concatenation, determine which cluster_uid and source_station_uid
+    # are actually referenced by records.  Clusters / source-stations that had no
+    # publishable sediment records (all Q-only after filter_publishable_sediment_records)
+    # produce zero records and should be removed from the NetCDF metadata dimensions.
+    _n_old_stations = n_stations
+    _n_old_source = n_source_stations
+    _old_cluster_uids = list(cluster_uids)
+    _old_source_uids = list(source_station_uids)
+    used_cluster_indices = sorted(np.unique(station_index_arr))
+    n_used = len(used_cluster_indices)
+    n_inactive = n_stations - n_used
+
+    old_to_new_cluster = np.full(n_stations, -1, dtype=np.int32)
+    for _new_i, _old_i in enumerate(used_cluster_indices):
+        old_to_new_cluster[_old_i] = _new_i
+
+    used_source_indices = sorted(set(i for i in record_source_station_idx_arr if i >= 0))
+    n_used_source = len(used_source_indices)
+    n_inactive_source = n_source_stations - n_used_source
+
+    old_to_new_source = np.full(n_source_stations, -1, dtype=np.int32)
+    for _new_i, _old_i in enumerate(used_source_indices):
+        old_to_new_source[_old_i] = _new_i
+
+    if n_inactive > 0 or n_inactive_source > 0:
+        print("Trimming inactive metadata dimensions: {}/{} cluster_uid, {}/{} source_station_uid".format(
+            n_inactive, _n_old_stations, n_inactive_source, _n_old_source))
+
+    # Remap record-level index arrays
+    station_index_arr = old_to_new_cluster[station_index_arr]
+    record_source_station_idx_arr = np.array([
+        old_to_new_source[i] if i >= 0 else -1
+        for i in record_source_station_idx_arr
+    ], dtype=np.int32)
+
+    # Trim all n_stations-dimension arrays/lists by used indices
+    lats = lats[used_cluster_indices]
+    lons = lons[used_cluster_indices]
+    all_cluster_ids = [all_cluster_ids[i] for i in used_cluster_indices]
+    cluster_uids = [cluster_uids[i] for i in used_cluster_indices]
+    basin_areas = basin_areas[used_cluster_indices]
+    pfaf_codes = pfaf_codes[used_cluster_indices]
+    n_reaches_arr = n_reaches_arr[used_cluster_indices]
+    match_quality_arr = match_quality_arr[used_cluster_indices]
+    basin_distance_arr = basin_distance_arr[used_cluster_indices]
+    point_in_local_arr = point_in_local_arr[used_cluster_indices]
+    point_in_basin_arr = point_in_basin_arr[used_cluster_indices]
+    basin_status_arr = [basin_status_arr[i] for i in used_cluster_indices]
+    basin_flag_arr = [basin_flag_arr[i] for i in used_cluster_indices]
+    station_names = [station_names[i] for i in used_cluster_indices]
+    river_names = [river_names[i] for i in used_cluster_indices]
+    source_station_ids = [source_station_ids[i] for i in used_cluster_indices]
+    cluster_sources_used = [cluster_sources_used[i] for i in used_cluster_indices]
+    cluster_source_station_counts = cluster_source_station_counts[used_cluster_indices]
+    station_path_groups = [station_path_groups[i] for i in used_cluster_indices]
+    station_global_attr_payloads = [station_global_attr_payloads[i] for i in used_cluster_indices]
+
+    # Trim all n_source_stations-dimension arrays/lists by used indices
+    source_station_uids = [source_station_uids[i] for i in used_source_indices]
+    source_station_cluster_index = source_station_cluster_index[used_source_indices]
+    source_station_source_index = source_station_source_index[used_source_indices]
+    source_station_native_ids = [source_station_native_ids[i] for i in used_source_indices]
+    source_station_names = [source_station_names[i] for i in used_source_indices]
+    source_station_rivers = [source_station_rivers[i] for i in used_source_indices]
+    source_station_lats = source_station_lats[used_source_indices]
+    source_station_lons = source_station_lons[used_source_indices]
+    source_station_paths = [source_station_paths[i] for i in used_source_indices]
+    source_station_resolutions = [source_station_resolutions[i] for i in used_source_indices]
+    source_station_text_arrays = dict(
+        (field_name, [source_station_text_arrays[field_name][i] for i in used_source_indices])
+        for field_name in SOURCE_STATION_TEXT_FIELDS
+    )
+    source_station_path_groups = [source_station_path_groups[i] for i in used_source_indices]
+    source_station_global_attr_payloads = [source_station_global_attr_payloads[i] for i in used_source_indices]
+
+    # Remap source_station_cluster_index to new compact cluster indices
+    source_station_cluster_index = old_to_new_cluster[source_station_cluster_index]
+    # Recompute cluster_source_station_counts from trimmed source_station_cluster_index
+    cluster_source_station_counts = np.zeros(n_used, dtype=np.int32)
+    for _ssci in source_station_cluster_index:
+        if _ssci >= 0:
+            cluster_source_station_counts[_ssci] += 1
+
+    # Rebuild cluster_to_idx compact mapping
+    cluster_to_idx = {cid: i for i, cid in enumerate(all_cluster_ids)}
+
+    # Update dimension counts
+    n_stations = n_used
+    n_source_stations = n_used_source
+
+    if n_inactive > 0 or n_inactive_source > 0:
+        # Write trimmed inactive entries diagnostic.
+        # _old_cluster_uids and _old_source_uids were saved before trimming.
+        _trim_path = out_path.with_suffix(".trimmed_inactive.csv")
+        with open(_trim_path, "w") as _f:
+            _f.write("entity,uid\n")
+            for _oi in range(_n_old_stations):
+                if old_to_new_cluster[_oi] < 0:
+                    _f.write("cluster_uid,{}\n".format(_old_cluster_uids[_oi]))
+            for _oi in range(_n_old_source):
+                if old_to_new_source[_oi] < 0:
+                    _f.write("source_station_uid,{}\n".format(_old_source_uids[_oi]))
+        print("Trimmed inactive entries written to {}".format(_trim_path))
 
     # 释放 parts 列表
     del (parts_idx, parts_time, parts_res, parts_q, parts_ssc, parts_ssl,
@@ -1880,6 +2020,20 @@ def main():
         nss_v.long_name = "number of unique source stations mapped into this cluster"
         nss_v[:] = cluster_source_station_counts
 
+        write_global_attr_payload_variables(
+            nc,
+            "n_stations",
+            "station",
+            station_global_attr_payloads,
+            "merged cluster station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_stations",
+            station_global_attr_payloads,
+            subject="merged cluster station",
+        )
+
         # ── n_source_stations 查找表（原始站点完整映射）───────────────────────
         ss_uid_v = nc.createVariable("source_station_uid", str, ("n_source_stations",))
         ss_uid_v.long_name = "stable source-station identifier used inside the merged reference dataset"
@@ -1963,6 +2117,21 @@ def main():
             text_var.long_name = ss_text_attrs[field_name][0]
             text_var.comment = ss_text_attrs[field_name][1]
             text_var[:] = np.array(source_station_text_arrays[field_name], dtype=object)
+
+        write_global_attr_payload_variables(
+            nc,
+            "n_source_stations",
+            "source_station",
+            source_station_global_attr_payloads,
+            "source station",
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_source_stations",
+            source_station_global_attr_payloads,
+            var_prefix="source_station_",
+            subject="source station",
+        )
 
         # ── n_sources 查找表（每个数据集一行，供引用/机构信息查询）──────────────
         sn_lk = nc.createVariable("source_name", str, ("n_sources",))
@@ -2093,6 +2262,7 @@ def main():
         nc.merge_excluded_source_families = "satellite"
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
+        set_global_attr_policy(nc)
         nc.basin_csv      = str(inp_path)
         nc.n_input_station_rows = str(len(stations))
         nc.n_source_stations = str(n_source_stations)

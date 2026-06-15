@@ -115,10 +115,14 @@ DEFAULT_START_DATE = "1995-01-01"               # 验证起始日期（空 = 不
 DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不限制）
 
 # --- 其他 ---
-DEFAULT_OUTPUT_DIR = "./validation_results"     # 输出目录路径（必填）
+DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/validate_model_with_sed_reference"     # 输出目录路径（必填）
 DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
 DEFAULT_MAKE_PLOTS = True                      # 是否输出逐对比 PNG 图
+DEFAULT_PLOT_ONLY = False                     # 仅重绘出图，跳过计算
+DEFAULT_MAP_ONLY = True                     # 仅绘制概览图和空间分布图，跳过站点验证计算
 DEFAULT_NUM_WORKERS = 8                        # 并行进程数（0 = 自动选 CPU 核心数的一半）
+
+DEFAULT_MERIT_HYDRO_DIR = "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"  # MERIT Hydro 河网数据目录（区域图使用）
 
 
 def parse_allowed_flags(text: str) -> Tuple[int, ...]:
@@ -505,6 +509,73 @@ def maybe_plot_compare(compare_df: pd.DataFrame, title: str, ylabel: str, out_pn
     plt.close(fig)
 
 
+def regenerate_all_plots(output_dir: Path) -> None:
+    """Re-generate all station compare PNGs from existing compare CSV files.
+    Skips the entire model/reference loading pipeline -- only reads CSV and plots.
+    Set DEFAULT_PLOT_ONLY = True to use this mode.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir = Path(output_dir)
+    station_dirs = sorted(output_dir.iterdir())
+    total = 0
+    skipped = 0
+    for sd in station_dirs:
+        if not sd.is_dir():
+            continue
+        # Find all compare_*.csv in this station dir
+        csv_files = sorted(sd.glob("compare_*.csv"))
+        if not csv_files:
+            skipped += 1
+            continue
+        for csv_path in csv_files:
+            # Determine variable name and resolution from filename
+            stem = csv_path.stem  # e.g. compare_Q_daily
+            parts = stem.split("_")
+            if len(parts) < 3:
+                continue
+            var_name = parts[1]
+            resolution = "_".join(parts[2:])
+            out_png = csv_path.with_suffix(".png")
+
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                continue
+
+            # Find reference and model columns dynamically
+            ref_cols = [c for c in df.columns if "reference" in c.lower()]
+            model_cols = [c for c in df.columns if "model" in c.lower()]
+            if not ref_cols or not model_cols:
+                continue
+            ref_col = ref_cols[0]
+            model_col = model_cols[0]
+
+            # Build title from station dir name + variable
+            station_label = sd.name
+            if "_" in station_label:
+                parts_label = station_label.split("_", 1)
+                station_label = parts_label[1] if len(parts_label) > 1 else station_label
+
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(pd.to_datetime(df["time"]), df[ref_col], color="tab:red", linewidth=2, label="Reference")
+            ax.plot(pd.to_datetime(df["time"]), df[model_col], color="tab:blue", linewidth=2, label="Model")
+            ax.set_title("%s %s" % (station_label, var_name))
+            ax.set_xlabel("Time")
+            ax.set_ylabel(var_name)
+            ax.grid(True, alpha=0.3)
+            ax.legend(loc="best")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            fig.savefig(out_png, dpi=200, bbox_inches="tight")
+            plt.close(fig)
+            total += 1
+
+    print("[INFO] Regenerated %d station plots from existing CSV files." % total)
+    if skipped:
+        print("[INFO] %d station directories had no compare CSV files." % skipped)
+
 # ============================================================
 # Parallel worker for station validation
 # ============================================================
@@ -700,7 +771,6 @@ def _validate_one_station(args_tuple):
     return metrics_list, var_status_list
 
 
-
 _LAND_POLYGONS_CACHE: Optional[List[Tuple[np.ndarray, np.ndarray]]] = None
 _LAND_POLYGON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson"
 _LAND_POLYGON_PATH = Path(__file__).resolve().parent / "ne_110m_land.geojson"
@@ -764,6 +834,77 @@ def _plot_land(ax, polygons: List[Tuple[np.ndarray, np.ndarray]]) -> None:
         ax.fill(lon, lat, color="#EEEEEE", edgecolor="#CCCCCC", linewidth=0.3, zorder=0)
 
 
+def _load_river_network(
+    merit_dir: str,
+    view_lon_min: float,
+    view_lon_max: float,
+    view_lat_min: float,
+    view_lat_max: float,
+    min_order: int = 1,
+) -> "List[np.ndarray]":
+    """Load river line segments from MERIT Hydro pfaf_level_02 shapefiles
+    that overlap the given viewport.
+
+    Parameters
+    ----------
+    min_order : int
+        Minimum Strahler stream order to include.  Use 5+ for main-stem-only,
+        3+ for medium rivers, 1 (default) for all.
+
+    Returns a list of (N,2) numpy arrays, each a single PolyLine segment.
+    On failure prints a warning and returns [].
+    """
+    import shapefile as _sf
+
+    _PFAF_CODES = ["61", "62", "63", "64", "66", "67"]
+    _SUB_DIR = "pfaf_level_02"
+    _PREFIX = "riv_pfaf_"
+    _SUFFIX = "_MERIT_Hydro_v07_Basins_v01_bugfix1.shp"
+
+    segments = []
+    base = Path(merit_dir) / _SUB_DIR
+
+    for code in _PFAF_CODES:
+        shp_path = base / f"{_PREFIX}{code}{_SUFFIX}"
+        if not shp_path.exists():
+            continue
+        try:
+            sf = _sf.Reader(str(shp_path))
+        except Exception as exc:
+            print(f"[WARN] Failed to open river shapefile {shp_path}: {exc}", flush=True)
+            continue
+
+        # Find order field index (skip DeletionFlag)
+        _field_names = [f[0] for f in sf.fields if f[0] != "DeletionFlag"]
+        if "order" in _field_names:
+            _order_idx = _field_names.index("order")
+        else:
+            _order_idx = -1
+
+        for shape, rec in zip(sf.iterShapes(), sf.iterRecords()):
+            pts = np.asarray(shape.points, dtype=np.float64)
+            if len(pts) < 2:
+                continue
+            lons = pts[:, 0]
+            lats = pts[:, 1]
+            if np.all(lons < view_lon_min) or np.all(lons > view_lon_max)                or np.all(lats < view_lat_min) or np.all(lats > view_lat_max):
+                continue
+            # Filter by stream order
+            if min_order > 1 and _order_idx >= 0:
+                seg_order = int(rec[_order_idx])
+                if seg_order < min_order:
+                    continue
+            segments.append(pts)
+
+        sf.close()
+
+    if not segments:
+        print(f"[WARN] No river segments loaded from {base}", flush=True)
+    else:
+        print(f"[INFO] Loaded {len(segments)} river segments (order >= {min_order}) from MERIT Hydro", flush=True)
+    return segments
+
+
 def plot_model_domain(
     lat_arr: np.ndarray,
     lon_arr: np.ndarray,
@@ -777,20 +918,35 @@ def plot_model_domain(
     region_lat_max: Optional[float] = None,
     region_lon_min: Optional[float] = None,
     region_lon_max: Optional[float] = None,
+    map_type: str = "global",
+    merit_hydro_dir: Optional[str] = None,
 ) -> None:
     """Generate a spatial overview map of model domain and reference stations.
 
-    The map has three layers:
+    Parameters
+    ----------
+    map_type : "global" or "region"
+        * "global" — full global view with subsampled grid (default).
+        * "region" — zoomed to the user-specified region with river overlay
+          and station labels.
+    merit_hydro_dir : str or None
+        Path to MERIT Hydro shapefile directory (required for map_type="region").
+
+    The base map has three layers:
       1. Land polygons (if GeoJSON is reachable)
       2. Model bounding box + subsampled grid points
       3. Reference stations colored by their filter status
-    Saved to <output_dir>/model_domain_overview.png
+    Saved to <output_dir>/model_domain_overview.png  (global)
+    or   <output_dir>/model_domain_overview_region.png  (region)
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(16, 8))
+    if map_type == "region":
+        fig, ax = plt.subplots(figsize=(12, 10))
+    else:
+        fig, ax = plt.subplots(figsize=(16, 8))
 
     # --- 1. Land polygons ---
     polygons = _load_land_polygons()
@@ -798,7 +954,7 @@ def plot_model_domain(
         _plot_land(ax, polygons)
 
     # --- 2. Model domain: subsampled grid points + bounding box ---
-    step = 10
+    step = 2 if map_type == "region" else 10
     lat_subsampled = lat_arr[::step]
     lon_subsampled = lon_arr[::step]
     # convert lon to lon180 for display
@@ -854,19 +1010,57 @@ def plot_model_domain(
             zorder=3, label=style["label"], 
         )
 
+    # --- 4. River network (region map only) ---
+    if map_type == "region" and merit_hydro_dir:
+        _rl_min = region_lon_min if region_lon_min is not None else -80.0
+        _rl_max = region_lon_max if region_lon_max is not None else -45.0
+        _rb_min = region_lat_min if region_lat_min is not None else -20.0
+        _rb_max = region_lat_max if region_lat_max is not None else 5.0
+        river_segs = _load_river_network(merit_hydro_dir, _rl_min, _rl_max, _rb_min, _rb_max, min_order=5)
+        if river_segs:
+            from matplotlib.collections import LineCollection
+            lc = LineCollection(river_segs, colors="#3366CC", linewidths=0.4, alpha=0.6, zorder=1.5)
+            ax.add_collection(lc)
+
+    # --- 5. Station labels (region map only) ---
+    if map_type == "region":
+        for r in candidate_rows:
+            if r.get("candidate_status") != "candidate":
+                continue
+            s_lat = r.get("lat", np.nan)
+            s_lon = r.get("lon", np.nan)
+            if not np.isfinite(s_lat) or not np.isfinite(s_lon):
+                continue
+            s_lon180 = float(to_lon180(s_lon))
+            s_name = clean_text(r.get("station_name", ""))
+            s_river = clean_text(r.get("river_name", ""))
+            label = s_name
+            if s_river:
+                label += "\n(%s)" % s_river
+            ax.annotate(
+                label,
+                (s_lon180, s_lat),
+                fontsize=14,
+                xytext=(5, 4),
+                textcoords="offset points",
+                alpha=0.85,
+                zorder=4,
+            )
+
     # --- Labels, legend, grid ---
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
+    ax.set_xlabel("Longitude", fontsize=12)
+    ax.set_ylabel("Latitude", fontsize=12)
     ax.set_title(
-        "Model Domain Overview\nValidation: %s to %s" % (valid_start.date(), valid_end.date()), fontsize=13
+        "Model Domain Overview\nValidation: %s to %s" % (valid_start.date(), valid_end.date()) if map_type == "global" \
+            else "Model Domain Overview \u2014 Regional\nValidation: %s to %s" % (valid_start.date(), valid_end.date()), fontsize=15
     )
-    # Apply region cropping if user specified limits
-    if region_lat_min is not None or region_lat_max is not None or region_lon_min is not None or region_lon_max is not None:
+    # Apply region cropping: only zoom for regional map, global map always shows full globe
+    if map_type == "region" and (region_lat_min is not None or region_lat_max is not None or region_lon_min is not None or region_lon_max is not None):
         # Convert user lon to -180..180 range
-        lon_min = to_lon180(region_lon_min) if region_lon_min is not None else -180.0
-        lon_max = to_lon180(region_lon_max) if region_lon_max is not None else 180.0
-        lat_min = region_lat_min if region_lat_min is not None else -90.0
-        lat_max = region_lat_max if region_lat_max is not None else 90.0
+        lon_min = to_lon180(region_lon_min) if region_lon_min is not None else -80.0
+        lon_max = to_lon180(region_lon_max) if region_lon_max is not None else -45.0
+        lat_min = region_lat_min if region_lat_min is not None else -20.0
+        lat_max = region_lat_max if region_lat_max is not None else 5.0
         # Add a small padding (5%) so stations near edges are visible
         lat_pad = (lat_max - lat_min) * 0.05
         lon_pad = (lon_max - lon_min) * 0.05
@@ -875,18 +1069,20 @@ def plot_model_domain(
     else:
         ax.set_xlim(-180, 180)
         ax.set_ylim(-90, 90)
+    ax.tick_params(axis="both", labelsize=10)
     ax.grid(True, alpha=0.2, linewidth=0.3)
-    legend = ax.legend(loc="lower left", fontsize=7, markerscale=0.8, framealpha=0.8)
+    legend = ax.legend(loc="lower left", fontsize=14, markerscale=0.8, framealpha=0.8)
     for lh in legend.legend_handles:
         lh._sizes = [20]
 
     plt.tight_layout()
-    out_path = output_dir / "model_domain_overview.png"
+    if map_type == "region":
+        out_path = output_dir / "model_domain_overview_region.png"
+    else:
+        out_path = output_dir / "model_domain_overview.png"
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     print("[INFO] Model domain overview saved: %s" % out_path)
-
-
 
 
 def plot_model_spatial_mean(
@@ -1015,8 +1211,6 @@ def plot_model_spatial_mean(
     print("[INFO] Time-mean spatial map saved: %s" % out_path, flush=True)
 
 
-
-
 def main() -> None:
     #  Assemble configuration 
     cfg = {                                       
@@ -1047,6 +1241,9 @@ def main() -> None:
         "region_lon_max": DEFAULT_REGION_LON_MAX,
         "make_plots": DEFAULT_MAKE_PLOTS,         
         "num_workers": DEFAULT_NUM_WORKERS,         
+        "merit_hydro_dir": DEFAULT_MERIT_HYDRO_DIR,
+        "plot_only": DEFAULT_PLOT_ONLY,
+        "map_only": DEFAULT_MAP_ONLY,
     }                                              
     # 
 
@@ -1188,7 +1385,29 @@ def main() -> None:
         region_lat_max=cfg.get("region_lat_max"),
         region_lon_min=cfg.get("region_lon_min"),
         region_lon_max=cfg.get("region_lon_max"),
+        map_type="global",
+        merit_hydro_dir=None,
     )
+    # --- Plot regional zoomed map ---
+    plot_model_domain(
+        lat_arr=lat_arr, lon_arr=lon_arr, bounds=bounds,
+        candidate_rows=candidate_rows, station_tasks=station_tasks,
+        valid_start=valid_start, valid_end=valid_end,
+        output_dir=output_dir,
+        region_lat_min=cfg.get("region_lat_min"),
+        region_lat_max=cfg.get("region_lat_max"),
+        region_lon_min=cfg.get("region_lon_min"),
+        region_lon_max=cfg.get("region_lon_max"),
+        map_type="region",
+        merit_hydro_dir=cfg.get("merit_hydro_dir"),
+    )
+
+
+    # --- MAP_ONLY mode: only plot domain overview maps, skip everything else ---
+    if cfg.get("map_only", False):
+        print("[INFO] MAP_ONLY mode: domain overview maps done.")
+        print("[INFO] Set DEFAULT_MAP_ONLY = False to run full validation.")
+        return
 
     print("[INFO] Candidate stations in region: %d" % sum(1 for r in candidate_rows if r.get("candidate_status") == "candidate"))
 
@@ -1205,6 +1424,14 @@ def main() -> None:
         region_lon_max=cfg.get("region_lon_max"),
     )
 
+
+    # --- PLOT_ONLY mode: skip heavy computation ---
+    if cfg.get("plot_only", False):
+        print("[INFO] PLOT_ONLY mode: regenerating station plots from existing CSV files...")
+        regenerate_all_plots(Path(cfg["output_dir"]))
+        print("[INFO] Done. Set DEFAULT_PLOT_ONLY = False to re-run full validation.")
+        return
+
     print("[INFO] Loading reference matrix (%.1f GB)... " % (1.8), end="", flush=True)
 
     matrix_ds = nc4.Dataset(str(matrix_path), "r")
@@ -1212,14 +1439,42 @@ def main() -> None:
         len(matrix_ds.variables["cluster_uid"]),
         len(matrix_ds.variables["time"]),
     ))
-    model_cache = preload_model_all_stations(
-        files=nc_files,
-        station_tasks=station_tasks,
-        active_vars=active_vars,
-        model_vars=model_vars,
-        valid_start=valid_start,
-        valid_end=valid_end,
+
+    # --- Model cache with disk persist (skip pre-load if unchanged) ---
+    import hashlib
+    import pickle
+    _cache_dir = output_dir / ".model_cache"
+    _cache_dir.mkdir(parents=True, exist_ok=True)
+    # Hash of (model file list + mod times + active vars + time window) for cache key
+    _cache_key_input = (
+        [(str(f), os.path.getmtime(f)) for f in nc_files],
+        sorted(active_vars),
+        str(valid_start), str(valid_end),
     )
+    _cache_key = hashlib.md5(repr(_cache_key_input).encode()).hexdigest()
+    _cache_pkl = _cache_dir / f"model_cache_{_cache_key}.pkl"
+
+    if _cache_pkl.exists():
+        print("[INFO] Loading model cache from %s" % _cache_pkl, flush=True)
+        with open(_cache_pkl, "rb") as _fh:
+            model_cache = pickle.load(_fh)
+    else:
+        model_cache = preload_model_all_stations(
+            files=nc_files,
+            station_tasks=station_tasks,
+            active_vars=active_vars,
+            model_vars=model_vars,
+            valid_start=valid_start,
+            valid_end=valid_end,
+        )
+        # Save cache (clean up old caches if more than 5)
+        with open(_cache_pkl, "wb") as _fh:
+            pickle.dump(model_cache, _fh, protocol=pickle.HIGHEST_PROTOCOL)
+        _old_caches = sorted(_cache_dir.glob("model_cache_*.pkl"))
+        for _old in _old_caches[:-5]:
+            _old.unlink()
+        print("[INFO] Model cache saved to %s" % _cache_pkl, flush=True)
+
     print("[INFO] Starting parallel station validation with %d workers..." % cfg["num_workers"], flush=True)
 
     # Close the reference matrix in the main process (workers will re-open it)
@@ -1241,6 +1496,7 @@ def main() -> None:
             "source_station_id": clean_text(row.get("source_station_id", "")),
             "river_name": clean_text(row.get("river_name", "")),
         }
+        cache_key = (nearest["indexers"]["lat_ucat"], nearest["indexers"]["lon_ucat"])
         station_args_list.append((
             row_dict,
             nearest,
@@ -1251,7 +1507,7 @@ def main() -> None:
             cfg["resolution"],
             active_vars,
             model_vars,
-            model_cache,
+            {cache_key: model_cache.get(cache_key, {})},
             str(output_dir),
             cfg["make_plots"],
             int(cfg["min_reference_points"]),

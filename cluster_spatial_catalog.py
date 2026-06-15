@@ -40,6 +40,9 @@ GEO_METADATA_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
 ]
 GEO_VALUE_COLUMNS = GEO_METADATA_COLUMNS[:4]
 GEO_ATTR_KEY_MAP = {
@@ -76,6 +79,9 @@ STATION_CATALOG_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "n_source_stations_in_cluster",
     "basin_match_quality_code",
     "basin_match_quality",
@@ -115,6 +121,9 @@ RESOLUTION_CATALOG_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "lat",
     "lon",
     "basin_area",
@@ -150,6 +159,9 @@ SOURCE_RESOLUTION_CATALOG_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "source_station_native_id",
     "source_station_name",
     "source_station_river_name",
@@ -209,6 +221,9 @@ SUMMARY_LAYER_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "lat",
     "lon",
     "basin_area",
@@ -251,6 +266,9 @@ RESOLUTION_LAYER_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "lat",
     "lon",
     "basin_area",
@@ -284,6 +302,9 @@ SOURCE_LAYER_COLUMNS = [
     "iso_a3",
     "geo_attribute_source",
     "geo_attribute_confidence",
+    "geo_attribute_method",
+    "geo_boundary_dataset",
+    "geo_boundary_version",
     "lat",
     "lon",
 ]
@@ -411,8 +432,25 @@ def _aggregate_geo_rows(frame):
     values = dict((col, _unique_join(frame[col].tolist() if col in frame.columns else [])) for col in GEO_VALUE_COLUMNS)
     sources = [_clean_text(v) for v in frame.get("geo_attribute_source", pd.Series(dtype=object)).tolist()]
     confidences = [_clean_text(v) for v in frame.get("geo_attribute_confidence", pd.Series(dtype=object)).tolist()]
-    if any(v.startswith("source_nc_global_attrs") for v in sources):
-        values["geo_attribute_source"] = "source_nc_global_attrs" if all(values.get(col, "") for col in GEO_VALUE_COLUMNS) else "source_nc_global_attrs_partial"
+    methods = [_clean_text(v) for v in frame.get("geo_attribute_method", pd.Series(dtype=object)).tolist()]
+    boundary_datasets = [
+        _clean_text(v) for v in frame.get("geo_boundary_dataset", pd.Series(dtype=object)).tolist()
+    ]
+    boundary_versions = [
+        _clean_text(v) for v in frame.get("geo_boundary_version", pd.Series(dtype=object)).tolist()
+    ]
+    has_boundary = any(v == "boundary_admin0" for v in sources)
+    has_source_nc = any(v.startswith("source_nc_global_attrs") for v in sources)
+    if any(v == "source_nc_global_attrs_plus_boundary_admin0" for v in sources) or (has_boundary and has_source_nc):
+        values["geo_attribute_source"] = "source_nc_global_attrs_plus_boundary_admin0"
+    elif has_boundary:
+        values["geo_attribute_source"] = "boundary_admin0"
+    elif has_source_nc:
+        values["geo_attribute_source"] = (
+            "source_nc_global_attrs"
+            if all(values.get(col, "") for col in GEO_VALUE_COLUMNS)
+            else "source_nc_global_attrs_partial"
+        )
     elif any(v == "existing_catalog" for v in sources):
         values["geo_attribute_source"] = "existing_catalog"
     else:
@@ -424,6 +462,14 @@ def _aggregate_geo_rows(frame):
         values["geo_attribute_confidence"] = "medium"
     else:
         values["geo_attribute_confidence"] = "missing"
+    values["geo_attribute_method"] = _unique_join(methods)
+    if not values["geo_attribute_method"] and values["geo_attribute_source"] in {
+        "source_nc_global_attrs",
+        "source_nc_global_attrs_partial",
+    }:
+        values["geo_attribute_method"] = "upstream_global_attrs"
+    values["geo_boundary_dataset"] = _unique_join(boundary_datasets)
+    values["geo_boundary_version"] = _unique_join(boundary_versions)
     return values
 
 
@@ -466,15 +512,23 @@ def enrich_source_station_geography(source_catalog):
 
         existing_source = _clean_text(row.get("geo_attribute_source", ""))
         existing_confidence = _clean_text(row.get("geo_attribute_confidence", ""))
+        existing_method = _clean_text(row.get("geo_attribute_method", ""))
+        existing_boundary_dataset = _clean_text(row.get("geo_boundary_dataset", ""))
+        existing_boundary_version = _clean_text(row.get("geo_boundary_version", ""))
         if not used_source_nc and existing_source and existing_source != "missing":
             source = existing_source
             confidence = existing_confidence or _geo_source_and_confidence(values, False, had_existing)[1]
+            method = existing_method or ("upstream_global_attrs" if source.startswith("source_nc_global_attrs") else "")
         else:
             source, confidence = _geo_source_and_confidence(values, used_source_nc, had_existing)
+            method = existing_method or ("upstream_global_attrs" if used_source_nc else "")
         for col in GEO_VALUE_COLUMNS:
             work.at[idx, col] = values.get(col, "")
         work.at[idx, "geo_attribute_source"] = source
         work.at[idx, "geo_attribute_confidence"] = confidence
+        work.at[idx, "geo_attribute_method"] = method
+        work.at[idx, "geo_boundary_dataset"] = existing_boundary_dataset
+        work.at[idx, "geo_boundary_version"] = existing_boundary_version
 
     return normalize_source_station_resolution_catalog(work)
 
@@ -662,12 +716,15 @@ def normalize_cluster_station_catalog(station_catalog):
         "river_name",
         "source_station_id",
         "sources_used",
-    "country",
-    "continent_region",
-    "geographic_coverage",
-    "iso_a3",
-    "geo_attribute_source",
-    "geo_attribute_confidence",
+        "country",
+        "continent_region",
+        "geographic_coverage",
+        "iso_a3",
+        "geo_attribute_source",
+        "geo_attribute_confidence",
+        "geo_attribute_method",
+        "geo_boundary_dataset",
+        "geo_boundary_version",
         "basin_match_quality",
         "basin_status",
         "basin_flag",
@@ -717,12 +774,15 @@ def normalize_cluster_resolution_catalog(resolution_catalog):
         "river_name",
         "source_station_id",
         "sources_used",
-    "country",
-    "continent_region",
-    "geographic_coverage",
-    "iso_a3",
-    "geo_attribute_source",
-    "geo_attribute_confidence",
+        "country",
+        "continent_region",
+        "geographic_coverage",
+        "iso_a3",
+        "geo_attribute_source",
+        "geo_attribute_confidence",
+        "geo_attribute_method",
+        "geo_boundary_dataset",
+        "geo_boundary_version",
         "basin_match_quality",
         "basin_status",
         "basin_flag",

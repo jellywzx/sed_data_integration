@@ -38,6 +38,17 @@ from basin_policy import (
     MATCH_QUALITY_CODES,
     MATCH_QUALITY_MEANINGS,
 )
+from global_attr_provenance import (
+    global_attr_payloads_for_path_groups,
+    set_global_attr_policy,
+    write_global_attr_payload_variables,
+    write_promoted_global_attr_variables,
+)
+from geo_boundary_enrichment import (
+    add_geo_boundary_args,
+    boundary_options_from_args,
+    enrich_global_attr_payloads,
+)
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
     S5_BASIN_CLUSTERED_CSV,
@@ -286,7 +297,7 @@ def _build_source_lookup(resolution_df):
     }
 
 
-def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
+def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df, geo_options=None, resolution=""):
     n_stations = len(cluster_ids)
     cluster_to_idx = {cid: i for i, cid in enumerate(cluster_ids)}
     cluster_groups = {
@@ -312,6 +323,7 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
     basin_flag_arr = ["unknown"] * n_stations
     sources_used_arr = [""] * n_stations
     n_sources_arr = np.zeros(n_stations, dtype=np.int32)
+    station_path_groups = [[] for _ in range(n_stations)]
 
     station_meta_cache = {}
 
@@ -374,6 +386,16 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
         sources = sorted(group["source"].astype(str).unique().tolist())
         sources_used_arr[idx] = "|".join(sources)
         n_sources_arr[idx] = len(sources)
+        station_path_groups[idx] = sorted(set(str(path) for path in group["path"].astype(str).tolist()))
+
+    station_global_attr_payloads = global_attr_payloads_for_path_groups(station_path_groups)
+    enrich_global_attr_payloads(
+        station_global_attr_payloads,
+        lat_arr,
+        lon_arr,
+        subject="s6 {} matrix stations".format(resolution or "resolution"),
+        **(geo_options or {}),
+    )
 
     return {
         "cluster_to_idx": cluster_to_idx,
@@ -394,6 +416,7 @@ def _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df):
         "basin_flag": basin_flag_arr,
         "sources_used": sources_used_arr,
         "n_sources_in_resolution": n_sources_arr,
+        "global_attr_payloads": station_global_attr_payloads,
     }
 
 
@@ -501,6 +524,20 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         nsrc_v = nc.createVariable("n_sources_in_resolution", "i4", ("n_stations",))
         nsrc_v.long_name = "number of source datasets contributing to this resolution for the cluster"
         nsrc_v[:] = metadata["n_sources_in_resolution"]
+
+        write_global_attr_payload_variables(
+            nc,
+            "n_stations",
+            "station",
+            metadata["global_attr_payloads"],
+            "{} matrix station".format(resolution),
+        )
+        write_promoted_global_attr_variables(
+            nc,
+            "n_stations",
+            metadata["global_attr_payloads"],
+            subject="{} matrix station".format(resolution),
+        )
 
         ba_v = nc.createVariable("basin_area", "f4", ("n_stations",), fill_value=FILL, zlib=True, complevel=4)
         ba_v.long_name = "basin drainage area"
@@ -715,6 +752,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         )
         nc.classification_policy = "manual_review_on_conflict"
         nc.qc_stage_schema_version = "1"
+        set_global_attr_policy(nc)
         nc.n_clusters = str(n_stations)
         nc.n_time_steps = str(n_time)
         nc.dataset_version = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -826,6 +864,7 @@ def _run_resolution_export(args):
         out_dir,
         source_station_uid_lookup,
         cluster_workers,
+        geo_options,
     ) = args
     run_t0 = time.perf_counter()
 
@@ -863,7 +902,13 @@ def _run_resolution_export(args):
         }
 
     cluster_ids = sorted(series_results.keys())
-    metadata = _build_station_metadata(cluster_ids, cluster_rep_lookup, resolution_df)
+    metadata = _build_station_metadata(
+        cluster_ids,
+        cluster_rep_lookup,
+        resolution_df,
+        geo_options=geo_options,
+        resolution=resolution,
+    )
     out_path = out_dir / "s6_basin_matrix_{}.nc".format(resolution)
     t_write = time.perf_counter()
     _write_matrix_nc(
@@ -922,6 +967,7 @@ def main(argv=None):
         default=DEFAULT_RESOLUTION_WORKERS,
         help="optional override for concurrent resolution jobs; default uses host profile",
     )
+    add_geo_boundary_args(ap)
     args = ap.parse_args(argv)
 
     if not HAS_NC or nc4 is None:
@@ -1007,6 +1053,7 @@ def main(argv=None):
         max_parallel=runtime_cfg["resolution_workers"],
     )
     print("Resolution worker map: {}".format(resolution_workers_map))
+    geo_options = boundary_options_from_args(args)
 
     jobs = [
         (
@@ -1016,6 +1063,7 @@ def main(argv=None):
             out_dir,
             source_station_uid_lookup,
             resolution_workers_map[resolution],
+            geo_options,
         )
         for resolution in active_resolutions
     ]

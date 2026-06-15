@@ -17,7 +17,7 @@
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
   # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
-  steps: "s2,s6,s7,s8"
+  steps: "s6,s7,s8"
 
   # 起始 / 结束阶段（steps 为空时生效）
   start_at: s1
@@ -92,6 +92,17 @@ env:
   DAILY_WORKERS: "40"          # 日矩阵 worker 数，推荐 8-40
   MONTHLY_WORKERS: "20"        # 月矩阵 worker 数，推荐 4-20
   ANNUAL_WORKERS: "4"          # 年矩阵 worker 数，推荐 1-8
+
+  # s6 promoted 地理字段补齐。默认空=只使用 upstream global attrs；
+  # 如需补齐，显式填写本地 ADM0 polygon 文件路径（例如 Natural Earth 10m Admin 0 Countries）。
+  SED_GEO_BOUNDARY_FILE: ""
+  SED_GEO_BOUNDARY_NAME_COL: ""
+  SED_GEO_BOUNDARY_ISO_COL: ""
+  SED_GEO_BOUNDARY_CONTINENT_COL: ""
+  SED_GEO_BOUNDARY_REGION_COL: ""
+  SED_GEO_BOUNDARY_DATASET: ""
+  SED_GEO_BOUNDARY_VERSION: ""
+  SED_SKIP_BOUNDARY_GEO_ENRICHMENT: "0"
 
   MERGE_N: "48"                # merge 步骤 LSF 核数，推荐 24-64
   MERGE_MEM_MB: "240000"       # merge 步骤 LSF 内存 MB，推荐 120000-480000
