@@ -342,12 +342,19 @@ def _source_station_catalog_detail(ctx) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_legacy_source_tables(ctx, source_dataset: pd.DataFrame, chunk_size: int) -> dict:
-    frames = [
-        _source_station_catalog_detail(ctx),
-        _satellite_catalog_detail(ctx, chunk_size, scan_variables=False),
-    ]
-    detail = pd.concat([f for f in frames if not f.empty], ignore_index=True) if any(not f.empty for f in frames) else pd.DataFrame()
+def _build_contribution_from_detail(
+    detail: pd.DataFrame,
+    source_dataset: pd.DataFrame = None,
+) -> dict:
+    """Build the 9-table contribution dict from an arbitrary detail DataFrame.
+
+    This is the core computation extracted from _build_legacy_source_tables,
+    reusable for both the combined legacy track and the per-track (main vs
+    satellite) dual-track contributions.  *detail* must contain columns
+    ``source_name``, ``n_records``, ``n_source_stations``, ``n_clusters``,
+    ``n_Q_records``, ``n_SSC_records``, ``n_SSL_records``, ``resolution``,
+    ``first_year``, ``last_year``.
+    """
     if detail.empty:
         empty = pd.DataFrame()
         return {
@@ -377,7 +384,7 @@ def _build_legacy_source_tables(ctx, source_dataset: pd.DataFrame, chunk_size: i
         .reset_index()
     )
     summary = attach_source_classification(summary, "source_name")
-    if not source_dataset.empty and "source_name" in source_dataset.columns:
+    if source_dataset is not None and not source_dataset.empty and "source_name" in source_dataset.columns:
         meta_cols = [c for c in ("source_name", "source_long_name", "institution", "reference", "source_url") if c in source_dataset.columns]
         summary = summary.merge(source_dataset[meta_cols].drop_duplicates("source_name"), on="source_name", how="left")
     total_records = float(summary["n_records"].sum()) or 1.0
@@ -483,6 +490,15 @@ def _build_legacy_source_tables(ctx, source_dataset: pd.DataFrame, chunk_size: i
     }
 
 
+def _build_legacy_source_tables(ctx, source_dataset: pd.DataFrame, chunk_size: int) -> dict:
+    frames = [
+        _source_station_catalog_detail(ctx),
+        _satellite_catalog_detail(ctx, chunk_size, scan_variables=False),
+    ]
+    detail = pd.concat([f for f in frames if not f.empty], ignore_index=True) if any(not f.empty for f in frames) else pd.DataFrame()
+    return _build_contribution_from_detail(detail, source_dataset)
+
+
 def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
     source_dataset = ctx.read_csv(PRODUCT_FILES["source_dataset_catalog"], required=False)
     source_station = ctx.read_csv(PRODUCT_FILES["source_station_catalog"], required=False)
@@ -573,11 +589,29 @@ def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
         else 0
     )
     legacy = _build_legacy_source_tables(ctx, source_dataset, max(1, int(chunk_size)))
+    # Dual-track: separate main (in-situ / reference / climatology) from satellite
+    main_detail = _source_station_catalog_detail(ctx)
+    sat_detail = _satellite_catalog_detail(ctx, max(1, int(chunk_size)), scan_variables=False)
+    # Re-classify by source type: any source with satellite classification goes to satellite track
+    if not main_detail.empty and "source_name" in main_detail.columns:
+        classified = attach_source_classification(main_detail[["source_name"]].drop_duplicates(), "source_name")
+        sat_sources = set(classified.loc[classified["source_type"] == "satellite", "source_name"].astype(str).str.lower())
+        main_mask = ~main_detail["source_name"].astype(str).str.lower().isin(sat_sources)
+        moved = main_detail[~main_mask].copy()
+        main_detail = main_detail[main_mask].copy()
+        if not moved.empty:
+            sat_detail = pd.concat([sat_detail, moved], ignore_index=True)
+    dual_main = _build_contribution_from_detail(main_detail, source_dataset)
+    dual_sat = _build_contribution_from_detail(sat_detail, source_dataset)
     return {
         "source_summary": source_summary.sort_values("source_name"),
         "source_resolution": source_station_by_source,
         "satellite_source_resolution": satellite_by_source,
         **legacy,
+        "main_source_contribution": dual_main,
+        "satellite_source_contribution": dual_sat,
+        "main_detail": main_detail,
+        "sat_detail": sat_detail,
     }
 
 
@@ -588,7 +622,9 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 20) -> 
     except Exception:
         return
     figures_dir.mkdir(parents=True, exist_ok=True)
-    source_summary = stats.get("source_dataset_contribution", pd.DataFrame())
+    # Prefer main-track source contribution over legacy merged for primary figures
+    main_tables = stats.get("main_source_contribution", {})
+    source_summary = main_tables.get("source_dataset_contribution", stats.get("source_dataset_contribution", pd.DataFrame()))
     if source_summary.empty:
         source_summary = stats.get("source_summary", pd.DataFrame()).rename(columns={"main_record_count": "n_records", "main_cluster_count": "n_clusters", "record_attributed_station_count": "n_source_stations"})
     if source_summary.empty or "n_records" not in source_summary.columns:
@@ -757,6 +793,16 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 20) -> 
 
 
 def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir: Path, report_dir: Path) -> list[str]:
+    # Dual-track tables (preferred)
+    main_tables = stats.get("main_source_contribution", {})
+    sat_tables = stats.get("satellite_source_contribution", {})
+    main_dataset = main_tables.get("source_dataset_contribution", pd.DataFrame())
+    main_type_df = main_tables.get("source_type_contribution", pd.DataFrame())
+    main_resolution = main_tables.get("source_resolution_contribution", pd.DataFrame())
+    main_metrics = main_tables.get("report_key_metrics", pd.DataFrame())
+    sat_dataset = sat_tables.get("source_dataset_contribution", pd.DataFrame())
+
+    # Legacy merged tables (backward-compatible fallback)
     dataset = stats.get("source_dataset_contribution", pd.DataFrame())
     source_summary = stats.get("source_summary", pd.DataFrame())
     type_df = stats.get("source_type_contribution", pd.DataFrame())
@@ -767,11 +813,17 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
     satellite_resolution = stats.get("satellite_source_resolution", pd.DataFrame())
     key_metrics = stats.get("report_key_metrics", pd.DataFrame())
 
-    total_sources = metric_value(key_metrics, "total_source_datasets", len(dataset))
-    total_records = metric_value(key_metrics, "total_records", pd.to_numeric(dataset.get("n_records", 0), errors="coerce").fillna(0).sum() if not dataset.empty else 0)
-    total_stations = metric_value(key_metrics, "total_source_stations", "")
-    total_clusters = metric_value(key_metrics, "total_clusters_source_sum", "")
-    top_source = metric_value(key_metrics, "top_source_by_records", "")
+    total_sources = metric_value(main_metrics, "total_source_datasets",
+                    metric_value(key_metrics, "total_source_datasets", len(main_dataset)))
+    total_records = metric_value(main_metrics, "total_records",
+                    metric_value(key_metrics, "total_records",
+                        pd.to_numeric(main_dataset.get("n_records", 0), errors="coerce").fillna(0).sum() if not main_dataset.empty else 0))
+    total_stations = metric_value(main_metrics, "total_source_stations",
+                    metric_value(key_metrics, "total_source_stations", ""))
+    total_clusters = metric_value(main_metrics, "total_clusters_source_sum",
+                    metric_value(key_metrics, "total_clusters_source_sum", ""))
+    top_source = metric_value(main_metrics, "top_source_by_records",
+                    metric_value(key_metrics, "top_source_by_records", ""))
 
     over_attribution = 0
     if not source_summary.empty and "over_attribution_record_count" in source_summary.columns:
@@ -785,14 +837,16 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         "- Release package: `{}`".format(display_path(ctx.release_dir)),
         "- Output tables: `{}`".format(display_path(tables_dir)),
         "- Source contribution uses release catalogs and release NetCDF provenance only.",
+        "- **Dual-track reporting**: main in-situ/reference sources are reported separately from satellite validation sources.",
         "",
         "## Counting Policy",
         "",
         "- `record_attributed_record_count` is source-station based and avoids multi-source cluster over-counting.",
         "- `cluster_attributed_record_count` preserves the historical exploded cluster attribution for parity with older reports.",
         "- Cluster counts can sum above unique release clusters because multiple sources can contribute to the same reference cluster.",
+        "- Satellite percentages throughout this report are computed against satellite-only totals, not merged totals.",
         "",
-        "## Key Metrics",
+        "## Key Metrics (Main Track — In-Situ / Reference / Climatology)",
         "",
         "- Source datasets: {}".format(fmt_int(total_sources)),
         "- Source stations: {}".format(fmt_int(total_stations)),
@@ -801,18 +855,35 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         "- Top source by records: `{}`".format(top_source),
         "- Over-attribution records in source summary: {}".format(fmt_int(over_attribution)),
         "",
-        "## Key Metric Table",
-        "",
-        sorted_markdown_table(key_metrics, columns=["metric", "value", "detail"], max_rows=20),
+        sorted_markdown_table(main_metrics, columns=["metric", "value", "detail"], max_rows=20) if not main_metrics.empty
+        else sorted_markdown_table(key_metrics, columns=["metric", "value", "detail"], max_rows=20),
     ]
     append_table_section(
         lines,
-        "Top Source Datasets",
-        dataset,
+        "Main Source Contribution (In-Situ / Reference / Climatology)",
+        main_dataset,
         columns=["source_name", "source_type", "source_group", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "first_year", "last_year", "resolutions", "percentage_of_total_records"],
         sort_by="n_records",
         max_rows=15,
+        note="Primary contribution table. This track excludes satellite-derived sources (RiverSed, GSED, Dethier, Shashi_Jianli) which are reported separately below.",
     )
+    append_table_section(
+        lines,
+        "Main Source Contribution by Type",
+        main_type_df,
+        columns=["summary_level", "category", "n_source_datasets", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "resolutions", "percentage_of_total_records"],
+        sort_by="n_records",
+        max_rows=14,
+    )
+    if not main_resolution.empty:
+        append_table_section(
+            lines,
+            "Main Source by Resolution",
+            main_resolution,
+            columns=["source_name", "product", "resolution", "source_type", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "percentage_of_total_records", "percentage_within_source_records"],
+            sort_by="n_records",
+            max_rows=18,
+        )
     append_table_section(
         lines,
         "Catalog Attribution Cross-Check",
@@ -822,9 +893,55 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         max_rows=15,
         note="This table separates unique source-station attribution from cluster-exploded attribution.",
     )
+    # Satellite track section
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## Satellite Validation Contribution (Validation-Only Sidecar)",
+        "",
+        "The satellite product concatenates records from multiple independent satellite-derived sources.",
+        "These sources are **not** equivalent to in-situ/reference data: their Q and SSL coverage is ",
+        "typically zero or near-zero, and SSC values are derived from satellite algorithms, not direct ",
+        "field measurements.  Percentages below are relative to satellite-only totals.",
+        "",
+        "**Do not** merge satellite percentages with the main-track percentages above for ",
+        "manuscript contribution claims.  See the variable coverage report (variable_summary) ",
+        "for a detailed sparsity analysis of each satellite source.",
+    ])
+    if not sat_dataset.empty:
+        append_table_section(
+            lines,
+            "Satellite Source Datasets",
+            sat_dataset,
+            columns=["source_name", "source_type", "source_group", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "first_year", "last_year", "resolutions", "percentage_of_total_records"],
+            sort_by="n_records",
+            max_rows=15,
+        )
     append_table_section(
         lines,
-        "Contribution Concentration",
+        "Satellite Source-Resolution Contribution (CSV catalog)",
+        satellite_resolution,
+        max_rows=12,
+        note="Satellite products remain validation-sidecar contributions and should be interpreted with variable coverage. Q/SSL are often entirely absent.",
+    )
+    # Legacy merged sections (kept for backward compatibility, with clarifying note)
+    lines.extend([
+        "",
+        "---",
+        "",
+        "## Legacy Merged Contribution (All Sources Combined)",
+        "",
+        "The following sections merge all sources (main + satellite) into a single combined ",
+        "framework for backward compatibility with earlier report versions.  **These combined ",
+        "percentages mix satellite validation records with in-situ/reference data and may ",
+        "overstate the contribution of satellite sources that dominate by record count but ",
+        "contribute little usable Q/SSC/SSL data.**  For manuscript contribution claims, ",
+        "refer to the main-track tables above.",
+    ])
+    append_table_section(
+        lines,
+        "Contribution Concentration (Combined)",
         cumulative,
         columns=["rank", "source_name", "source_type", "source_group", "n_records", "cumulative_records", "cumulative_percent"],
         sort_by="rank",
@@ -833,7 +950,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
     )
     append_table_section(
         lines,
-        "Contribution by Source Type and Group",
+        "Contribution by Source Type and Group (Combined)",
         type_df,
         columns=["summary_level", "category", "n_source_datasets", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "resolutions", "percentage_of_total_records"],
         sort_by="n_records",
@@ -841,7 +958,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
     )
     append_table_section(
         lines,
-        "Source by Resolution",
+        "Source by Resolution (Combined)",
         resolution,
         columns=["source_name", "product", "resolution", "source_type", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "percentage_of_total_records", "percentage_within_source_records"],
         sort_by="n_records",
@@ -849,7 +966,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
     )
     append_table_section(
         lines,
-        "Source by Variable",
+        "Source by Variable (Combined)",
         variable,
         columns=["source_name", "source_type", "source_group", "variable", "n_variable_records", "n_source_records", "percentage_of_total_variable_records", "percentage_within_source_records"],
         sort_by="n_variable_records",
@@ -857,27 +974,22 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
     )
     append_table_section(
         lines,
-        "Temporal Span by Source",
+        "Temporal Span by Source (Combined)",
         temporal,
         columns=["source_name", "source_type", "source_group", "first_year", "last_year", "year_span", "n_records", "n_source_stations", "n_clusters", "resolutions"],
         sort_by="n_records",
         max_rows=15,
-    )
-    append_table_section(
-        lines,
-        "Satellite Source-Resolution Contribution",
-        satellite_resolution,
-        max_rows=12,
-        note="Satellite products remain validation-sidecar contributions and should be interpreted with variable coverage.",
     )
     lines.extend(
         [
             "",
             "## Interpretation Notes",
             "",
-            "- Record dominance does not necessarily imply the broadest spatial footprint.",
-            "- Satellite source rows can dominate total validation records even when Q/SSL coverage is sparse.",
+            "- **Main-track metrics** (Key Metrics, Main Source Contribution) are the primary reference for manuscript contribution claims.",
+            "- Record dominance in the merged table does not necessarily imply the broadest spatial footprint or the most scientifically useful data.",
+            "- Satellite source rows dominate the merged totals by record count, but their Q/SSL coverage is typically zero and SSC is sparse.",
             "- Source classification is conservative; review `source_classification_template.csv` before using type/group proportions as final manuscript text.",
+            "- Satellite source datasets from Dethier and Shashi_Jianli report Q and SSC counts equal to total records as a best estimate; verify actual coverage in the NetCDF file.",
         ]
     )
     append_figure_index(lines, figures_dir, report_dir)
@@ -895,7 +1007,8 @@ def main(argv=None) -> int:
     reports_dir = ctx.output_path("reports", "x").parent
     stats = build_source_contribution(ctx, max(1, int(args.chunk_size)))
     for name, frame in stats.items():
-        write_csv(frame, tables_dir / "table_{}.csv".format(name))
+        if isinstance(frame, pd.DataFrame):
+            write_csv(frame, tables_dir / "table_{}.csv".format(name))
     for legacy_name in (
         "source_dataset_contribution",
         "source_type_contribution",
@@ -908,6 +1021,11 @@ def main(argv=None) -> int:
     ):
         write_csv(stats[legacy_name], tables_dir / "table_{}.csv".format(legacy_name))
     write_csv(stats["source_classification_template"], tables_dir / "source_classification_template.csv")
+    # Dual-track CSVs: main and satellite separated
+    for prefix, track_key in (("main", "main_source_contribution"), ("sat", "satellite_source_contribution")):
+        tables = stats.get(track_key, {})
+        for name, frame in tables.items():
+            write_csv(frame, tables_dir / "table_{}_{}.csv".format(prefix, name))
     if not args.skip_figures:
         try:
             write_figures(stats, ctx.figures_dir(), max(72, int(args.dpi)), max(5, int(args.top_n)))
