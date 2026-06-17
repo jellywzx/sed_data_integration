@@ -16,11 +16,14 @@ Default outputs:
 """
 
 import argparse
+import re
 import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -121,9 +124,6 @@ GLOBAL_ATTRS_TO_KEEP = (
     "geospatial_lat_max",
     "geospatial_lon_min",
     "geospatial_lon_max",
-    "citation",
-    "references",
-    "license",
 )
 CLIMATOLOGY_PACKAGE_FILES = (
     "sed_reference_climatology.nc",
@@ -287,9 +287,212 @@ def prepare_output_dir(path, force=False, dry_run=False):
 
 
 def _copy_global_attrs(src, dst):
+    attrs = _minimal_global_attrs(src, src.variables.keys())
     for name in GLOBAL_ATTRS_TO_KEEP:
+        dst.setncattr(name, attrs.get(name, ""))
+
+
+def _copy_h5_global_attrs(src, dst):
+    attrs = _minimal_global_attrs(src, src.variables.keys())
+    for name in GLOBAL_ATTRS_TO_KEEP:
+        dst.attrs[name] = attrs.get(name, "")
+
+
+def _source_attr(src, name, default=""):
+    if hasattr(src, "getncattr"):
         if name in src.ncattrs():
-            dst.setncattr(name, src.getncattr(name))
+            return src.getncattr(name)
+        return default
+    return src.attrs.get(name, default)
+
+
+def _source_var_attr(var, name, default=""):
+    if hasattr(var, "getncattr"):
+        if name in var.ncattrs():
+            return var.getncattr(name)
+        return default
+    return var.attrs.get(name, default)
+
+
+def _clean_attr_value(value):
+    if value is None:
+        return ""
+    text = str(value).strip()
+    return text
+
+
+def _first_nonempty_attr(src, *names):
+    for name in names:
+        value = _clean_attr_value(_source_attr(src, name, ""))
+        if value:
+            return value
+    return ""
+
+
+def _history_created_time(src):
+    history = _clean_attr_value(_source_attr(src, "history", ""))
+    match = re.search(r"Created\s+([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+)", history)
+    return match.group(1) if match else ""
+
+
+def _valid_numeric_values(var):
+    data = np.asarray(var[:])
+    if np.ma.isMaskedArray(data):
+        data = data.compressed()
+    else:
+        data = data.reshape(-1)
+    if data.size == 0:
+        return data
+    data = data.astype(float, copy=False)
+    fill_value = _source_var_attr(var, "_FillValue", None)
+    mask = np.isfinite(data)
+    if fill_value is not None:
+        try:
+            mask &= data != float(fill_value)
+        except (TypeError, ValueError):
+            pass
+    return data[mask]
+
+
+def _format_float(value):
+    return "{:.8g}".format(float(value))
+
+
+def _format_time_value(value, units, calendar):
+    units = _clean_attr_value(units)
+    calendar = _clean_attr_value(calendar) or "standard"
+    if HAS_NC and nc4 is not None:
+        try:
+            dt = nc4.num2date(
+                float(value),
+                units=units,
+                calendar=calendar,
+                only_use_cftime_datetimes=False,
+                only_use_python_datetimes=False,
+            )
+            if getattr(dt, "hour", 0) == 0 and getattr(dt, "minute", 0) == 0 and getattr(dt, "second", 0) == 0:
+                return dt.strftime("%Y-%m-%d")
+            return dt.isoformat()
+        except Exception:
+            pass
+
+    match = re.match(r"^\s*(days|hours|minutes|seconds)\s+since\s+([0-9]{4}-[0-9]{2}-[0-9]{2})", units)
+    if not match:
+        return _format_float(value)
+    unit_name, origin = match.groups()
+    unit_map = {"days": "D", "hours": "h", "minutes": "m", "seconds": "s"}
+    try:
+        ts = pd.to_datetime(origin) + pd.to_timedelta(float(value), unit=unit_map[unit_name])
+    except Exception:
+        return _format_float(value)
+    if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
+        return ts.strftime("%Y-%m-%d")
+    return ts.isoformat()
+
+
+def _time_coverage_attrs(src):
+    if "time" not in src.variables:
+        return "", ""
+    values = _valid_numeric_values(src.variables["time"])
+    if values.size == 0:
+        return "", ""
+    time_var = src.variables["time"]
+    units = _source_var_attr(time_var, "units", "")
+    calendar = _source_var_attr(time_var, "calendar", "standard")
+    return (
+        _format_time_value(np.nanmin(values), units, calendar),
+        _format_time_value(np.nanmax(values), units, calendar),
+    )
+
+
+def _geospatial_attrs(src):
+    result = {}
+    for var_name, min_key, max_key in (
+        ("lat", "geospatial_lat_min", "geospatial_lat_max"),
+        ("lon", "geospatial_lon_min", "geospatial_lon_max"),
+    ):
+        if var_name not in src.variables:
+            result[min_key] = ""
+            result[max_key] = ""
+            continue
+        values = _valid_numeric_values(src.variables[var_name])
+        result[min_key] = _format_float(np.nanmin(values)) if values.size else ""
+        result[max_key] = _format_float(np.nanmax(values)) if values.size else ""
+    return result
+
+
+def _qc_flag_meanings(src):
+    mappings = []
+    for name in ("Q_flag", "SSC_flag", "SSL_flag"):
+        if name not in src.variables:
+            continue
+        flag_meanings = _clean_attr_value(_source_var_attr(src.variables[name], "flag_meanings", ""))
+        if not flag_meanings:
+            continue
+        meanings = flag_meanings.split()
+        flag_values = _source_var_attr(src.variables[name], "flag_values", None)
+        if flag_values is not None:
+            values = np.asarray(flag_values).reshape(-1).tolist()
+        else:
+            values = []
+        if len(values) == len(meanings):
+            value = "; ".join("{}={}".format(_format_flag_value(v), m) for v, m in zip(values, meanings))
+        else:
+            value = flag_meanings
+        if value and value not in mappings:
+            mappings.append(value)
+    return " | ".join(mappings)
+
+
+def _format_flag_value(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return _format_float(numeric)
+
+
+def _variables_provided(variable_names):
+    primary = [name for name in ("Q", "SSC", "SSL") if name in variable_names]
+    flags = [name for name in ("Q_flag", "SSC_flag", "SSL_flag") if name in variable_names]
+    parts = []
+    if primary:
+        parts.append(", ".join(primary))
+    if flags:
+        parts.append("quality flags: {}".format(", ".join(flags)))
+    return "; ".join(parts)
+
+
+def _minimal_global_attrs(src, variable_names):
+    attrs = {name: _clean_attr_value(_source_attr(src, name, "")) for name in GLOBAL_ATTRS_TO_KEEP}
+    variable_names = set(variable_names)
+    time_start, time_end = _time_coverage_attrs(src)
+    geo = _geospatial_attrs(src)
+
+    attrs["title"] = attrs["title"] or _first_nonempty_attr(src, "title")
+    attrs["product_role"] = attrs["product_role"] or "minimal {} station-time matrix".format(
+        _first_nonempty_attr(src, "time_type") or "resolution-specific"
+    )
+    attrs["release_version"] = attrs["release_version"] or _first_nonempty_attr(
+        src, "release_version", "dataset_version"
+    )
+    attrs["date_created"] = attrs["date_created"] or _history_created_time(src)
+    attrs["date_modified"] = attrs["date_modified"] or datetime.now().isoformat(timespec="seconds")
+    attrs["Conventions"] = attrs["Conventions"] or _first_nonempty_attr(src, "Conventions", "conventions")
+    attrs["summary"] = attrs["summary"] or (
+        "Minimal station-by-time matrix product for river discharge, suspended sediment concentration, "
+        "and suspended sediment load."
+    )
+    attrs["variables_provided"] = attrs["variables_provided"] or _variables_provided(variable_names)
+    attrs["qc_flag_meanings"] = attrs["qc_flag_meanings"] or _qc_flag_meanings(src)
+    attrs["time_coverage_start"] = attrs["time_coverage_start"] or time_start
+    attrs["time_coverage_end"] = attrs["time_coverage_end"] or time_end
+    for key, value in geo.items():
+        attrs[key] = attrs[key] or value
+
+    return attrs
 
 
 def _copy_variable_attrs(src_var, dst_var):
@@ -441,9 +644,7 @@ def _copy_minimal_matrix_nc_h5netcdf(src_path, dst_path, keep_vars, required_var
                     required_dims.append(dim_name)
 
         with h5netcdf.File(tmp_path, "w") as dst:
-            for name in GLOBAL_ATTRS_TO_KEEP:
-                if name in src.attrs:
-                    dst.attrs[name] = src.attrs[name]
+            _copy_h5_global_attrs(src, dst)
 
             for dim_name in required_dims:
                 dst.dimensions[dim_name] = len(src.dimensions[dim_name])
@@ -759,6 +960,16 @@ def _matrix_variables(path):
     raise RuntimeError("netCDF4 or h5netcdf is required to inspect NetCDF files")
 
 
+def _matrix_global_attr_names(path):
+    if HAS_NC:
+        with nc4.Dataset(path, "r") as ds:
+            return list(ds.ncattrs())
+    if HAS_H5NETCDF:
+        with h5netcdf.File(path, "r") as ds:
+            return list(ds.attrs.keys())
+    raise RuntimeError("netCDF4 or h5netcdf is required to inspect NetCDF files")
+
+
 def validate_minimal_package(args):
     report_path = args.minimal_dir / "minimal_release_validation_report.csv"
     if args.dry_run:
@@ -853,6 +1064,38 @@ def validate_minimal_package(args):
             if not forbidden_present
             else "forbidden matrix variables present",
             ";".join(forbidden_present),
+        )
+        try:
+            attr_names = _matrix_global_attr_names(matrix_path)
+        except Exception as exc:
+            add(
+                "matrix_global_attrs:{}".format(name),
+                "fail",
+                "cannot inspect matrix global attributes",
+                str(exc),
+            )
+            continue
+        attr_name_set = set(attr_names)
+        missing_attrs = [attr_name for attr_name in GLOBAL_ATTRS_TO_KEEP if attr_name not in attr_name_set]
+        add(
+            "matrix_global_attrs:{}".format(name),
+            "fail" if missing_attrs else "pass",
+            "required matrix global attributes present"
+            if not missing_attrs
+            else "required matrix global attributes missing",
+            ";".join(missing_attrs),
+        )
+        expected_order = list(GLOBAL_ATTRS_TO_KEEP)
+        add(
+            "matrix_global_attr_order:{}".format(name),
+            "pass" if attr_names == expected_order else "fail",
+            "matrix global attributes follow required order"
+            if attr_names == expected_order
+            else "matrix global attributes are out of order",
+            "expected={}; actual={}".format(
+                "|".join(expected_order),
+                "|".join(attr_names),
+            ),
         )
 
     df = pd.DataFrame(rows)
