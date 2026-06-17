@@ -20,11 +20,12 @@ import re
 import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SCRIPTS_DIR = SCRIPT_DIR.parent
@@ -55,76 +56,14 @@ DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
 DEFAULT_MINIMAL_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
 DEFAULT_CLIMATOLOGY_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_climatology"
 DEFAULT_SATELLITE_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_satellite"
+DEFAULT_SCHEMA_PATH = SCRIPTS_DIR / "config/release_minimal_schema.yml"
 
-REQUIRED_RELEASE_FILES = (
-    "sed_reference_timeseries_daily.nc",
-    "sed_reference_timeseries_monthly.nc",
-    "sed_reference_timeseries_annual.nc",
-    "station_catalog.csv",
-    "source_station_catalog.csv",
-    "source_dataset_catalog.csv",
-)
-
-MINIMAL_PACKAGE_FILES = REQUIRED_RELEASE_FILES
-MINIMAL_MATRIX_FILES = (
-    "sed_reference_timeseries_daily.nc",
-    "sed_reference_timeseries_monthly.nc",
-    "sed_reference_timeseries_annual.nc",
-)
-MINIMAL_KEEP_VARS = (
-    "lat",
-    "lon",
-    "cluster_id",
-    "cluster_uid",
-    "time",
-    "Q",
-    "SSC",
-    "SSL",
-    "Q_flag",
-    "SSC_flag",
-    "SSL_flag",
-    "n_valid_time_steps",
-    "selected_source_station_uid",
-    "basin_area",
-    "station_name",
-    "river_name",
-)
-MINIMAL_REQUIRED_VARS = (
-    "cluster_uid",
-    "time",
-    "Q",
-    "SSC",
-    "SSL",
-    "Q_flag",
-    "SSC_flag",
-    "SSL_flag",
-    "n_valid_time_steps",
-)
-COMPRESSED_MATRIX_VARS = {
-    "Q",
-    "SSC",
-    "SSL",
-    "Q_flag",
-    "SSC_flag",
-    "SSL_flag",
-}
-GLOBAL_ATTRS_TO_KEEP = (
-    "title",
-    "product_role",
-    "release_version",
-    "date_created",
-    "date_modified",
-    "Conventions",
-    "summary",
-    "variables_provided",
-    "qc_flag_meanings",
-    "time_coverage_start",
-    "time_coverage_end",
-    "geospatial_lat_min",
-    "geospatial_lat_max",
-    "geospatial_lon_min",
-    "geospatial_lon_max",
-)
+MINIMAL_PACKAGE_FILES = ()
+MINIMAL_MATRIX_FILES = ()
+MINIMAL_KEEP_VARS = ()
+MINIMAL_REQUIRED_VARS = ()
+COMPRESSED_MATRIX_VARS = set()
+GLOBAL_ATTRS_TO_KEEP = ()
 CLIMATOLOGY_PACKAGE_FILES = (
     "sed_reference_climatology.nc",
 )
@@ -132,65 +71,119 @@ SATELLITE_PACKAGE_FILES = (
     "sed_reference_satellite.nc",
     "satellite_catalog.csv",
 )
-MINIMAL_FORBIDDEN_FILES = (
-    "sed_reference_master.nc",
-    "sed_reference_climatology.nc",
-    "sed_reference_satellite.nc",
-    "satellite_catalog.csv",
-)
-MINIMAL_FORBIDDEN_VARS = (
-    "source_name",
-    "selected_source_index",
-    "is_overlap",
-)
+MINIMAL_FORBIDDEN_FILES = ()
+MINIMAL_FORBIDDEN_VARS = ()
 MINIMAL_RESOLUTIONS = {"daily", "monthly", "annual"}
-MINIMAL_STATION_CATALOG_COLUMNS = (
-    "cluster_uid",
-    "cluster_id",
-    "resolution",
-    "lat",
-    "lon",
-    "country",
-    "time_start",
-    "time_end",
-    "record_count",
-    "n_valid_time_steps",
-    "basin_area",
-    "pfaf_code",
-    "n_upstream_reaches",
-    "station_name",
-    "river_name",
-)
-MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = (
-    "source_station_uid",
-    "source_name",
-    "source_station_native_id",
-    "source_station_id",
-    "source_station_name",
-    "source_station_river_name",
-    "source_station_lat",
-    "source_station_lon",
-    "cluster_uid",
-    "cluster_id",
-    "resolution",
-    "n_records",
-    "time_start",
-    "time_end",
-)
-MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = (
-    "source_name",
-    "source_long_name",
-    "institution",
-    "reference",
-    "source_url",
-    "country",
-    "geographic_coverage",
-    "n_source_stations",
-    "n_records",
-)
+MINIMAL_CATALOG_COLUMNS = {}
+MINIMAL_STATION_CATALOG_COLUMNS = ()
+MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = ()
+MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = ()
 
 BUILD_FAILURES = []
 BUILD_WARNINGS = []
+
+PACKAGING_SCRIPT = Path(__file__).resolve()
+
+
+class MinimalSchemaError(ValueError):
+    pass
+
+
+def _schema_list(schema, key):
+    if key not in schema:
+        raise MinimalSchemaError("Schema missing required field: {}".format(key))
+    value = schema[key]
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise MinimalSchemaError("Schema field {} must be a list of non-empty strings".format(key))
+    return tuple(value)
+
+
+def _schema_catalog_columns(schema):
+    key = "minimal_catalog_columns"
+    if key not in schema:
+        raise MinimalSchemaError("Schema missing required field: {}".format(key))
+    value = schema[key]
+    if not isinstance(value, dict):
+        raise MinimalSchemaError("Schema field {} must be a mapping of catalog file names to columns".format(key))
+
+    required_catalogs = (
+        "station_catalog.csv",
+        "source_station_catalog.csv",
+        "source_dataset_catalog.csv",
+    )
+    result = {}
+    for catalog_name in required_catalogs:
+        if catalog_name not in value:
+            raise MinimalSchemaError(
+                "Schema field {} missing required catalog: {}".format(key, catalog_name)
+            )
+        columns = value[catalog_name]
+        if not isinstance(columns, list) or any(
+            not isinstance(item, str) or not item for item in columns
+        ):
+            raise MinimalSchemaError(
+                "Schema field {}.{} must be a list of non-empty strings".format(key, catalog_name)
+            )
+        result[catalog_name] = tuple(columns)
+    return result
+
+
+def load_minimal_schema(path):
+    if not path.is_file():
+        raise MinimalSchemaError("Minimal release schema file not found: {}".format(path))
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            schema = yaml.safe_load(stream)
+    except yaml.YAMLError as exc:
+        raise MinimalSchemaError("Minimal release schema is not valid YAML: {} ({})".format(path, exc))
+    if not isinstance(schema, dict):
+        raise MinimalSchemaError("Minimal release schema must be a YAML mapping: {}".format(path))
+
+    catalog_columns = _schema_catalog_columns(schema)
+    return {
+        "minimal_matrix_files": _schema_list(schema, "minimal_matrix_files"),
+        "keep_variables": _schema_list(schema, "keep_variables"),
+        "required_variables": _schema_list(schema, "required_variables"),
+        "compressed_variables": _schema_list(schema, "compressed_variables"),
+        "global_attributes_to_keep": _schema_list(schema, "global_attributes_to_keep"),
+        "forbidden_files": _schema_list(schema, "forbidden_files"),
+        "forbidden_variables": _schema_list(schema, "forbidden_variables"),
+        "minimal_catalog_columns": catalog_columns,
+    }
+
+
+def apply_minimal_schema(schema):
+    global MINIMAL_PACKAGE_FILES
+    global MINIMAL_MATRIX_FILES
+    global MINIMAL_KEEP_VARS
+    global MINIMAL_REQUIRED_VARS
+    global COMPRESSED_MATRIX_VARS
+    global GLOBAL_ATTRS_TO_KEEP
+    global MINIMAL_FORBIDDEN_FILES
+    global MINIMAL_FORBIDDEN_VARS
+    global MINIMAL_CATALOG_COLUMNS
+    global MINIMAL_STATION_CATALOG_COLUMNS
+    global MINIMAL_SOURCE_STATION_CATALOG_COLUMNS
+    global MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS
+
+    MINIMAL_MATRIX_FILES = schema["minimal_matrix_files"]
+    MINIMAL_KEEP_VARS = schema["keep_variables"]
+    MINIMAL_REQUIRED_VARS = schema["required_variables"]
+    COMPRESSED_MATRIX_VARS = set(schema["compressed_variables"])
+    GLOBAL_ATTRS_TO_KEEP = schema["global_attributes_to_keep"]
+    MINIMAL_FORBIDDEN_FILES = schema["forbidden_files"]
+    MINIMAL_FORBIDDEN_VARS = schema["forbidden_variables"]
+    MINIMAL_CATALOG_COLUMNS = schema["minimal_catalog_columns"]
+    MINIMAL_STATION_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["station_catalog.csv"]
+    MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["source_station_catalog.csv"]
+    MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["source_dataset_catalog.csv"]
+    MINIMAL_PACKAGE_FILES = tuple(MINIMAL_MATRIX_FILES) + tuple(MINIMAL_CATALOG_COLUMNS)
+
+
+try:
+    apply_minimal_schema(load_minimal_schema(DEFAULT_SCHEMA_PATH))
+except MinimalSchemaError:
+    pass
 
 
 def resolve_path(value, base=PROJECT_ROOT):
@@ -208,6 +201,7 @@ def parse_args(argv=None):
     parser.add_argument("--minimal-dir", default=str(DEFAULT_MINIMAL_DIR))
     parser.add_argument("--climatology-dir", default=str(DEFAULT_CLIMATOLOGY_DIR))
     parser.add_argument("--satellite-dir", default=str(DEFAULT_SATELLITE_DIR))
+    parser.add_argument("--schema", default=str(DEFAULT_SCHEMA_PATH), help="Minimal package schema YAML")
     parser.add_argument("--force", action="store_true", help="Overwrite existing output directories")
     parser.add_argument("--dry-run", action="store_true", help="Print planned actions without writing files")
     parser.add_argument("--skip-climatology", action="store_true", help="Skip climatology-only package")
@@ -230,6 +224,12 @@ def parse_args(argv=None):
     args.minimal_dir = resolve_path(args.minimal_dir)
     args.climatology_dir = resolve_path(args.climatology_dir)
     args.satellite_dir = resolve_path(args.satellite_dir)
+    args.schema = resolve_path(args.schema, base=SCRIPTS_DIR)
+
+    try:
+        apply_minimal_schema(load_minimal_schema(args.schema))
+    except MinimalSchemaError as exc:
+        parser.error(str(exc))
 
     if args.compression_level < 0 or args.compression_level > 9:
         parser.error("--compression-level must be between 0 and 9")
@@ -246,7 +246,7 @@ def validate_inputs(release_dir):
 
     missing = []
     required_paths = []
-    for name in REQUIRED_RELEASE_FILES:
+    for name in MINIMAL_PACKAGE_FILES:
         path = release_dir / name
         required_paths.append(path)
         if not path.is_file():
@@ -314,6 +314,10 @@ def _source_var_attr(var, name, default=""):
     return var.attrs.get(name, default)
 
 
+def _utc_iso8601_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _clean_attr_value(value):
     if value is None:
         return ""
@@ -327,6 +331,77 @@ def _first_nonempty_attr(src, *names):
         if value:
             return value
     return ""
+
+
+def _release_provenance_nc_candidates(release_dir):
+    names = (
+        "sed_reference_master.nc",
+        "sed_reference_timeseries_daily.nc",
+        "sed_reference_timeseries_monthly.nc",
+        "sed_reference_timeseries_annual.nc",
+        "sed_reference_climatology.nc",
+        "sed_reference_satellite.nc",
+    )
+    for name in names:
+        path = release_dir / name
+        if path.is_file():
+            yield path
+
+
+def _read_release_nc_attrs(path):
+    if HAS_NC:
+        with nc4.Dataset(path, "r") as ds:
+            return {
+                "source_release_version": _clean_attr_value(_source_attr(ds, "release_version", "")),
+                "source_release_date_created": _clean_attr_value(_source_attr(ds, "date_created", "")),
+                "source_release_date_modified": _clean_attr_value(_source_attr(ds, "date_modified", "")),
+            }
+    if HAS_H5NETCDF:
+        with h5netcdf.File(path, "r") as ds:
+            return {
+                "source_release_version": _clean_attr_value(_source_attr(ds, "release_version", "")),
+                "source_release_date_created": _clean_attr_value(_source_attr(ds, "date_created", "")),
+                "source_release_date_modified": _clean_attr_value(_source_attr(ds, "date_modified", "")),
+            }
+    return {
+        "source_release_version": "",
+        "source_release_date_created": "",
+        "source_release_date_modified": "",
+    }
+
+
+def read_release_provenance(release_dir, schema_path, package_created_at):
+    provenance = {
+        "source_release_directory": str(release_dir),
+        "source_release_version": "",
+        "source_release_date_created": "",
+        "source_release_date_modified": "",
+        "packaging_script": str(PACKAGING_SCRIPT),
+        "schema_path": str(schema_path),
+        "package_created_at": package_created_at,
+    }
+
+    found_nc = False
+    for path in _release_provenance_nc_candidates(release_dir):
+        found_nc = True
+        try:
+            attrs = _read_release_nc_attrs(path)
+        except Exception as exc:
+            _warn(BUILD_WARNINGS, "could not read release provenance from {}: {}".format(path, exc))
+            continue
+        for key, value in attrs.items():
+            if value and not provenance[key]:
+                provenance[key] = value
+        if (
+            provenance["source_release_version"]
+            and provenance["source_release_date_created"]
+            and provenance["source_release_date_modified"]
+        ):
+            return provenance
+
+    if not found_nc:
+        _warn(BUILD_WARNINGS, "no full release NetCDF found for provenance attributes in {}".format(release_dir))
+    return provenance
 
 
 def _history_created_time(src):
@@ -802,6 +877,7 @@ def write_inventory(
     package_name,
     release_dir,
     source_files,
+    provenance,
     dry_run=False,
     inventory_name="release_inventory.csv",
     status="copied",
@@ -821,6 +897,12 @@ def write_inventory(
                 "source_path": str(source_path),
                 "source_exists": bool(source_path.is_file()),
                 "status": row_status,
+                "source_release_version": provenance["source_release_version"],
+                "source_release_date_created": provenance["source_release_date_created"],
+                "source_release_date_modified": provenance["source_release_date_modified"],
+                "packaging_script": provenance["packaging_script"],
+                "schema_path": provenance["schema_path"],
+                "package_created_at": provenance["package_created_at"],
             }
         )
 
@@ -832,59 +914,80 @@ def write_inventory(
     print("[write] {}".format(inventory_path))
 
 
-def write_readme(package_dir, package_name, release_dir, compression_level=None, dry_run=False):
+def _readme_provenance_block(provenance, package_role):
+    lines = [
+        "- Source release directory: `{}`".format(provenance["source_release_directory"]),
+        "- Source release version: `{}`".format(provenance["source_release_version"]),
+    ]
+    if provenance["source_release_date_created"]:
+        lines.append("- Source release date_created: `{}`".format(provenance["source_release_date_created"]))
+    if provenance["source_release_date_modified"]:
+        lines.append("- Source release date_modified: `{}`".format(provenance["source_release_date_modified"]))
+    lines.extend(
+        [
+            "- Packaging script path: `{}`".format(provenance["packaging_script"]),
+            "- Schema path: `{}`".format(provenance["schema_path"]),
+            "- Package role: {}".format(package_role),
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def write_readme(package_dir, package_name, release_dir, provenance, compression_level=None, dry_run=False):
     readme_path = package_dir / "README.md"
     if package_name == "sed_reference_release_minimal":
+        package_role = "minimal station-reference matrix package for daily/monthly/annual use."
         text = """# sed_reference_release_minimal
 
 Generated by `tools/build_minimal_release_package.py`.
 
-- Full release source: `{release_dir}`
-- Package role: minimal station-reference matrix package for daily/monthly/annual use.
+{provenance_block}
 - Matrix files keep selected user-facing fields and omit master, climatology, satellite,
   overlap-candidate, parquet, and GPKG products.
 - Requested NetCDF compression level: `{compression_level}`
 
 """.format(
-            release_dir=release_dir,
+            provenance_block=_readme_provenance_block(provenance, package_role),
             compression_level=compression_level,
         )
     elif package_name == "sed_reference_release_climatology":
+        package_role = "standalone climatology package."
         text = """# sed_reference_release_climatology
 
 Generated by `tools/build_minimal_release_package.py`.
 
-- Full release source: `{release_dir}`
-- Package role: standalone climatology package.
+{provenance_block}
 - Use this package separately from the daily/monthly/annual matrix minimal package.
 - NetCDF file is copied from the full release without slimming.
 
 """.format(
-            release_dir=release_dir,
+            provenance_block=_readme_provenance_block(provenance, package_role),
         )
     elif package_name == "sed_reference_release_satellite":
+        package_role = "satellite validation-only package."
         text = """# sed_reference_release_satellite
 
 Generated by `tools/build_minimal_release_package.py`.
 
-- Full release source: `{release_dir}`
-- Package role: satellite validation-only package.
+{provenance_block}
 - Satellite data are retained for validation and do not enter the main station-reference merge.
 - NetCDF and catalog files are copied from the full release without slimming.
 
 """.format(
-            release_dir=release_dir,
+            provenance_block=_readme_provenance_block(provenance, package_role),
         )
     else:
+        package_role = package_name
         text = """# {package_name}
 
 Generated by `tools/build_minimal_release_package.py`.
 
-- Full release source: `{release_dir}`
+{provenance_block}
 
 """.format(
             package_name=package_name,
-            release_dir=release_dir,
+            provenance_block=_readme_provenance_block(provenance, package_role),
         )
 
     if dry_run:
@@ -926,6 +1029,7 @@ def _build_copy_package(package_name, package_dir, release_dir, source_files, in
         package_name,
         release_dir,
         source_files,
+        args.release_provenance,
         dry_run=args.dry_run,
         inventory_name=inventory_name,
         status="copied_from_full_release",
@@ -934,12 +1038,26 @@ def _build_copy_package(package_name, package_dir, release_dir, source_files, in
         package_dir,
         package_name,
         release_dir,
+        args.release_provenance,
         dry_run=args.dry_run,
     )
 
 
 def _copy_minimal_matrix_worker(payload):
-    name, release_dir, minimal_dir, keep_vars, required_vars, compression_level = payload
+    (
+        name,
+        release_dir,
+        minimal_dir,
+        keep_vars,
+        required_vars,
+        compressed_vars,
+        global_attrs_to_keep,
+        compression_level,
+    ) = payload
+    global COMPRESSED_MATRIX_VARS
+    global GLOBAL_ATTRS_TO_KEEP
+    COMPRESSED_MATRIX_VARS = set(compressed_vars)
+    GLOBAL_ATTRS_TO_KEEP = tuple(global_attrs_to_keep)
     ok = copy_minimal_matrix_nc(
         release_dir / name,
         minimal_dir / name,
@@ -1132,6 +1250,8 @@ def build_minimal_package(args):
                 args.minimal_dir,
                 MINIMAL_KEEP_VARS,
                 MINIMAL_REQUIRED_VARS,
+                tuple(COMPRESSED_MATRIX_VARS),
+                GLOBAL_ATTRS_TO_KEEP,
                 args.compression_level,
             )
             for name in MINIMAL_MATRIX_FILES
@@ -1166,12 +1286,14 @@ def build_minimal_package(args):
         package_name,
         args.release_dir,
         MINIMAL_PACKAGE_FILES,
+        args.release_provenance,
         dry_run=args.dry_run,
     )
     write_readme(
         args.minimal_dir,
         package_name,
         args.release_dir,
+        args.release_provenance,
         compression_level=args.compression_level,
         dry_run=args.dry_run,
     )
@@ -1207,6 +1329,7 @@ def main(argv=None):
     print("[config] minimal output dir:     {}".format(args.minimal_dir))
     print("[config] climatology output dir: {}".format(args.climatology_dir))
     print("[config] satellite output dir:   {}".format(args.satellite_dir))
+    print("[config] minimal schema:         {}".format(args.schema))
     print("[config] compression level:      {}".format(args.compression_level))
     print("[config] matrix workers:         {}".format(args.matrix_workers))
     print("[config] dry run:                {}".format(args.dry_run))
@@ -1214,7 +1337,15 @@ def main(argv=None):
     print("[config] netCDF4 available:      {}".format(HAS_NC))
     print("[config] h5netcdf available:    {}".format(HAS_H5NETCDF))
 
+    args.package_created_at = _utc_iso8601_now()
+    print("[config] package created at:     {}".format(args.package_created_at))
+
     validate_inputs(args.release_dir)
+    args.release_provenance = read_release_provenance(
+        args.release_dir,
+        args.schema,
+        args.package_created_at,
+    )
     build_minimal_package(args)
 
     if args.skip_climatology:

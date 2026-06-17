@@ -1,0 +1,112 @@
+minimal_matrix_files:
+  - sed_reference_timeseries_daily.nc
+  - sed_reference_timeseries_monthly.nc
+  - sed_reference_timeseries_annual.nc
+
+keep_variables:
+  - lat
+  - lon
+  - cluster_id
+  - cluster_uid
+  - time
+  - Q
+  - SSC
+  - SSL
+  - Q_flag
+  - SSC_flag
+  - SSL_flag
+  - n_valid_time_steps
+  - selected_source_station_uid
+  - basin_area
+  - station_name
+  - river_name
+
+required_variables:
+  - cluster_uid
+  - time
+  - Q
+  - SSC
+  - SSL
+  - Q_flag
+  - SSC_flag
+  - SSL_flag
+  - n_valid_time_steps
+
+compressed_variables:
+  - Q
+  - SSC
+  - SSL
+  - Q_flag
+  - SSC_flag
+  - SSL_flag
+
+global_attributes_to_keep:
+  - title
+  - product_role
+  - release_version
+  - date_created
+  - date_modified
+  - Conventions
+  - summary
+  - variables_provided
+  - qc_flag_meanings
+  - time_coverage_start
+  - time_coverage_end
+  - geospatial_lat_min
+  - geospatial_lat_max
+  - geospatial_lon_min
+  - geospatial_lon_max
+
+forbidden_files:
+  - sed_reference_master.nc
+  - sed_reference_climatology.nc
+  - sed_reference_satellite.nc
+  - satellite_catalog.csv
+
+forbidden_variables:
+  - source_name
+  - selected_source_index
+  - is_overlap
+
+minimal_catalog_columns:
+  station_catalog.csv:
+    - cluster_uid
+    - cluster_id
+    - resolution
+    - lat
+    - lon
+    - country
+    - time_start
+    - time_end
+    - record_count
+    - n_valid_time_steps
+    - basin_area
+    - pfaf_code
+    - n_upstream_reaches
+    - station_name
+    - river_name
+  source_station_catalog.csv:
+    - source_station_uid
+    - source_name
+    - source_station_native_id
+    - source_station_id
+    - source_station_name
+    - source_station_river_name
+    - source_station_lat
+    - source_station_lon
+    - cluster_uid
+    - cluster_id
+    - resolution
+    - n_records
+    - time_start
+    - time_end
+  source_dataset_catalog.csv:
+    - source_name
+    - source_long_name
+    - institution
+    - reference
+    - source_url
+    - country
+    - geographic_coverage
+    - n_source_stations
+    - n_records
