@@ -104,9 +104,33 @@ minimal_catalog_columns:
     - source_name
     - source_long_name
     - institution
+    - source_category
+    - release_role
+    - included_in_minimal_release
+    - source_version
     - reference
+    - data_doi
+    - article_doi
     - source_url
+    - license_or_terms
+    - access_date
     - country
+    - continent_region
     - geographic_coverage
+    - available_resolutions
+    - temporal_resolution_used
+    - temporal_span_used
+    - time_start
+    - time_end
     - n_source_stations
+    - n_clusters
+    - n_source_station_resolution_rows
+    - n_cluster_resolution_rows
     - n_records
+    - variables_used
+    - variable_treatment
+    - preferred_citation
+    - source_station_paths_sample
+    - data_limitations
+    - provenance_notes
+    - metadata_status
