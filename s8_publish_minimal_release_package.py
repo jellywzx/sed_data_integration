@@ -56,7 +56,7 @@ DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
 DEFAULT_MINIMAL_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
 DEFAULT_CLIMATOLOGY_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_climatology"
 DEFAULT_SATELLITE_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_satellite"
-DEFAULT_SCHEMA_PATH = SCRIPTS_DIR / "config/release_minimal_schema.yml"
+DEFAULT_SCHEMA_PATH = SCRIPT_DIR / "release_minimal_schema.yml"
 
 MINIMAL_PACKAGE_FILES = ()
 MINIMAL_MATRIX_FILES = ()
