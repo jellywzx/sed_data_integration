@@ -101,17 +101,8 @@ minimal_catalog_columns:
     - time_start
     - time_end
   source_dataset_catalog.csv:
-    - Data Source Name
-    - Type
-    - Observation type
-    - Temporal resolution
-    - Temporal_span
-    - Variables Provided
-    - Geographic coverage
-    - Citation
+    - source_name
     - reference
     - source_url
-    - access_date
     - n_source_stations
-    - n_clusters
     - n_records
