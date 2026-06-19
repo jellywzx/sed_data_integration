@@ -90,6 +90,10 @@ BUILTIN_S8_SKIP_GPKG = False
 BUILTIN_S8_INCLUDE_BASIN_POLYGONS = True
 BUILTIN_S8_SKIP_VALIDATION = False
 BUILTIN_S8_FORCE = True
+BUILTIN_S8_MINIMAL_MATRIX_WORKERS = 3
+BUILTIN_S8_MINIMAL_COMPRESSION = 4
+BUILTIN_S8_SKIP_MINIMAL_CLIMATOLOGY = False
+BUILTIN_S8_SKIP_MINIMAL_SATELLITE = False
 BUILTIN_CLUSTER_POLL_SECONDS = 60
 
 
@@ -294,6 +298,9 @@ def stage_outputs():
             release_dir / "release_validation_report.csv",
             release_dir / "release_inventory.csv",
             release_dir / "README.md",
+            OUTPUT_DIR / "sed_reference_release_minimal" / "minimal_release_validation_report.csv",
+            OUTPUT_DIR / "sed_reference_release_minimal" / "release_inventory.csv",
+            OUTPUT_DIR / "sed_reference_release_minimal" / "README.md",
         ],
     }
 
@@ -518,7 +525,24 @@ def build_stage_specs(args, python_bin):
         {
             "name": "s8_publish_reference_dataset",
             "cmd": s8_cmd,
-        }
+        },
+        {
+            "name": "s8_publish_minimal_release_package",
+            "cmd": [
+                python_bin,
+                str(SCRIPT_DIR / "s8_publish_minimal_release_package.py"),
+                "--release-dir",
+                str(OUTPUT_DIR / "sed_reference_release"),
+                "--matrix-workers",
+                str(args.s8_minimal_matrix_workers),
+                "--compression-level",
+                str(args.s8_minimal_compression),
+            ]
+            + (["--skip-climatology"] if args.s8_skip_minimal_climatology else [])
+            + (["--skip-satellite"] if args.s8_skip_minimal_satellite else [])
+            + (["--force"] if args.s8_force else [])
+            + (["--dry-run"] if args.dry_run else []),
+        },
     ]
 
     return {
@@ -783,6 +807,30 @@ def parse_args(defaults=None):
         default=BUILTIN_S8_FORCE,
         help="Do not pass --force to s8_publish_reference_dataset.py.",
     )
+    parser.add_argument(
+        "--s8-minimal-matrix-workers",
+        type=int,
+        default=BUILTIN_S8_MINIMAL_MATRIX_WORKERS,
+        help="Parallel workers for minimal matrix NetCDF copies (default: 3).",
+    )
+    parser.add_argument(
+        "--s8-minimal-compression",
+        type=int,
+        default=BUILTIN_S8_MINIMAL_COMPRESSION,
+        help="NetCDF compression level for minimal matrix files (0-9, default: 4).",
+    )
+    parser.add_argument(
+        "--s8-skip-minimal-climatology",
+        action="store_true",
+        default=BUILTIN_S8_SKIP_MINIMAL_CLIMATOLOGY,
+        help="Skip building the climatology extension package in s8 minimal release.",
+    )
+    parser.add_argument(
+        "--s8-skip-minimal-satellite",
+        action="store_true",
+        default=BUILTIN_S8_SKIP_MINIMAL_SATELLITE,
+        help="Skip building the satellite extension package in s8 minimal release.",
+    )
     if defaults:
         parser.set_defaults(**defaults)
     return parser.parse_args()
@@ -876,6 +924,10 @@ def _confirm_config(args, stages, python_bin):
         ("matrix workers", str(args.matrix_workers)),
         ("matrix resolution workers", str(args.matrix_resolution_workers)),
         ("s8 link mode", str(args.s8_link_mode)),
+        ("s8 minimal matrix workers", str(args.s8_minimal_matrix_workers)),
+        ("s8 minimal compression", str(args.s8_minimal_compression)),
+        ("s8 skip minimal climatology", str(args.s8_skip_minimal_climatology)),
+        ("s8 skip minimal satellite", str(args.s8_skip_minimal_satellite)),
         ("s8 skip gpkg", str(args.s8_skip_gpkg)),
         ("include local basins", str(args.include_local_basins)),
         ("strict s1", str(args.strict_s1)),
@@ -930,6 +982,10 @@ def _confirm_config(args, stages, python_bin):
         ("matrix resolution workers", "--matrix-resolution-workers N"),
         ("s8 link mode", "--s8-link-mode hardlink|symlink|copy"),
         ("s8 skip gpkg", "--s8-skip-gpkg"),
+        ("s8 minimal matrix workers", "--s8-minimal-matrix-workers N"),
+        ("s8 minimal compression", "--s8-minimal-compression N"),
+        ("s8 skip minimal climatology", "--s8-skip-minimal-climatology"),
+        ("s8 skip minimal satellite", "--s8-skip-minimal-satellite"),
         ("include local basins", "--include-local-basins"),
         ("strict s1", "--strict-s1"),
         ("cluster poll seconds", "--cluster-poll-seconds N"),
@@ -1006,6 +1062,10 @@ _CONFIG_FIELDS = [
     ("s8_skip_validation", "--s8-skip-validation"),
     ("s8_include_basin_polygons", "--s8-include-basin-polygons"),
     ("s8_force", "--s8-force"),
+    ("s8_minimal_matrix_workers", "--s8-minimal-matrix-workers"),
+    ("s8_minimal_compression", "--s8-minimal-compression"),
+    ("s8_skip_minimal_climatology", "--s8-skip-minimal-climatology"),
+    ("s8_skip_minimal_satellite", "--s8-skip-minimal-satellite"),
     ("python", "--python"),
     ("log_file", "--log-file"),
 ]
@@ -1092,6 +1152,10 @@ cli:
   s8_skip_validation: false     # 跳过发布校验
   s8_include_basin_polygons: true  # 包含流域多边形
   s8_force: true                # 强制覆盖已存在的发布文件
+  s8_minimal_matrix_workers: 3        # Parallel workers for minimal matrix NetCDF copies
+  s8_minimal_compression: 4           # NetCDF compression level (0-9)
+  s8_skip_minimal_climatology: false  # Skip climatology extension package
+  s8_skip_minimal_satellite: false    # Skip satellite extension package
 
 # ============================================================
 # 环境变量（仅通过 export 设置，非 CLI 参数）
@@ -1240,6 +1304,10 @@ def main():
         _print_and_log(log_fp, "matrix resolution workers: {}".format(args.matrix_resolution_workers))
         _print_and_log(log_fp, "s8 link mode:            {}".format(args.s8_link_mode))
         _print_and_log(log_fp, "s8 skip gpkg:            {}".format(args.s8_skip_gpkg))
+        _print_and_log(log_fp, "s8 minimal matrix workers:     {}".format(args.s8_minimal_matrix_workers))
+        _print_and_log(log_fp, "s8 minimal compression:        {}".format(args.s8_minimal_compression))
+        _print_and_log(log_fp, "s8 skip minimal climatology:  {}".format(args.s8_skip_minimal_climatology))
+        _print_and_log(log_fp, "s8 skip minimal satellite:    {}".format(args.s8_skip_minimal_satellite))
         _print_and_log(log_fp, "include local basins:    {}".format(args.include_local_basins))
         _print_and_log(log_fp, "strict s1:               {}".format(args.strict_s1))
         _print_and_log(log_fp, "cluster poll seconds:    {}".format(args.cluster_poll_seconds))
