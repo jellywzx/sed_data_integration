@@ -59,9 +59,6 @@ global_attributes_to_keep:
 
 forbidden_files:
   - sed_reference_master.nc
-  - sed_reference_climatology.nc
-  - sed_reference_satellite.nc
-  - satellite_catalog.csv
 
 forbidden_variables:
   - source_name

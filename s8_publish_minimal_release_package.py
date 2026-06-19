@@ -3,16 +3,14 @@
 Build post-release slim package directories from the full S8 release package.
 
 This tool validates the full release input, prepares the target output
-directories, builds a minimal matrix NetCDF package, and writes optional
-standalone climatology and satellite-validation extension packages.
+directory, builds a minimal matrix NetCDF package, and integrates optional
+climatology and satellite-validation extension files into that same package.
 
 Default input:
   scripts_basin_test/output/sed_reference_release/
 
-Default outputs:
+Default output:
   scripts_basin_test/output/sed_reference_release_minimal/
-  scripts_basin_test/output/sed_reference_release_climatology/
-  scripts_basin_test/output/sed_reference_release_satellite/
 """
 
 import argparse
@@ -71,6 +69,7 @@ SATELLITE_PACKAGE_FILES = (
     "sed_reference_satellite.nc",
     "satellite_catalog.csv",
 )
+INTEGRATED_EXTENSION_FILES = CLIMATOLOGY_PACKAGE_FILES + SATELLITE_PACKAGE_FILES
 MINIMAL_FORBIDDEN_FILES = ()
 MINIMAL_FORBIDDEN_VARS = ()
 MINIMAL_RESOLUTIONS = {"daily", "monthly", "annual"}
@@ -1141,6 +1140,390 @@ def _build_display_name_lookup():
 _DISPLAY_NAME_LOOKUP = _build_display_name_lookup()
 
 
+_SOURCE_FOLDER_MAP_MS = {
+    "GFQA_v2": "GFQA_v2",
+    "USGS NWIS": "USGS",
+    "HYDAT": "Hydat",
+    "Bayern": "bayern",
+    "Eurasian Dataset": "Eurasian_River",
+    "EUSEDcollab": "EUSEDcollab",
+    "HYBAM": "HYBAM",
+    "Rhine": "Rhine",
+    "Mekong Delta": "Mekong_Delta",
+    "Myanmar Rivers": "Myanmar",
+    "Yajiang / Yarlung Tsangpo": "Yajiang",
+    "Chao Phraya River": "Chao_Phraya_River",
+    "Robotham": "Robotham",
+    "NERC-Hampshire Avon": "NERC",
+    "Fukushima": "Fukushima",
+    "Shashi_Jianli": "Shashi_Jianli",
+    "Huanghe (Yellow River)": "HuangHe",
+    "GloRiSe v1.1": "GloRiSe",
+    "Milliman & Farnsworth": "Milliman",
+    "High Mountain Asia (HMA)": "HMA",
+    "Ali & De Boer (Upper Indus)": "ALi_De_Boer",
+    "Vanmaercke et al.": "Vanmaercke",
+    "GSED": "GSED",
+    "Dethier": "Dethier",
+    "RiverSed (USA)": "RiverSed",
+}
+
+
+def _display_source_name(source_name):
+    """Return manuscript display name for a source identifier."""
+    key = _normalize_ms(source_name)
+    return _DISPLAY_NAME_LOOKUP.get(key, _clean_ms(source_name))
+
+
+def _split_unique_ms(values, separators="|;"):
+    """Split source text fields into unique, ordered display fragments."""
+    out = []
+    seen = set()
+    pattern = "[" + re.escape(separators) + "]"
+    for value in values:
+        text = _clean_ms(value)
+        if not text:
+            continue
+        for part in re.split(pattern, text):
+            item = _clean_ms(part)
+            key = item.lower()
+            if item and key not in seen:
+                out.append(item)
+                seen.add(key)
+    return out
+
+
+def _join_unique_ms(values, sep="; ", separators="|;"):
+    return sep.join(_split_unique_ms(values, separators=separators))
+
+
+def _source_registry_value(source_name, field):
+    value = _clean_ms(_lookup_registry(source_name).get(field, ""))
+    if value:
+        return value
+    display_name = _display_source_name(source_name)
+    if display_name != _clean_ms(source_name):
+        return _clean_ms(_lookup_registry(display_name).get(field, ""))
+    return ""
+
+
+def _catalog_type_for_source(source_name, fallback_category=""):
+    category = _clean_ms(fallback_category) or _source_registry_value(source_name, "source_category")
+    return _category_display_name(category)
+
+
+def _catalog_citation_for_source(source_name, *values):
+    return _first_nonempty_ms(
+        _source_registry_value(source_name, "preferred_citation"),
+        *values,
+        source_name,
+    )
+
+
+def _load_source_access_dates(warnings):
+    """Best-effort access/download dates from raw Source folders."""
+    source_root = PROJECT_ROOT.parent / "Source"
+    access_dates = {}
+    if not source_root.is_dir():
+        _warn(warnings, "Source folder not found for access_date enrichment: {}".format(source_root))
+        return access_dates
+
+    for display_name, folder_name in _SOURCE_FOLDER_MAP_MS.items():
+        folder = source_root / folder_name
+        if not folder.is_dir():
+            continue
+
+        date_text = ""
+        for html_name in ("readme.html", "__README.html"):
+            html_path = folder / html_name
+            if not html_path.is_file():
+                continue
+            content = html_path.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"Accessed from.*?on\s+([0-9]{4}-[0-9]{2}-[0-9]{2})", content, re.DOTALL)
+            if match:
+                date_text = match.group(1)
+                break
+
+        if not date_text:
+            rtf_path = folder / "citation.rtf"
+            if rtf_path.is_file():
+                content = rtf_path.read_text(encoding="utf-8", errors="ignore")
+                match = re.search(r"Accessed\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})", content)
+                if match:
+                    try:
+                        date_text = datetime.strptime(match.group(1), "%d %b %Y").strftime("%Y-%m-%d")
+                    except ValueError:
+                        date_text = ""
+
+        if not date_text:
+            for path in sorted(folder.rglob("*"), key=lambda item: len(str(item))):
+                if not path.is_file() or path.name == ".DS_Store" or ".claude" in str(path):
+                    continue
+                match = re.search(r"([0-9]{4}-[0-9]{2}-[0-9]{2})", path.name)
+                if match:
+                    date_text = match.group(1)
+                    break
+                match = re.search(r"([0-9]{2})\.([0-9]{2})\.([0-9]{4})", path.name)
+                if match and int(match.group(1)) <= 31 and int(match.group(2)) <= 12:
+                    date_text = "{}-{}-{}".format(match.group(3), match.group(2), match.group(1))
+                    break
+
+        if not date_text:
+            earliest = None
+            for path in folder.rglob("*"):
+                if not path.is_file() or path.name == ".DS_Store" or ".claude" in str(path):
+                    continue
+                mtime = path.stat().st_mtime
+                if earliest is None or mtime < earliest:
+                    earliest = mtime
+            if earliest is not None:
+                date_text = datetime.fromtimestamp(earliest).strftime("%Y-%m-%d")
+
+        if date_text:
+            access_dates[_normalize_ms(display_name)] = date_text
+            folder_key = _normalize_ms(folder_name)
+            if folder_key:
+                access_dates[folder_key] = date_text
+
+    return access_dates
+
+
+def _access_date_for_source(access_dates, *names):
+    for name in names:
+        value = access_dates.get(_normalize_ms(name), "")
+        if value:
+            return value
+    return ""
+
+
+def _decode_nc_text(value):
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore").strip()
+    if isinstance(value, np.bytes_):
+        return value.decode("utf-8", errors="ignore").strip()
+    if isinstance(value, np.ndarray):
+        if value.shape == ():
+            return _decode_nc_text(value.item())
+        if value.dtype.kind in {"S", "U"}:
+            return "".join(_decode_nc_text(item) for item in value).strip()
+    return _clean_ms(value)
+
+
+def _nc_variable_values(ds, name):
+    if name not in ds.variables:
+        return []
+    values = np.asarray(ds.variables[name][:])
+    if values.shape == ():
+        return [_decode_nc_text(values.item())]
+    return [_decode_nc_text(item) for item in values.reshape(-1)]
+
+
+def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
+    path = release_dir / "sed_reference_climatology.nc"
+    if not path.is_file():
+        _warn(warnings, "climatology source catalog skipped; missing {}".format(path))
+        return []
+
+    if HAS_NC:
+        opener = nc4.Dataset
+        open_kwargs = {"mode": "r"}
+    elif HAS_H5NETCDF:
+        opener = h5netcdf.File
+        open_kwargs = {"mode": "r"}
+    else:
+        _warn(warnings, "climatology source catalog skipped; netCDF4 or h5netcdf is required")
+        return []
+
+    with opener(path, **open_kwargs) as ds:
+        source_values = _nc_variable_values(ds, "source")
+        source_names = _nc_variable_values(ds, "source_name")
+        long_names = _nc_variable_values(ds, "source_long_name")
+        references = _nc_variable_values(ds, "reference")
+        urls = _nc_variable_values(ds, "source_url")
+        station_ids = _nc_variable_values(ds, "station_uid")
+        countries = _nc_variable_values(ds, "country")
+        geos = _nc_variable_values(ds, "geographic_coverage")
+        time_starts = _nc_variable_values(ds, "source_station_time_coverage_start")
+        time_ends = _nc_variable_values(ds, "source_station_time_coverage_end")
+        variables = _nc_variable_values(ds, "source_station_variables_provided")
+
+    source_meta = {}
+    for idx, source_name in enumerate(source_names):
+        key = _clean_ms(source_name)
+        if not key:
+            continue
+        source_meta[key] = {
+            "source_long_name": long_names[idx] if idx < len(long_names) else "",
+            "reference": references[idx] if idx < len(references) else "",
+            "source_url": urls[idx] if idx < len(urls) else "",
+        }
+
+    rows = []
+    for source in sorted({_clean_ms(value) for value in source_values if _clean_ms(value)}):
+        indices = [idx for idx, value in enumerate(source_values) if _clean_ms(value) == source]
+        meta = source_meta.get(source, {})
+        display_name = _display_source_name(source)
+        time_start = _min_date_ms(time_starts[idx] for idx in indices if idx < len(time_starts))
+        time_end = _max_date_ms(time_ends[idx] for idx in indices if idx < len(time_ends))
+        vars_text = _join_unique_ms(
+            (variables[idx] for idx in indices if idx < len(variables)),
+            sep="; ",
+            separators="|;,",
+        ) or "Q; SSC; SSL"
+        country_text = _join_unique_ms((countries[idx] for idx in indices if idx < len(countries)), sep="|")
+        geo_text = _join_unique_ms((geos[idx] for idx in indices if idx < len(geos)), sep="|")
+        reference = _first_nonempty_ms(meta.get("reference", ""), _source_registry_value(source, "reference"))
+        source_url = _first_nonempty_ms(meta.get("source_url", ""), _source_registry_value(source, "source_url"))
+        station_count = len({_clean_ms(station_ids[idx]) for idx in indices if idx < len(station_ids) and _clean_ms(station_ids[idx])})
+        if station_count == 0:
+            station_count = len(indices)
+        rows.append(
+            {
+                "Data Source Name": display_name,
+                "Type": _catalog_type_for_source(source),
+                "Observation type": "In-situ / literature compilation",
+                "Temporal resolution": "climatological",
+                "Temporal_span": _year_span_ms(time_start, time_end),
+                "Variables Provided": vars_text,
+                "Geographic coverage": geo_text or country_text,
+                "Citation": _catalog_citation_for_source(source, reference),
+                "reference": reference,
+                "source_url": source_url,
+                "access_date": _access_date_for_source(access_dates, display_name, source),
+                "n_source_stations": station_count,
+                "n_clusters": "",
+                "n_records": len(indices),
+            }
+        )
+    return rows
+
+
+def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
+    path = release_dir / "satellite_catalog.csv"
+    if not path.is_file():
+        _warn(warnings, "satellite source catalog skipped; missing {}".format(path))
+        return []
+
+    df = _read_catalog_csv(path)
+    if df.empty or "source" not in df.columns:
+        _warn(warnings, "satellite source catalog skipped; satellite_catalog.csv has no source rows")
+        return []
+
+    for column in [
+        "satellite_station_uid",
+        "cluster_uid",
+        "resolution",
+        "n_records",
+        "time_start",
+        "time_end",
+        "country",
+        "geographic_coverage",
+    ]:
+        if column not in df.columns:
+            df[column] = ""
+    df["n_records"] = pd.to_numeric(df["n_records"], errors="coerce").fillna(0).astype("int64")
+
+    rows = []
+    for source, group in df.groupby("source", dropna=False, sort=True):
+        source = _clean_ms(source)
+        if not source:
+            continue
+        display_name = _display_source_name(source)
+        resolutions = _join_unique_ms(sorted(group["resolution"].astype(str).unique()), sep="; ")
+        time_start = _min_date_ms(group["time_start"])
+        time_end = _max_date_ms(group["time_end"])
+        geo_text = _join_unique_ms(group["geographic_coverage"], sep="|")
+        country_text = _join_unique_ms(group["country"], sep="|")
+        rows.append(
+            {
+                "Data Source Name": display_name,
+                "Type": "Satellite-derived",
+                "Observation type": "Satellite-derived",
+                "Temporal resolution": resolutions,
+                "Temporal_span": _year_span_ms(time_start, time_end),
+                "Variables Provided": "Q; SSC; SSL",
+                "Geographic coverage": geo_text or country_text,
+                "Citation": _catalog_citation_for_source(source),
+                "reference": _source_registry_value(source, "reference"),
+                "source_url": _source_registry_value(source, "source_url"),
+                "access_date": _access_date_for_source(access_dates, display_name, source),
+                "n_source_stations": len({_clean_ms(v) for v in group["satellite_station_uid"] if _clean_ms(v)}),
+                "n_clusters": len({_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}),
+                "n_records": int(group["n_records"].sum()),
+            }
+        )
+    return rows
+
+
+def _numeric_catalog_value(value):
+    text = _clean_ms(value)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_catalog_rows(rows):
+    merged = {}
+    order = []
+    text_merge_columns = {
+        "Temporal resolution": "; ",
+        "Variables Provided": "; ",
+        "Geographic coverage": "|",
+        "Citation": "; ",
+        "reference": "; ",
+        "source_url": "; ",
+        "access_date": "; ",
+        "Observation type": "; ",
+    }
+    numeric_sum_columns = {"n_source_stations", "n_records"}
+
+    for row in rows:
+        name = _clean_ms(row.get("Data Source Name", ""))
+        if not name:
+            continue
+        key = _normalize_ms(name)
+        if key not in merged:
+            merged[key] = dict(row)
+            order.append(key)
+            continue
+
+        current = merged[key]
+        for column, value in row.items():
+            if column == "Data Source Name":
+                continue
+            if column in numeric_sum_columns:
+                left = _numeric_catalog_value(current.get(column, ""))
+                right = _numeric_catalog_value(value)
+                if left is None:
+                    current[column] = right if right is not None else current.get(column, "")
+                elif right is not None:
+                    current[column] = left + right
+                continue
+            if column == "n_clusters":
+                left = _numeric_catalog_value(current.get(column, ""))
+                right = _numeric_catalog_value(value)
+                if left is None:
+                    current[column] = right if right is not None else current.get(column, "")
+                elif right is not None:
+                    current[column] = left + right
+                continue
+            if column in text_merge_columns:
+                sep = text_merge_columns[column]
+                current[column] = _join_unique_ms(
+                    [current.get(column, ""), value],
+                    sep=sep,
+                    separators="|;" if sep == "|" else "|;",
+                )
+                continue
+            if not _clean_ms(current.get(column, "")) and _clean_ms(value):
+                current[column] = value
+
+    return [merged[key] for key in order]
+
+
 def _aggregate_minimal_source_stats_ms(source_station_df):
     """Aggregate statistics from source_station_catalog for minimal resolutions.
 
@@ -1202,7 +1585,14 @@ def _aggregate_minimal_source_stats_ms(source_station_df):
     return pd.DataFrame(rows)
 
 
-def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_station_df, warnings):
+def build_manuscript_style_source_dataset_catalog(
+    source_dataset_df,
+    source_station_df,
+    warnings,
+    release_dir=None,
+    include_climatology=True,
+    include_satellite=True,
+):
     """Build a manuscript-style source summary table with 14 fixed columns.
 
     Uses full release source_dataset_catalog.csv for metadata and
@@ -1215,6 +1605,8 @@ def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_stat
       reference, source_url, access_date, n_source_stations, n_clusters,
       n_records
     """
+    access_dates = _load_source_access_dates(warnings)
+
     # Step 1: Ensure we have a source-level base from source_dataset
     sd = source_dataset_df.copy() if not source_dataset_df.empty else pd.DataFrame()
     if sd.empty and not source_station_df.empty and "source_name" in source_station_df.columns:
@@ -1267,7 +1659,11 @@ def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_stat
         ]:
             suffixed = "{}_st".format(merge_col)
             if suffixed in enriched.columns:
-                enriched[merge_col] = enriched[merge_col].fillna(enriched[suffixed])
+                if merge_col not in enriched.columns:
+                    enriched[merge_col] = enriched[suffixed]
+                else:
+                    empty = enriched[merge_col].astype(str).str.strip().eq("")
+                    enriched[merge_col] = enriched[merge_col].where(~empty, enriched[suffixed])
                 enriched = enriched.drop(columns=[suffixed])
 
     # Step 5: Map to 14 output columns
@@ -1301,7 +1697,7 @@ def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_stat
         temporal_span = _year_span_ms(ts_date, te_date)
 
         # Variables Provided
-        vars_provided = _clean_ms(row.get("variables_used", ""))
+        vars_provided = _clean_ms(row.get("variables_used", "")) or "Q; SSC; SSL"
 
         # Geographic coverage
         geo = _clean_ms(row.get("geographic_coverage", ""))
@@ -1322,7 +1718,7 @@ def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_stat
         url = _clean_ms(row.get("source_url", ""))
 
         # access_date
-        access = _clean_ms(row.get("access_date", ""))
+        access = _clean_ms(row.get("access_date", "")) or _access_date_for_source(access_dates, dsn, src_name)
 
         # n_source_stations / n_clusters / n_records
         def _safe_int(val, default=0):
@@ -1354,7 +1750,12 @@ def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_stat
             "n_records": n_recs,
         })
 
-    result = pd.DataFrame(rows)
+    if release_dir is not None and include_climatology:
+        rows.extend(_read_climatology_catalog_rows(release_dir, warnings, access_dates))
+    if release_dir is not None and include_satellite:
+        rows.extend(_read_satellite_catalog_rows(release_dir, warnings, access_dates))
+
+    result = pd.DataFrame(_merge_catalog_rows(rows))
     result = _ensure_columns(result, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS, warnings, "source_dataset_catalog.csv")
     result = result.loc[:, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS]
     result = result.sort_values("Data Source Name", kind="mergesort").reset_index(drop=True)
@@ -1424,29 +1825,39 @@ def slim_source_station_catalog(src, dst, warnings):
     print("[write] {}".format(dst))
 
 
-def slim_source_dataset_catalog(src, dst, warnings):
+def slim_source_dataset_catalog(src, dst, warnings, args):
     print("[catalog] building manuscript-style source_dataset_catalog.csv")
     source_dataset_df = _read_catalog_csv(src)
     source_station_path = src.parent / "source_station_catalog.csv"
     source_station_df = _read_catalog_csv(source_station_path) if source_station_path.is_file() else pd.DataFrame()
-    result = build_manuscript_style_source_dataset_catalog(source_dataset_df, source_station_df, warnings)
+    result = build_manuscript_style_source_dataset_catalog(
+        source_dataset_df,
+        source_station_df,
+        warnings,
+        release_dir=args.release_dir,
+        include_climatology=not args.skip_climatology,
+        include_satellite=not args.skip_satellite,
+    )
     result.to_csv(dst, index=False)
     print("[write] {}".format(dst))
 
 
 def build_minimal_catalogs(args, warnings):
     catalog_jobs = (
-        ("station_catalog.csv", slim_station_catalog),
-        ("source_station_catalog.csv", slim_source_station_catalog),
-        ("source_dataset_catalog.csv", slim_source_dataset_catalog),
+        ("station_catalog.csv", slim_station_catalog, False),
+        ("source_station_catalog.csv", slim_source_station_catalog, False),
+        ("source_dataset_catalog.csv", slim_source_dataset_catalog, True),
     )
     if args.dry_run:
-        for name, _ in catalog_jobs:
+        for name, _, _ in catalog_jobs:
             print("[dry-run] would build minimal catalog CSV: {}".format(args.minimal_dir / name))
         return
 
-    for name, func in catalog_jobs:
-        func(args.release_dir / name, args.minimal_dir / name, warnings)
+    for name, func, needs_args in catalog_jobs:
+        if needs_args:
+            func(args.release_dir / name, args.minimal_dir / name, warnings, args)
+        else:
+            func(args.release_dir / name, args.minimal_dir / name, warnings)
 
 
 def write_inventory(
@@ -1458,13 +1869,24 @@ def write_inventory(
     dry_run=False,
     inventory_name="release_inventory.csv",
     status="copied",
+    skipped_files=(),
 ):
     inventory_path = package_dir / inventory_name
     rows = []
-    for name in source_files:
+    all_files = list(source_files) + [name for name in skipped_files if name not in source_files]
+    for name in all_files:
         source_path = release_dir / name
         if package_name == "sed_reference_release_minimal":
-            row_status = "minimal_nc" if name in MINIMAL_MATRIX_FILES else "minimal_catalog"
+            if name in skipped_files:
+                row_status = "skipped"
+            elif name in MINIMAL_MATRIX_FILES:
+                row_status = "minimal_nc"
+            elif name in MINIMAL_CATALOG_COLUMNS:
+                row_status = "minimal_catalog"
+            elif name in INTEGRATED_EXTENSION_FILES:
+                row_status = "integrated_extension"
+            else:
+                row_status = status if source_path.is_file() else "missing_source"
         else:
             row_status = status if source_path.is_file() else "missing_source"
         rows.append(
@@ -1514,45 +1936,23 @@ def _readme_provenance_block(provenance, package_role):
 def write_readme(package_dir, package_name, release_dir, provenance, compression_level=None, dry_run=False):
     readme_path = package_dir / "README.md"
     if package_name == "sed_reference_release_minimal":
-        package_role = "minimal station-reference matrix package for daily/monthly/annual use."
+        package_role = "minimal station-reference package with integrated climatology and satellite extensions."
         text = """# sed_reference_release_minimal
 
-Generated by `tools/build_minimal_release_package.py`.
+Generated by `s8_publish_minimal_release_package.py`.
 
 {provenance_block}
-- Matrix files keep selected user-facing fields and omit master, climatology, satellite,
-  overlap-candidate, parquet, and GPKG products.
+- Matrix files keep selected user-facing fields and omit master, overlap-candidate,
+  parquet, and GPKG products.
+- Climatology and satellite-validation extension files are included in this same
+  package when not skipped at build time.
+- `source_dataset_catalog.csv` summarizes in-situ, climatology, and satellite
+  source datasets in the manuscript table format.
 - Requested NetCDF compression level: `{compression_level}`
 
 """.format(
             provenance_block=_readme_provenance_block(provenance, package_role),
             compression_level=compression_level,
-        )
-    elif package_name == "sed_reference_release_climatology":
-        package_role = "standalone climatology package."
-        text = """# sed_reference_release_climatology
-
-Generated by `tools/build_minimal_release_package.py`.
-
-{provenance_block}
-- Use this package separately from the daily/monthly/annual matrix minimal package.
-- NetCDF file is copied from the full release without slimming.
-
-""".format(
-            provenance_block=_readme_provenance_block(provenance, package_role),
-        )
-    elif package_name == "sed_reference_release_satellite":
-        package_role = "satellite validation-only package."
-        text = """# sed_reference_release_satellite
-
-Generated by `tools/build_minimal_release_package.py`.
-
-{provenance_block}
-- Satellite data are retained for validation and do not enter the main station-reference merge.
-- NetCDF and catalog files are copied from the full release without slimming.
-
-""".format(
-            provenance_block=_readme_provenance_block(provenance, package_role),
         )
     else:
         package_role = package_name
@@ -1583,41 +1983,29 @@ def copy_release_file(src, dst, dry_run=False):
     print("[copy] {} -> {}".format(src, dst))
 
 
-def _build_copy_package(package_name, package_dir, release_dir, source_files, inventory_name, args):
-    print("[build] {} package".format(package_name))
-    missing = [name for name in source_files if not (release_dir / name).is_file()]
-    if missing:
-        _warn(
-            BUILD_WARNINGS,
-            "{} missing source file(s): {}".format(package_name, ", ".join(missing)),
-        )
+def integrated_extension_files(args):
+    files = []
+    skipped = []
+    if args.skip_climatology:
+        skipped.extend(CLIMATOLOGY_PACKAGE_FILES)
+    else:
+        files.extend(CLIMATOLOGY_PACKAGE_FILES)
+    if args.skip_satellite:
+        skipped.extend(SATELLITE_PACKAGE_FILES)
+    else:
+        files.extend(SATELLITE_PACKAGE_FILES)
+    return tuple(files), tuple(skipped)
 
-    prepare_output_dir(package_dir, force=args.force, dry_run=args.dry_run)
 
-    for name in source_files:
-        src = release_dir / name
+def copy_integrated_extension_files(args):
+    files, _ = integrated_extension_files(args)
+    for name in files:
+        src = args.release_dir / name
+        dst = args.minimal_dir / name
         if src.is_file():
-            copy_release_file(src, package_dir / name, dry_run=args.dry_run)
+            copy_release_file(src, dst, dry_run=args.dry_run)
         else:
-            print("[warn] skip missing optional package source: {}".format(src))
-
-    write_inventory(
-        package_dir,
-        package_name,
-        release_dir,
-        source_files,
-        args.release_provenance,
-        dry_run=args.dry_run,
-        inventory_name=inventory_name,
-        status="copied_from_full_release",
-    )
-    write_readme(
-        package_dir,
-        package_name,
-        release_dir,
-        args.release_provenance,
-        dry_run=args.dry_run,
-    )
+            _warn(BUILD_WARNINGS, "integrated extension source missing: {}".format(src))
 
 
 def _copy_minimal_matrix_worker(payload):
@@ -1690,6 +2078,25 @@ def validate_minimal_package(args):
             "pass" if path.is_file() else "fail",
             "required minimal file present" if path.is_file() else "required minimal file missing",
             str(path),
+        )
+
+    extension_files, skipped_extension_files = integrated_extension_files(args)
+    for name in extension_files:
+        path = args.minimal_dir / name
+        add(
+            "integrated_extension_file:{}".format(name),
+            "pass" if path.is_file() else "fail",
+            "integrated extension file present"
+            if path.is_file()
+            else "integrated extension file missing",
+            str(path),
+        )
+    for name in skipped_extension_files:
+        add(
+            "integrated_extension_file:{}".format(name),
+            "skipped",
+            "integrated extension file skipped by command-line option",
+            str(args.minimal_dir / name),
         )
 
     for name in MINIMAL_FORBIDDEN_FILES:
@@ -1856,15 +2263,18 @@ def build_minimal_package(args):
                     else:
                         BUILD_FAILURES.append("minimal matrix failed: {}".format(name))
 
+    copy_integrated_extension_files(args)
     build_minimal_catalogs(args, BUILD_WARNINGS)
 
+    extension_files, skipped_extension_files = integrated_extension_files(args)
     write_inventory(
         args.minimal_dir,
         package_name,
         args.release_dir,
-        MINIMAL_PACKAGE_FILES,
+        tuple(MINIMAL_PACKAGE_FILES) + tuple(extension_files),
         args.release_provenance,
         dry_run=args.dry_run,
+        skipped_files=skipped_extension_files,
     )
     write_readme(
         args.minimal_dir,
@@ -1877,35 +2287,13 @@ def build_minimal_package(args):
     validate_minimal_package(args)
 
 
-def build_climatology_package(args):
-    _build_copy_package(
-        "sed_reference_release_climatology",
-        args.climatology_dir,
-        args.release_dir,
-        CLIMATOLOGY_PACKAGE_FILES,
-        "climatology_release_inventory.csv",
-        args,
-    )
-
-
-def build_satellite_package(args):
-    _build_copy_package(
-        "sed_reference_release_satellite",
-        args.satellite_dir,
-        args.release_dir,
-        SATELLITE_PACKAGE_FILES,
-        "satellite_release_inventory.csv",
-        args,
-    )
-
-
 def main(argv=None):
     args = parse_args(argv)
 
     print("[config] full release dir:       {}".format(args.release_dir))
     print("[config] minimal output dir:     {}".format(args.minimal_dir))
-    print("[config] climatology output dir: {}".format(args.climatology_dir))
-    print("[config] satellite output dir:   {}".format(args.satellite_dir))
+    print("[config] climatology output dir: {} (deprecated; integrated into minimal)".format(args.climatology_dir))
+    print("[config] satellite output dir:   {} (deprecated; integrated into minimal)".format(args.satellite_dir))
     print("[config] minimal schema:         {}".format(args.schema))
     print("[config] compression level:      {}".format(args.compression_level))
     print("[config] matrix workers:         {}".format(args.matrix_workers))
@@ -1926,14 +2314,14 @@ def main(argv=None):
     build_minimal_package(args)
 
     if args.skip_climatology:
-        print("[skip] climatology package")
+        print("[skip] climatology extension")
     else:
-        build_climatology_package(args)
+        print("[done] climatology extension integrated into minimal package")
 
     if args.skip_satellite:
-        print("[skip] satellite package")
+        print("[skip] satellite extension")
     else:
-        build_satellite_package(args)
+        print("[done] satellite extension integrated into minimal package")
 
     if BUILD_WARNINGS:
         print("[warn] {} build warning(s):".format(len(BUILD_WARNINGS)))
