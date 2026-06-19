@@ -102,8 +102,4 @@ minimal_catalog_columns:
     - reference
     - source_url
     - n_source_stations
-<<<<<<< HEAD
-    - n_clusters
-=======
->>>>>>> 95f374151d0568d7457f554c569c5bca45774dc9
     - n_records

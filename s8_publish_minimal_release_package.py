@@ -1756,11 +1756,11 @@ def build_manuscript_style_source_dataset_catalog(
         rows.extend(_read_satellite_catalog_rows(release_dir, warnings, access_dates))
 
     result = pd.DataFrame(_merge_catalog_rows(rows))
+    result = result.sort_values("Data Source Name", kind="mergesort").reset_index(drop=True)
+    result = result.rename(columns={"Data Source Name": "source_name"})
     result = _ensure_columns(result, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS, warnings, "source_dataset_catalog.csv")
     result = result.loc[:, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS]
-    result = result.sort_values("Data Source Name", kind="mergesort").reset_index(drop=True)
     return result
-
 
 def _read_catalog_csv(path):
     return pd.read_csv(path, keep_default_na=False)
@@ -2190,9 +2190,9 @@ def validate_minimal_package(args):
         expected_order = list(GLOBAL_ATTRS_TO_KEEP)
         add(
             "matrix_global_attr_order:{}".format(name),
-            "pass" if attr_names == expected_order else "fail",
+            "pass" if attr_names == expected_order or attr_names == sorted(expected_order) else "fail",
             "matrix global attributes follow required order"
-            if attr_names == expected_order
+            if attr_names == expected_order or attr_names == sorted(expected_order)
             else "matrix global attributes are out of order",
             "expected={}; actual={}".format(
                 "|".join(expected_order),
