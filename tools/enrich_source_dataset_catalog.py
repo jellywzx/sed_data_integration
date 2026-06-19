@@ -25,9 +25,15 @@ import pandas as pd
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_RELEASE_DIR = SCRIPT_DIR / "scripts_basin_test/output/sed_reference_release"
-DEFAULT_SOURCE_DATASET_CATALOG = DEFAULT_RELEASE_DIR / "source_dataset_catalog.csv"
-DEFAULT_SOURCE_STATION_CATALOG = DEFAULT_RELEASE_DIR / "source_station_catalog.csv"
+
+try:
+    from pipeline_paths import RELEASE_DATASET_DIR, get_output_r_root
+
+    PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
+    DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
+except Exception:
+    PROJECT_ROOT = SCRIPT_DIR
+    DEFAULT_RELEASE_DIR = SCRIPT_DIR / "output/sed_reference_release"
 
 MINIMAL_MATRIX_RESOLUTIONS = {"daily", "monthly", "annual"}
 
@@ -363,6 +369,28 @@ def registry_entry(source_name: Any) -> Mapping[str, Any]:
     return {}
 
 
+def resolve_existing_path(value: Any, *, base: Path = PROJECT_ROOT) -> Path:
+    path = Path(clean_text(value)).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+
+    candidates = [
+        Path.cwd() / path,
+        base / path,
+        SCRIPT_DIR / path,
+    ]
+    if path.parts and path.parts[0] == SCRIPT_DIR.name:
+        candidates.append(SCRIPT_DIR.parent / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return (base / path).resolve()
+
+
+def release_file(release_dir: Path, file_name: str) -> Path:
+    return release_dir / file_name
+
+
 def read_catalog(path: Path, required: bool = True) -> pd.DataFrame:
     if not path.is_file():
         if required:
@@ -580,13 +608,30 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
-    release_dir = Path(args.release_dir).expanduser().resolve()
-    source_dataset_path = Path(args.source_dataset_catalog).expanduser().resolve() if args.source_dataset_catalog else release_dir / "source_dataset_catalog.csv"
-    source_station_path = Path(args.source_station_catalog).expanduser().resolve() if args.source_station_catalog else release_dir / "source_station_catalog.csv"
+    release_dir = resolve_existing_path(args.release_dir)
+    source_dataset_path = resolve_existing_path(args.source_dataset_catalog) if args.source_dataset_catalog else release_file(release_dir, "source_dataset_catalog.csv")
+    source_station_path = resolve_existing_path(args.source_station_catalog) if args.source_station_catalog else release_file(release_dir, "source_station_catalog.csv")
+
+    print("[check] release_dir={}".format(release_dir))
+    print("[check] source_dataset_catalog={}".format(source_dataset_path))
+    print("[check] source_station_catalog={}".format(source_station_path))
+
+    if not source_dataset_path.is_file() and not source_station_path.is_file():
+        raise FileNotFoundError(
+            "No input catalogs found. Check --release-dir. Expected at least one of: {} or {}".format(
+                source_dataset_path,
+                source_station_path,
+            )
+        )
 
     source_dataset = read_catalog(source_dataset_path, required=source_station_path.is_file())
     source_station = read_catalog(source_station_path, required=False)
     enriched = enrich_source_dataset_catalog(source_dataset, source_station)
+
+    if enriched.empty:
+        raise RuntimeError(
+            "Enriched source_dataset_catalog is empty. This usually means the release directory is wrong or source_station_catalog.csv has no source_name rows."
+        )
 
     if args.in_place:
         out_path = source_dataset_path
@@ -595,7 +640,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             shutil.copy2(source_dataset_path, backup_path)
             print("[backup] {}".format(backup_path))
     else:
-        out_path = Path(args.out).expanduser().resolve() if args.out else source_dataset_path.with_name("source_dataset_catalog_enriched.csv")
+        out_path = resolve_existing_path(args.out) if args.out else source_dataset_path.with_name("source_dataset_catalog_enriched.csv")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     enriched.to_csv(out_path, index=False)
