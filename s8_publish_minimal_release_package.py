@@ -51,7 +51,7 @@ except ImportError:
     HAS_H5NETCDF = False
 
 
-PROJECT_ROOT = get_output_r_root(SCRIPTS_DIR)
+PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
 DEFAULT_MINIMAL_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
 DEFAULT_CLIMATOLOGY_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_climatology"
@@ -779,6 +779,588 @@ def _warn(warnings, message):
     print("[warn] {}".format(message))
 
 
+# =============================================================================
+# Manuscript-style source catalog building helpers
+# =============================================================================
+
+_manuscript_source_registry_list = [
+    {
+        "aliases": ["GloRiSe v1.1", "GloRiSe", "glorise_v1_1"],
+        "source_long_name": "Global River Sediments database version 1.1",
+        "source_category": "global",
+        "reference": "",
+        "source_url": "https://github.com/GerritMuller/GloRiSe",
+        "preferred_citation": "Muller et al. (2021)",
+    },
+    {
+        "aliases": ["GFQA_v2", "GFQA", "GEMS", "GEMS_Water", "GEMStat"],
+        "source_long_name": "Global Freshwater Quality Assessment v2 / GEMS-water-derived source",
+        "source_category": "global",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Heinle et al. (2024)",
+    },
+    {
+        "aliases": ["USGS NWIS", "USGS_NWIS", "NWIS", "USGS"],
+        "source_long_name": "U.S. Geological Survey National Water Information System",
+        "source_category": "national",
+        "reference": "",
+        "source_url": "https://waterdata.usgs.gov/nwis",
+        "preferred_citation": "U.S. Geological Survey (2016)",
+    },
+    {
+        "aliases": ["HYDAT", "Water Survey of Canada"],
+        "source_long_name": "HYDAT / Water Survey of Canada hydrometric database",
+        "source_category": "national",
+        "reference": "",
+        "source_url": "https://wateroffice.ec.gc.ca/",
+        "preferred_citation": "Water Survey of Canada",
+    },
+    {
+        "aliases": ["Bayern", "GKD Bayern", "Bayern_GKD"],
+        "source_long_name": "Bavarian Hydrological Service / Gewaesserkundlicher Dienst Bayern",
+        "source_category": "national",
+        "reference": "",
+        "source_url": "https://www.gkd.bayern.de/",
+        "preferred_citation": "GKD Bayern",
+    },
+    {
+        "aliases": ["HYBAM"],
+        "source_long_name": "Observation Service HYBAM",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "https://hybam.obs-mip.fr/",
+        "preferred_citation": "HYBAM Observatory",
+    },
+    {
+        "aliases": ["Eurasian Dataset", "Eurasian_River", "Eurasian_Arctic", "Eurasian"],
+        "source_long_name": "Eurasian Arctic river sediment/discharge dataset",
+        "source_category": "regional",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Holmes and Peterson (2016)",
+    },
+    {
+        "aliases": ["EUSEDcollab", "EUSEDcollab.v1", "EUSED"],
+        "source_long_name": "European Sediments Collaboration database",
+        "source_category": "regional",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Matthews et al. (2023)",
+    },
+    {
+        "aliases": ["Rhine", "Rhine Basin"],
+        "source_long_name": "Rhine suspended sediment / SPM-MPM dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Slabon et al. (2025)",
+    },
+    {
+        "aliases": ["Mekong Delta", "Mekong_Delta"],
+        "source_long_name": "Vietnamese Mekong Delta ADCP/sediment dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Darby et al. (2020)",
+    },
+    {
+        "aliases": ["Myanmar Rivers", "Myanmar_Rivers", "Irrawaddy Salween"],
+        "source_long_name": "Irrawaddy and Salween river sediment dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Baronas et al. (2020)",
+    },
+    {
+        "aliases": ["Yajiang / Yarlung Tsangpo", "Yajiang", "Yajiang_Yarlung_Tsangpo", "Yarlung_Tsangpo"],
+        "source_long_name": "Yajiang / Yarlung Tsangpo river basin dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Shi Xiaonan (2025)",
+    },
+    {
+        "aliases": ["Chao Phraya River", "Chao_Phraya", "Chao Phraya"],
+        "source_long_name": "Chao Phraya River annual sediment flux dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Wei Bingbing (2025)",
+    },
+    {
+        "aliases": ["Robotham", "Littlestock Brook"],
+        "source_long_name": "Littlestock Brook dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Robotham et al. (2022)",
+    },
+    {
+        "aliases": ["NERC-Hampshire Avon", "NERC_Hampshire_Avon", "Hampshire Avon"],
+        "source_long_name": "NERC Hampshire Avon / River Avon dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Heppell and Binley (2016)",
+    },
+    {
+        "aliases": ["Fukushima", "Fukushima_Niida", "Niida River"],
+        "source_long_name": "Fukushima Niida River dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Bin et al. (2022)",
+    },
+    {
+        "aliases": ["Shashi_Jianli", "Shashi-Jianli", "Shashi Jianli"],
+        "source_long_name": "Shashi and Jianli Yangtze River stations",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Nones and Guo (2025)",
+    },
+    {
+        "aliases": ["Huanghe", "Huanghe (Yellow River)", "Yellow River", "Huanghe_Yellow_River"],
+        "source_long_name": "Yellow River / Huanghe dataset",
+        "source_category": "basin_specific",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Zhang Yaonan et al. (2021)",
+    },
+    {
+        "aliases": ["Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth"],
+        "source_long_name": "Global river discharge and sediment flux compilation",
+        "source_category": "global_climatology",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Milliman and Farnsworth (2013)",
+    },
+    {
+        "aliases": ["High Mountain Asia", "HMA"],
+        "source_long_name": "High Mountain Asia sediment flux compilation",
+        "source_category": "regional_climatology",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Li et al. (2021)",
+    },
+    {
+        "aliases": ["Ali & De Boer", "Ali_De_Boer", "Upper Indus"],
+        "source_long_name": "Upper Indus sediment yield compilation",
+        "source_category": "regional_climatology",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Ali and De Boer (2007)",
+    },
+    {
+        "aliases": ["Vanmaercke", "Vanmaercke et al.", "Vanmaercke_Africa"],
+        "source_long_name": "African sediment yield synthesis",
+        "source_category": "regional_climatology",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Vanmaercke et al. (2014)",
+    },
+    {
+        "aliases": ["GSED"],
+        "source_long_name": "Global Suspended Sediment Dynamics",
+        "source_category": "satellite_derived",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Sun et al. (2025)",
+    },
+    {
+        "aliases": ["Dethier", "Dethier et al."],
+        "source_long_name": "Satellite-derived virtual station sediment dataset",
+        "source_category": "satellite_derived",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Dethier et al. (2022, 2023)",
+    },
+    {
+        "aliases": ["RiverSed", "RiverSed (USA)", "RiverSed_USA"],
+        "source_long_name": "RiverSed USA satellite-derived suspended sediment dataset",
+        "source_category": "satellite_derived",
+        "reference": "",
+        "source_url": "",
+        "preferred_citation": "Gardner et al. (2021/2023)",
+    },
+]
+
+
+def _normalize_ms(value):
+    """Normalize a string for forgiving matching."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"nan", "none", "nat", "na", "n/a", "null", "_", "--"}:
+        return ""
+    text = text.lower().replace("&", "and")
+    text = re.sub(r"[^0-9a-z]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text
+
+
+def _lookup_registry(source_name):
+    """Look up source_name in the registry and return matching entry dict (or empty dict)."""
+    key = _normalize_ms(source_name)
+    if not key:
+        return {}
+    for entry in _manuscript_source_registry_list:
+        for alias in entry.get("aliases", []):
+            if _normalize_ms(alias) == key:
+                return entry
+    compact_key = key.replace("_", "")
+    for entry in _manuscript_source_registry_list:
+        for alias in entry.get("aliases", []):
+            if compact_key and compact_key == _normalize_ms(alias).replace("_", ""):
+                return entry
+    return {}
+
+
+def _clean_ms(value):
+    """Clean text value."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"nan", "none", "nat", "na", "n/a", "null", "_", "--"}:
+        return ""
+    return text
+
+
+def _first_nonempty_ms(*values):
+    """Return the first non-empty value."""
+    for value in values:
+        text = _clean_ms(value)
+        if text:
+            return text
+    return ""
+
+
+def _min_date_ms(values):
+    """Earliest date from a series of date strings."""
+    cleaned = [_clean_ms(v) for v in values if _clean_ms(v)]
+    if not cleaned:
+        return ""
+    parsed = pd.to_datetime(cleaned, errors="coerce")
+    valid = parsed[~pd.isna(parsed)]
+    if len(valid) == 0:
+        return sorted(cleaned)[0]
+    return pd.Timestamp(valid.min()).strftime("%Y-%m-%d")
+
+
+def _max_date_ms(values):
+    """Latest date from a series of date strings."""
+    cleaned = [_clean_ms(v) for v in values if _clean_ms(v)]
+    if not cleaned:
+        return ""
+    parsed = pd.to_datetime(cleaned, errors="coerce")
+    valid = parsed[~pd.isna(parsed)]
+    if len(valid) == 0:
+        return sorted(cleaned)[-1]
+    return pd.Timestamp(valid.max()).strftime("%Y-%m-%d")
+
+
+def _year_span_ms(time_start, time_end):
+    """Build year-range string like '1995-2021' from date strings."""
+    y0 = time_start[:4] if time_start else ""
+    y1 = time_end[:4] if time_end else ""
+    if y0 and y1:
+        return y0 if y0 == y1 else "{}-{}".format(y0, y1)
+    return y0 or y1 or ""
+
+
+def _category_display_name(category):
+    """Map source_category code to human-readable Type string."""
+    if not category:
+        return ""
+    mapping = {
+        "global": "Global",
+        "national": "National",
+        "regional": "Regional",
+        "basin_specific": "Basin-specific",
+        "satellite_derived": "Satellite-derived",
+        "global_climatology": "Global climatology",
+        "regional_climatology": "Regional climatology",
+    }
+    return mapping.get(category.strip().lower(), "")
+
+
+def _infer_observation_type(source_category):
+    """Infer Observation type from source_category."""
+    cat = _clean_ms(source_category).lower()
+    if not cat:
+        return ""
+    if "satellite" in cat:
+        return "Satellite-derived"
+    if "climatology" in cat:
+        return "In-situ / literature compilation"
+    return "In-situ"
+
+
+# Display name mapping: maps normalized source_name to manuscript Data Source Name.
+_MINIMAL_ALIASES_MS = {
+    "GloRiSe v1.1": ["GloRiSe", "glorise_v1_1"],
+    "GFQA_v2": ["GFQA_v2", "GFQA"],
+    "Milliman & Farnsworth": ["Milliman"],
+    "USGS NWIS": ["USGS"],
+    "HYDAT": ["HYDAT"],
+    "Bayern": ["Bayern"],
+    "Eurasian Dataset": ["Eurasian_River"],
+    "EUSEDcollab": ["EUSEDcollab"],
+    "High Mountain Asia (HMA)": ["HMA"],
+    "Ali & De Boer (Upper Indus)": ["ALi_De_Boer", "Ali_De_Boer"],
+    "Vanmaercke et al.": ["Vanmaercke"],
+    "HYBAM": ["HYBAM"],
+    "Rhine": ["Rhine"],
+    "Mekong Delta": ["Mekong_Delta"],
+    "Myanmar Rivers": ["Myanmar"],
+    "Yajiang / Yarlung Tsangpo": ["Yajiang"],
+    "Chao Phraya River": ["Chao_Phraya_River", "Chao_Phraya"],
+    "Robotham": ["Robotham"],
+    "NERC-Hampshire Avon": ["NERC"],
+    "Fukushima": ["Fukushima"],
+    "Shashi_Jianli": ["Shashi_Jianli"],
+    "Huanghe (Yellow River)": ["Huanghe"],
+    "GSED": ["GSED"],
+    "Dethier": ["Dethier"],
+    "RiverSed (USA)": ["RiverSed"],
+}
+
+
+def _build_display_name_lookup():
+    """Build mapping from normalized key to manuscript display name."""
+    lookup = {}
+    for display_name, aliases in _MINIMAL_ALIASES_MS.items():
+        for alias in [display_name] + aliases:
+            key = _normalize_ms(alias)
+            if key:
+                lookup[key] = display_name
+    return lookup
+
+
+_DISPLAY_NAME_LOOKUP = _build_display_name_lookup()
+
+
+def _aggregate_minimal_source_stats_ms(source_station_df):
+    """Aggregate statistics from source_station_catalog for minimal resolutions.
+
+    Returns DataFrame with one row per source_name containing aggregated stats.
+    """
+    if source_station_df.empty or "source_name" not in source_station_df.columns:
+        return pd.DataFrame(columns=["source_name"])
+
+    required = [
+        "source_name", "resolution", "source_station_uid", "cluster_uid",
+        "n_records", "time_start", "time_end"
+    ]
+    for col in required:
+        if col not in source_station_df.columns:
+            source_station_df[col] = ""
+
+    work = source_station_df.copy()
+    res = work["resolution"].astype(str).str.strip().str.lower()
+    work = work[res.isin(MINIMAL_RESOLUTIONS)].copy()
+    work["n_records"] = pd.to_numeric(work["n_records"], errors="coerce").fillna(0).astype("int64")
+
+    rows = []
+    for source_name, group in work.groupby("source_name", dropna=False, sort=False):
+        src_name = _clean_ms(source_name)
+        if not src_name:
+            continue
+
+        time_start = _min_date_ms(group["time_start"])
+        time_end = _max_date_ms(group["time_end"])
+
+        unique_res = set(_clean_ms(v).lower() for v in group["resolution"] if _clean_ms(v))
+        res_order = ["daily", "monthly", "annual"]
+        ordered_res = [r for r in res_order if r in unique_res]
+        res_str = "; ".join(ordered_res)
+
+        vars_set = set()
+        if "source_station_variables_provided" in group.columns:
+            for v in group["source_station_variables_provided"]:
+                tv = _clean_ms(v)
+                if tv:
+                    vars_set.add(tv)
+        vars_str = "; ".join(sorted(vars_set))
+
+        rows.append({
+            "source_name": src_name,
+            "n_source_stations": len(
+                {_clean_ms(v) for v in group["source_station_uid"] if _clean_ms(v)}
+            ),
+            "n_clusters": len(
+                {_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}
+            ),
+            "n_records": int(group["n_records"].sum()),
+            "time_start": time_start,
+            "time_end": time_end,
+            "temporal_resolution_used": res_str,
+            "variables_used": vars_str,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def build_manuscript_style_source_dataset_catalog(source_dataset_df, source_station_df, warnings):
+    """Build a manuscript-style source summary table with 14 fixed columns.
+
+    Uses full release source_dataset_catalog.csv for metadata and
+    source_station_catalog.csv (filtered to minimal resolutions) for statistics.
+    Registry enrichment is done via an internal lookup table, not external files.
+
+    Returns a DataFrame with these columns in order:
+      Data Source Name, Type, Observation type, Temporal resolution,
+      Temporal_span, Variables Provided, Geographic coverage, Citation,
+      reference, source_url, access_date, n_source_stations, n_clusters,
+      n_records
+    """
+    # Step 1: Ensure we have a source-level base from source_dataset
+    sd = source_dataset_df.copy() if not source_dataset_df.empty else pd.DataFrame()
+    if sd.empty and not source_station_df.empty and "source_name" in source_station_df.columns:
+        sd = pd.DataFrame({"source_name": sorted(source_station_df["source_name"].astype(str).unique())})
+
+    # Filter station to minimal resolutions
+    station = _filter_minimal_resolutions(source_station_df)
+
+    # Step 2: Compute station-level stats
+    stats_df = _aggregate_minimal_source_stats_ms(station)
+
+    if sd.empty and not stats_df.empty:
+        sd = pd.DataFrame({"source_name": sorted(stats_df["source_name"].unique())})
+
+    # Step 3: Build enriched base from source_dataset metadata + registry
+    enriched = sd.copy()
+
+    # Ensure all metadata columns exist
+    for col in ["source_name", "source_long_name", "source_category",
+                "reference", "source_url", "preferred_citation",
+                "geographic_coverage", "variables_used", "access_date",
+                "country", "acquisition_type"]:
+        if col not in enriched.columns:
+            enriched[col] = ""
+
+    # Fill registry fields
+    for idx, row in enriched.iterrows():
+        entry = _lookup_registry(row.get("source_name", ""))
+        if entry:
+            for field in ["source_long_name", "source_category", "reference",
+                          "source_url", "preferred_citation"]:
+                current = _clean_ms(row.get(field, ""))
+                registered = _clean_ms(entry.get(field, ""))
+                if not current and registered:
+                    enriched.at[idx, field] = registered
+            # Merge geographic_coverage from entry if present
+            current_geo = _clean_ms(row.get("geographic_coverage", ""))
+            entry_geo = _clean_ms(entry.get("geographic_coverage", ""))
+            if not current_geo and entry_geo:
+                enriched.at[idx, "geographic_coverage"] = entry_geo
+
+    # Step 4: Merge station stats
+    if not stats_df.empty:
+        enriched = enriched.merge(
+            stats_df, on="source_name", how="left", suffixes=("", "_st")
+        )
+        for merge_col in [
+            "n_source_stations", "n_clusters", "n_records",
+            "time_start", "time_end", "temporal_resolution_used", "variables_used",
+        ]:
+            suffixed = "{}_st".format(merge_col)
+            if suffixed in enriched.columns:
+                enriched[merge_col] = enriched[merge_col].fillna(enriched[suffixed])
+                enriched = enriched.drop(columns=[suffixed])
+
+    # Step 5: Map to 14 output columns
+    rows = []
+    for _, row in enriched.iterrows():
+        src_name = _clean_ms(row.get("source_name", ""))
+        if not src_name:
+            continue
+
+        # Data Source Name: use manuscript display name if known
+        display_key = _normalize_ms(src_name)
+        dsn = _DISPLAY_NAME_LOOKUP.get(display_key, src_name)
+
+        # Type
+        cat = _clean_ms(row.get("source_category", ""))
+        type_val = _category_display_name(cat)
+
+        # Observation type
+        obs_type = _infer_observation_type(cat)
+        # Try acquisition_type as override
+        acq = _clean_ms(row.get("acquisition_type", ""))
+        if acq:
+            obs_type = acq
+
+        # Temporal resolution
+        temp_res = _clean_ms(row.get("temporal_resolution_used", ""))
+
+        # Temporal_span
+        ts_date = _clean_ms(row.get("time_start", ""))
+        te_date = _clean_ms(row.get("time_end", ""))
+        temporal_span = _year_span_ms(ts_date, te_date)
+
+        # Variables Provided
+        vars_provided = _clean_ms(row.get("variables_used", ""))
+
+        # Geographic coverage
+        geo = _clean_ms(row.get("geographic_coverage", ""))
+        if not geo:
+            geo = _clean_ms(row.get("country", ""))
+
+        # Citation
+        citation = _first_nonempty_ms(
+            row.get("preferred_citation", ""),
+            row.get("reference", ""),
+            src_name,
+        )
+
+        # reference
+        ref = _clean_ms(row.get("reference", ""))
+
+        # source_url
+        url = _clean_ms(row.get("source_url", ""))
+
+        # access_date
+        access = _clean_ms(row.get("access_date", ""))
+
+        # n_source_stations / n_clusters / n_records
+        def _safe_int(val, default=0):
+            if pd.isna(val):
+                return default
+            try:
+                return int(float(val))
+            except (ValueError, TypeError):
+                return default
+
+        n_stations = _safe_int(row.get("n_source_stations"))
+        n_clusters = _safe_int(row.get("n_clusters"))
+        n_recs = _safe_int(row.get("n_records"))
+
+        rows.append({
+            "Data Source Name": dsn,
+            "Type": type_val,
+            "Observation type": obs_type,
+            "Temporal resolution": temp_res,
+            "Temporal_span": temporal_span,
+            "Variables Provided": vars_provided,
+            "Geographic coverage": geo,
+            "Citation": citation,
+            "reference": ref,
+            "source_url": url,
+            "access_date": access,
+            "n_source_stations": n_stations,
+            "n_clusters": n_clusters,
+            "n_records": n_recs,
+        })
+
+    result = pd.DataFrame(rows)
+    result = _ensure_columns(result, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS, warnings, "source_dataset_catalog.csv")
+    result = result.loc[:, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS]
+    result = result.sort_values("Data Source Name", kind="mergesort").reset_index(drop=True)
+    return result
+
+
 def _read_catalog_csv(path):
     return pd.read_csv(path, keep_default_na=False)
 
@@ -843,17 +1425,12 @@ def slim_source_station_catalog(src, dst, warnings):
 
 
 def slim_source_dataset_catalog(src, dst, warnings):
-    print("[catalog] slimming source_dataset_catalog.csv")
-    df = _read_catalog_csv(src)
-    df = _ensure_columns(
-        df,
-        MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS,
-        warnings,
-        "source_dataset_catalog.csv",
-    )
-    df = df.loc[:, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS]
-    df = df.sort_values(["source_name"], kind="mergesort").reset_index(drop=True)
-    df.to_csv(dst, index=False)
+    print("[catalog] building manuscript-style source_dataset_catalog.csv")
+    source_dataset_df = _read_catalog_csv(src)
+    source_station_path = src.parent / "source_station_catalog.csv"
+    source_station_df = _read_catalog_csv(source_station_path) if source_station_path.is_file() else pd.DataFrame()
+    result = build_manuscript_style_source_dataset_catalog(source_dataset_df, source_station_df, warnings)
+    result.to_csv(dst, index=False)
     print("[write] {}".format(dst))
 
 
