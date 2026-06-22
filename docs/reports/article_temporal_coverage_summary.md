@@ -4,19 +4,19 @@
 
 The release provides daily, monthly, annual, and climatological sediment-reference products with temporal coverage spanning from 1884 to 2025 across all products.
 
-The main time-series products contain 1,475 daily clusters, 1,861 monthly clusters, and 58 annual clusters.
+The main time-series products contain 1,607 daily clusters, 1,875 monthly clusters, and 58 annual clusters.
 
-Daily records span 1948-2025, with 2,813,598 valid cluster-time observations across 1,475 clusters and a median record length of 3.7 years.
+Daily records span 1948-2025, with 2,724,382 valid cluster-time observations across 1,607 clusters and a median record length of 2.9 years.
 
-Monthly records span 1938-2021, with 121,363 valid cluster-time observations across 1,861 clusters and a median record length of 7.3 years.
+Monthly records span 1938-2021, with 122,546 valid cluster-time observations across 1,875 clusters and a median record length of 7.5 years.
 
 Annual records span 1912-2021, with 619 valid cluster-time observations across 58 clusters and a median record length of 5.0 years. Annual coverage is described by observed records and calendar span, rather than by a regular-grid coverage ratio, because the annual time axis is irregular.
 
 Long daily records are a major strength of the release: 15 daily clusters are longer than 50 years and 0 daily clusters are longer than 100 years.
 
-Peak temporal coverage differs by product: daily: 562 active units in 1980; monthly: 1,485 active units in 2013; annual: 47 active units in 2018.
+Peak temporal coverage differs by product: daily: 556 active units in 1980; monthly: 1,497 active units in 2013; annual: 47 active units in 2018.
 
-The climatology product is reported separately as 1,359 standalone climatology stations, because it is not a basin-cluster time-series matrix.
+The climatology product is reported separately as 1,322 standalone climatology stations, because it is not a basin-cluster time-series matrix.
 
 ## Output tables
 

@@ -1196,45 +1196,14 @@ def main() -> int:
     print("Clusters with published basin polygons: {}".format(polygons))
     print("Article summary: {}".format(OUTPUT_DIR / "article_spatial_coverage_summary.md"))
     # =============================================================================
-    # Copy outputs to the docs/reports directory
+    # Copy markdown report to docs/reports only
     # =============================================================================
     reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
-
-    # Copy CSV tables
-    table_files = [
-        "table_spatial_coverage_summary.csv",
-        "table_spatial_coverage_by_resolution.csv",
-        "table_spatial_coverage_by_region.csv",
-        "table_spatial_coverage_by_country.csv",
-        "table_spatial_coverage_by_source.csv",
-        "table_spatial_coverage_by_region_source.csv",
-        "table_spatial_coverage_by_region_resolution.csv",
-        "table_upstream_area_distribution.csv",
-        "table_satellite_validation_spatial_coverage.csv",
-        "table_unknown_country_region_clusters.csv",
-        "article_spatial_coverage_metrics.csv",
-        "table_basin_polygon_layers.csv",
-        "table_cluster_spatial_attributes.csv",
-    ]
-    for fname in table_files:
-        src = TABLES_DIR / fname
-        if src.is_file():
-            shutil.copy2(str(src), str(reports_dir / fname))
-
-    # Copy markdown report
     md_report = OUTPUT_DIR / "article_spatial_coverage_summary.md"
     if md_report.is_file():
         shutil.copy2(str(md_report), str(reports_dir / md_report.name))
-
-    # Copy figures if directory exists
-    if FIGURES_DIR.is_dir():
-        figs_dst = reports_dir / "figures"
-        if figs_dst.is_dir():
-            shutil.rmtree(str(figs_dst))
-        shutil.copytree(str(FIGURES_DIR), str(figs_dst))
-
-    print(f"Copied all outputs (tables, report, figures) -> {reports_dir}")
+        print("Copied {} -> {}".format(md_report, reports_dir))
 
     return 0
 
