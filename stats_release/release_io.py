@@ -135,7 +135,11 @@ def add_common_args(parser, module_name: str) -> None:
     parser.add_argument("--strict-release-only", action="store_true", default=True, help="Reject input reads outside --release-dir. Enabled by default.")
     parser.add_argument("--allow-non-release-inputs", action="store_false", dest="strict_release_only", help="Disable the input path guard for debugging only.")
     parser.add_argument("--skip-figures", action="store_true", help="Skip PNG figure creation.")
-    parser.add_argument("--copy-reports", action="store_true", help="Also copy Markdown reports to docs/reports/. Disabled by default to keep stats output self-contained.")
+    parser.add_argument(
+        "--copy-reports",
+        action="store_true",
+        help="Also copy Markdown reports to the docs report area. Disabled by default to keep stats output self-contained.",
+    )
     parser.add_argument("--dpi", type=int, default=300, help="Figure DPI.")
 
 

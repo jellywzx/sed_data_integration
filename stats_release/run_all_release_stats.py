@@ -18,7 +18,6 @@ if __package__ in {None, ""}:
 from stats_release.release_io import (
     add_common_args,
     context_from_args,
-    copy_report_to_docs,
     file_manifest,
     metadata_fingerprint,
     script_fingerprint,
@@ -36,6 +35,9 @@ from stats_release.reporting import (
     sorted_markdown_table,
 )
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DOCS_STATS_RELEASE_DIR = PROJECT_ROOT / "docs" / "reports" / "stats_release"
 
 MODULES = (
     "inventory",
@@ -90,6 +92,19 @@ def _collect_output_files(out_dir: Path, modules: list) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows, columns=["module", "relative_path", "size_bytes", "mtime_ns"])
+
+
+def _copy_markdown_reports_to_docs(out_root: Path, enabled: bool) -> list[Path]:
+    if not enabled:
+        return []
+    out_root = Path(out_root).resolve()
+    copied = []
+    for source in sorted(out_root.rglob("*.md")):
+        target = DOCS_STATS_RELEASE_DIR / source.relative_to(out_root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(source), str(target))
+        copied.append(target)
+    return copied
 
 
 def _module_report_rows(out_root: Path) -> pd.DataFrame:
@@ -323,8 +338,6 @@ def main(argv=None) -> int:
         ]
         if args.skip_figures:
             cmd.append("--skip-figures")
-        if args.copy_reports:
-            cmd.append("--copy-reports")
         if not ctx.strict_release_only:
             cmd.append("--allow-non-release-inputs")
         print("Running {}".format(module))
@@ -407,11 +420,9 @@ def main(argv=None) -> int:
         ),
         detailed_path,
     )
-    try:
-        copy_report_to_docs(md_path, bool(args.copy_reports))
-        copy_report_to_docs(detailed_path, bool(args.copy_reports))
-    except Exception:
-        pass
+    copied_reports = _copy_markdown_reports_to_docs(out_root, bool(args.copy_reports))
+    if copied_reports:
+        print("Copied {} Markdown reports to {}".format(len(copied_reports), DOCS_STATS_RELEASE_DIR))
     failed = [row for row in rows if row["return_code"] != 0]
     return 1 if failed else 0
 

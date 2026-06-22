@@ -34,7 +34,6 @@ from stats_release.common_stats import (
 from stats_release.release_io import (
     ReleaseContext,
     clean_text,
-    copy_report_to_docs,
     file_manifest,
     metadata_fingerprint,
     read_numeric_var,
@@ -56,6 +55,7 @@ from stats_release.reporting import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MINIMAL_RELEASE_DIR = PROJECT_ROOT / "output" / "sed_reference_release_minimal"
 DEFAULT_OUT_DIR = PROJECT_ROOT / "output_other" / "stats_release_minimal"
+DOCS_MINIMAL_REPORT_DIR = PROJECT_ROOT / "docs" / "reports" / "stats_release" / "minimal"
 
 MATRIX_PRODUCTS = {
     "daily": "sed_reference_timeseries_daily.nc",
@@ -172,7 +172,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--copy-reports",
         action="store_true",
-        help="Deprecated compatibility flag; manuscript_minimal_stats.md is always copied to docs/reports/.",
+        help="Deprecated compatibility flag; manuscript_minimal_stats.md is always copied to docs/reports/stats_release/minimal/.",
     )
     args = parser.parse_args(argv)
     args.release_dir = Path(args.release_dir).expanduser().resolve()
@@ -190,6 +190,13 @@ def clean_managed_outputs(out_dir: Path) -> None:
             path.unlink()
         elif path.is_dir():
             shutil.rmtree(str(path))
+
+
+def copy_minimal_report_to_docs(report_path: Path) -> Path:
+    target = DOCS_MINIMAL_REPORT_DIR / Path(report_path).name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(report_path), str(target))
+    return target
 
 
 def file_inventory(ctx: ReleaseContext) -> pd.DataFrame:
@@ -873,7 +880,7 @@ def main(argv=None) -> int:
     )
     report_path = ctx.output_path("manuscript_minimal_stats.md")
     write_markdown(report, report_path)
-    copied_report = copy_report_to_docs(report_path, True)
+    copied_report = copy_minimal_report_to_docs(report_path)
 
     print("Wrote minimal release manuscript stats to {}".format(args.out_dir))
     print("Report: {}".format(report_path))
