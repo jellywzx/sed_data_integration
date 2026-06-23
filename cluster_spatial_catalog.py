@@ -109,6 +109,7 @@ RESOLUTION_CATALOG_COLUMNS = [
     "cluster_id",
     "resolution",
     "record_count",
+    "n_valid_time_steps",
     "time_start",
     "time_end",
     "station_name",
@@ -758,6 +759,7 @@ def normalize_cluster_resolution_catalog(resolution_catalog):
         "master_station_index": -1,
         "cluster_id": -1,
         "record_count": 0,
+        "n_valid_time_steps": 0,
         "n_upstream_reaches": -9999,
         "basin_match_quality_code": -1,
         "point_in_local": 0,
@@ -990,6 +992,7 @@ def build_cluster_resolution_catalog(station_catalog):
             continue
         subset["resolution"] = resolution
         subset["record_count"] = subset[count_col].astype(np.int64)
+        subset["n_valid_time_steps"] = subset[count_col].astype(np.int64)
         subset["time_start"] = subset[start_col].fillna("").astype(str).str.strip()
         subset["time_end"] = subset[end_col].fillna("").astype(str).str.strip()
         rows.append(subset[RESOLUTION_CATALOG_COLUMNS])

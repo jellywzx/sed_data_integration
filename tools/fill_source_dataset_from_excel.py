@@ -2,16 +2,18 @@
 """
 Fill empty reference/source_url in source_dataset_catalog.csv
 from the reference Excel manuscript table.
+
+Searches across multiple sheets: default (first) sheet, plus
+'minimal_17' and 'clim_sat_8' sheets.
 """
 
 import pandas as pd
 import re, sys
 from pathlib import Path
 
-# Paths
-SCRIPT_DIR = Path(__file__).resolve().parent
-CSV_PATH = SCRIPT_DIR / "output/sed_reference_release_minimal/source_dataset_catalog.csv"
-XLSX_PATH = SCRIPT_DIR / "docs/manuscript_source_table_cleaned_minimal_filled_organized.xlsx"
+# Paths — absolute
+CSV_PATH = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal/source_dataset_catalog.csv")
+XLSX_PATH = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/manuscript_source_table_cleaned_minimal_filled_organized.xlsx")
 
 
 def normalize(name):
@@ -20,13 +22,38 @@ def normalize(name):
     return re.sub(r"\s+", " ", str(name).strip().lower())
 
 
+def load_excel_sheets(path, extra_sheets=None):
+    """Load the default (first) sheet plus any extra named sheets."""
+    if extra_sheets is None:
+        extra_sheets = ["minimal_17", "clim_sat_8"]
+
+    parts = []
+
+    # Always load the default (first) sheet
+    default = pd.read_excel(path, engine="openpyxl")
+    parts.append(default)
+    print(f"[ref] Default sheet loaded: {len(default)} rows")
+
+    # Load additional named sheets if they exist
+    for sheet in extra_sheets:
+        try:
+            df = pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
+            parts.append(df)
+            print(f"[ref] Sheet '{sheet}' loaded: {len(df)} rows")
+        except ValueError:
+            print(f"[ref] Sheet '{sheet}' not found — skipped")
+
+    combined = pd.concat(parts, ignore_index=True)
+    print(f"[ref] Combined: {len(combined)} rows from {len(parts)} sheet(s)")
+    return combined
+
+
 def main():
-    # 1. Load Excel reference
+    # 1. Load Excel reference (multiple sheets)
     if not XLSX_PATH.is_file():
         print(f"[error] Excel not found: {XLSX_PATH}")
         sys.exit(1)
-    xlsx = pd.read_excel(XLSX_PATH, engine="openpyxl")
-    print(f"[ref] Excel loaded: {len(xlsx)} rows")
+    xlsx = load_excel_sheets(XLSX_PATH)
 
     # 2. Load CSV
     if not CSV_PATH.is_file():
@@ -35,7 +62,7 @@ def main():
     csv = pd.read_csv(CSV_PATH)
     print(f"[csv] CSV loaded: {len(csv)} rows")
 
-    # 3. Build lookup: normalized name → Excel row
+    # 3. Build lookup: normalized name -> Excel row
     lookup = {}
     for _, row in xlsx.iterrows():
         key = normalize(row.get("Data Source Name", ""))

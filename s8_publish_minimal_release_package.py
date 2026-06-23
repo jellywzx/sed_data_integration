@@ -14,6 +14,7 @@ Default output:
 """
 
 import argparse
+import importlib.util
 import re
 import shutil
 import sys
@@ -31,6 +32,10 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from pipeline_paths import RELEASE_DATASET_DIR, get_output_r_root
+from geo_boundary_enrichment import (
+    boundary_options_from_argv,
+    enrich_global_attr_payloads,
+)
 
 try:
     import netCDF4 as nc4
@@ -65,6 +70,7 @@ GLOBAL_ATTRS_TO_KEEP = ()
 CLIMATOLOGY_PACKAGE_FILES = (
     "sed_reference_climatology.nc",
 )
+CLIMATOLOGY_QUERY_TABLE = "climatology_catalog.csv"
 SATELLITE_PACKAGE_FILES = (
     "sed_reference_satellite.nc",
     "satellite_catalog.csv",
@@ -74,9 +80,47 @@ MINIMAL_FORBIDDEN_FILES = ()
 MINIMAL_FORBIDDEN_VARS = ()
 MINIMAL_RESOLUTIONS = {"daily", "monthly", "annual"}
 MINIMAL_CATALOG_COLUMNS = {}
+MINIMAL_CORE_CATALOG_FILES = (
+    "station_catalog.csv",
+    "source_station_catalog.csv",
+    "source_dataset_catalog.csv",
+)
 MINIMAL_STATION_CATALOG_COLUMNS = ()
 MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = ()
 MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = ()
+MINIMAL_SATELLITE_CATALOG_COLUMNS = ()
+DEFAULT_CLIMATOLOGY_QUERY_COLUMNS = (
+    "record_index",
+    "station_index",
+    "station_uid",
+    "lat",
+    "lon",
+    "station_name",
+    "river_name",
+    "source_station_id",
+    "source_name",
+    "source_long_name",
+    "institution",
+    "reference",
+    "source_url",
+    "time",
+    "time_raw",
+    "resolution",
+    "Q",
+    "SSC",
+    "SSL",
+    "Q_flag",
+    "SSC_flag",
+    "SSL_flag",
+    "source_station_time_coverage_start",
+    "source_station_time_coverage_end",
+    "source_station_variables_provided",
+    "source_station_path",
+)
+CLIMATOLOGY_QUERY_COLUMNS = DEFAULT_CLIMATOLOGY_QUERY_COLUMNS
+DEFAULT_NATURALEARTH_LOWRES_RELATIVE = Path(
+    "tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"
+)
 
 BUILD_FAILURES = []
 BUILD_WARNINGS = []
@@ -97,6 +141,32 @@ def _schema_list(schema, key):
     return tuple(value)
 
 
+def _schema_optional_list(schema, key, default):
+    if key not in schema:
+        return tuple(default)
+    value = schema[key]
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise MinimalSchemaError("Schema field {} must be a list of non-empty strings".format(key))
+    return tuple(value)
+
+
+def _schema_climatology_query_columns(schema):
+    columns = _schema_optional_list(
+        schema,
+        "climatology_query_columns",
+        DEFAULT_CLIMATOLOGY_QUERY_COLUMNS,
+    )
+    supported = set(DEFAULT_CLIMATOLOGY_QUERY_COLUMNS)
+    unknown = [name for name in columns if name not in supported]
+    if unknown:
+        raise MinimalSchemaError(
+            "Schema field climatology_query_columns has unsupported columns: {}".format(
+                ", ".join(unknown)
+            )
+        )
+    return columns
+
+
 def _schema_catalog_columns(schema):
     key = "minimal_catalog_columns"
     if key not in schema:
@@ -105,11 +175,7 @@ def _schema_catalog_columns(schema):
     if not isinstance(value, dict):
         raise MinimalSchemaError("Schema field {} must be a mapping of catalog file names to columns".format(key))
 
-    required_catalogs = (
-        "station_catalog.csv",
-        "source_station_catalog.csv",
-        "source_dataset_catalog.csv",
-    )
+    required_catalogs = MINIMAL_CORE_CATALOG_FILES + ("satellite_catalog.csv",)
     result = {}
     for catalog_name in required_catalogs:
         if catalog_name not in value:
@@ -148,6 +214,7 @@ def load_minimal_schema(path):
         "forbidden_files": _schema_list(schema, "forbidden_files"),
         "forbidden_variables": _schema_list(schema, "forbidden_variables"),
         "minimal_catalog_columns": catalog_columns,
+        "climatology_query_columns": _schema_climatology_query_columns(schema),
     }
 
 
@@ -164,6 +231,8 @@ def apply_minimal_schema(schema):
     global MINIMAL_STATION_CATALOG_COLUMNS
     global MINIMAL_SOURCE_STATION_CATALOG_COLUMNS
     global MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS
+    global MINIMAL_SATELLITE_CATALOG_COLUMNS
+    global CLIMATOLOGY_QUERY_COLUMNS
 
     MINIMAL_MATRIX_FILES = schema["minimal_matrix_files"]
     MINIMAL_KEEP_VARS = schema["keep_variables"]
@@ -176,7 +245,9 @@ def apply_minimal_schema(schema):
     MINIMAL_STATION_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["station_catalog.csv"]
     MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["source_station_catalog.csv"]
     MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["source_dataset_catalog.csv"]
-    MINIMAL_PACKAGE_FILES = tuple(MINIMAL_MATRIX_FILES) + tuple(MINIMAL_CATALOG_COLUMNS)
+    MINIMAL_SATELLITE_CATALOG_COLUMNS = MINIMAL_CATALOG_COLUMNS["satellite_catalog.csv"]
+    CLIMATOLOGY_QUERY_COLUMNS = schema["climatology_query_columns"]
+    MINIMAL_PACKAGE_FILES = tuple(MINIMAL_MATRIX_FILES) + MINIMAL_CORE_CATALOG_FILES
 
 
 try:
@@ -1298,14 +1369,14 @@ def _access_date_for_source(access_dates, *names):
 
 def _decode_nc_text(value):
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="ignore").strip()
+        return value.decode("utf-8", errors="ignore").strip("\x00").strip()
     if isinstance(value, np.bytes_):
-        return value.decode("utf-8", errors="ignore").strip()
+        return value.decode("utf-8", errors="ignore").strip("\x00").strip()
     if isinstance(value, np.ndarray):
         if value.shape == ():
             return _decode_nc_text(value.item())
         if value.dtype.kind in {"S", "U"}:
-            return "".join(_decode_nc_text(item) for item in value).strip()
+            return "".join(_decode_nc_text(item) for item in value).strip("\x00").strip()
     return _clean_ms(value)
 
 
@@ -1316,6 +1387,192 @@ def _nc_variable_values(ds, name):
     if values.shape == ():
         return [_decode_nc_text(values.item())]
     return [_decode_nc_text(item) for item in values.reshape(-1)]
+
+
+def _nc_query_variable_values(ds, name):
+    if name not in ds.variables:
+        return []
+    values = np.asarray(ds.variables[name][:])
+    if np.ma.isMaskedArray(values):
+        if values.dtype.kind in {"S", "U", "O"}:
+            values = values.filled(b"")
+        else:
+            values = values.filled(np.nan)
+    if values.shape == ():
+        if values.dtype.kind in {"S", "U", "O"}:
+            return [_decode_nc_text(values.item())]
+        return [values.item()]
+    if values.dtype.kind in {"S", "U", "O"}:
+        if values.ndim >= 2 and values.dtype.kind in {"S", "U"}:
+            rows = values.reshape((-1, values.shape[-1]))
+            return [_decode_nc_text(row) for row in rows]
+        return [_decode_nc_text(item) for item in values.reshape(-1)]
+    return values.reshape(-1).tolist()
+
+
+def _query_value_at(values, index, default=""):
+    try:
+        if index is None or index < 0 or index >= len(values):
+            return default
+        value = values[index]
+    except Exception:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
+def _query_index(value):
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _open_climatology_query_nc(path):
+    if HAS_NC:
+        return nc4.Dataset(path, "r")
+    if HAS_H5NETCDF:
+        return h5netcdf.File(path, "r")
+    return None
+
+
+def build_climatology_observation_csv(args):
+    if args.skip_climatology:
+        print("[skip] climatology query CSV skipped by command-line option")
+        return
+
+    input_nc = args.release_dir / "sed_reference_climatology.nc"
+    output_csv = args.minimal_dir / CLIMATOLOGY_QUERY_TABLE
+
+    if args.dry_run:
+        print("[dry-run] would build climatology query CSV: {}".format(output_csv))
+        return
+
+    if not input_nc.is_file():
+        _warn(BUILD_WARNINGS, "climatology query CSV skipped; missing {}".format(input_nc))
+        return
+    if not HAS_NC and not HAS_H5NETCDF:
+        _warn(BUILD_WARNINGS, "climatology query CSV skipped; netCDF4 or h5netcdf is required")
+        return
+
+    station_fields = (
+        "station_uid",
+        "lat",
+        "lon",
+        "station_name",
+        "river_name",
+        "source_station_id",
+        "source_station_time_coverage_start",
+        "source_station_time_coverage_end",
+        "source_station_variables_provided",
+        "source_station_path",
+    )
+    source_fields = (
+        "source_name",
+        "source_long_name",
+        "institution",
+        "reference",
+        "source_url",
+    )
+    record_fields = (
+        "time",
+        "resolution",
+        "Q",
+        "SSC",
+        "SSL",
+        "Q_flag",
+        "SSC_flag",
+        "SSL_flag",
+        "source",
+    )
+
+    with _open_climatology_query_nc(input_nc) as ds:
+        station_index_values = _nc_query_variable_values(ds, "station_index")
+        station_source_index_values = _nc_query_variable_values(ds, "source_index")
+        station_values = {name: _nc_query_variable_values(ds, name) for name in station_fields}
+        source_values = {name: _nc_query_variable_values(ds, name) for name in source_fields}
+        record_values = {name: _nc_query_variable_values(ds, name) for name in record_fields}
+
+        time_values = record_values.get("time", [])
+        if "time" in ds.variables:
+            time_units = _source_var_attr(ds.variables["time"], "units", "")
+            time_calendar = _source_var_attr(ds.variables["time"], "calendar", "standard")
+        else:
+            time_units = ""
+            time_calendar = "standard"
+        decoded_time_values = [
+            "" if value is None or pd.isna(value) else _format_time_value(value, time_units, time_calendar)
+            for value in time_values
+        ]
+
+    n_records = max(
+        [len(station_index_values), len(decoded_time_values)]
+        + [len(record_values.get(name, [])) for name in record_fields],
+        default=0,
+    )
+
+    rows = []
+    for record_idx in range(n_records):
+        station_idx = _query_index(_query_value_at(station_index_values, record_idx))
+        source_idx = (
+            _query_index(_query_value_at(station_source_index_values, station_idx))
+            if station_idx is not None
+            else None
+        )
+        record_source = _query_value_at(record_values.get("source", []), record_idx)
+        source_name = _query_value_at(source_values.get("source_name", []), source_idx)
+        if not source_name and record_source:
+            source_name = record_source
+
+        rows.append(
+            {
+                "record_index": record_idx,
+                "station_index": "" if station_idx is None else station_idx,
+                "station_uid": _query_value_at(station_values.get("station_uid", []), station_idx),
+                "lat": _query_value_at(station_values.get("lat", []), station_idx),
+                "lon": _query_value_at(station_values.get("lon", []), station_idx),
+                "station_name": _query_value_at(station_values.get("station_name", []), station_idx),
+                "river_name": _query_value_at(station_values.get("river_name", []), station_idx),
+                "source_station_id": _query_value_at(station_values.get("source_station_id", []), station_idx),
+                "source_name": source_name,
+                "source_long_name": _query_value_at(source_values.get("source_long_name", []), source_idx),
+                "institution": _query_value_at(source_values.get("institution", []), source_idx),
+                "reference": _query_value_at(source_values.get("reference", []), source_idx),
+                "source_url": _query_value_at(source_values.get("source_url", []), source_idx),
+                "time": _query_value_at(decoded_time_values, record_idx),
+                "time_raw": _query_value_at(time_values, record_idx),
+                "resolution": _query_value_at(record_values.get("resolution", []), record_idx),
+                "Q": _query_value_at(record_values.get("Q", []), record_idx),
+                "SSC": _query_value_at(record_values.get("SSC", []), record_idx),
+                "SSL": _query_value_at(record_values.get("SSL", []), record_idx),
+                "Q_flag": _query_value_at(record_values.get("Q_flag", []), record_idx),
+                "SSC_flag": _query_value_at(record_values.get("SSC_flag", []), record_idx),
+                "SSL_flag": _query_value_at(record_values.get("SSL_flag", []), record_idx),
+                "source_station_time_coverage_start": _query_value_at(
+                    station_values.get("source_station_time_coverage_start", []),
+                    station_idx,
+                ),
+                "source_station_time_coverage_end": _query_value_at(
+                    station_values.get("source_station_time_coverage_end", []),
+                    station_idx,
+                ),
+                "source_station_variables_provided": _query_value_at(
+                    station_values.get("source_station_variables_provided", []),
+                    station_idx,
+                ),
+                "source_station_path": _query_value_at(station_values.get("source_station_path", []), station_idx),
+            }
+        )
+
+    pd.DataFrame(rows, columns=CLIMATOLOGY_QUERY_COLUMNS).to_csv(output_csv, index=False)
+    print("[write] {}".format(output_csv))
+    print("[done] exported {} climatology record(s)".format(len(rows)))
 
 
 def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
@@ -1781,6 +2038,94 @@ def _ensure_columns(df, columns, warnings, catalog_name):
     return df
 
 
+def _package_fixture_boundary_path(package_name):
+    spec = importlib.util.find_spec(package_name)
+    if spec is None or not spec.origin:
+        return None
+    return Path(spec.origin).resolve().parent / DEFAULT_NATURALEARTH_LOWRES_RELATIVE
+
+
+def _default_geo_boundary_file():
+    candidates = [
+        _package_fixture_boundary_path("pyogrio"),
+        _package_fixture_boundary_path("geopandas"),
+        Path("/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"),
+        Path("/share/home/dq134/.local/share/mamba/envs/delineator310/lib/python3.10/site-packages/geopandas/datasets/naturalearth_lowres/naturalearth_lowres.shp"),
+    ]
+    for path in candidates:
+        if path and path.is_file():
+            return str(path)
+    return ""
+
+
+def _satellite_country_boundary_options(boundary_options=None):
+    options = boundary_options_from_argv([]) if boundary_options is None else dict(boundary_options)
+    if not _clean_ms(options.get("boundary_file", "")):
+        options["boundary_file"] = _default_geo_boundary_file()
+    if options.get("boundary_file") and not _clean_ms(options.get("boundary_dataset", "")):
+        options["boundary_dataset"] = Path(str(options["boundary_file"])).stem
+    return options
+
+
+def _fill_missing_satellite_country_from_boundary(df, warnings, boundary_options=None):
+    if "country" not in df.columns:
+        return df
+    missing_mask = df["country"].fillna("").astype(str).str.strip().eq("")
+    if not missing_mask.any():
+        return df
+
+    options = _satellite_country_boundary_options(boundary_options)
+    if options.get("skip") or not _clean_ms(options.get("boundary_file", "")):
+        _warn(
+            warnings,
+            "satellite_catalog.csv country boundary fallback skipped; no admin0 boundary file configured or found",
+        )
+        return df
+
+    geo_fields = (
+        "country",
+        "continent_region",
+        "geographic_coverage",
+        "iso_a3",
+        "geo_attribute_source",
+        "geo_attribute_confidence",
+        "geo_attribute_method",
+        "geo_boundary_dataset",
+        "geo_boundary_version",
+    )
+    work = df.copy()
+    payloads = []
+    for _, row in work.iterrows():
+        promoted = dict((field, _clean_ms(row.get(field, ""))) for field in geo_fields)
+        payloads.append({"promoted": promoted})
+
+    enrich_global_attr_payloads(
+        payloads,
+        work.get("lat", pd.Series([""] * len(work), index=work.index)).tolist(),
+        work.get("lon", pd.Series([""] * len(work), index=work.index)).tolist(),
+        subject="minimal satellite catalog stations",
+        logger=print,
+        **options,
+    )
+
+    filled = 0
+    for pos, idx in enumerate(work.index):
+        if not missing_mask.loc[idx]:
+            continue
+        country = _clean_ms(payloads[pos].get("promoted", {}).get("country", ""))
+        if country:
+            work.at[idx, "country"] = country
+            filled += 1
+    remaining = int(work["country"].fillna("").astype(str).str.strip().eq("").sum())
+    print(
+        "[catalog] satellite_catalog.csv country fallback filled {} row(s); remaining blank={}".format(
+            filled,
+            remaining,
+        )
+    )
+    return work
+
+
 def slim_station_catalog(src, dst, warnings):
     print("[catalog] slimming station_catalog.csv")
     df = _read_catalog_csv(src)
@@ -1788,7 +2133,7 @@ def slim_station_catalog(src, dst, warnings):
 
     if "n_valid_time_steps" not in df.columns and "record_count" in df.columns:
         df["n_valid_time_steps"] = df["record_count"]
-        _warn(warnings, "station_catalog.csv missing n_valid_time_steps; copied from record_count")
+        print("[catalog] station_catalog.csv: n_valid_time_steps not found; copied from record_count (upstream data is pre-fix)")
 
     if "country" not in df.columns:
         df["country"] = ""
@@ -1819,6 +2164,29 @@ def slim_source_station_catalog(src, dst, warnings):
     df = df.loc[:, MINIMAL_SOURCE_STATION_CATALOG_COLUMNS]
     df = df.sort_values(
         ["resolution", "cluster_uid", "source_name", "source_station_uid"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    df.to_csv(dst, index=False)
+    print("[write] {}".format(dst))
+
+
+def slim_satellite_catalog(src, dst, warnings, boundary_options=None):
+    print("[catalog] slimming satellite_catalog.csv")
+    df = _read_catalog_csv(src)
+    df = _ensure_columns(
+        df,
+        MINIMAL_SATELLITE_CATALOG_COLUMNS,
+        warnings,
+        "satellite_catalog.csv",
+    )
+    df = _fill_missing_satellite_country_from_boundary(
+        df,
+        warnings,
+        boundary_options=boundary_options,
+    )
+    df = df.loc[:, MINIMAL_SATELLITE_CATALOG_COLUMNS]
+    df = df.sort_values(
+        ["source", "resolution", "satellite_station_uid"],
         kind="mergesort",
     ).reset_index(drop=True)
     df.to_csv(dst, index=False)
@@ -1881,10 +2249,12 @@ def write_inventory(
                 row_status = "skipped"
             elif name in MINIMAL_MATRIX_FILES:
                 row_status = "minimal_nc"
-            elif name in MINIMAL_CATALOG_COLUMNS:
-                row_status = "minimal_catalog"
+            elif name == CLIMATOLOGY_QUERY_TABLE:
+                row_status = "generated_query_table"
             elif name in INTEGRATED_EXTENSION_FILES:
                 row_status = "integrated_extension"
+            elif name in MINIMAL_CATALOG_COLUMNS:
+                row_status = "minimal_catalog"
             else:
                 row_status = status if source_path.is_file() else "missing_source"
         else:
@@ -1946,6 +2316,8 @@ Generated by `s8_publish_minimal_release_package.py`.
   parquet, and GPKG products.
 - Climatology and satellite-validation extension files are included in this same
   package when not skipped at build time.
+- `climatology_catalog.csv` is a query-friendly flat table exported from
+  `sed_reference_climatology.nc`.
 - `source_dataset_catalog.csv` summarizes in-situ, climatology, and satellite
   source datasets in the manuscript table format.
 - Requested NetCDF compression level: `{compression_level}`
@@ -2003,7 +2375,13 @@ def copy_integrated_extension_files(args):
         src = args.release_dir / name
         dst = args.minimal_dir / name
         if src.is_file():
-            copy_release_file(src, dst, dry_run=args.dry_run)
+            if name == "satellite_catalog.csv":
+                if args.dry_run:
+                    print("[dry-run] would build minimal satellite catalog CSV: {}".format(dst))
+                else:
+                    slim_satellite_catalog(src, dst, BUILD_WARNINGS)
+            else:
+                copy_release_file(src, dst, dry_run=args.dry_run)
         else:
             _warn(BUILD_WARNINGS, "integrated extension source missing: {}".format(src))
 
@@ -2097,6 +2475,24 @@ def validate_minimal_package(args):
             "skipped",
             "integrated extension file skipped by command-line option",
             str(args.minimal_dir / name),
+        )
+
+    climatology_query_path = args.minimal_dir / CLIMATOLOGY_QUERY_TABLE
+    if args.skip_climatology:
+        add(
+            "generated_file:{}".format(CLIMATOLOGY_QUERY_TABLE),
+            "skipped",
+            "climatology query CSV skipped by command-line option",
+            str(climatology_query_path),
+        )
+    else:
+        add(
+            "generated_file:{}".format(CLIMATOLOGY_QUERY_TABLE),
+            "pass" if climatology_query_path.is_file() else "fail",
+            "generated climatology query CSV present"
+            if climatology_query_path.is_file()
+            else "generated climatology query CSV missing",
+            str(climatology_query_path),
         )
 
     for name in MINIMAL_FORBIDDEN_FILES:
@@ -2264,17 +2660,20 @@ def build_minimal_package(args):
                         BUILD_FAILURES.append("minimal matrix failed: {}".format(name))
 
     copy_integrated_extension_files(args)
+    build_climatology_observation_csv(args)
     build_minimal_catalogs(args, BUILD_WARNINGS)
 
     extension_files, skipped_extension_files = integrated_extension_files(args)
+    generated_files = () if args.skip_climatology else (CLIMATOLOGY_QUERY_TABLE,)
+    skipped_generated_files = (CLIMATOLOGY_QUERY_TABLE,) if args.skip_climatology else ()
     write_inventory(
         args.minimal_dir,
         package_name,
         args.release_dir,
-        tuple(MINIMAL_PACKAGE_FILES) + tuple(extension_files),
+        tuple(MINIMAL_PACKAGE_FILES) + tuple(extension_files) + generated_files,
         args.release_provenance,
         dry_run=args.dry_run,
-        skipped_files=skipped_extension_files,
+        skipped_files=tuple(skipped_extension_files) + skipped_generated_files,
     )
     write_readme(
         args.minimal_dir,

@@ -86,7 +86,6 @@ minimal_catalog_columns:
     - source_station_uid
     - source_name
     - source_station_native_id
-    - source_station_id
     - source_station_name
     - source_station_river_name
     - source_station_lat
@@ -103,3 +102,44 @@ minimal_catalog_columns:
     - source_url
     - n_source_stations
     - n_records
+  satellite_catalog.csv:
+    - satellite_station_uid
+    - cluster_uid
+    - cluster_id
+    - source
+    - resolution
+    - lat
+    - lon
+    - country
+    - time_start
+    - time_end
+    - n_records
+    - station_name
+    - river_name
+    - source_station_native_id
+
+climatology_query_columns:
+  - record_index
+  - station_index
+  - station_uid
+  - lat
+  - lon
+  - station_name
+  - river_name
+  - source_station_id
+  - source_name
+  - source_long_name
+  - reference
+  - source_url
+  - time
+  - time_raw
+  - resolution
+  - Q
+  - SSC
+  - SSL
+  - Q_flag
+  - SSC_flag
+  - SSL_flag
+  - source_station_time_coverage_start
+  - source_station_time_coverage_end
+  - source_station_variables_provided
