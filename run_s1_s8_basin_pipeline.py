@@ -17,6 +17,16 @@ Typical usage:
   # Run the whole pipeline with the built-in defaults
   python run_s1_s8_basin_pipeline.py
 
+  # Run with a YAML configuration file (see pipeline_config.yaml for all options)
+  python run_s1_s8_basin_pipeline.py --config-file pipeline_config.yaml
+  python run_s1_s8_basin_pipeline.py -c pipeline_config.yaml
+
+  # Run with YAML config, preview only (dry-run), skip confirmation
+  python run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --dry-run --yes
+
+  # CLI flags override the YAML config file values
+  python run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --steps s1,s2,s3
+
   # Run a continuous stage range
   python run_s1_s8_basin_pipeline.py --start-at s3 --end-at s6
 

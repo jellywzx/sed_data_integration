@@ -67,10 +67,13 @@ def parse_job_id(output):
     return match.group(1)
 
 
-def run_checked(cmd, env=None):
+def run_checked(cmd, env=None, input_text=None):
+    if input_text is not None and not input_text.endswith("\n"):
+        input_text += "\n"
     proc = subprocess.run(
         cmd,
         env=env,
+        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         universal_newlines=True,
@@ -79,8 +82,15 @@ def run_checked(cmd, env=None):
     return proc.returncode, proc.stdout
 
 
-def submit_job(name, bsub_cmd, dry_run=False, submit_log=None, env=None):
+def _render_submission(bsub_cmd, script_text=None):
     rendered = shell_join(bsub_cmd)
+    if script_text is None:
+        return rendered
+    return "{} <<'LSF_SCRIPT'\n{}\nLSF_SCRIPT".format(rendered, script_text)
+
+
+def submit_job(name, bsub_cmd, dry_run=False, submit_log=None, env=None, script_text=None):
+    rendered = _render_submission(bsub_cmd, script_text)
     if dry_run:
         line = "[DRY_RUN] {}".format(rendered)
         print(line)
@@ -93,7 +103,7 @@ def submit_job(name, bsub_cmd, dry_run=False, submit_log=None, env=None):
     if shutil.which("bsub") is None:
         raise RuntimeError("bsub not found in PATH")
 
-    rc, output = run_checked(bsub_cmd, env=env)
+    rc, output = run_checked(bsub_cmd, env=env, input_text=script_text)
     if submit_log:
         submit_log.parent.mkdir(parents=True, exist_ok=True)
         with submit_log.open("a", encoding="utf-8") as fp:
@@ -145,6 +155,23 @@ def clean(value):
     return "" if text.lower() in {"", "nan", "none", "null"} else text
 
 
+def bool_token(value, default=True):
+    text = clean(value).lower()
+    if not text:
+        return bool(default)
+    return text not in {"0", "false", "no", "off"}
+
+
+def mtime_epoch(path):
+    path = Path(path)
+    return path.stat().st_mtime if path.is_file() else None
+
+
+def is_fresh(path, submitted_at):
+    mtime = mtime_epoch(path)
+    return mtime is not None and mtime >= float(submitted_at)
+
+
 def size_text(path):
     path = Path(path)
     if not path.is_file():
@@ -184,8 +211,10 @@ def count_true(rows, name):
     return sum(1 for row in rows if clean(row.get(name)).lower() in {"1", "true", "t", "yes", "y"})
 
 
-def write_summary(summary_log, array_job_id, finalize_job_id, array_size):
+def write_summary(summary_log, array_job_id, finalize_job_id, array_size, s4_resume, submitted_at):
     summary_log = Path(summary_log)
+    submitted_at = float(submitted_at)
+    resume_enabled = bool_token(s4_resume, default=True)
     rows = []
     csv_path = OUT_DIR / "s4_upstream_basins.csv"
     partial_csv_path = OUT_DIR / "s4_upstream_basins.partial.csv"
@@ -233,6 +262,8 @@ def write_summary(summary_log, array_job_id, finalize_job_id, array_size):
     lines.append("Array job id: {}".format(array_job_id))
     lines.append("Finalize job id: {}".format(finalize_job_id))
     lines.append("Finalize LSF status: {}".format(lsf_log_status(finalize_out)))
+    lines.append("S4_RESUME: {}".format(s4_resume))
+    lines.append("Submitted at epoch: {:.3f}".format(submitted_at))
     lines.append("S4_GPKG_EXCLUDE_SATELLITE: {}".format(os.environ.get("S4_GPKG_EXCLUDE_SATELLITE", "")))
     lines.append("")
     lines.append("Shard completion:")
@@ -264,6 +295,20 @@ def write_summary(summary_log, array_job_id, finalize_job_id, array_size):
     for path in output_files:
         lines.append("  {:<36} {}".format(path.relative_to(SCRIPT_DIR).as_posix(), size_text(path)))
     lines.append("")
+
+    fresh_csv = is_fresh(csv_path, submitted_at)
+    fresh_shards = [path for path in present_shards if is_fresh(path, submitted_at)]
+    stale_shards = [path.name for path in present_shards if not is_fresh(path, submitted_at)]
+    lines.append("Freshness checks:")
+    lines.append("  submitted_at_epoch : {:.3f}".format(submitted_at))
+    lines.append("  output CSV fresh   : {}".format("YES" if fresh_csv else "NO"))
+    lines.append("  fresh shards       : {}/{}".format(len(fresh_shards), array_size))
+    if not resume_enabled and stale_shards:
+        lines.append("  stale shards       : {}".format(", ".join(stale_shards[:40])))
+        if len(stale_shards) > 40:
+            lines.append("  stale shards       : ... {} more".format(len(stale_shards) - 40))
+    lines.append("")
+
     lines.append("GPKG status:")
     lines.append("  upstream basins gpkg : {}".format("YES" if gpkg_path.is_file() else "NO"))
     lines.append("  local catchments gpkg: {}".format("YES" if local_gpkg_path.is_file() else "NO"))
@@ -271,7 +316,12 @@ def write_summary(summary_log, array_job_id, finalize_job_id, array_size):
 
     all_shards_present = not missing_shards
     required_outputs_present = csv_path.is_file()
-    if all_shards_present and required_outputs_present and lsf_log_status(finalize_out) == "DONE":
+    outputs_are_fresh = required_outputs_present and fresh_csv
+    shards_are_current = resume_enabled or (
+        len(fresh_shards) == int(array_size) and not stale_shards
+    )
+    finalize_done = lsf_log_status(finalize_out) == "DONE"
+    if all_shards_present and outputs_are_fresh and shards_are_current and finalize_done:
         result = "S4_COMPLETED"
     elif required_outputs_present:
         result = "S4_OUTPUT_CSV_PRESENT_BUT_REVIEW_LOGS"
@@ -305,9 +355,10 @@ def validate_summary(summary_log):
     return 0
 
 
-def build_trace_script(python_bin, array_size, exclude_satellite):
+def build_trace_script(python_bin, array_size, exclude_satellite, s4_resume):
     live_log = "output/logs/s4_lsf/s4_trace.${JOB_INDEX}.live.log"
     lines = [
+        "#!/usr/bin/env bash",
         "set -euo pipefail",
         "cd {}".format(shell_join([SCRIPT_DIR])),
         "mkdir -p output/logs/s4_lsf output/s4_shards",
@@ -318,11 +369,13 @@ def build_trace_script(python_bin, array_size, exclude_satellite):
         "export S4_SHARD_COUNT={}".format(int(array_size)),
         'export S4_SHARD_INDEX="$((JOB_INDEX - 1))"',
         "export S4_FINALIZE_ONLY=0",
+        "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
         'echo "[$(date \'+%F %T\')] live log: ${LIVE_LOG}"',
         'echo "[$(date \'+%F %T\')] start shard job: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"',
         'echo "[$(date \'+%F %T\')] host: $(hostname)"',
         'echo "[$(date \'+%F %T\')] python: ${PYTHON_BIN}"',
+        'echo "[$(date \'+%F %T\')] S4_RESUME=${S4_RESUME}"',
         'echo "[$(date \'+%F %T\')] S4_GPKG_EXCLUDE_SATELLITE=${S4_GPKG_EXCLUDE_SATELLITE}"',
         '"${PYTHON_BIN}" s4_basin_trace_watch.py',
         'echo "[$(date \'+%F %T\')] shard done: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"',
@@ -330,8 +383,9 @@ def build_trace_script(python_bin, array_size, exclude_satellite):
     return "\n".join(lines)
 
 
-def build_finalize_script(python_bin, array_size, exclude_satellite):
+def build_finalize_script(python_bin, array_size, exclude_satellite, s4_resume):
     lines = [
+        "#!/usr/bin/env bash",
         "set -euo pipefail",
         "cd {}".format(shell_join([SCRIPT_DIR])),
         "mkdir -p output/logs/s4_lsf output/s4_shards",
@@ -341,11 +395,13 @@ def build_finalize_script(python_bin, array_size, exclude_satellite):
         "export S4_SHARD_COUNT={}".format(int(array_size)),
         "export S4_SHARD_INDEX=0",
         "export S4_FINALIZE_ONLY=1",
+        "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
         'echo "[$(date \'+%F %T\')] live log: ${LIVE_LOG}"',
         'echo "[$(date \'+%F %T\')] start finalize: shard_count=${S4_SHARD_COUNT}"',
         'echo "[$(date \'+%F %T\')] host: $(hostname)"',
         'echo "[$(date \'+%F %T\')] python: ${PYTHON_BIN}"',
+        'echo "[$(date \'+%F %T\')] S4_RESUME=${S4_RESUME}"',
         'echo "[$(date \'+%F %T\')] S4_GPKG_EXCLUDE_SATELLITE=${S4_GPKG_EXCLUDE_SATELLITE}"',
         '"${PYTHON_BIN}" s4_basin_trace_watch.py',
         'echo "[$(date \'+%F %T\')] finalize done"',
@@ -353,7 +409,16 @@ def build_finalize_script(python_bin, array_size, exclude_satellite):
     return "\n".join(lines)
 
 
-def build_summary_script(python_bin, summary_log, array_job_id, finalize_job_id, array_size, exclude_satellite):
+def build_summary_script(
+    python_bin,
+    summary_log,
+    array_job_id,
+    finalize_job_id,
+    array_size,
+    exclude_satellite,
+    s4_resume,
+    submitted_at,
+):
     cmd = [
         python_bin,
         str(SCRIPT_DIR / "submit_s4_lsf.py"),
@@ -366,10 +431,16 @@ def build_summary_script(python_bin, summary_log, array_job_id, finalize_job_id,
         str(finalize_job_id),
         "--array-size",
         str(array_size),
+        "--s4-resume",
+        str(s4_resume),
+        "--submitted-at",
+        "{:.6f}".format(float(submitted_at)),
     ]
     lines = [
+        "#!/usr/bin/env bash",
         "set -euo pipefail",
         "cd {}".format(shell_join([SCRIPT_DIR])),
+        "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
         shell_join(cmd),
     ]
@@ -398,6 +469,8 @@ def parse_summary_args(argv):
     parser.add_argument("--array-job-id", required=True)
     parser.add_argument("--finalize-job-id", required=True)
     parser.add_argument("--array-size", required=True, type=int)
+    parser.add_argument("--s4-resume", required=True)
+    parser.add_argument("--submitted-at", required=True, type=float)
     return parser.parse_args(argv)
 
 
@@ -413,6 +486,8 @@ def submit_s4(args):
     cores = positive_int(args.cores, "S4_NCORES")
     ptile = positive_int(args.ptile, "S4_PTILE")
     exclude_satellite = env_value("S4_GPKG_EXCLUDE_SATELLITE", "1")
+    s4_resume = env_value("S4_RESUME", "1")
+    submitted_at = time.time()
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SHARD_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -424,6 +499,7 @@ def submit_s4(args):
         {
             "S4_SHARD_COUNT": str(array_size),
             "PYTHON_BIN": python_bin,
+            "S4_RESUME": str(s4_resume),
             "S4_GPKG_EXCLUDE_SATELLITE": str(exclude_satellite),
         }
     )
@@ -434,8 +510,15 @@ def submit_s4(args):
     print("SUBMIT_LOG={}".format(submit_log))
     print("SUMMARY_LOG={}".format(summary_log))
     print("ARRAY_SIZE={}".format(array_size))
+    print("S4_RESUME={}".format(s4_resume))
     print("DRY_RUN={}".format(int(args.dry_run)))
 
+    trace_script = build_trace_script(
+        python_bin,
+        array_size,
+        exclude_satellite,
+        s4_resume,
+    )
     trace_cmd = [
         "bsub",
         "-q",
@@ -452,12 +535,22 @@ def submit_s4(args):
         "rusage[mem={}]".format(args.mem),
         "-R",
         "span[ptile={}] span[hosts=1]".format(ptile),
-        "bash",
-        "-lc",
-        build_trace_script(python_bin, array_size, exclude_satellite),
     ]
-    array_job_id = submit_job("s4_trace", trace_cmd, args.dry_run, submit_log, job_env)
+    array_job_id = submit_job(
+        "s4_trace",
+        trace_cmd,
+        args.dry_run,
+        submit_log,
+        job_env,
+        script_text=trace_script,
+    )
 
+    finalize_script = build_finalize_script(
+        python_bin,
+        array_size,
+        exclude_satellite,
+        s4_resume,
+    )
     finalize_cmd = [
         "bsub",
         "-q",
@@ -465,7 +558,7 @@ def submit_s4(args):
         "-J",
         "s4_finalize",
         "-w",
-        "ended({})".format(array_job_id),
+        "done({})".format(array_job_id),
         "-o",
         "output/logs/s4_lsf/s4_finalize.out",
         "-e",
@@ -476,12 +569,26 @@ def submit_s4(args):
         "rusage[mem=24G]",
         "-R",
         "span[hosts=1]",
-        "bash",
-        "-lc",
-        build_finalize_script(python_bin, array_size, exclude_satellite),
     ]
-    finalize_job_id = submit_job("s4_finalize", finalize_cmd, args.dry_run, submit_log, job_env)
+    finalize_job_id = submit_job(
+        "s4_finalize",
+        finalize_cmd,
+        args.dry_run,
+        submit_log,
+        job_env,
+        script_text=finalize_script,
+    )
 
+    summary_script = build_summary_script(
+        python_bin,
+        summary_log,
+        array_job_id,
+        finalize_job_id,
+        array_size,
+        exclude_satellite,
+        s4_resume,
+        submitted_at,
+    )
     summary_cmd = [
         "bsub",
         "-q",
@@ -489,7 +596,7 @@ def submit_s4(args):
         "-J",
         "s4_summary",
         "-w",
-        "ended({})".format(finalize_job_id),
+        "done({})".format(finalize_job_id),
         "-o",
         "output/logs/s4_lsf/s4_summary.out",
         "-e",
@@ -500,17 +607,22 @@ def submit_s4(args):
         "rusage[mem=2G]",
         "-R",
         "span[hosts=1]",
-        "bash",
-        "-lc",
-        build_summary_script(python_bin, summary_log, array_job_id, finalize_job_id, array_size, exclude_satellite),
     ]
-    summary_job_id = submit_job("s4_summary", summary_cmd, args.dry_run, submit_log, job_env)
+    summary_job_id = submit_job(
+        "s4_summary",
+        summary_cmd,
+        args.dry_run,
+        submit_log,
+        job_env,
+        script_text=summary_script,
+    )
 
     print("")
     print("Submitted.")
     print("Array job id: {}".format(array_job_id))
     print("Finalize job id: {}".format(finalize_job_id))
     print("Summary job id: {}".format(summary_job_id))
+    print("S4_RESUME: {}".format(s4_resume))
     print("S4_GPKG_EXCLUDE_SATELLITE: {}".format(exclude_satellite))
     print("Track with: bjobs -w {} {} {}".format(array_job_id, finalize_job_id, summary_job_id))
     print("Submit log: {}".format(submit_log))
@@ -533,6 +645,8 @@ def main(argv=None):
             args.array_job_id,
             args.finalize_job_id,
             args.array_size,
+            args.s4_resume,
+            args.submitted_at,
         )
     args = parse_args(argv)
     try:

@@ -1,4 +1,4 @@
-# ============================================================
+# ============================================================i
 # Pipeline configuration file for run_s1_s8_basin_pipeline.py
 # ============================================================
 #
@@ -17,10 +17,10 @@
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
   # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
-  steps: "s6,s7,s8"
+  steps: ""
 
   # 起始 / 结束阶段（steps 为空时生效）
-  start_at: s1
+  start_at: s4
   end_at: s8
 
   # 试跑模式：只打印命令，不实际执行
@@ -53,7 +53,7 @@ cli:
   s4_array_size: 16        # LSF 阵列大小（集群模式），推荐 8-32
   s4_batch_size: 50        # 每批站点数，推荐 20-100
   s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
-  s4_no_resume: false      # 关闭 resume（重新跑所有 shard）
+  s4_no_resume: true      # 关闭 resume（重新跑所有 shard）
   s4_no_gpkg: false        # 关闭 GPKG 几何输出
 
   # MERIT Hydro 数据集路径
@@ -72,7 +72,7 @@ cli:
 
   # s8: 发布
   s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
-  s8_skip_gpkg: false           # 跳过 GPKG 发布
+  s8_skip_gpkg: true           # 跳过 GPKG 发布
   s8_skip_validation: false     # 跳过发布校验
   s8_include_basin_polygons: true  # 包含流域多边形
   s8_force: true                # 强制覆盖已存在的发布文件
