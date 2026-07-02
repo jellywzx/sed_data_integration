@@ -66,6 +66,7 @@ from s6_basin_merge_to_nc import (
     _read_station_meta_from_nc,
     append_stage_qc_variables,
     build_cluster_series,
+    classify_source_family_from_observation_type,
 )
 
 try:
@@ -254,6 +255,52 @@ def _build_cluster_rep_lookup(stations):
         .set_index("cluster_id")
     )
     return rep
+
+
+def _prepare_mainline_matrix_input(stations_all, organized_root):
+    """Match s6 master mainline filtering before assigning source-station UIDs."""
+    if "observation_type" not in stations_all.columns:
+        raise ValueError(
+            "s5 CSV missing required column 'observation_type'. "
+            "Please rerun s3/s4/s5 so each source row carries observation_type."
+        )
+
+    work = stations_all.copy()
+    n_input = int(len(work))
+    work["_input_row_index"] = np.arange(len(work), dtype=np.int32)
+    work["observation_type"] = work["observation_type"].fillna("").astype(str).str.strip()
+    missing_observation_type = work["observation_type"].eq("")
+    n_missing_observation_type = int(missing_observation_type.sum())
+    if n_missing_observation_type > 0:
+        raise ValueError(
+            "s5 CSV has {} rows with blank observation_type; cannot build "
+            "master-compatible source_station_uid values.".format(n_missing_observation_type)
+        )
+
+    work["resolution_norm"] = work["resolution"].map(_normalize_resolution)
+    n_climatology = int(work["resolution_norm"].astype(str).str.strip().eq("climatology").sum())
+    if n_climatology > 0:
+        work = work[work["resolution_norm"].astype(str).str.strip().ne("climatology")].copy()
+
+    source_family = work["observation_type"].map(classify_source_family_from_observation_type)
+    satellite_mask = source_family.eq("satellite")
+    n_satellite = int(satellite_mask.sum())
+    if n_satellite > 0:
+        work = work.loc[~satellite_mask].copy()
+
+    if len(work) == 0:
+        raise ValueError(
+            "No non-climatology, non-satellite rows remain for the main matrix export."
+        )
+
+    work["path"] = work["path"].apply(lambda p: _resolve_station_path(p, organized_root))
+    stats = {
+        "input_rows": n_input,
+        "climatology_rows_removed": n_climatology,
+        "satellite_rows_removed": n_satellite,
+        "mainline_rows": int(len(work)),
+    }
+    return work, stats
 
 
 def _worker_build_cluster(args):
@@ -1000,14 +1047,15 @@ def main(argv=None):
             print("Error: s5 CSV missing required column '{}'".format(col))
             return 1
 
-    stations_all = stations_all.copy()
-    stations_all["_input_row_index"] = np.arange(len(stations_all), dtype=np.int32)
-    stations_all["resolution_norm"] = stations_all["resolution"].map(_normalize_resolution)
-    stations_all["path"] = stations_all["path"].apply(lambda p: _resolve_station_path(p, organized_root))
+    try:
+        stations_all, mainline_stats = _prepare_mainline_matrix_input(stations_all, organized_root)
+    except ValueError as exc:
+        print("Error: {}".format(exc))
+        return 1
+
     row_to_source_station_index, source_station_uid_lookup = _build_source_station_uid_lookup(stations_all)
 
     stations = stations_all.copy()
-    stations["resolution_norm"] = stations["resolution"].map(_normalize_resolution)
     stations = stations[stations["resolution_norm"].isin(resolutions)].copy()
     stations = stations[stations["path"].apply(lambda p: Path(p).is_file())].copy()
 
@@ -1020,6 +1068,12 @@ def main(argv=None):
     ).astype(np.int32)
     cluster_rep_lookup = _build_cluster_rep_lookup(stations_all)
 
+    print(
+        "Mainline matrix input: {mainline_rows}/{input_rows} rows "
+        "(removed climatology={climatology_rows_removed}, satellite={satellite_rows_removed})".format(
+            **mainline_stats
+        )
+    )
     print("Input rows after filtering: {}".format(len(stations)))
     print("Requested resolutions: {}".format(", ".join(resolutions)))
     print("Output dir: {}".format(out_dir))

@@ -258,6 +258,70 @@ def _read_text_var(ds, name, size=None):
     return [_clean_text(item) for item in arr]
 
 
+def _collect_selected_source_station_uids(ds, row_chunk_size=128):
+    if "selected_source_station_uid" not in ds.variables:
+        return set()
+
+    var = ds.variables["selected_source_station_uid"]
+    dims = tuple(getattr(var, "dimensions", ()))
+    if "n_stations" in dims and "n_stations" in ds.dimensions:
+        station_axis = dims.index("n_stations")
+        n_stations = len(ds.dimensions["n_stations"])
+        selected = set()
+        for start in range(0, n_stations, int(row_chunk_size)):
+            stop = min(start + int(row_chunk_size), n_stations)
+            slices = [slice(None)] * len(dims)
+            slices[station_axis] = slice(start, stop)
+            values = np.ma.asarray(var[tuple(slices)])
+            if np.ma.isMaskedArray(values):
+                values = values.filled("")
+            for value in np.asarray(values, dtype=object).reshape(-1):
+                uid = _clean_text(value)
+                if uid:
+                    selected.add(uid)
+        return selected
+
+    values = np.ma.asarray(var[:])
+    if np.ma.isMaskedArray(values):
+        values = values.filled("")
+    return {
+        uid
+        for uid in (_clean_text(value) for value in np.asarray(values, dtype=object).reshape(-1))
+        if uid
+    }
+
+
+def _matrix_selected_uid_catalog_lookup_row(resolution, selected_uids, source_station_catalog):
+    resolution = _clean_text(resolution)
+    catalog = normalize_source_station_resolution_catalog(source_station_catalog)
+    catalog = catalog[catalog["resolution"].astype(str).str.strip().eq(resolution)]
+    catalog_uids = {
+        _clean_text(uid)
+        for uid in catalog["source_station_uid"].tolist()
+        if _clean_text(uid)
+    }
+    selected_uids = {
+        _clean_text(uid)
+        for uid in selected_uids
+        if _clean_text(uid)
+    }
+    missing = sorted(selected_uids - catalog_uids)
+    details = (
+        "selected_unique_uids={}; catalog_uids_for_resolution={}; missing={}".format(
+            len(selected_uids),
+            len(catalog_uids),
+            len(missing),
+        )
+    )
+    if missing:
+        details += "; sample_missing={}".format(", ".join(missing[:10]))
+    return {
+        "check": "matrix_selected_source_station_uid_catalog_lookup_{}".format(resolution),
+        "status": "pass" if not missing else "fail",
+        "details": details,
+    }
+
+
 def _read_float_array(ds, name, fill_values=None, size=None):
     if name not in ds.variables:
         return np.full(int(size or 0), np.nan, dtype=np.float64)
@@ -2319,6 +2383,15 @@ def validate_release(
                         }
                     )
                     continue
+
+                selected_source_station_uids = _collect_selected_source_station_uids(ds)
+                rows.append(
+                    _matrix_selected_uid_catalog_lookup_row(
+                        resolution,
+                        selected_source_station_uids,
+                        source_station_catalog,
+                    )
+                )
 
                 matrix_selected_count, matrix_no_sediment, matrix_sediment_detail = (
                     _count_matrix_selected_cells_without_sediment(ds)
