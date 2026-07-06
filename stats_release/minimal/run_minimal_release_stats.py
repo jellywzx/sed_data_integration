@@ -21,8 +21,9 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+_SCRIPTS_BASIN = Path('/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test')
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(_SCRIPTS_BASIN))
 
 from stats_release.common_stats import (
     FLAG_MEANINGS,
@@ -52,10 +53,10 @@ from stats_release.reporting import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MINIMAL_RELEASE_DIR = PROJECT_ROOT / "output" / "sed_reference_release_minimal"
-DEFAULT_OUT_DIR = PROJECT_ROOT / "output_other" / "stats_release_minimal"
-DOCS_MINIMAL_REPORT_DIR = PROJECT_ROOT / "docs" / "reports" / "stats_release" / "minimal"
+PROJECT_ROOT = _SCRIPTS_BASIN
+DEFAULT_MINIMAL_RELEASE_DIR = _SCRIPTS_BASIN / "output" / "sed_reference_release_minimal"
+DEFAULT_OUT_DIR = _SCRIPTS_BASIN / "output_other" / "stats_release_minimal"
+DOCS_MINIMAL_REPORT_DIR = _SCRIPTS_BASIN / "docs" / "reports" / "stats_release" / "minimal"
 
 MATRIX_PRODUCTS = {
     "daily": "sed_reference_timeseries_daily.nc",
