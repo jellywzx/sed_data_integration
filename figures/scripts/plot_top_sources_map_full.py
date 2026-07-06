@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Plot in-situ (observed) source-dataset station locations (ESSD-compliant)."""
+"""Plot in-situ (observed) source-dataset station locations (ESSD-compliant).
+
+Command-line usage examples:
+
+    python plot_top_sources_map_full.py
+    python plot_top_sources_map_full.py --legend-user-order
+    python plot_top_sources_map_full.py --release-dir output/sed_reference_release_minimal --figures-root figures
+    python plot_top_sources_map_full.py --top-n 10 --dpi 300 --legend-user-order
+    python plot_top_sources_map_full.py --help
+
+Use --legend-user-order to draw legend text in the user-provided source order;
+omitting it preserves the default legend ordering.
+"""
 
 from __future__ import annotations
 
@@ -58,19 +70,19 @@ SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
 MIN_LAT = -60  # southern extent bound, excluding Antarctica
 
 SOURCE_NAME_ALIASES = {
-    "ALi_De_Boer": "Ali & De Boer (Upper Indus)",
-    "HMA": "High Mountain Asia (HMA)",
-    "Milliman": "Milliman & Farnsworth",
-    "Vanmaercke": "Vanmaercke et al.",
-    "RiverSed": "RiverSed (USA)",
+    "ALi_De_Boer": "Ali and De Boer",
+    "HMA": "HMA",
+    "Milliman": "Milliman",
+    "Vanmaercke": "Vanmaercke",
+    "RiverSed": "RiverSed",
     "USGS": "USGS NWIS",
-    "Eurasian_River": "Eurasian Dataset",
-    "GloRiSe": "GloRiSe v1.1",
-    "Huanghe": "Huanghe (Yellow River)",
+    "Eurasian_River": "Eurasian River",
+    "GloRiSe": "GloRiSe",
+    "Huanghe": "Huanghe",
     "Myanmar": "Myanmar Rivers",
-    "NERC": "NERC-Hampshire Avon",
-    "Yajiang": "Yajiang / Yarlung Tsangpo",
-    "Chao_Phraya_River": "Chao Phraya River",
+    "NERC": "NERC Avon",
+    "Yajiang": "Yajiang",
+    "Chao_Phraya_River": "Chao Phraya",
     "Mekong_Delta": "Mekong Delta",
 }
 
@@ -99,6 +111,31 @@ OKABE_ITO_EXTENDED = [
 ]
 
 TOP_MARKERS = ["o", "^", "s", "D", "P", "X", "*", "p", "h", "<"]
+
+PREFERRED_LEGEND_LABEL_ORDER = [
+    "GloRiSe v1.1",
+    "GFQA_v2",
+    "USGS NWIS",
+    "HYDAT",
+    "Bayern",
+    "Eurasian River",
+    "EUSEDcollab",
+    "HYBAM",
+    "Rhine",
+    "Mekong Delta",
+    "Myanmar Rivers",
+    "Yajiang / Yarlung Tsangpo",
+    "Chao Phraya River",
+    "Robotham",
+    "NERC-Hampshire Avon",
+    "Fukushima",
+    "Shashi_Jianli",
+    "Huanghe (Yellow River)",
+    "Milliman & Farnsworth",
+    "High Mountain Asia (HMA)",
+    "Ali & De Boer (Upper Indus)",
+    "Vanmaercke et al.",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +284,11 @@ def parse_args() -> argparse.Namespace:
                         help="Legacy output directory (optional); ESSD outputs go to --figures-root.")
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--dpi", type=int, default=300)
+    parser.add_argument(
+        "--legend-user-order",
+        action="store_true",
+        help="Order legend entries by the user-provided source label order.",
+    )
     return parser.parse_args()
 
 
@@ -470,8 +512,28 @@ def category_style(index: int) -> tuple[str, str]:
     return color, marker
 
 
+def order_legend_entries(
+    handles: List[Line2D], labels: List[str], use_user_order: bool
+) -> Tuple[List[Line2D], List[str]]:
+    if not use_user_order:
+        return handles, labels
+
+    preferred_order = {label: index for index, label in enumerate(PREFERRED_LEGEND_LABEL_ORDER)}
+    entries = []
+    seen = set()
+    for original_index, (handle, label) in enumerate(zip(handles, labels)):
+        clean_label = label.strip()
+        if clean_label in seen:
+            continue
+        seen.add(clean_label)
+        entries.append((preferred_order.get(clean_label, len(preferred_order)), original_index, handle, label))
+
+    entries.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in entries], [item[3] for item in entries]
+
+
 def plot_map(points: pd.DataFrame, top_sources: List[str], counts: Dict[str, int],
-             figure_id: str, figure_dirs: dict, dpi: int) -> List[Path]:
+             figure_id: str, figure_dirs: dict, dpi: int, legend_user_order: bool = False) -> List[Path]:
     figure_dirs["final"].mkdir(parents=True, exist_ok=True)
     top_set = set(top_sources)
     other_sources = sorted(category for category in counts if category not in top_set)
@@ -505,6 +567,7 @@ def plot_map(points: pd.DataFrame, top_sources: List[str], counts: Dict[str, int
     # ax.set_title(title + "\n" + subtitle, fontsize=FONT_SIZE_TITLE, pad=12)
 
     handles = []
+    handle_labels = []
     for label in legend_order:
         if counts.get(label, 0) <= 0:
             continue
@@ -522,6 +585,8 @@ def plot_map(points: pd.DataFrame, top_sources: List[str], counts: Dict[str, int
                 label="{} ({:,})".format(label, counts[label]),
             )
         )
+        handle_labels.append(label)
+    handles, _ = order_legend_entries(handles, handle_labels, legend_user_order)
     ax.legend(
         handles=handles,
         loc="lower left",
@@ -567,7 +632,8 @@ def print_summary(catalog: pd.DataFrame, points: pd.DataFrame, input_counts: pd.
 # ESSD figure orchestration
 # ---------------------------------------------------------------------------
 
-def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int) -> dict[str, object]:
+def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
+                  legend_user_order: bool = False) -> dict[str, object]:
     configure_matplotlib(plt)
     figure_dirs = ensure_figure_dirs(figures_root)
     figure_id = OUTPUT_STEM
@@ -592,7 +658,7 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int) -
     print_summary(catalog, points, input_counts, top_sources)
 
     category_counts = points.groupby("category").size().to_dict()
-    outputs = plot_map(points, top_sources, category_counts, figure_id, figure_dirs, dpi)
+    outputs = plot_map(points, top_sources, category_counts, figure_id, figure_dirs, dpi, legend_user_order)
 
     data_paths = write_plotting_data(figure_dirs["data"], figure_id, points, catalog, top_sources, category_counts)
     script_src = Path(__file__).resolve()
@@ -615,7 +681,7 @@ def main() -> int:
     release_dir = args.release_dir.resolve()
     figures_root = args.figures_root.resolve()
 
-    outputs = create_figure(release_dir, figures_root, args.top_n, args.dpi)
+    outputs = create_figure(release_dir, figures_root, args.top_n, args.dpi, args.legend_user_order)
 
     print("\nWrote ESSD-compliant figure outputs:")
     print("  {}".format(outputs["pdf_path"]))

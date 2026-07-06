@@ -23,7 +23,10 @@ import pandas as pd
 import netCDF4 as nc
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 # ============================================================
@@ -85,6 +88,7 @@ mpl.rcParams["legend.fontsize"] = 14
 
 PANEL_LABEL_FONTSIZE = 18
 LEGEND_FONTSIZE = 14
+TITLE_FONTSIZE = 16
 
 
 # ============================================================
@@ -159,6 +163,54 @@ def read_time_as_datetime(ds):
 def finite_mask(values):
     """Return finite-value mask."""
     return np.isfinite(np.asarray(values, dtype=float))
+
+
+def _plain_tick_label(value, pos):
+    """Format y ticks as plain numbers without scientific notation."""
+    if np.isclose(value, round(value)):
+        return f"{int(round(value))}"
+    return f"{value:g}"
+
+
+def _scientific_tick_label(value, pos):
+    """Format positive y ticks in scientific notation."""
+    if np.isclose(value, 0):
+        return "0"
+    exponent = int(np.floor(np.log10(abs(value))))
+    coefficient = value / (10 ** exponent)
+    if np.isclose(coefficient, round(coefficient)):
+        coefficient = int(round(coefficient))
+    return rf"${coefficient}\times10^{{{exponent}}}$"
+
+
+def set_q_y_ticks(ax, top):
+    """Set panel-a Q ticks with labeled 0-1 subunit ticks and plain labels."""
+    subunit_ticks = np.arange(0, 1.01, 0.2)
+    regular_major_ticks = np.arange(1, top + 1, 1)
+    major_ticks = np.unique(np.concatenate([subunit_ticks, regular_major_ticks]))
+    major_ticks = major_ticks[(major_ticks >= 0) & (major_ticks <= top)]
+
+    minor_ticks = np.arange(0, top + 0.2, 0.2)
+    minor_ticks = minor_ticks[(minor_ticks >= 0) & (minor_ticks <= top)]
+    minor_ticks = minor_ticks[~np.isclose(minor_ticks[:, None], major_ticks).any(axis=1)]
+
+    ax.yaxis.set_major_locator(FixedLocator(major_ticks))
+    ax.yaxis.set_minor_locator(FixedLocator(minor_ticks))
+    ax.yaxis.set_major_formatter(FuncFormatter(_plain_tick_label))
+
+
+def set_ssc_y_ticks(ax, top):
+    """Set panel-b SSC ticks at multiples of 10 with scientific labels."""
+    major_ticks = np.arange(0, top + 10, 10)
+    major_ticks = major_ticks[(major_ticks >= 0) & (major_ticks <= top)]
+
+    minor_ticks = np.arange(0, top + 5, 5)
+    minor_ticks = minor_ticks[(minor_ticks >= 0) & (minor_ticks <= top)]
+    minor_ticks = minor_ticks[~np.isclose(minor_ticks[:, None], major_ticks).any(axis=1)]
+
+    ax.yaxis.set_major_locator(FixedLocator(major_ticks))
+    ax.yaxis.set_minor_locator(FixedLocator(minor_ticks))
+    ax.yaxis.set_major_formatter(FuncFormatter(_scientific_tick_label))
 
 
 # ============================================================
@@ -334,6 +386,7 @@ def plot_qc2_timeseries_panel(
     values = np.asarray(values, dtype=float)
     valid = finite_mask(values)
     qc2_suspect_mask = np.asarray(qc2_suspect_mask, dtype=bool) & valid
+    not_suspect = valid & ~qc2_suspect_mask
 
     # Connecting line between all valid points
     ax.plot(
@@ -345,14 +398,14 @@ def plot_qc2_timeseries_panel(
         zorder=1,
     )
 
-    # Scatter for all non-missing points
+    # Scatter for points that passed QC (not QC2 suspect)
     ax.scatter(
-        dates[valid],
-        values[valid],
+        dates[not_suspect],
+        values[not_suspect],
         s=10,
         color=OKABE_ITO["gray"],
         alpha=0.45,
-        label="All non-missing points",
+        label="Passed QC",
         zorder=2,
         rasterized=True,
     )
@@ -367,7 +420,7 @@ def plot_qc2_timeseries_panel(
             facecolor=OKABE_ITO["orange"],
             edgecolor=OKABE_ITO["black"],
             linewidth=0.4,
-            label=f"QC2 suspect points (n = {int(qc2_suspect_mask.sum())})",
+            label=f"QC2 suspect points ",
             zorder=5,
         )
 
@@ -377,7 +430,7 @@ def plot_qc2_timeseries_panel(
         ax.axhline(
             lower_bound,
             color=OKABE_ITO["black"],
-            linestyle="--",
+            linestyle="-.",
             linewidth=1.0,
             alpha=0.9,
             label="Log-IQR bounds",
@@ -388,7 +441,7 @@ def plot_qc2_timeseries_panel(
         ax.axhline(
             upper_bound,
             color=OKABE_ITO["black"],
-            linestyle="--",
+            linestyle="-.",
             linewidth=1.0,
             alpha=0.9,
             label=None if bound_label_added else "Log-IQR bounds",
@@ -515,12 +568,11 @@ def write_combined_checklist(
 - Red-green contrast avoided: yes
 - QC2 suspect points: orange triangles with black outline
 - QC3 suspect points: reddish-purple diamonds with black outline
-- Not flagged points (panels c, d): blue circles
-- All non-missing points (panels a, b): gray circles
+- Passed QC points (all panels): gray circles
 - Log-IQR bounds (panels a, b): black dashed lines
 - Fitted SSC-Q trend (panel c): solid black line
 - IQR residual envelope (panels c, d): black dashed lines
-- Legend explains colors, markers, and line types: yes
+- Unified figure legend explaining all colors, markers, and line types: yes
 
 ## Units and labels
 
@@ -694,17 +746,22 @@ def main():
 
 
     fig = plt.figure(figsize=figsize)
-    gs = GridSpec(4, 2, figure=fig, wspace=0.18, hspace=0.15)
+    gs = GridSpec(1, 2, figure=fig, wspace=0.25)
 
-    # Left column: QC2 time-series panels — 1:1 height ratio (2 rows each)
-    axes_q = fig.add_subplot(gs[0:2, 0])      # Panel (a): Q
-    axes_ssc = fig.add_subplot(gs[2:4, 0])    # Panel (b): SSC
 
-    # Right column: QC3 diagnostic panels — 3:1 height ratio (3 rows + 1 row)
-    axes_scatter = fig.add_subplot(gs[0:3, 1])   # Panel (c): SSC-Q scatter
-    axes_residual = fig.add_subplot(gs[3, 1])    # Panel (d): residual
+    # Left column: (a) and (b) — tight hspace
+    gs_left = GridSpecFromSubplotSpec(4, 1, subplot_spec=gs[0], hspace=0.15)
+    axes_q = fig.add_subplot(gs_left[0:2, 0])      # Panel (a): Q
+    axes_ssc = fig.add_subplot(gs_left[2:4, 0])    # Panel (b): SSC
+
+    # Right column: (c) and (d) — larger hspace for xlabel visibility
+    gs_right = GridSpecFromSubplotSpec(4, 1, subplot_spec=gs[1], hspace=0.40)
+    axes_scatter = fig.add_subplot(gs_right[0:3, 0])   # Panel (c): SSC-Q scatter
+    axes_residual = fig.add_subplot(gs_right[3, 0])    # Panel (d): residual
 
     axes = {'q': axes_q, 'ssc': axes_ssc, 'scatter': axes_scatter, 'residual': axes_residual}
+    # Share x-axis: panel (a) follows panel (b) so ticks align vertically
+    axes["q"].sharex(axes["ssc"])
 
     # ------------------------------------------------------------------
     # Panel (a): Q time-series with QC2 highlights (top-left)
@@ -721,6 +778,12 @@ def main():
         show_legend=False,
     )
     axes['q'].tick_params(labelbottom=False)
+    # Set Q y-axis range and denser ticks
+    axes['q'].set_ylim(bottom=0, top=10)
+    # set_q_y_ticks(axes['q'], top=10)
+    axes['q'].set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 10])
+    axes['q'].yaxis.set_major_formatter(plt.ScalarFormatter())
+    axes['q'].tick_params(which='minor', length=4, width=0.5, color='gray')
 
     # ------------------------------------------------------------------
     # Panel (b): SSC time-series with QC2 highlights (bottom-left)
@@ -732,20 +795,29 @@ def main():
         qc2_suspect_mask=ssc_qc2_suspect,
         variable_label="SSC",
         unit_label="mg L⁻¹",
+        show_legend=False,
         lower_bound=SSC_qc2_lower,
         upper_bound=SSC_qc2_upper,
     )
     axes['ssc'].set_xlabel("Time")
     # Panel label (b)
     axes['ssc'].text(
-        -0.05, 0.98, "(b)",
+        -0.12, 1.02, "(b)",
         transform=axes['ssc'].transAxes,
         ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
     )
     # Restrict SSC y-axis to data range +5% margin
     ssc_valid = SSC[np.isfinite(SSC)]
     if len(ssc_valid) > 0:
-        axes['ssc'].set_ylim(bottom=0, top=np.nanmax(ssc_valid) * 1.05)
+        ssc_top = np.nanmax(ssc_valid) * 1.05
+        axes['ssc'].set_ylim(bottom=0, top=ssc_top)
+        # set_ssc_y_ticks(axes['ssc'], top=ssc_top)
+        # 手动设置 SSC 轴刻度
+        axes['ssc'].set_yticks([0, 1, 10, 100, 1000])
+        # axes['ssc'].yaxis.set_major_formatter(plt.ScalarFormatter())
+    axes['ssc'].tick_params(which='minor', length=4, width=0.5, color='gray')
+    # Restrict x-axis to SSC data range (SSC ends 1990-11-22)
+    axes["ssc"].set_xlim(pd.Timestamp("1979-07-01"), pd.Timestamp("1990-11-22"))
 
     # ------------------------------------------------------------------
     # Panel (c): SSC-Q log-log scatter (top-right)
@@ -756,8 +828,8 @@ def main():
         m = categories["not_flagged"]
         ax_c.scatter(
             logQ_all[m], logSSC_all[m],
-            s=20, c=OKABE_ITO["blue"], alpha=0.65, marker="o",
-            label=f"Not flagged by QC2/QC3 (n = {m.sum()})",
+            s=20, c=OKABE_ITO["gray"], alpha=0.65, marker="o",
+            label="Passed QC",
         )
 
     if np.any(categories["qc2_suspect"]):
@@ -767,7 +839,7 @@ def main():
             s=28, facecolor=OKABE_ITO["orange"],
             edgecolor=OKABE_ITO["black"],
             linewidth=0.35, alpha=0.85, marker="^",
-            label=f"QC2 log-IQR suspect (n = {m.sum()})",
+            label="QC2 log-IQR suspect",
         )
 
     if np.any(categories["qc3_suspect"]):
@@ -807,13 +879,12 @@ def main():
     )
 
     ax_c.text(
-        -0.10, 0.98, "(c)",
+        -0.10, 1, "(c)",
         transform=ax_c.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
     )
     ax_c.set_xlabel("log10(Q) [m³ s⁻¹]")
     ax_c.set_ylabel("log10(SSC) [mg L⁻¹]")
     # ax_c.set_title(f"SSC-Q diagnostic for {station_name} ({station_id})")
-    ax_c.legend(frameon=True, fontsize=LEGEND_FONTSIZE, loc='upper left')
 
     # ------------------------------------------------------------------
     # Panel (d): Residual time-series (bottom-right)
@@ -824,7 +895,7 @@ def main():
         m = categories["not_flagged"]
         ax_d.scatter(
             time[m], residual_all[m],
-            s=15, c=OKABE_ITO["blue"], alpha=0.65, marker="o",
+            s=15, c=OKABE_ITO["gray"], alpha=0.65, marker="o",
         )
 
     if np.any(categories["qc2_suspect"]):
@@ -856,7 +927,7 @@ def main():
     )
 
     ax_d.text(
-        -0.10, 0.95, "(d)",
+        -0.10, 1, "(d)",
         transform=ax_d.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold"
     )
     ax_d.set_ylabel("Residual\n(log SSC)")
@@ -867,17 +938,63 @@ def main():
     # ------------------------------------------------------------------
     # Panel label (a)
     axes['q'].text(
-        -0.05, 0.98, "(a)",
+        -0.12, 1.02, "(a)",
         transform=axes['q'].transAxes,
         ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
     )
 
 
     # ------------------------------------------------------------------
+    # Column headers over left and right columns
+    # ------------------------------------------------------------------
+    # Positioned in the top margin above the panels
+    fig.text(
+        0.36, 1, "QC2: log-IQR",
+        ha="center", va="top",
+        fontsize=TITLE_FONTSIZE, fontweight="bold",
+    )
+    fig.text(
+        0.755, 1, "QC3: SSC-Q consistency",
+        ha="center", va="top",
+        fontsize=TITLE_FONTSIZE, fontweight="bold",
+    )
+
+    # ------------------------------------------------------------------
+    # Unified figure legend
+    # ------------------------------------------------------------------
+    # Matplotlib fills multi-column legends by column; this handle order renders as:
+    # Row 1: Passed QC | QC2 log-IQR suspect | QC3 SSC-Q suspect
+    # Row 2: Log-IQR bounds | Fitted SSC-Q trend | IQR residual envelope
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor=OKABE_ITO["gray"],
+               markersize=8, label='Unflagged (QC1-QC3)'),
+        Line2D([0], [0], color=OKABE_ITO["black"], linestyle='-.', linewidth=1.5,
+               label='Log-IQR bounds (a, b)'),
+        Line2D([0], [0], marker='^', color=OKABE_ITO["black"],
+               markerfacecolor=OKABE_ITO["orange"], markersize=9,
+               label='QC2 log-IQR suspect'),
+        Line2D([0], [0], color=OKABE_ITO["black"], linestyle='-', linewidth=2,
+               label='Fitted SSC-Q trend (c)'),
+        Line2D([0], [0], marker='D', color=OKABE_ITO["black"],
+               markerfacecolor=OKABE_ITO["reddish_purple"], markersize=9,
+               label='QC3 SSC-Q suspect'),
+        Line2D([0], [0], color=OKABE_ITO["black"], linestyle='--', linewidth=1,
+               label='IQR residual envelope (c, d)'),
+    ]
+    fig.legend(
+        handles=legend_elements,
+        loc='lower center',
+        bbox_to_anchor=(0.55, -0.02),
+        ncol=3,
+        frameon=False,
+        fontsize=LEGEND_FONTSIZE,
+    )
+
+    # ------------------------------------------------------------------
     # Save figure outputs
     # ------------------------------------------------------------------
     out_pdf.parent.mkdir(parents=True, exist_ok=True)
-    fig.subplots_adjust(left=0.16, right=0.97, bottom=0.07, top=0.96)
+    fig.subplots_adjust(left=0.16, right=0.97, bottom=0.12, top=0.96)
     fig.savefig(out_pdf, bbox_inches="tight")
     fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
