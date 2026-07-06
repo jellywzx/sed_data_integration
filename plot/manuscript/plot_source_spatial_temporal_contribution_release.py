@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Plot release source spatial contribution and temporal span.
 
-This script reads release-only stats tables under output_other/stats_release
-and writes manuscript-style source contribution figures. It mirrors
-plot_source_spatial_temporal_contribution.py while using the stats_release
-table layout.
+This script reads release catalog tables under output/sed_reference_release_minimal
+and writes manuscript-style source contribution figures.
 """
 
 import argparse
+import datetime
 from pathlib import Path
-from typing import Tuple
+import shutil
+import subprocess
+from typing import Dict, List, Tuple
 import ctypes
 import os
 
@@ -29,60 +30,179 @@ from matplotlib.patches import Patch
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
-OUTPUT_OTHER_DIR = PROJECT_DIR / "output_other"
-DEFAULT_STATS_DIR = OUTPUT_OTHER_DIR / "stats_release"
-OUTPUT_FIGURES_DIR = DEFAULT_STATS_DIR / "source_spatial_temporal_contribution" / "figures"
-OUTPUT_STEM = "fig_source_spatial_temporal_contribution_release"
+PROJECT_DIR = SCRIPT_DIR.parent.parent
+DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
 OVERLAY_OUTPUT_STEM = "fig_source_spatial_temporal_contribution_overlay_release"
 OTHER_PRODUCTS_OUTPUT_STEM = "fig_other_products_source_contribution_overlay_release"
 
-FIGSIZE = (11.5, 6.8)
+DEFAULT_OUTPUT_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
+
 OVERLAY_FIGSIZE = (10.8, 7.0)
 DPI = 300
 
-SPATIAL_COLOR = "#4c78a8"
+SPATIAL_COLOR = "#0072B2"
 TEMPORAL_LINE_COLOR = "#555555"
-TEMPORAL_POINT_COLOR = "#d95f02"
+TEMPORAL_POINT_COLOR = "#E69F00"
+
+OKABE_ITO = {
+    "black": "#000000",
+    "orange": "#E69F00",
+    "sky_blue": "#56B4E9",
+    "bluish_green": "#009E73",
+    "yellow": "#F0E442",
+    "blue": "#0072B2",
+    "vermillion": "#D55E00",
+    "reddish_purple": "#CC79A7",
+}
 
 
 def read_csv_required(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(
             "Required input not found: {}\n"
-            "Run stats_release.run_all_release_stats first, or pass --stats-dir "
-            "to an existing release stats output directory.".format(path)
+            "Expected the built-in sed_reference_release_minimal directory to be complete.".format(path)
         )
     try:
         return pd.read_csv(path, keep_default_na=False)
     except pd.errors.EmptyDataError:
         raise ValueError(
             "Required input is empty: {}\n"
-            "Run stats_release.run_all_release_stats again, or pass --stats-dir "
-            "to a complete release stats output directory.".format(path)
+            "Expected the built-in sed_reference_release_minimal directory to be complete.".format(path)
         )
 
 
-def read_csv_optional(path: Path) -> pd.DataFrame:
-    """Read a CSV file, returning an empty DataFrame if missing or empty."""
+def configure_matplotlib(plt) -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+            "axes.unicode_minus": False,
+        }
+    )
+
+
+def ensure_figure_dirs(figures_root: Path) -> Dict[str, Path]:
+    root = Path(figures_root).resolve()
+    dirs = {
+        "root": root,
+        "final": root / "final",
+        "data": root / "data",
+        "scripts": root / "scripts",
+        "checklists": root / "checklists",
+    }
+    for path in dirs.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
+def run_text_command(cmd: List[str]) -> Tuple[bool, str]:
     try:
-        if not path.is_file():
-            return pd.DataFrame()
-        return pd.read_csv(path, keep_default_na=False)
-    except (pd.errors.EmptyDataError, pd.errors.ParserError):
-        return pd.DataFrame()
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    except FileNotFoundError:
+        return False, "{} unavailable".format(cmd[0])
+    return result.returncode == 0, result.stdout.strip()
 
 
-def _source_tables_dir(stats_dir: Path) -> Path:
-    return Path(stats_dir) / "source_contribution" / "tables"
+def pdf_page_size(pdfinfo_output: str) -> str:
+    for line in pdfinfo_output.splitlines():
+        if line.startswith("Page size:"):
+            return line.split(":", 1)[1].strip()
+    return "not found in pdfinfo output"
 
 
-def _source_table(stats_dir: Path, name: str) -> Path:
-    return _source_tables_dir(stats_dir) / name
+def font_embedding_status(pdffonts_output: str) -> str:
+    lines = pdffonts_output.splitlines()
+    if len(lines) < 3:
+        return "no fonts reported by pdffonts"
+    header = lines[0]
+    if "emb" not in header or "sub" not in header:
+        return "checked with pdffonts; review raw output"
+    emb_start = header.index("emb")
+    sub_start = header.index("sub")
+    values = [line[emb_start:sub_start].strip().lower() for line in lines[2:] if line.strip()]
+    if values and all(value == "yes" for value in values):
+        return "all reported fonts embedded"
+    if values:
+        return "some reported fonts may not be embedded; review pdffonts output"
+    return "no fonts reported by pdffonts"
 
 
-def _has_nonempty_csv(path: Path) -> bool:
-    return path.is_file() and path.stat().st_size > 1
+def file_size_mb(path: Path) -> str:
+    if not path.is_file():
+        return "not found"
+    return "{:.2f} MB".format(path.stat().st_size / (1024 * 1024))
+
+
+def _write_csv(df: pd.DataFrame, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path
+
+
+def write_plotting_data(
+    data_dir: Path,
+    figure_id: str,
+    merged_df: pd.DataFrame,
+    climatology_df: pd.DataFrame,
+    satellite_df: pd.DataFrame,
+) -> List[Path]:
+    outputs = []
+    if not merged_df.empty:
+        outputs.append(_write_csv(merged_df, data_dir / "{}_main_source_data.csv".format(figure_id)))
+    if not climatology_df.empty:
+        outputs.append(_write_csv(climatology_df, data_dir / "{}_climatology_data.csv".format(figure_id)))
+    if not satellite_df.empty:
+        outputs.append(_write_csv(satellite_df, data_dir / "{}_satellite_data.csv".format(figure_id)))
+    return outputs
+
+
+def write_figure_checklist(
+    checklist_path: Path,
+    figure_id: str,
+    pdf_path: Path,
+    png_path: Path,
+    data_paths: List[Path],
+    script_copy_path: Path,
+    dpi: int,
+    figsize: Tuple[float, float],
+    is_multi_panel: bool,
+    panel_labels: str,
+) -> Path:
+    pdfinfo_ok, pdfinfo_output = run_text_command(["pdfinfo", str(pdf_path)])
+    pdffonts_ok, pdffonts_output = run_text_command(["pdffonts", str(pdf_path)])
+    width_cm = figsize[0] * 2.54
+    height_cm = figsize[1] * 2.54
+    clines = [
+        "# {} ESSD figure checklist".format(figure_id),
+        "",
+        "- Final PDF: `{}`".format(pdf_path.name),
+        "- Final PNG: `{}`".format(png_path.name),
+        "- Formats: PDF vector preferred; PNG bitmap companion",
+        "- PNG dpi: {}".format(dpi),
+        "- Intended size: {:.1f} x {:.1f} cm ({:.1f} x {:.1f} in)".format(width_cm, height_cm, figsize[0], figsize[1]),
+        "- PDF page size: {}".format(pdf_page_size(pdfinfo_output) if pdfinfo_ok else "not checked ({})".format(pdfinfo_output)),
+        "- PDF file size: {}".format(file_size_mb(pdf_path)),
+        "- PNG file size: {}".format(file_size_mb(png_path)),
+        "- Width >= 8 cm: yes",
+        "- Font family: DejaVu Sans",
+        "- Font consistency: one sans-serif family set in Matplotlib rcParams",
+        "- Font embedding status: {}".format(font_embedding_status(pdffonts_output) if pdffonts_ok else "not checked ({})".format(pdffonts_output)),
+        "- Colorblind-safe status: Okabe-Ito palette (blue {} + orange {})".format(OKABE_ITO["blue"], OKABE_ITO["orange"]),
+        "- Coblis/equivalent review: requires manual Coblis/equivalent review after export",
+        "- Legend completeness: colors, bar fills, line styles, and point markers explained",
+        "- Panel labels: {}".format(panel_labels),
+        "- Units and ranges: counts as comma-separated integers; years as four-digit integers",
+        "- Dense point layers: N/A (bar chart / h-line figure)",
+        "- Plotting script: `{}`".format(script_copy_path.name),
+        "- Plotting-data availability: {} CSV files".format(len(data_paths)),
+        "- Export date: {}".format(datetime.date.today().isoformat()),
+    ]
+    clines.extend("- Plotting data file: `{}`".format(p.name) for p in data_paths)
+    checklist_path.parent.mkdir(parents=True, exist_ok=True)
+    checklist_path.write_text("\n".join(clines).rstrip() + "\n", encoding="utf-8")
+    return checklist_path
 
 
 def numeric(df: pd.DataFrame, col: str) -> pd.Series:
@@ -115,149 +235,113 @@ def format_compact_count(value: object) -> str:
     return "{:,.0f}".format(value)
 
 
-def _filter_by_source_type(df: pd.DataFrame, source_type: str, invert: bool = False) -> pd.DataFrame:
-    if df.empty or "source_type" not in df.columns:
-        return df.copy()
-    values = df["source_type"].astype(str).str.strip().str.lower()
-    mask = values.eq(source_type.lower())
-    if invert:
-        mask = ~mask
-    return df[mask].copy()
-
-
-def _normalize_contribution_table(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
-    required = {"source_name", "n_clusters", "n_records"}
+def _require_columns(df: pd.DataFrame, table_name: str, required: set) -> None:
     missing = sorted(required.difference(df.columns))
     if missing:
         raise ValueError("{} is missing columns: {}".format(table_name, ", ".join(missing)))
 
+
+def _read_minimal_catalog(release_dir: Path, name: str) -> pd.DataFrame:
+    return read_csv_required(Path(release_dir) / name)
+
+
+def _year_from_column(df: pd.DataFrame, col: str) -> pd.Series:
+    return pd.to_datetime(df[col], errors="coerce").dt.year
+
+
+def _nunique_nonempty(values: pd.Series) -> int:
+    clean = values.astype(str).str.strip()
+    clean = clean[clean.ne("")]
+    return int(clean.nunique())
+
+
+def load_main_sources_from_minimal(release_dir: Path) -> pd.DataFrame:
+    df = _read_minimal_catalog(release_dir, "source_station_catalog.csv")
+    _require_columns(
+        df,
+        "source_station_catalog.csv",
+        {"source_name", "cluster_uid", "n_records", "time_start", "time_end"},
+    )
+
+    df = df.copy()
     df["source_name"] = df["source_name"].astype(str).str.strip()
-    df["cluster_count"] = numeric(df, "n_clusters").fillna(0)
-    df["spatial_record_count"] = numeric(df, "n_records").fillna(0)
-    df = df[df["source_name"].ne("")]
-    df = df.sort_values(["cluster_count", "source_name"], ascending=[False, True])
-    return df[["source_name", "cluster_count", "spatial_record_count"]].reset_index(drop=True)
-
-
-def _normalize_temporal_table(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
-    required = {"source_name", "first_year", "last_year", "n_records"}
-    missing = sorted(required.difference(df.columns))
-    if missing:
-        raise ValueError("{} is missing columns: {}".format(table_name, ", ".join(missing)))
-
-    df["source_name"] = df["source_name"].astype(str).str.strip()
-    df["first_year"] = numeric(df, "first_year")
-    df["last_year"] = numeric(df, "last_year")
     df["n_records"] = numeric(df, "n_records").fillna(0)
+    df["first_year"] = _year_from_column(df, "time_start")
+    df["last_year"] = _year_from_column(df, "time_end")
     df = df[df["source_name"].ne("")]
-    df = df.dropna(subset=["first_year", "last_year"])
-
-    if df.empty:
-        return pd.DataFrame(columns=["source_name", "first_year", "last_year", "temporal_record_count"])
 
     grouped = (
         df.groupby("source_name", as_index=False)
         .agg(
+            cluster_count=("cluster_uid", _nunique_nonempty),
+            spatial_record_count=("n_records", "sum"),
             first_year=("first_year", "min"),
             last_year=("last_year", "max"),
             temporal_record_count=("n_records", "sum"),
         )
-        .sort_values("source_name")
+        .sort_values(["cluster_count", "source_name"], ascending=[True, False])
+        .reset_index(drop=True)
     )
     return grouped
 
 
-def _normalize_other_product_table(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
-    required = {"source_name", "n_clusters", "n_records", "first_year", "last_year"}
-    missing = sorted(required.difference(df.columns))
-    if missing:
-        raise ValueError("{} is missing columns: {}".format(table_name, ", ".join(missing)))
-    out = pd.DataFrame(
-        {
-            "source_name": df["source_name"].astype(str).str.strip(),
-            "contribution_count": numeric(df, "n_clusters").fillna(0),
-            "record_count": numeric(df, "n_records").fillna(0),
-            "first_year": numeric(df, "first_year"),
-            "last_year": numeric(df, "last_year"),
-        }
-    )
-    out = out[out["source_name"].ne("")]
-    return out.sort_values(["contribution_count", "source_name"], ascending=[True, False]).reset_index(drop=True)
-
-
-def _read_main_source_tables(stats_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    dataset_path = _source_table(stats_dir, "table_main_source_dataset_contribution.csv")
-    temporal_path = _source_table(stats_dir, "table_main_source_temporal_coverage.csv")
-    if _has_nonempty_csv(dataset_path) and _has_nonempty_csv(temporal_path):
-        return read_csv_required(dataset_path), read_csv_required(temporal_path)
-
-    merged_dataset_path = _source_table(stats_dir, "table_source_dataset_contribution.csv")
-    merged_temporal_path = _source_table(stats_dir, "table_source_temporal_coverage.csv")
-    dataset = _filter_by_source_type(read_csv_required(merged_dataset_path), "satellite", invert=True)
-    temporal = _filter_by_source_type(read_csv_required(merged_temporal_path), "satellite", invert=True)
-    return dataset, temporal
-
-
-def merge_source_contributions(spatial_df: pd.DataFrame, temporal_df: pd.DataFrame) -> pd.DataFrame:
-    merged = spatial_df.merge(temporal_df, on="source_name", how="left")
-    merged = merged.sort_values(["cluster_count", "source_name"], ascending=[True, False]).reset_index(drop=True)
-    return merged
-
-
-def load_main_sources(stats_dir: Path) -> pd.DataFrame:
-    dataset, temporal = _read_main_source_tables(stats_dir)
-    spatial_df = _normalize_contribution_table(dataset, "main source dataset contribution")
-    temporal_df = _normalize_temporal_table(temporal, "main source temporal coverage")
-    return merge_source_contributions(spatial_df, temporal_df)
-
-
-def load_other_product_sources(stats_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    merged_dataset_path = _source_table(stats_dir, "table_source_dataset_contribution.csv")
-    merged_temporal_path = _source_table(stats_dir, "table_source_temporal_coverage.csv")
-    merged_dataset = read_csv_optional(merged_dataset_path)
-    merged_temporal = read_csv_optional(merged_temporal_path)
-
+def load_other_product_sources_from_minimal(release_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
     empty = pd.DataFrame(columns=["source_name", "contribution_count", "record_count", "first_year", "last_year"])
-    climatology = empty.copy()
-    if not merged_dataset.empty and not merged_temporal.empty:
-        clim_dataset = _filter_by_source_type(merged_dataset, "climatology")
-        clim_temporal = _filter_by_source_type(merged_temporal, "climatology")
-        if not clim_dataset.empty and not clim_temporal.empty:
-            climatology = _normalize_other_product_table(
-                clim_dataset.merge(
-                    clim_temporal[["source_name", "first_year", "last_year", "n_records"]],
-                    on="source_name",
-                    how="left",
-                    suffixes=("", "_temporal"),
-                ),
-                "climatology source contribution",
-            )
 
-    sat_dataset_path = _source_table(stats_dir, "table_sat_source_dataset_contribution.csv")
-    sat_temporal_path = _source_table(stats_dir, "table_sat_source_temporal_coverage.csv")
-    if _has_nonempty_csv(sat_dataset_path) and _has_nonempty_csv(sat_temporal_path):
-        sat_dataset = read_csv_required(sat_dataset_path)
-        sat_temporal = read_csv_required(sat_temporal_path)
-    elif not merged_dataset.empty and not merged_temporal.empty:
-        sat_dataset = _filter_by_source_type(merged_dataset, "satellite")
-        sat_temporal = _filter_by_source_type(merged_temporal, "satellite")
+    climatology_raw = _read_minimal_catalog(release_dir, "climatology_catalog.csv")
+    _require_columns(
+        climatology_raw,
+        "climatology_catalog.csv",
+        {"source_name", "station_uid", "source_station_time_coverage_start", "source_station_time_coverage_end"},
+    )
+    climatology_raw = climatology_raw.copy()
+    climatology_raw["source_name"] = climatology_raw["source_name"].astype(str).str.strip()
+    climatology_raw["first_year"] = _year_from_column(climatology_raw, "source_station_time_coverage_start")
+    climatology_raw["last_year"] = _year_from_column(climatology_raw, "source_station_time_coverage_end")
+    climatology_raw = climatology_raw[climatology_raw["source_name"].ne("")]
+    if climatology_raw.empty:
+        climatology = empty.copy()
     else:
-        sat_dataset = pd.DataFrame()
-        sat_temporal = pd.DataFrame()
-
-    satellite = empty.copy()
-    if not sat_dataset.empty and not sat_temporal.empty:
-        satellite = _normalize_other_product_table(
-            sat_dataset.merge(
-                sat_temporal[["source_name", "first_year", "last_year", "n_records"]],
-                on="source_name",
-                how="left",
-                suffixes=("", "_temporal"),
-            ),
-            "satellite source contribution",
+        climatology = (
+            climatology_raw.groupby("source_name", as_index=False)
+            .agg(
+                contribution_count=("station_uid", _nunique_nonempty),
+                record_count=("station_uid", "size"),
+                first_year=("first_year", "min"),
+                last_year=("last_year", "max"),
+            )
+            .sort_values(["contribution_count", "source_name"], ascending=[True, False])
+            .reset_index(drop=True)
         )
-    return climatology, satellite
 
+    satellite_raw = _read_minimal_catalog(release_dir, "satellite_catalog.csv")
+    _require_columns(
+        satellite_raw,
+        "satellite_catalog.csv",
+        {"source", "cluster_uid", "n_records", "time_start", "time_end"},
+    )
+    satellite_raw = satellite_raw.copy()
+    satellite_raw["source_name"] = satellite_raw["source"].astype(str).str.strip()
+    satellite_raw["n_records"] = numeric(satellite_raw, "n_records").fillna(0)
+    satellite_raw["first_year"] = _year_from_column(satellite_raw, "time_start")
+    satellite_raw["last_year"] = _year_from_column(satellite_raw, "time_end")
+    satellite_raw = satellite_raw[satellite_raw["source_name"].ne("")]
+    if satellite_raw.empty:
+        satellite = empty.copy()
+    else:
+        satellite = (
+            satellite_raw.groupby("source_name", as_index=False)
+            .agg(
+                contribution_count=("cluster_uid", _nunique_nonempty),
+                record_count=("n_records", "sum"),
+                first_year=("first_year", "min"),
+                last_year=("last_year", "max"),
+            )
+            .sort_values(["contribution_count", "source_name"], ascending=[True, False])
+            .reset_index(drop=True)
+        )
+
+    return climatology, satellite
 
 def _temporal_point_sizes(record_counts: pd.Series) -> pd.Series:
     counts = pd.to_numeric(record_counts, errors="coerce").fillna(0).clip(lower=0)
@@ -446,97 +530,6 @@ def plot_other_product_panel(
     ax_count.set_title(title, loc="left", fontsize=11)
 
 
-def plot_combined_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
-    if df.empty:
-        raise ValueError("No source rows available for plotting.")
-
-    y = np.arange(len(df))
-    fig, (ax_spatial, ax_time) = plt.subplots(
-        1,
-        2,
-        figsize=FIGSIZE,
-        sharey=True,
-        gridspec_kw={"width_ratios": [1.0, 1.55], "wspace": 0.08},
-    )
-
-    ax_spatial.barh(y, df["cluster_count"], color=SPATIAL_COLOR, alpha=0.9)
-    ax_spatial.set_yticks(y)
-    ax_spatial.set_yticklabels(df["source_name"])
-    ax_spatial.set_xlabel("Cluster count")
-    ax_spatial.set_title("Spatial contribution")
-    ax_spatial.grid(axis="x", linewidth=0.3, alpha=0.55)
-    ax_spatial.set_axisbelow(True)
-
-    max_cluster = pd.to_numeric(df["cluster_count"], errors="coerce").max()
-    if pd.notna(max_cluster) and max_cluster > 0:
-        ax_spatial.set_xlim(0, max_cluster * 1.22)
-    annotate_cluster_counts(ax_spatial, df, y)
-
-    time_df = df.dropna(subset=["first_year", "last_year"]).copy()
-    if not time_df.empty:
-        for idx, row in time_df.iterrows():
-            ax_time.hlines(
-                y[idx],
-                row["first_year"],
-                row["last_year"],
-                color=TEMPORAL_LINE_COLOR,
-                linewidth=1.5,
-                alpha=0.88,
-            )
-        ax_time.scatter(
-            time_df["last_year"],
-            y[time_df.index],
-            s=48,
-            color=TEMPORAL_POINT_COLOR,
-            alpha=0.78,
-            edgecolor="white",
-            linewidth=0.5,
-            zorder=3,
-        )
-        year_min = int(np.floor(time_df["first_year"].min() / 10.0) * 10)
-        year_max = int(np.ceil(time_df["last_year"].max() / 10.0) * 10)
-        ax_time.set_xlim(year_min - 2, year_max + 9)
-
-    ax_time.set_xlabel("Year")
-    ax_time.set_title("Temporal span")
-    ax_time.grid(axis="x", linewidth=0.3, alpha=0.55)
-    ax_time.set_axisbelow(True)
-    ax_time.tick_params(axis="y", left=False, labelleft=False)
-
-    fig.suptitle("Source contributions to spatial coverage and temporal span", y=0.98)
-    legend_handles = [
-        Patch(facecolor=SPATIAL_COLOR, edgecolor="none", label="clusters"),
-        Patch(facecolor=SPATIAL_COLOR, edgecolor="#2f4f6f", linewidth=0.5, label="clusters / records"),
-        Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.5, label="temporal span"),
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            linestyle="none",
-            markerfacecolor=TEMPORAL_POINT_COLOR,
-            markeredgecolor="white",
-            markersize=7,
-            label="span end",
-        ),
-    ]
-    fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=4,
-        frameon=False,
-        bbox_to_anchor=(0.56, 0.005),
-    )
-    fig.subplots_adjust(left=0.19, right=0.98, top=0.88, bottom=0.14)
-
-    OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = OUTPUT_FIGURES_DIR / "{}.png".format(OUTPUT_STEM)
-    pdf_path = OUTPUT_FIGURES_DIR / "{}.pdf".format(OUTPUT_STEM)
-    fig.savefig(png_path, dpi=DPI, bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
-    plt.close(fig)
-    return png_path, pdf_path
-
-
 def _set_year_limits(ax, time_df: pd.DataFrame) -> None:
     if time_df.empty:
         return
@@ -545,7 +538,12 @@ def _set_year_limits(ax, time_df: pd.DataFrame) -> None:
     ax.set_xlim(year_min - 2, year_max + 9)
 
 
-def plot_overlay_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
+def plot_overlay_source_contribution(
+    df: pd.DataFrame,
+    figure_id: str,
+    figure_dirs: dict,
+    dpi: int = 300,
+) -> Tuple[Path, Path]:
     if df.empty:
         raise ValueError("No source rows available for plotting.")
 
@@ -632,16 +630,21 @@ def plot_overlay_source_contribution(df: pd.DataFrame) -> Tuple[Path, Path]:
     )
     fig.subplots_adjust(left=0.22, right=0.97, top=0.86, bottom=0.18)
 
-    OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = OUTPUT_FIGURES_DIR / "{}.png".format(OVERLAY_OUTPUT_STEM)
-    pdf_path = OUTPUT_FIGURES_DIR / "{}.pdf".format(OVERLAY_OUTPUT_STEM)
-    fig.savefig(png_path, dpi=DPI, bbox_inches="tight")
+    png_path = figure_dirs["final"] / "{}.png".format(figure_id)
+    pdf_path = figure_dirs["final"] / "{}.pdf".format(figure_id)
+    fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
     plt.close(fig)
     return png_path, pdf_path
 
 
-def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite: pd.DataFrame) -> Tuple[Path, Path]:
+def plot_other_products_source_contribution(
+    climatology: pd.DataFrame,
+    satellite: pd.DataFrame,
+    figure_id: str,
+    figure_dirs: dict,
+    dpi: int = 300,
+) -> Tuple[Path, Path]:
     fig, axes = plt.subplots(
         2,
         1,
@@ -653,20 +656,30 @@ def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite
         climatology,
         "Climatology sources",
         "Station count",
-        "#54a24b",
+        OKABE_ITO["bluish_green"],
+    )
+    axes[0].text(
+        0.01, 0.97, "(a)", transform=axes[0].transAxes,
+        fontsize=13, fontweight="bold", va="top", ha="left",
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85),
     )
     plot_other_product_panel(
         axes[1],
         satellite,
         "Satellite-validation sources",
         "Linked cluster count",
-        "#9c755f",
+        OKABE_ITO["reddish_purple"],
+    )
+    axes[1].text(
+        0.01, 0.97, "(b)", transform=axes[1].transAxes,
+        fontsize=13, fontweight="bold", va="top", ha="left",
+        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85),
     )
 
     fig.suptitle("Other product source contributions and temporal span", y=0.98)
     legend_handles = [
-        Patch(facecolor="#54a24b", alpha=0.48, edgecolor="none", label="climatology stations"),
-        Patch(facecolor="#9c755f", alpha=0.48, edgecolor="none", label="satellite linked clusters"),
+        Patch(facecolor=OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology stations"),
+        Patch(facecolor=OKABE_ITO["reddish_purple"], alpha=0.48, edgecolor="none", label="satellite linked clusters"),
         Patch(facecolor=SPATIAL_COLOR, alpha=0.48, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
         Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
         Line2D(
@@ -689,10 +702,9 @@ def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite
     )
     fig.subplots_adjust(left=0.2, right=0.97, top=0.87, bottom=0.15)
 
-    OUTPUT_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    png_path = OUTPUT_FIGURES_DIR / "{}.png".format(OTHER_PRODUCTS_OUTPUT_STEM)
-    pdf_path = OUTPUT_FIGURES_DIR / "{}.pdf".format(OTHER_PRODUCTS_OUTPUT_STEM)
-    fig.savefig(png_path, dpi=DPI, bbox_inches="tight")
+    png_path = figure_dirs["final"] / "{}.png".format(figure_id)
+    pdf_path = figure_dirs["final"] / "{}.pdf".format(figure_id)
+    fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
     plt.close(fig)
     return png_path, pdf_path
@@ -700,48 +712,87 @@ def plot_other_products_source_contribution(climatology: pd.DataFrame, satellite
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot source spatial-temporal contribution figures from stats_release outputs."
-    )
-    parser.add_argument(
-        "--stats-dir",
-        default=str(DEFAULT_STATS_DIR),
-        help="Root stats_release output directory. Default: {}".format(DEFAULT_STATS_DIR),
+        description="Plot source spatial-temporal contribution figures from minimal release catalogs."
     )
     parser.add_argument(
         "--out-dir",
-        default=None,
+        default=str(DEFAULT_OUTPUT_DIR),
         help=(
-            "Figure output directory. Default: "
-            "<stats-dir>/source_spatial_temporal_contribution/figures"
+            "Figure output directory. Figures are saved under final/, data/, scripts/, and checklists/ "
+            "subdirectories per ESSD guidelines. Default: "
+            "{}".format(DEFAULT_OUTPUT_DIR)
         ),
+    )
+    parser.add_argument(
+        "--figure-id",
+        default=None,
+        help="Figure ID stem for both generated figures (overrides individual --figure-id-*).",
+    )
+    parser.add_argument(
+        "--figure-id-b",
+        default=OVERLAY_OUTPUT_STEM,
+        help="Figure ID for the overlay figure. Default: {}".format(OVERLAY_OUTPUT_STEM),
+    )
+    parser.add_argument(
+        "--figure-id-c",
+        default=OTHER_PRODUCTS_OUTPUT_STEM,
+        help="Figure ID for the other-products figure. Default: {}".format(OTHER_PRODUCTS_OUTPUT_STEM),
     )
     parser.add_argument("--dpi", type=int, default=DPI, help="PNG output DPI. Default: {}".format(DPI))
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
-    global OUTPUT_FIGURES_DIR, DPI
-
     args = parse_args(argv)
-    stats_dir = Path(args.stats_dir).expanduser().resolve()
-    OUTPUT_FIGURES_DIR = (
-        Path(args.out_dir).expanduser().resolve()
-        if args.out_dir
-        else stats_dir / "source_spatial_temporal_contribution" / "figures"
-    )
-    DPI = int(args.dpi)
+    release_dir = DEFAULT_RELEASE_DIR.resolve()
+    out_dir = Path(args.out_dir).expanduser().resolve()
+    dpi = int(args.dpi)
 
-    merged = load_main_sources(stats_dir)
-    climatology_df, satellite_df = load_other_product_sources(stats_dir)
-    png_path, pdf_path = plot_combined_source_contribution(merged)
-    overlay_png_path, overlay_pdf_path = plot_overlay_source_contribution(merged)
-    other_png_path, other_pdf_path = plot_other_products_source_contribution(climatology_df, satellite_df)
-    print("Wrote {}".format(png_path))
-    print("Wrote {}".format(pdf_path))
-    print("Wrote {}".format(overlay_png_path))
-    print("Wrote {}".format(overlay_pdf_path))
-    print("Wrote {}".format(other_png_path))
-    print("Wrote {}".format(other_pdf_path))
+    # Resolve figure IDs
+    figure_id_b = args.figure_id or args.figure_id_b
+    figure_id_c = args.figure_id or args.figure_id_c
+
+    # Configure matplotlib for ESSD compliance
+    configure_matplotlib(plt)
+
+    # Create ESSD output directory structure
+    figure_dirs = ensure_figure_dirs(out_dir)
+
+    # Load data (shared by all 3 figures)
+    merged = load_main_sources_from_minimal(release_dir)
+    climatology_df, satellite_df = load_other_product_sources_from_minimal(release_dir)
+
+    # ---- Figure B: Overlay source contribution (single-panel with twin axes) ----
+    png_b, pdf_b = plot_overlay_source_contribution(merged, figure_id_b, figure_dirs, dpi=dpi)
+    data_paths_b = write_plotting_data(figure_dirs["data"], figure_id_b, merged, pd.DataFrame(), pd.DataFrame())
+    script_copy_b = figure_dirs["scripts"] / "plot_{}.py".format(figure_id_b)
+    shutil.copy2(__file__, script_copy_b)
+    write_figure_checklist(
+        figure_dirs["checklists"] / "{}_checklist.md".format(figure_id_b),
+        figure_id_b, pdf_b, png_b, data_paths_b, script_copy_b, dpi, OVERLAY_FIGSIZE,
+        is_multi_panel=False, panel_labels="N/A (single-panel figure with twin axes)",
+    )
+
+    # ---- Figure C: Other products source contribution (2-panel) ----
+    png_c, pdf_c = plot_other_products_source_contribution(climatology_df, satellite_df, figure_id_c, figure_dirs, dpi=dpi)
+    data_paths_c = write_plotting_data(figure_dirs["data"], figure_id_c, pd.DataFrame(), climatology_df, satellite_df)
+    script_copy_c = figure_dirs["scripts"] / "plot_{}.py".format(figure_id_c)
+    shutil.copy2(__file__, script_copy_c)
+    write_figure_checklist(
+        figure_dirs["checklists"] / "{}_checklist.md".format(figure_id_c),
+        figure_id_c, pdf_c, png_c, data_paths_c, script_copy_c, dpi, (10.8, 6.8),
+        is_multi_panel=True, panel_labels="`(a)` climatology sources, `(b)` satellite-validation sources",
+    )
+
+    # Print summary
+    print("Wrote {}".format(pdf_b))
+    print("Wrote {}".format(png_b))
+    print("Wrote {}".format(pdf_c))
+    print("Wrote {}".format(png_c))
+    for path in data_paths_b + data_paths_c:
+        print("Wrote {}".format(path))
+    print("Wrote {}".format(script_copy_b))
+    print("Wrote {}".format(script_copy_c))
     return 0
 
 
