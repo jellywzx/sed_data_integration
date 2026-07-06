@@ -630,6 +630,9 @@ def _minimal_global_attrs(src, variable_names):
         "Minimal station-by-time matrix product for river discharge, suspended sediment concentration, "
         "and suspended sediment load."
     )
+    attrs["citation"] = ""
+    attrs["references"] = ""
+    attrs["license"] = ""
     attrs["variables_provided"] = attrs["variables_provided"] or _variables_provided(variable_names)
     attrs["qc_flag_meanings"] = attrs["qc_flag_meanings"] or _qc_flag_meanings(src)
     attrs["time_coverage_start"] = attrs["time_coverage_start"] or time_start

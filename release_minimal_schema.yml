@@ -48,6 +48,9 @@ global_attributes_to_keep:
   - date_modified
   - Conventions
   - summary
+  - citation
+  - references
+  - license
   - variables_provided
   - qc_flag_meanings
   - time_coverage_start
