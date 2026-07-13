@@ -256,9 +256,9 @@ def plot_combined_direct(
         SOURCE.OKABE_ITO["reddish_purple"],
     )
 
-    add_panel_label(ax_main, "(a) In situ", x=-0.15, y=1.05)
-    add_panel_label(ax_climatology, "(b) Climatology", x=-0.15, y=1.3)
-    add_panel_label(ax_satellite, "(c) Satellite ", x=-0.15, y=1.3)
+    add_panel_label(ax_main, "(a) Main station-reference matrices", x=-0.15, y=1.1)
+    add_panel_label(ax_climatology, "(b) Climatology auxiliary layer", x=-0.15, y=1.3)
+    add_panel_label(ax_satellite, "(c) Satellite validation layer", x=-0.15, y=1.3)
 
     # fig.legend(
     #     handles=legend_handles(),
