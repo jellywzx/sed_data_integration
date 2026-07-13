@@ -9,6 +9,7 @@ reads only files inside ``--release-dir`` and writes validation diagnostics into
 
 
 import argparse
+import json
 import shutil
 import itertools
 import math
@@ -291,6 +292,18 @@ def _import_xarray():
         return None
 
 
+def _open_netcdf_dataset(xr, path: Path):
+    try:
+        return xr.open_dataset(path, decode_times=False, mask_and_scale=True, engine="h5netcdf")
+    except Exception as first_exc:
+        try:
+            return xr.open_dataset(path, decode_times=False, mask_and_scale=True)
+        except Exception as second_exc:
+            raise RuntimeError(
+                "h5netcdf failed: {}; default engine failed: {}".format(first_exc, second_exc)
+            )
+
+
 def _decode_value_array(values) -> List[str]:
     arr = np.asarray(values)
     if arr.ndim == 0:
@@ -387,7 +400,7 @@ def inspect_netcdf(path: Path) -> Tuple[List[Dict[str, object]], Dict[str, str]]
         return rows, units
 
     try:
-        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True, engine="h5netcdf")
+        ds = _open_netcdf_dataset(xr, path)
     except Exception as exc:
         rows.append(
             {
@@ -882,7 +895,7 @@ def _load_master_records(
     if xr is None:
         return pd.DataFrame(), "xarray not available for master NetCDF reading"
     try:
-        ds = xr.open_dataset(path, decode_times=False, mask_and_scale=True, engine="h5netcdf")
+        ds = _open_netcdf_dataset(xr, path)
     except Exception as exc:
         return pd.DataFrame(), "cannot open master NetCDF: {}".format(exc)
 
@@ -1599,6 +1612,292 @@ def _write_plot_files(pair_records: pd.DataFrame, units: Dict[str, str], figures
     return generated
 
 
+def _legacy_clean_label(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore").strip()
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    text = str(value).strip()
+    if text.lower() in ("nan", "none"):
+        return ""
+    return text
+
+
+def _legacy_resolution_label(value) -> str:
+    text = _legacy_clean_label(value)
+    return {"0": "daily", "1": "monthly", "2": "annual"}.get(text, text)
+
+
+def _legacy_text_column(frame: pd.DataFrame, column: str, mapper: Optional[Callable[[object], str]] = None) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series([""] * len(frame), index=frame.index, dtype=object)
+    clean = mapper or _legacy_clean_label
+    return frame[column].map(clean)
+
+
+def _legacy_overlap_flags(records: pd.DataFrame) -> pd.Series:
+    if "is_overlap" not in records.columns:
+        return pd.Series([0] * len(records), index=records.index, dtype=int)
+    flags = pd.to_numeric(records["is_overlap"], errors="coerce").fillna(0)
+    return (flags == 1).astype(int)
+
+
+def _legacy_ordered_pivot(index: pd.Series, columns: pd.Series, index_name: str) -> pd.DataFrame:
+    if len(index) == 0:
+        return pd.DataFrame(columns=[index_name])
+    table = pd.crosstab(index, columns)
+    table = table.sort_index().sort_index(axis=1)
+    table = table.reset_index()
+    table.columns = [index_name] + [str(col) for col in table.columns[1:]]
+    return table
+
+
+def _legacy_unique_count(frame: pd.DataFrame, candidates: Sequence[str]) -> int:
+    for col in candidates:
+        if col in frame.columns:
+            values = frame[col].map(_legacy_clean_label)
+            values = values[values.str.strip().ne("")]
+            return int(values.nunique())
+    return 0
+
+
+def _legacy_overlap_group_count(candidates: pd.DataFrame) -> int:
+    if candidates.empty:
+        return 0
+    work = candidates.copy()
+    if "is_overlap" in work.columns:
+        overlap = pd.to_numeric(work["is_overlap"], errors="coerce").fillna(0)
+        work = work[overlap == 1].copy()
+    if work.empty:
+        return 0
+    if "candidate_group_key" in work.columns:
+        keys = work["candidate_group_key"].map(_legacy_clean_label)
+        return int(keys[keys.str.strip().ne("")].nunique())
+    cluster_col = _cluster_key(work)
+    time_col = "time" if "time" in work.columns else ("date" if "date" in work.columns else None)
+    if cluster_col is None or time_col is None or "resolution" not in work.columns:
+        return 0
+    keys = (
+        work[cluster_col].map(_legacy_clean_label)
+        + "|"
+        + work["resolution"].map(_legacy_resolution_label)
+        + "|"
+        + work[time_col].map(_legacy_clean_label)
+    )
+    return int(keys[keys.str.strip().ne("||")].nunique())
+
+
+def build_legacy_validation_tables(records: pd.DataFrame, candidates: pd.DataFrame) -> Tuple[Dict[str, pd.DataFrame], Dict[str, object]]:
+    """Build legacy s10 output tables expected by downstream manuscript tools."""
+    if records.empty:
+        resolution_source_family = pd.DataFrame(columns=["res"])
+        source_by_resolution = pd.DataFrame(columns=["src"])
+        overlap_by_source = pd.DataFrame(columns=["src", "count", "sum"])
+        overlap_by_resolution = pd.DataFrame(columns=["res", "0", "1"])
+        fam_dist: Dict[str, int] = {}
+        ov_dist = {"non_overlap": 0, "overlap": 0}
+    else:
+        res = _legacy_text_column(records, "resolution", _legacy_resolution_label)
+        src = _legacy_text_column(records, "source")
+        family = _legacy_text_column(records, "source_family")
+        overlap = _legacy_overlap_flags(records)
+
+        resolution_source_family = _legacy_ordered_pivot(res, family, "res")
+        source_by_resolution = _legacy_ordered_pivot(src, res, "src")
+
+        overlap_work = pd.DataFrame({"src": src, "is_overlap": overlap})
+        overlap_by_source = (
+            overlap_work.groupby("src", dropna=False)["is_overlap"]
+            .agg(["count", "sum"])
+            .reset_index()
+            .sort_values("src", kind="mergesort")
+            .reset_index(drop=True)
+        )
+        overlap_by_source["count"] = overlap_by_source["count"].astype(int)
+        overlap_by_source["sum"] = overlap_by_source["sum"].astype(int)
+
+        overlap_by_resolution = pd.crosstab(res, overlap)
+        for flag in (0, 1):
+            if flag not in overlap_by_resolution.columns:
+                overlap_by_resolution[flag] = 0
+        overlap_by_resolution = overlap_by_resolution[[0, 1]].sort_index().reset_index()
+        overlap_by_resolution.columns = ["res", "0", "1"]
+
+        fam_counts = family[family.str.strip().ne("")].value_counts()
+        fam_dist = {str(key): int(value) for key, value in fam_counts.items()}
+        ov_dist = {
+            "non_overlap": int((overlap == 0).sum()),
+            "overlap": int((overlap == 1).sum()),
+        }
+
+    selected = pd.to_numeric(
+        candidates.get("selected_flag", pd.Series(dtype=float)),
+        errors="coerce",
+    )
+    summary_data: Dict[str, object] = {
+        "n_master": int(len(records)),
+        "n_clusters": _legacy_unique_count(records, ("cluster_uid", "cluster_id")),
+        "n_ss": _legacy_unique_count(records, ("source_station_uid",)),
+        "n_candidates": int(len(candidates)),
+        "n_sel": int((selected == 1).sum()) if len(selected) else 0,
+        "n_overlap_pairs": _legacy_overlap_group_count(candidates),
+        "fam_dist": fam_dist,
+        "ov_dist": ov_dist,
+    }
+    tables = {
+        "validation_resolution_source_family.csv": resolution_source_family,
+        "validation_source_by_resolution.csv": source_by_resolution,
+        "validation_overlap_by_source.csv": overlap_by_source,
+        "validation_overlap_by_resolution.csv": overlap_by_resolution,
+    }
+    return tables, summary_data
+
+
+def _format_legacy_count(value) -> str:
+    try:
+        return "{:,}".format(int(value))
+    except Exception:
+        return str(value)
+
+
+def _legacy_table_preview(df: pd.DataFrame, max_rows: int = 20) -> List[str]:
+    if df.empty:
+        return ["无可用记录。"]
+    preview = df.head(max_rows).copy()
+    cols = [str(col) for col in preview.columns]
+    lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
+    ]
+    for _, row in preview.iterrows():
+        values = [_legacy_clean_label(row.get(col, "")) for col in preview.columns]
+        lines.append("| " + " | ".join(values) + " |")
+    return lines
+
+
+def _write_legacy_report(
+    out_path: Path,
+    release_dir: Path,
+    release_files: Sequence[str],
+    summary_data: Dict[str, object],
+    tables: Dict[str, pd.DataFrame],
+    supports_pairs: bool,
+    metrics: pd.DataFrame,
+    load_note: str,
+    generated_outputs: Sequence[Tuple[str, str]],
+) -> None:
+    fam_dist = summary_data.get("fam_dist", {})
+    ov_dist = summary_data.get("ov_dist", {})
+    lines: List[str] = []
+    lines.append("# s10 最终验证结果详细报告")
+    lines.append("")
+    lines.append("## 1. 概述")
+    lines.append("")
+    lines.append("本报告由 `s10_final_validation_results.py` 基于 s8 发布产品动态生成。")
+    lines.append("")
+    lines.append("### 输入")
+    lines.append("")
+    lines.append("- 发布目录: `{}`".format(release_dir))
+    lines.append("- 发布文件数: {}".format(len(release_files)))
+    lines.append("- Master 读取状态: {}".format(load_note))
+    lines.append("")
+    lines.append("### 核心数量")
+    lines.append("")
+    lines.append("- Master records: {}".format(_format_legacy_count(summary_data.get("n_master", 0))))
+    lines.append("- Clusters: {}".format(_format_legacy_count(summary_data.get("n_clusters", 0))))
+    lines.append("- Source stations: {}".format(_format_legacy_count(summary_data.get("n_ss", 0))))
+    lines.append("- Candidate rows: {}".format(_format_legacy_count(summary_data.get("n_candidates", 0))))
+    lines.append("- Selected candidate rows: {}".format(_format_legacy_count(summary_data.get("n_sel", 0))))
+    lines.append("- Overlap groups: {}".format(_format_legacy_count(summary_data.get("n_overlap_pairs", 0))))
+    lines.append("")
+    lines.append("## 2. Source family 分布")
+    lines.append("")
+    if fam_dist:
+        fam_df = pd.DataFrame(
+            [{"source_family": key, "n_records": value} for key, value in fam_dist.items()]
+        )
+        lines.extend(_legacy_table_preview(fam_df))
+    else:
+        lines.append("无可用 source_family 汇总。")
+    lines.append("")
+    lines.append("## 3. Overlap 分布")
+    lines.append("")
+    if ov_dist:
+        ov_df = pd.DataFrame(
+            [{"class": key, "n_records": value} for key, value in ov_dist.items()]
+        )
+        lines.extend(_legacy_table_preview(ov_df))
+    else:
+        lines.append("无可用 overlap 汇总。")
+    lines.append("")
+    lines.append("## 4. Legacy 汇总表预览")
+    for name in (
+        "validation_resolution_source_family.csv",
+        "validation_source_by_resolution.csv",
+        "validation_overlap_by_source.csv",
+        "validation_overlap_by_resolution.csv",
+    ):
+        lines.append("")
+        lines.append("### {}".format(name))
+        lines.append("")
+        lines.extend(_legacy_table_preview(tables.get(name, pd.DataFrame())))
+    lines.append("")
+    lines.append("## 5. Source-pair metrics")
+    lines.append("")
+    if supports_pairs and not metrics.empty:
+        preview = metrics.sort_values(["n_pairs", "source_pair", "variable"], ascending=[False, True, True]).head(12)
+        lines.extend(_legacy_table_preview(preview))
+    else:
+        lines.append(TRUE_PAIR_SKIP_REASON)
+    lines.append("")
+    lines.append("## 6. 生成文件")
+    lines.append("")
+    for name, status in generated_outputs:
+        lines.append("- `{}`: {}".format(name, status))
+    lines.append("")
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_legacy_validation_outputs(
+    out_dir: Path,
+    release_dir: Path,
+    release_files: Sequence[str],
+    records: pd.DataFrame,
+    candidates: pd.DataFrame,
+    supports_pairs: bool,
+    metrics: pd.DataFrame,
+    load_note: str,
+    generated_outputs: Sequence[Tuple[str, str]],
+) -> List[Tuple[str, str]]:
+    tables, summary_data = build_legacy_validation_tables(records, candidates)
+    generated: List[Tuple[str, str]] = []
+    for name, table in tables.items():
+        path = out_dir / name
+        table.to_csv(path, index=False)
+        generated.append((name, "generated"))
+
+    summary_path = out_dir / "validation_summary_data.json"
+    summary_path.write_text(json.dumps(summary_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    generated.append((summary_path.name, "generated"))
+
+    report_path = out_dir / "validation_results_report.md"
+    _write_legacy_report(
+        report_path,
+        release_dir,
+        release_files,
+        summary_data,
+        tables,
+        supports_pairs,
+        metrics,
+        load_note,
+        list(generated_outputs) + generated + [(report_path.name, "generated")],
+    )
+    generated.append((report_path.name, "generated"))
+    return generated
+
+
 def _write_summary(
     out_path: Path,
     release_files: Sequence[str],
@@ -1797,6 +2096,24 @@ def run_validation(
         for var in VARIABLES:
             generated_outputs.append(("figures/overlap_pair_scatter_{}.png".format(var), "skipped: {}".format(TRUE_PAIR_SKIP_REASON)))
             generated_outputs.append(("figures/overlap_pair_bias_box_{}.png".format(var), "skipped: {}".format(TRUE_PAIR_SKIP_REASON)))
+
+    if progress:
+        progress("Writing legacy s10 validation outputs")
+    legacy_outputs = write_legacy_validation_outputs(
+        out_dir,
+        release_dir,
+        release_files,
+        records,
+        candidates,
+        supports_pairs,
+        metrics,
+        load_note,
+        generated_outputs,
+    )
+    generated_outputs.extend(legacy_outputs)
+    if progress:
+        for name, _ in legacy_outputs:
+            progress("Wrote {}".format(out_dir / name))
 
     summary_path = out_dir / "validation_results_summary.md"
     generated_outputs.append((summary_path.name, "generated"))
