@@ -72,7 +72,7 @@ cli:
 
   # s8: 发布
   s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
-  s8_skip_gpkg: true           # 跳过 GPKG 发布
+  s8_skip_gpkg: false           # 跳过 GPKG 发布
   s8_skip_validation: false     # 跳过发布校验
   s8_include_basin_polygons: true  # 包含流域多边形
   s8_force: true                # 强制覆盖已存在的发布文件
