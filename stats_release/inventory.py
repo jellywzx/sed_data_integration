@@ -86,8 +86,6 @@ def _registered_inventory_rows(ctx) -> list:
             detail = _gpkg_detail(ctx, file_name)
         elif exists and suffixes.endswith(".csv.gz"):
             detail = "compressed CSV sidecar"
-        elif exists and path.suffix.lower() == ".parquet":
-            detail = "Parquet sidecar"
         rows.append(
             {
                 "product": product,
@@ -563,7 +561,7 @@ def build_validation_contradictions(ctx) -> pd.DataFrame:
         return pd.DataFrame(columns=["check", "status", "file_name", "issue", "details"])
     actual = {p.name for p in ctx.release_dir.iterdir() if p.is_file()}
     rows = []
-    pattern = re.compile(r"[A-Za-z0-9_./-]+\.(?:csv\.gz|parquet|csv|nc|gpkg|md|py)")
+    pattern = re.compile(r"[A-Za-z0-9_./-]+\.(?:csv\.gz|csv|nc|gpkg|md|py)")
     for _, row in validation.iterrows():
         details = clean_text(row.get("details", ""))
         lowered = details.lower()

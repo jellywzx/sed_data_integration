@@ -86,7 +86,6 @@ def build_layer_stats(ctx) -> dict:
         )
     for product_key, layer_name in (
         ("overlap_candidates_csv_gz", "overlap_candidates_sidecar"),
-        ("overlap_candidates_parquet", "overlap_candidates_sidecar"),
         ("satellite_candidates_csv_gz", "satellite_candidates_sidecar"),
         ("satellite_candidates_parquet", "satellite_candidates_sidecar"),
         ("satellite_validation_catalog", "satellite_validation_catalog"),

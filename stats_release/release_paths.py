@@ -26,7 +26,6 @@ PRODUCT_FILES = {
     "cluster_basins_gpkg": "sed_reference_cluster_basins.gpkg",
     "source_stations_gpkg": "sed_reference_source_stations.gpkg",
     "overlap_candidates_csv_gz": "sed_reference_overlap_candidates.csv.gz",
-    "overlap_candidates_parquet": "sed_reference_overlap_candidates.parquet",
     "satellite_candidates_csv_gz": "sed_reference_satellite_candidates.csv.gz",
     "satellite_candidates_parquet": "sed_reference_satellite_candidates.parquet",
     "inventory_csv": "release_inventory.csv",

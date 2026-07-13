@@ -110,7 +110,6 @@ CATALOG_PRODUCTS = OrderedDict(
         ("source_station_catalog", "source_station_catalog.csv"),
         ("source_dataset_catalog", "source_dataset_catalog.csv"),
         ("overlap_candidates", "sed_reference_overlap_candidates.csv.gz"),
-        ("overlap_candidates_parquet", "sed_reference_overlap_candidates.parquet"),
         ("satellite_candidates", "sed_reference_satellite_candidates.csv.gz"),
         ("satellite_candidates_parquet", "sed_reference_satellite_candidates.parquet"),
         ("satellite_validation_catalog", "satellite_validation_catalog.csv"),
