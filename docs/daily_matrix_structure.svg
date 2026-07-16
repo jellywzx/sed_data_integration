@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">Daily station-by-time matrix structure</title>
+  <desc id="desc">Rows represent station clusters, columns represent daily time steps, and each populated station-time cell is one output record containing up to Q, SSC, and SSL values.</desc>
+  <defs>
+    <style>
+      .title { font: 700 40px Arial, Helvetica, sans-serif; fill: #17324d; }
+      .subtitle { font: 400 22px Arial, Helvetica, sans-serif; fill: #51677d; }
+      .section { font: 700 24px Arial, Helvetica, sans-serif; fill: #17324d; }
+      .label { font: 600 20px Arial, Helvetica, sans-serif; fill: #29465f; }
+      .small { font: 400 17px Arial, Helvetica, sans-serif; fill: #51677d; }
+      .tiny { font: 600 15px Arial, Helvetica, sans-serif; fill: #29465f; }
+      .celltext { font: 700 14px Arial, Helvetica, sans-serif; fill: #17324d; text-anchor: middle; }
+      .value { font: 600 18px Arial, Helvetica, sans-serif; fill: #17324d; }
+      .note { font: 600 19px Arial, Helvetica, sans-serif; fill: #7a4b00; }
+    </style>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#3b6f9b"/>
+    </marker>
+    <marker id="arrowGold" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12 z" fill="#c58a20"/>
+    </marker>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#17324d" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="980" fill="#f6f8fb"/>
+  <text x="80" y="72" class="title">How the daily matrix is organized</text>
+  <text x="80" y="110" class="subtitle">A station-by-time NetCDF structure: station cluster × daily time</text>
+
+  <!-- Main matrix card -->
+  <rect x="70" y="155" width="980" height="610" rx="22" fill="#ffffff" stroke="#d8e1ea" stroke-width="2" filter="url(#shadow)"/>
+  <text x="105" y="205" class="section">Daily matrix</text>
+  <text x="105" y="237" class="small">Each row is one station cluster time series; each column is one day.</text>
+
+  <!-- Column axis label -->
+  <text x="640" y="285" class="label" text-anchor="middle">Daily time steps →</text>
+
+  <!-- Matrix headers -->
+  <rect x="105" y="315" width="220" height="72" rx="10" fill="#dfeaf4"/>
+  <text x="215" y="348" class="label" text-anchor="middle">station cluster</text>
+  <text x="215" y="373" class="small" text-anchor="middle">matrix row</text>
+
+  <rect x="325" y="315" width="165" height="72" rx="10" fill="#dfeaf4"/>
+  <rect x="490" y="315" width="165" height="72" rx="10" fill="#dfeaf4"/>
+  <rect x="655" y="315" width="165" height="72" rx="10" fill="#dfeaf4"/>
+  <rect x="820" y="315" width="165" height="72" rx="10" fill="#dfeaf4"/>
+  <text x="407.5" y="358" class="label" text-anchor="middle">1 Jan</text>
+  <text x="572.5" y="358" class="label" text-anchor="middle">2 Jan</text>
+  <text x="737.5" y="358" class="label" text-anchor="middle">3 Jan</text>
+  <text x="902.5" y="358" class="label" text-anchor="middle">4 Jan</text>
+
+  <!-- Row labels -->
+  <rect x="105" y="387" width="220" height="112" rx="10" fill="#eef4f8" stroke="#d8e1ea"/>
+  <rect x="105" y="499" width="220" height="112" rx="10" fill="#e8f3ed" stroke="#94bea2" stroke-width="2.5"/>
+  <rect x="105" y="611" width="220" height="112" rx="10" fill="#eef4f8" stroke="#d8e1ea"/>
+  <text x="215" y="433" class="label" text-anchor="middle">cluster_A</text>
+  <text x="215" y="463" class="small" text-anchor="middle">one full daily series</text>
+  <text x="215" y="545" class="label" text-anchor="middle">cluster_B</text>
+  <text x="215" y="575" class="small" text-anchor="middle">highlighted row</text>
+  <text x="215" y="657" class="label" text-anchor="middle">cluster_C</text>
+  <text x="215" y="687" class="small" text-anchor="middle">one full daily series</text>
+
+  <!-- Matrix cells -->
+  <!-- Row A -->
+  <g>
+    <rect x="325" y="387" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="490" y="387" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="655" y="387" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="820" y="387" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <text x="407.5" y="420" class="celltext">Q</text><text x="407.5" y="448" class="celltext">SSC</text><text x="407.5" y="476" class="celltext">SSL</text>
+    <text x="572.5" y="420" class="celltext">Q</text><text x="572.5" y="448" class="celltext">SSC</text><text x="572.5" y="476" class="celltext">SSL</text>
+    <text x="737.5" y="420" class="celltext">Q</text><text x="737.5" y="448" class="celltext">SSC</text><text x="737.5" y="476" class="celltext">—</text>
+    <text x="902.5" y="445" class="small" text-anchor="middle">empty</text>
+  </g>
+
+  <!-- Row B highlighted -->
+  <g>
+    <rect x="325" y="499" width="165" height="112" fill="#f8fcf9" stroke="#94bea2" stroke-width="2"/>
+    <rect x="490" y="499" width="165" height="112" rx="8" fill="#fff3d8" stroke="#d39a31" stroke-width="4"/>
+    <rect x="655" y="499" width="165" height="112" fill="#f8fcf9" stroke="#94bea2" stroke-width="2"/>
+    <rect x="820" y="499" width="165" height="112" fill="#f8fcf9" stroke="#94bea2" stroke-width="2"/>
+    <text x="407.5" y="532" class="celltext">Q</text><text x="407.5" y="560" class="celltext">SSC</text><text x="407.5" y="588" class="celltext">SSL</text>
+    <text x="572.5" y="532" class="celltext">Q</text><text x="572.5" y="560" class="celltext">SSC</text><text x="572.5" y="588" class="celltext">SSL</text>
+    <text x="737.5" y="532" class="celltext">Q</text><text x="737.5" y="560" class="celltext">SSC</text><text x="737.5" y="588" class="celltext">—</text>
+    <text x="902.5" y="532" class="celltext">—</text><text x="902.5" y="560" class="celltext">SSC</text><text x="902.5" y="588" class="celltext">SSL</text>
+  </g>
+
+  <!-- Row C -->
+  <g>
+    <rect x="325" y="611" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="490" y="611" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="655" y="611" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <rect x="820" y="611" width="165" height="112" fill="#ffffff" stroke="#cfd9e3"/>
+    <text x="407.5" y="644" class="celltext">—</text><text x="407.5" y="672" class="celltext">SSC</text><text x="407.5" y="700" class="celltext">SSL</text>
+    <text x="572.5" y="644" class="celltext">Q</text><text x="572.5" y="672" class="celltext">SSC</text><text x="572.5" y="700" class="celltext">SSL</text>
+    <text x="737.5" y="669" class="small" text-anchor="middle">empty</text>
+    <text x="902.5" y="644" class="celltext">Q</text><text x="902.5" y="672" class="celltext">SSC</text><text x="902.5" y="700" class="celltext">SSL</text>
+  </g>
+
+  <!-- Row explanation -->
+  <path d="M 120 755 C 300 820, 700 820, 950 755" fill="none" stroke="#3b6f9b" stroke-width="3" marker-end="url(#arrowBlue)"/>
+  <text x="520" y="845" class="label" text-anchor="middle">One row ≠ one record</text>
+  <text x="520" y="875" class="small" text-anchor="middle">One row stores the complete daily time series of one station cluster.</text>
+
+  <!-- Zoomed cell card -->
+  <rect x="1110" y="155" width="420" height="610" rx="22" fill="#ffffff" stroke="#d8e1ea" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1150" y="205" class="section">Zoom into one cell</text>
+  <text x="1150" y="237" class="small">cluster_B × 2 Jan</text>
+
+  <path d="M 655 555 C 870 520, 990 360, 1120 330" fill="none" stroke="#c58a20" stroke-width="4" marker-end="url(#arrowGold)"/>
+
+  <rect x="1150" y="285" width="340" height="88" rx="14" fill="#fff3d8" stroke="#d39a31" stroke-width="3"/>
+  <text x="1320" y="322" class="label" text-anchor="middle">one populated station-time cell</text>
+  <text x="1320" y="351" class="small" text-anchor="middle">= one output record</text>
+
+  <text x="1150" y="420" class="label">Up to three variable values</text>
+
+  <rect x="1150" y="447" width="340" height="58" rx="10" fill="#e8f1f8"/>
+  <text x="1175" y="483" class="value">Q</text>
+  <text x="1455" y="483" class="value" text-anchor="end">120 m³ s⁻¹</text>
+
+  <rect x="1150" y="515" width="340" height="58" rx="10" fill="#edf6f0"/>
+  <text x="1175" y="551" class="value">SSC</text>
+  <text x="1455" y="551" class="value" text-anchor="end">35 mg L⁻¹</text>
+
+  <rect x="1150" y="583" width="340" height="58" rx="10" fill="#f8efe5"/>
+  <text x="1175" y="619" class="value">SSL</text>
+  <text x="1455" y="619" class="value" text-anchor="end">362.9 t d⁻¹</text>
+
+  <text x="1150" y="690" class="small">The same cell also carries:</text>
+  <text x="1170" y="721" class="tiny">Q_flag, SSC_flag, SSL_flag</text>
+  <text x="1170" y="748" class="tiny">selected_source_station_uid</text>
+
+  <!-- Bottom definition ribbon -->
+  <rect x="70" y="905" width="1460" height="50" rx="14" fill="#17324d"/>
+  <text x="800" y="938" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" fill="#ffffff" text-anchor="middle">Daily matrix = station cluster × day; populated cell = one record; record may contain Q, SSC, and/or SSL.</text>
+</svg>
