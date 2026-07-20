@@ -25,6 +25,12 @@ WINDOW_DAYS = {"exact": 0, "pm1d": 1, "pm2d": 2}
 WINDOW_EXCLUSIVE = False
 MASTER_FILE = "sed_reference_master.nc"
 SATELLITE_VALIDATION_FILE = "sed_reference_satellite_validation.nc"
+MAIN_MATRIX_FILES = {
+    "daily": "sed_reference_timeseries_daily.nc",
+    "monthly": "sed_reference_timeseries_monthly.nc",
+    "annual": "sed_reference_timeseries_annual.nc",
+}
+LINKED_RESOLUTIONS = frozenset(MAIN_MATRIX_FILES)
 CANDIDATE_SIDECAR_FILES = (
     "sed_reference_overlap_candidates.parquet",
     "sed_reference_overlap_candidates.csv.gz",
@@ -839,6 +845,7 @@ def load_observations_from_satellite_validation_nc(release_dir: Path, progress=l
             "source_family",
             "observation_type",
             "source_station_index",
+            "satellite_station_index",
             "source_station_uid",
             "source_station_paths",
             "satellite_station_uid",
@@ -856,6 +863,13 @@ def load_observations_from_satellite_validation_nc(release_dir: Path, progress=l
                 lookup = _indexed_lookup_series(ds, "satellite_station_uid", records["source_station_index"])
                 if lookup is not None:
                     records["source_station_uid"] = lookup
+
+        station_index = records.get("satellite_station_index", records.get("source_station_index"))
+        if station_index is not None:
+            for name in ("linked_cluster_uid", "linked_cluster_id", "linked_resolution", "link_status"):
+                lookup = _indexed_lookup_series(ds, name, station_index)
+                if lookup is not None:
+                    records[name] = lookup
 
         for name in VARIABLES:
             series = _record_series(ds, name, record_dim)
@@ -876,49 +890,88 @@ def load_observations_from_satellite_validation_nc(release_dir: Path, progress=l
     finally:
         ds.close()
 
-    return records, "satellite validation records loaded"
+    if not {"linked_cluster_uid", "linked_resolution", "link_status"}.issubset(records.columns):
+        return pd.DataFrame(), "satellite validation linkage fields are unavailable"
+    records["linked_cluster_uid"] = records["linked_cluster_uid"].map(_clean_text)
+    records["linked_resolution"] = records["linked_resolution"].map(_normalize_resolution)
+    records["link_status"] = records["link_status"].map(_clean_text).str.lower()
+    main_matrix_cluster_uids = _load_main_matrix_cluster_uids(release_dir)
+    published_link = pd.Series(False, index=records.index)
+    for resolution in LINKED_RESOLUTIONS:
+        published_link |= (
+            records["linked_resolution"].eq(resolution)
+            & records["linked_cluster_uid"].isin(main_matrix_cluster_uids[resolution])
+        )
+    valid_link = (
+        records["link_status"].eq("linked")
+        & records["linked_resolution"].isin(LINKED_RESOLUTIONS)
+        & published_link
+    )
+    records = records[valid_link].copy()
+    records["cluster_uid"] = records["linked_cluster_uid"]
+    if "linked_cluster_id" in records.columns:
+        records["cluster_id"] = records["linked_cluster_id"]
+    records["resolution"] = records["linked_resolution"]
+    return records, "satellite validation records loaded with linked main-cluster keys"
 
 
 def _build_satellite_candidate_windows(
     raw: pd.DataFrame,
     windows: Sequence[str],
     satellite_time_units: str,
-) -> Tuple[Dict[Tuple[int, str], Dict[str, object]], int]:
-    if raw.empty or "cluster_id" not in raw.columns:
+) -> Tuple[Dict[Tuple[str, str], Dict[str, object]], int]:
+    """Build candidate windows keyed by real main-cluster UID and resolution."""
+    if raw.empty:
         return {}, 0
 
     work = pd.DataFrame(index=raw.index)
-    work["cluster_id"] = pd.to_numeric(raw["cluster_id"], errors="coerce")
     work["cluster_uid"] = _extract_column(raw, ("cluster_uid", "station_uid", "cluster_uuid"), "").map(_clean_text)
     work["resolution"] = _extract_column(raw, ("resolution", "time_resolution", "temporal_resolution"), "").map(_normalize_resolution)
     work["time"] = _coerce_datetime_from_columns(raw)
-    valid = work["cluster_id"].notna() & work["resolution"].astype(str).str.strip().ne("") & work["time"].notna()
+    valid = (
+        work["cluster_uid"].astype(str).str.strip().ne("")
+        & work["resolution"].isin(LINKED_RESOLUTIONS)
+        & work["time"].notna()
+    )
     work = work[valid].copy()
     if work.empty:
         return {}, 0
 
     max_window = max(WINDOW_DAYS[window] for window in windows) if windows else 0
-    ranges: Dict[Tuple[int, str], Dict[str, object]] = {}
-    for (cluster_id, resolution), group in _groupby_compat(work, ["cluster_id", "resolution"]):
-        if pd.isna(cluster_id):
-            continue
+    ranges: Dict[Tuple[str, str], Dict[str, object]] = {}
+    for (cluster_uid, resolution), group in _groupby_compat(work, ["cluster_uid", "resolution"]):
         start = group["time"].min() - pd.Timedelta(days=max_window)
         end = group["time"].max() + pd.Timedelta(days=max_window)
         start_day = _datetime_to_cf_days(pd.Series([start]), satellite_time_units).iloc[0]
         end_day = _datetime_to_cf_days(pd.Series([end]), satellite_time_units).iloc[0]
         if pd.isna(start_day) or pd.isna(end_day):
             continue
-        cluster_uid = ""
-        nonempty_uid = group["cluster_uid"][group["cluster_uid"].astype(str).str.strip().ne("")]
-        if len(nonempty_uid):
-            cluster_uid = _clean_text(nonempty_uid.iloc[0])
-        key = (int(cluster_id), _normalize_resolution(resolution))
+        key = (_clean_text(cluster_uid), _normalize_resolution(resolution))
         ranges[key] = {
-            "cluster_uid": cluster_uid,
             "start_day": float(start_day),
             "end_day": float(end_day),
         }
-    return ranges, int(work[["cluster_id", "resolution"]].drop_duplicates().shape[0])
+    return ranges, int(work[["cluster_uid", "resolution"]].drop_duplicates().shape[0])
+
+
+def _load_main_matrix_cluster_uids(release_dir: Path) -> Dict[str, set]:
+    """Return the real cluster UIDs published by each main resolution matrix."""
+    cluster_uids = {resolution: set() for resolution in LINKED_RESOLUTIONS}
+    for resolution, filename in MAIN_MATRIX_FILES.items():
+        path = release_dir / filename
+        if not path.exists():
+            continue
+        ds = _open_dataset_compat(path)
+        try:
+            if "cluster_uid" not in ds.variables:
+                continue
+            values = _series_from_data_array(ds["cluster_uid"])
+            cluster_uids[resolution] = {
+                _clean_text(value) for value in values if _clean_text(value)
+            }
+        finally:
+            ds.close()
+    return cluster_uids
 
 
 def _station_series(ds, name: str, station_dim: str, default="") -> pd.Series:
@@ -932,19 +985,20 @@ def _station_series(ds, name: str, station_dim: str, default="") -> pd.Series:
 
 def _load_matching_satellite_station_metadata(
     ds,
-    candidate_windows: Dict[Tuple[int, str], Dict[str, object]],
-) -> Tuple[Dict[int, Dict[str, object]], int]:
+    candidate_windows: Dict[Tuple[str, str], Dict[str, object]],
+    main_matrix_cluster_uids: Dict[str, set],
+) -> Tuple[Dict[int, Dict[str, object]], Dict[str, int]]:
     station_dim = "n_satellite_stations" if "n_satellite_stations" in ds.sizes else None
     if station_dim is None:
-        return {}, 0
+        return {}, {"satellite_catalog_keys": 0, "unlinked_station_count": 0, "invalid_link_target_count": 0}
     n_stations = int(ds.sizes[station_dim])
-    cluster_name = "cluster_id_station" if "cluster_id_station" in ds.variables else "cluster_id"
-    if cluster_name not in ds.variables:
-        return {}, 0
-
-    cluster_ids = pd.to_numeric(_station_series(ds, cluster_name, station_dim, np.nan), errors="coerce")
-    resolutions = _station_series(ds, "station_resolution", station_dim, "").map(_normalize_resolution)
-    cluster_uids = _station_series(ds, "cluster_uid", station_dim, "").map(_clean_text)
+    singleton_cluster_name = "cluster_id_station" if "cluster_id_station" in ds.variables else "cluster_id"
+    singleton_cluster_ids = pd.to_numeric(_station_series(ds, singleton_cluster_name, station_dim, np.nan), errors="coerce")
+    singleton_cluster_uids = _station_series(ds, "cluster_uid", station_dim, "").map(_clean_text)
+    linked_cluster_ids = pd.to_numeric(_station_series(ds, "linked_cluster_id", station_dim, np.nan), errors="coerce")
+    linked_cluster_uids = _station_series(ds, "linked_cluster_uid", station_dim, "").map(_clean_text)
+    linked_resolutions = _station_series(ds, "linked_resolution", station_dim, "").map(_normalize_resolution)
+    link_statuses = _station_series(ds, "link_status", station_dim, "").map(_clean_text).str.lower()
     sources = _station_series(ds, "source", station_dim, "").map(_clean_text)
     families = _station_series(ds, "source_family", station_dim, "satellite").map(_clean_text)
     station_uids = _station_series(ds, "satellite_station_uid", station_dim, "").map(_clean_text)
@@ -953,22 +1007,37 @@ def _load_matching_satellite_station_metadata(
     resolved_paths = _station_series(ds, "resolved_candidate_path", station_dim, "").map(_clean_text)
 
     meta_by_station: Dict[int, Dict[str, object]] = {}
+    stats = {"satellite_catalog_keys": 0, "unlinked_station_count": 0, "invalid_link_target_count": 0}
     for idx in range(n_stations):
-        cluster_id = cluster_ids.iloc[idx]
-        if pd.isna(cluster_id):
-            continue
-        resolution = resolutions.iloc[idx]
-        key = (int(cluster_id), resolution)
-        if key not in candidate_windows:
-            continue
         family = classify_source_family(sources.iloc[idx], raw_family=families.iloc[idx], observation_type="Satellite")
         if family != "satellite":
             continue
-        cluster_uid = cluster_uids.iloc[idx] or _clean_text(candidate_windows[key].get("cluster_uid", ""))
+        if link_statuses.iloc[idx] != "linked":
+            stats["unlinked_station_count"] += 1
+            continue
+        linked_uid = linked_cluster_uids.iloc[idx]
+        linked_resolution = linked_resolutions.iloc[idx]
+        key = (linked_uid, linked_resolution)
+        if (
+            not linked_uid
+            or linked_resolution not in LINKED_RESOLUTIONS
+            or linked_uid not in main_matrix_cluster_uids.get(linked_resolution, set())
+        ):
+            stats["invalid_link_target_count"] += 1
+            continue
+        stats["satellite_catalog_keys"] += 1
+        if key not in candidate_windows:
+            continue
         meta_by_station[idx] = {
-            "cluster_id": int(cluster_id),
-            "cluster_uid": cluster_uid,
-            "resolution": resolution,
+            "cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
+            "cluster_uid": linked_uid,
+            "resolution": linked_resolution,
+            "linked_cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
+            "linked_cluster_uid": linked_uid,
+            "linked_resolution": linked_resolution,
+            "link_status": "linked",
+            "satellite_singleton_cluster_id": int(singleton_cluster_ids.iloc[idx]) if pd.notna(singleton_cluster_ids.iloc[idx]) else "",
+            "satellite_singleton_cluster_uid": singleton_cluster_uids.iloc[idx],
             "source": sources.iloc[idx],
             "source_family": "satellite",
             "observation_type": "Satellite",
@@ -977,11 +1046,11 @@ def _load_matching_satellite_station_metadata(
             "candidate_path": candidate_paths.iloc[idx],
             "source_station_paths": resolved_paths.iloc[idx] or candidate_paths.iloc[idx],
         }
-    return meta_by_station, len(set((int(cid), res) for cid, res in zip(cluster_ids.dropna().astype(int), resolutions[cluster_ids.notna()])))
+    return meta_by_station, stats
 
 
 def _satellite_chunk_worker(
-    item: Tuple[int, str, int, int, Dict[int, Dict[str, object]], Dict[Tuple[int, str], Dict[str, object]], str]
+    item: Tuple[int, str, int, int, Dict[int, Dict[str, object]], Dict[Tuple[str, str], Dict[str, object]], str]
 ) -> Tuple[int, pd.DataFrame, Dict[str, int]]:
     ordinal, path_text, start, stop, meta_by_station, candidate_windows, time_units = item
     stats = {
@@ -1006,7 +1075,7 @@ def _satellite_chunk_worker(
         for local_pos in np.where(station_mask)[0]:
             station_integer = int(station_idx[local_pos])
             meta = meta_by_station[station_integer]
-            key = (int(meta["cluster_id"]), _normalize_resolution(meta["resolution"]))
+            key = (_clean_text(meta["linked_cluster_uid"]), _normalize_resolution(meta["linked_resolution"]))
             window = candidate_windows.get(key)
             if not window:
                 continue
@@ -1049,6 +1118,12 @@ def _satellite_chunk_worker(
                 "cluster_uid": meta.get("cluster_uid", ""),
                 "cluster_id": meta.get("cluster_id", ""),
                 "resolution": meta.get("resolution", ""),
+                "linked_cluster_uid": meta.get("linked_cluster_uid", ""),
+                "linked_cluster_id": meta.get("linked_cluster_id", ""),
+                "linked_resolution": meta.get("linked_resolution", ""),
+                "link_status": meta.get("link_status", ""),
+                "satellite_singleton_cluster_uid": meta.get("satellite_singleton_cluster_uid", ""),
+                "satellite_singleton_cluster_id": meta.get("satellite_singleton_cluster_id", ""),
                 "source": meta.get("source", ""),
                 "source_family": "satellite",
                 "observation_type": "Satellite",
@@ -1087,6 +1162,8 @@ def load_relevant_satellite_validation_records(
         "candidate_keys": 0,
         "satellite_catalog_keys": 0,
         "matching_station_count": 0,
+        "unlinked_station_count": 0,
+        "invalid_link_target_count": 0,
         "chunks": 0,
         "records_scanned": 0,
         "station_hits": 0,
@@ -1113,8 +1190,13 @@ def load_relevant_satellite_validation_records(
             stats["no_common_key"] = 1
             return pd.DataFrame(), stats
 
-        meta_by_station, satellite_catalog_keys = _load_matching_satellite_station_metadata(ds, candidate_windows)
-        stats["satellite_catalog_keys"] = int(satellite_catalog_keys)
+        main_matrix_cluster_uids = _load_main_matrix_cluster_uids(release_dir)
+        meta_by_station, station_stats = _load_matching_satellite_station_metadata(
+            ds,
+            candidate_windows,
+            main_matrix_cluster_uids,
+        )
+        stats.update({key: int(value) for key, value in station_stats.items()})
         stats["matching_station_count"] = int(len(meta_by_station))
         if not meta_by_station:
             stats["no_matching_station"] = 1
@@ -1130,9 +1212,12 @@ def load_relevant_satellite_validation_records(
     stats["chunks"] = len(chunks)
     if progress:
         progress(
-            "Satellite validation NC: candidate_keys={}, matching_stations={}, chunks={}, workers={}".format(
+            "Satellite validation NC: candidate_keys={}, matching_stations={}, unlinked_stations={}, "
+            "invalid_link_targets={}, chunks={}, workers={}".format(
                 stats["candidate_keys"],
                 stats["matching_station_count"],
+                stats["unlinked_station_count"],
+                stats["invalid_link_target_count"],
                 stats["chunks"],
                 workers,
             )
@@ -1221,6 +1306,10 @@ def normalize_observation_table(
     out["cluster_uid"] = _extract_column(raw, ("cluster_uid", "station_uid", "cluster_uuid"), "")
     out["cluster_id"] = _extract_column(raw, ("cluster_id", "station_id", "master_station_index", "station_index"), "")
     out["resolution"] = _extract_column(raw, ("resolution", "time_resolution", "temporal_resolution"), "").map(_normalize_resolution)
+    out["linked_cluster_uid"] = _extract_column(raw, ("linked_cluster_uid",), "").map(_clean_text)
+    out["linked_cluster_id"] = _extract_column(raw, ("linked_cluster_id",), "")
+    out["linked_resolution"] = _extract_column(raw, ("linked_resolution",), "").map(_normalize_resolution)
+    out["link_status"] = _extract_column(raw, ("link_status",), "").map(_clean_text).str.lower()
     out["time"] = _coerce_datetime_from_columns(raw)
     if "date" not in raw.columns and "_time_units" in raw.columns and "time" in raw.columns:
         out["time"] = _parse_cf_days_since(raw["time"], _clean_text(raw["_time_units"].iloc[0])).dt.floor("D")
@@ -1248,6 +1337,19 @@ def normalize_observation_table(
         for source, family, observation in zip(out["source"], raw_family, raw_observation)
     ]
 
+    satellite_mask = out["source_family"].eq("satellite")
+    linked_satellite_mask = (
+        satellite_mask
+        & out["link_status"].eq("linked")
+        & out["linked_cluster_uid"].astype(str).str.strip().ne("")
+        & out["linked_resolution"].isin(LINKED_RESOLUTIONS)
+    )
+    # Satellite singleton IDs are provenance only. Pairing is always keyed by
+    # the explicitly published main-cluster linkage at the same resolution.
+    out.loc[linked_satellite_mask, "cluster_uid"] = out.loc[linked_satellite_mask, "linked_cluster_uid"]
+    out.loc[linked_satellite_mask, "cluster_id"] = out.loc[linked_satellite_mask, "linked_cluster_id"]
+    out.loc[linked_satellite_mask, "resolution"] = out.loc[linked_satellite_mask, "linked_resolution"]
+
     for variable in VARIABLES:
         col = _first_existing(raw.columns, (variable, variable.lower()))
         out[variable] = pd.to_numeric(raw[col], errors="coerce") if col is not None else np.nan
@@ -1266,7 +1368,8 @@ def normalize_observation_table(
     has_cluster = out["cluster_uid"].astype(str).str.strip().ne("") | out["cluster_id"].astype(str).str.strip().ne("")
     has_core = has_cluster & out["resolution"].astype(str).str.strip().ne("") & out["time"].notna()
     has_source = out["source"].astype(str).str.strip().ne("")
-    return out[has_core & has_source].reset_index(drop=True)
+    valid_satellite_link = ~satellite_mask | linked_satellite_mask
+    return out[has_core & has_source & valid_satellite_link].reset_index(drop=True)
 
 
 def _flag_rank(value) -> float:
@@ -1972,7 +2075,8 @@ def run_validation(
         if progress:
             progress(
                 "Satellite validation extraction: rows={satellite_rows}, station_hits={station_hits}, "
-                "time_hits={time_hits}, value_hits={value_hits}, no_common_key={no_common_key}, "
+                "time_hits={time_hits}, value_hits={value_hits}, unlinked_stations={unlinked_station_count}, "
+                "invalid_link_targets={invalid_link_target_count}, no_common_key={no_common_key}, "
                 "no_matching_station={no_matching_station}, no_time_overlap={no_time_overlap}, "
                 "no_variable_values={no_variable_values}".format(**satellite_stats)
             )

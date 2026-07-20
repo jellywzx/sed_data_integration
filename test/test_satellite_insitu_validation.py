@@ -75,8 +75,12 @@ def test_pairing_windows_are_cumulative_and_tie_breaks_by_flag():
     raw = pd.DataFrame(
         [
             {
-                "cluster_uid": "C1",
-                "cluster_id": 1,
+                "cluster_uid": "SATELLITE_SINGLETON",
+                "cluster_id": 999,
+                "linked_cluster_uid": "C1",
+                "linked_cluster_id": 1,
+                "linked_resolution": "daily",
+                "link_status": "linked",
                 "resolution": "daily",
                 "date": "2020-01-02",
                 "source": "RiverSed",
@@ -125,6 +129,72 @@ def test_pairing_windows_are_cumulative_and_tie_breaks_by_flag():
         raise AssertionError("pm1d/pm2d should include the exact best match")
     if set(ssc_pairs["insitu_source"]) != {"HYDAT"}:
         raise AssertionError("tie-break should choose lower/better flag HYDAT")
+
+
+def test_satellite_pairing_uses_only_linked_main_uid_and_resolution():
+    raw = pd.DataFrame(
+        [
+            {
+                # Deliberately equal to the main UID: an unlinked singleton
+                # must still be excluded rather than accidentally paired.
+                "cluster_uid": "MAIN_DAILY",
+                "cluster_id": 1,
+                "resolution": "daily",
+                "linked_cluster_uid": "",
+                "linked_resolution": "",
+                "link_status": "unlinked",
+                "date": "2020-01-02",
+                "source": "RiverSed",
+                "source_station_uid": "sat_unlinked_same_uid",
+                "SSC": 111.0,
+            },
+            {
+                "cluster_uid": "SATELLITE_MONTHLY_SINGLETON",
+                "cluster_id": 2,
+                "resolution": "daily",
+                "linked_cluster_uid": "MAIN_DAILY",
+                "linked_cluster_id": 10,
+                "linked_resolution": "monthly",
+                "link_status": "linked",
+                "date": "2020-01-02",
+                "source": "RiverSed",
+                "source_station_uid": "sat_cross_resolution",
+                "SSC": 222.0,
+            },
+            {
+                "cluster_uid": "SATELLITE_DAILY_SINGLETON",
+                "cluster_id": 3,
+                "resolution": "monthly",
+                "linked_cluster_uid": "MAIN_DAILY",
+                "linked_cluster_id": 10,
+                "linked_resolution": "daily",
+                "link_status": "linked",
+                "date": "2020-01-02",
+                "source": "RiverSed",
+                "source_station_uid": "sat_linked",
+                "SSC": 333.0,
+            },
+            {
+                "cluster_uid": "MAIN_DAILY",
+                "cluster_id": 10,
+                "resolution": "daily",
+                "date": "2020-01-02",
+                "source": "USGS",
+                "source_station_uid": "insitu_daily",
+                "SSC": 300.0,
+            },
+        ]
+    )
+    observations = normalize_observation_table(raw, input_mode="candidate_sidecar")
+    satellites = observations[observations["source_family"] == "satellite"]
+    if len(satellites) != 2:
+        raise AssertionError("unlinked satellite location should be excluded")
+    if set(satellites["cluster_uid"]) != {"MAIN_DAILY"}:
+        raise AssertionError("linked main UID should replace singleton UID for pairing")
+    pairs = pair_satellite_insitu_records(observations, windows=("exact",), progress=None)
+    ssc_pairs = pairs[pairs["variable"] == "SSC"]
+    if len(ssc_pairs) != 1 or ssc_pairs.iloc[0]["satellite_source_station_uid"] != "sat_linked":
+        raise AssertionError("only the linked daily satellite should pair with the daily main cluster")
 
 
 def test_metrics_skip_zero_mape_and_r2_is_pearson_squared():
@@ -238,6 +308,10 @@ def test_satellite_validation_nc_sparse_extract_and_parallel_match():
             {
                 "satellite_station_uid": ("n_satellite_stations", np.asarray(["SAT1", "SAT2"], dtype=object)),
                 "cluster_uid": ("n_satellite_stations", np.asarray(["C1", "C2"], dtype=object)),
+                "linked_cluster_uid": ("n_satellite_stations", np.asarray(["MAIN1", "MISSING_MAIN"], dtype=object)),
+                "linked_cluster_id": ("n_satellite_stations", np.asarray([101, 999], dtype=np.int32)),
+                "linked_resolution": ("n_satellite_stations", np.asarray(["daily", "daily"], dtype=object)),
+                "link_status": ("n_satellite_stations", np.asarray(["linked", "linked"], dtype=object)),
                 "source": ("n_satellite_stations", np.asarray(["RiverSed", "RiverSed"], dtype=object)),
                 "source_family": ("n_satellite_stations", np.asarray(["satellite", "satellite"], dtype=object)),
                 "station_resolution": ("n_satellite_stations", np.asarray(["daily", "daily"], dtype=object)),
@@ -259,14 +333,20 @@ def test_satellite_validation_nc_sparse_extract_and_parallel_match():
             }
         )
         ds["time"].attrs["units"] = "days since 1970-01-01"
-        ds.to_netcdf(str(nc_path), engine="h5netcdf")
+        ds.to_netcdf(str(nc_path), engine="netcdf4")
         ds.close()
+
+        matrix = xr.Dataset(
+            {"cluster_uid": ("n_stations", np.asarray(["MAIN1"], dtype=object))}
+        )
+        matrix.to_netcdf(str(release_dir / "sed_reference_timeseries_daily.nc"), engine="netcdf4")
+        matrix.close()
 
         candidate_rows = pd.DataFrame(
             [
                 {
-                    "cluster_uid": "C1",
-                    "cluster_id": 1,
+                    "cluster_uid": "MAIN1",
+                    "cluster_id": 101,
                     "resolution": "daily",
                     "date": "2020-01-10",
                     "source": "USGS",
@@ -299,6 +379,8 @@ def test_satellite_validation_nc_sparse_extract_and_parallel_match():
             raise AssertionError("expected two satellite rows inside pm2d window, got {}".format(len(serial)))
         if serial_stats["matching_station_count"] != 1:
             raise AssertionError("expected one matching satellite station")
+        if serial_stats["invalid_link_target_count"] != 1:
+            raise AssertionError("linked UID missing from the main matrix must be recorded as invalid")
         if serial_stats["time_hits"] != 2 or serial_stats["value_hits"] != 2:
             raise AssertionError("unexpected satellite extraction stats: {}".format(serial_stats))
         if not serial.equals(parallel):
