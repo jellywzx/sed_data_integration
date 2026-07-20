@@ -406,8 +406,8 @@ def plot_panel_b_domain_map(ax, input_dir: Path, variable: str) -> None:
     validated_mask = validated_mask & ~_is_fazenda_map
     if validated_mask.any():
         ax.scatter(lons[validated_mask], lats[validated_mask],
-                  color="#2ca02c", marker="o", s=20,
-                  alpha=0.6, linewidths=0.5,
+                  color="#2ca02c", marker="o", s=40,
+                  alpha=0.8, linewidths=0.5,
                   zorder=3)
 
     # Plot skipped stations grouped by filter_reason (initial full extent, no legend yet)
@@ -551,7 +551,7 @@ def plot_panel_b_domain_map(ax, input_dir: Path, variable: str) -> None:
     handles_labels = ax.get_legend_handles_labels()
     if handles_labels[0]:
         legend = ax.legend(loc="lower left", fontsize=FONT_LEGEND,
-                           markerscale=0.8, framealpha=0.8)
+                           markerscale=2, framealpha=0.8)
         if legend and handles_labels[0]:
             for lh in handles_labels[0]:
                 if hasattr(lh, '_sizes'):

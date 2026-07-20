@@ -182,8 +182,8 @@ def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.1) -> None:
 
 def legend_handles() -> List[object]:
     return [
-        Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="main source clusters"),
-        Patch(facecolor=SOURCE.OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology stations"),
+        Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="main clusters"),
+        Patch(facecolor=SOURCE.OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology records"),
         Patch(
             facecolor=SOURCE.OKABE_ITO["reddish_purple"],
             alpha=0.48,
@@ -245,7 +245,7 @@ def plot_combined_direct(
         ax_climatology,
         climatology,
         "",
-        "Station count",
+        "Record count",
         SOURCE.OKABE_ITO["bluish_green"],
     )
     SOURCE.plot_other_product_panel(
