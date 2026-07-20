@@ -9,6 +9,7 @@ preserved in the output.
 import argparse
 import hashlib
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -373,17 +374,25 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
-    stations = pd.read_csv(Path(args.s5_csv), low_memory=False)
-    matrix_dir = Path(args.matrix_dir)
-    matrix_tables = {
-        resolution: load_matrix_station_table(
-            matrix_dir / "s6_basin_matrix_{}.nc".format(resolution), resolution
+    s5_csv = Path(args.s5_csv)
+    if not s5_csv.is_file():
+        print("Error: s5 input not found: {}".format(s5_csv), file=sys.stderr)
+        return 1
+    try:
+        stations = pd.read_csv(s5_csv, low_memory=False)
+        matrix_dir = Path(args.matrix_dir)
+        matrix_tables = {
+            resolution: load_matrix_station_table(
+                matrix_dir / "s6_basin_matrix_{}.nc".format(resolution), resolution
+            )
+            for resolution in SUPPORTED_RESOLUTIONS
+        }
+        result = link_satellite_to_main_clusters(
+            stations, matrix_tables, max_distance_m=args.max_distance_m
         )
-        for resolution in SUPPORTED_RESOLUTIONS
-    }
-    result = link_satellite_to_main_clusters(
-        stations, matrix_tables, max_distance_m=args.max_distance_m
-    )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 1
     output = Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)
     result.to_csv(output, index=False)

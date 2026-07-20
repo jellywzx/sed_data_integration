@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Submit S6 NetCDF export jobs to LSF.
 
-This is the Python equivalent of submit_s6_fast.sh.  It submits S6 component
-jobs in parallel, then submits a summary job depending on the submitted jobs.
+This is the Python equivalent of submit_s6_fast.sh. Independent S6 components
+run in parallel; s5b waits for matrices and satellite export waits for s5b.
+The summary job depends on all selected jobs.
 With --wait, it blocks until the summary job ends and validates the outputs.
 """
 
@@ -345,6 +346,28 @@ def build_jobs(args, python_bin):
             }
         )
 
+    s5b_cmd = [
+        python_bin,
+        "s5b_link_satellite_to_main_clusters.py",
+        "--s5-csv",
+        str(s5_csv),
+        "--matrix-dir",
+        str(MATRIX_DIR),
+        "--out",
+        str(OUT_DIR / "s5b_satellite_main_cluster_linkage.csv"),
+    ]
+    jobs.append(
+        {
+            "step": "s5b",
+            "job_name": "{}_s5b".format(args.job_tag),
+            "ncores": 1,
+            "mem_mb": positive_int(env_value("S5B_MEM_MB", "16000"), "S5B_MEM_MB"),
+            "script": cd_script(shell_join(s5b_cmd)),
+            "outputs": [OUT_DIR / "s5b_satellite_main_cluster_linkage.csv"],
+            "depends_on_steps": ["daily", "monthly", "annual"],
+        }
+    )
+
     if not args.skip_climatology_export:
         clim_cmd = [
             python_bin,
@@ -387,6 +410,7 @@ def build_jobs(args, python_bin):
                 OUT_DIR / "s6_satellite_validation_only.nc",
                 OUT_DIR / "s6_satellite_validation_catalog.csv",
             ],
+            "depends_on_steps": ["s5b"],
         }
     )
 
@@ -453,6 +477,17 @@ def submit_s6(args):
 
     submitted = []
     for job in jobs:
+        submitted_by_step = {item["step"]: item for item in submitted}
+        dependency_ids = [
+            submitted_by_step[step]["job_id"]
+            for step in job.get("depends_on_steps", [])
+            if step in submitted_by_step
+        ]
+        dependency = (
+            " && ".join("done({})".format(job_id) for job_id in dependency_ids)
+            if dependency_ids
+            else None
+        )
         jid = submit_job(
             job["step"],
             build_bsub_cmd(
@@ -461,6 +496,7 @@ def submit_s6(args):
                 job["mem_mb"],
                 job["script"],
                 args,
+                dep=dependency,
             ),
             args.dry_run,
             submit_log,

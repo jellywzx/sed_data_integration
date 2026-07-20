@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Export satellite validation-only sediment observations from s5 candidates.
+Export satellite validation-only observations from s5b linkage rows.
 
 Runtime policy is built-in so users can run:
   python3 s6_export_satellite_validation_to_nc.py
@@ -32,7 +32,7 @@ from geo_boundary_enrichment import (
 )
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
-    S5_BASIN_CLUSTERED_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_LINKAGE_CSV,
     S6_SATELLITE_VALIDATION_CATALOG_CSV,
     S6_SATELLITE_VALIDATION_NC,
     get_output_r_root,
@@ -56,7 +56,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
-DEFAULT_INPUT = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
+DEFAULT_INPUT = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKAGE_CSV
 DEFAULT_OUTPUT = PROJECT_ROOT / S6_SATELLITE_VALIDATION_NC
 DEFAULT_CATALOG = PROJECT_ROOT / S6_SATELLITE_VALIDATION_CATALOG_CSV
 DEFAULT_RESOLUTIONS = ("daily", "monthly", "annual")
@@ -70,6 +70,22 @@ BUILTIN_RESOLUTIONS = DEFAULT_RESOLUTIONS
 BUILTIN_WORKERS_BY_HOST = {
     "node113": 24,
 }
+
+LINKAGE_TEXT_FIELDS = (
+    "satellite_location_uid",
+    "linked_cluster_uid",
+    "linked_resolution",
+    "link_status",
+    "link_method",
+    "link_quality",
+    "unlinked_reason",
+)
+LINKAGE_NUMERIC_FIELDS = (
+    "linked_cluster_id",
+    "link_distance_m",
+    "link_uparea_log10_error",
+    "link_candidate_count",
+)
 
 
 def _default_workers_for_host():
@@ -141,6 +157,24 @@ def _safe_text(value):
     return "" if text.lower() == "nan" else text
 
 
+def _linkage_payload(row):
+    return {
+        "satellite_location_uid": _safe_text(row.get("satellite_location_uid", "")),
+        "linked_cluster_id": _safe_int(row.get("linked_cluster_id", -1), default=-1),
+        "linked_cluster_uid": _safe_text(row.get("linked_cluster_uid", "")),
+        "linked_resolution": _safe_text(row.get("linked_resolution", "")),
+        "link_status": _safe_text(row.get("link_status", "")),
+        "link_method": _safe_text(row.get("link_method", "")),
+        "link_quality": _safe_text(row.get("link_quality", "")),
+        "link_distance_m": _safe_float(row.get("link_distance_m", np.nan)),
+        "link_uparea_log10_error": _safe_float(
+            row.get("link_uparea_log10_error", np.nan)
+        ),
+        "link_candidate_count": _safe_int(row.get("link_candidate_count", 0), default=0),
+        "unlinked_reason": _safe_text(row.get("unlinked_reason", "")),
+    }
+
+
 def _time_bounds(dates):
     if not dates:
         return "", ""
@@ -172,7 +206,10 @@ def _worker_load_satellite_candidate(payload):
 
     resolution = _normalize_resolution(payload.get("resolution", ""))
     cluster_id = _safe_int(payload.get("cluster_id", -1), default=-1)
+    cluster_uid = _safe_text(payload.get("cluster_uid", ""))
+    linkage = _linkage_payload(payload)
     station_key = (
+        linkage["satellite_location_uid"],
         cluster_id,
         source,
         observation_type,
@@ -208,7 +245,8 @@ def _worker_load_satellite_candidate(payload):
         "station_key": station_key,
         "station_payload": {
             "cluster_id": cluster_id,
-            "cluster_uid": "SED{:06d}".format(cluster_id) if cluster_id >= 0 else "",
+            "cluster_uid": cluster_uid
+            or ("SED{:06d}".format(cluster_id) if cluster_id >= 0 else ""),
             "source": source,
             "source_family": source_family,
             "observation_type": observation_type,
@@ -223,6 +261,7 @@ def _worker_load_satellite_candidate(payload):
             "validation_only": 1,
             "merge_policy": "validation_only",
             "global_attr_payload": global_attr_payload,
+            **linkage,
         },
         "source_meta": {
             "source": source,
@@ -260,7 +299,23 @@ def _write_satellite_validation_nc(
             return v
 
         sat_uid_v = _str_station_var("satellite_station_uid", "stable satellite validation station uid")
+        sat_location_uid_v = _str_station_var(
+            "satellite_location_uid", "stable satellite location identifier independent of resolution"
+        )
         cluster_uid_v = _str_station_var("cluster_uid", "stable cluster uid")
+        linked_cluster_uid_v = _str_station_var(
+            "linked_cluster_uid",
+            "main reference cluster lookup key; does not merge satellite data into main matrices",
+        )
+        linked_resolution_v = _str_station_var(
+            "linked_resolution", "main reference resolution used by the linkage"
+        )
+        link_status_v = _str_station_var("link_status", "satellite-to-main linkage status")
+        link_method_v = _str_station_var("link_method", "satellite-to-main linkage method")
+        link_quality_v = _str_station_var("link_quality", "satellite-to-main linkage quality")
+        unlinked_reason_v = _str_station_var(
+            "unlinked_reason", "standard reason when no main reference cluster is linked"
+        )
         source_v = _str_station_var("source", "source dataset short name")
         family_v = _str_station_var("source_family", "source family")
         native_id_v = _str_station_var("source_station_native_id", "native source station id")
@@ -277,7 +332,26 @@ def _write_satellite_validation_nc(
         ]
 
         cluster_id_v = nc.createVariable("cluster_id_station", "i4", ("n_satellite_stations",))
-        cluster_id_v.long_name = "cluster id from s5 for this source station"
+        cluster_id_v.long_name = "satellite singleton cluster id from s5 for this source station"
+        linked_cluster_id_v = nc.createVariable(
+            "linked_cluster_id", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        linked_cluster_id_v.long_name = (
+            "main reference cluster lookup id; does not merge satellite data into main matrices"
+        )
+        link_distance_v = nc.createVariable(
+            "link_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
+        )
+        link_distance_v.long_name = "distance from satellite location to linked main cluster representative"
+        link_distance_v.units = "m"
+        link_area_error_v = nc.createVariable(
+            "link_uparea_log10_error", "f4", ("n_satellite_stations",), fill_value=FILL
+        )
+        link_area_error_v.long_name = "absolute log10 upstream-area ratio used for linkage ranking"
+        link_candidate_count_v = nc.createVariable(
+            "link_candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        link_candidate_count_v.long_name = "number of candidates satisfying all linkage constraints"
         source_station_index_v = nc.createVariable("source_station_index", "i4", ("n_satellite_stations",))
         source_station_index_v.long_name = "0-based source-station index in satellite validation table"
         lat_v = nc.createVariable("lat", "f4", ("n_satellite_stations",), fill_value=FILL)
@@ -327,7 +401,22 @@ def _write_satellite_validation_nc(
         source_url_v = nc.createVariable("source_url", str, ("n_sources",))
 
         sat_uid_v[:] = np.asarray([row["satellite_station_uid"] for row in station_rows], dtype=object)
+        sat_location_uid_v[:] = np.asarray(
+            [row["satellite_location_uid"] for row in station_rows], dtype=object
+        )
         cluster_uid_v[:] = np.asarray([row["cluster_uid"] for row in station_rows], dtype=object)
+        linked_cluster_uid_v[:] = np.asarray(
+            [row["linked_cluster_uid"] for row in station_rows], dtype=object
+        )
+        linked_resolution_v[:] = np.asarray(
+            [row["linked_resolution"] for row in station_rows], dtype=object
+        )
+        link_status_v[:] = np.asarray([row["link_status"] for row in station_rows], dtype=object)
+        link_method_v[:] = np.asarray([row["link_method"] for row in station_rows], dtype=object)
+        link_quality_v[:] = np.asarray([row["link_quality"] for row in station_rows], dtype=object)
+        unlinked_reason_v[:] = np.asarray(
+            [row["unlinked_reason"] for row in station_rows], dtype=object
+        )
         source_v[:] = np.asarray([row["source"] for row in station_rows], dtype=object)
         family_v[:] = np.asarray([row["source_family"] for row in station_rows], dtype=object)
         native_id_v[:] = np.asarray([row["source_station_native_id"] for row in station_rows], dtype=object)
@@ -338,9 +427,36 @@ def _write_satellite_validation_nc(
         resolved_path_v[:] = np.asarray([row["resolved_candidate_path"] for row in station_rows], dtype=object)
         merge_policy_v[:] = np.asarray([row["merge_policy"] for row in station_rows], dtype=object)
         cluster_id_v[:] = np.asarray([row["cluster_id"] for row in station_rows], dtype=np.int32)
+        linked_cluster_id_v[:] = np.asarray(
+            [row["linked_cluster_id"] for row in station_rows], dtype=np.int32
+        )
+        link_candidate_count_v[:] = np.asarray(
+            [row["link_candidate_count"] for row in station_rows], dtype=np.int32
+        )
         source_station_index_v[:] = np.asarray([row["source_station_index"] for row in station_rows], dtype=np.int32)
         station_source_index_v[:] = np.asarray([source_to_idx.get(row["source"], -1) for row in station_rows], dtype=np.int32)
         validation_only_v[:] = np.ones(n_stations, dtype=np.int8)
+
+        link_distance_vals = np.asarray(
+            [
+                row["link_distance_m"] if row["link_distance_m"] is not None else np.nan
+                for row in station_rows
+            ],
+            dtype=np.float32,
+        )
+        link_area_error_vals = np.asarray(
+            [
+                row["link_uparea_log10_error"]
+                if row["link_uparea_log10_error"] is not None
+                else np.nan
+                for row in station_rows
+            ],
+            dtype=np.float32,
+        )
+        link_distance_vals[np.isnan(link_distance_vals)] = FILL
+        link_area_error_vals[np.isnan(link_area_error_vals)] = FILL
+        link_distance_v[:] = link_distance_vals
+        link_area_error_v[:] = link_area_error_vals
 
         write_global_attr_payload_variables(
             nc,
@@ -410,7 +526,12 @@ def _write_satellite_validation_nc(
         nc.intended_use = (
             "satellite-vs-station validation and diagnostic comparison; not used for station-reference merging"
         )
-        nc.source = "Exported from s5_basin_clustered_stations.csv satellite candidates and source NetCDF files"
+        nc.source = "Exported from s5b_satellite_main_cluster_linkage.csv and source NetCDF files"
+        nc.linked_cluster_semantics = (
+            "linked_cluster_uid and linked_cluster_id connect validation-only satellite locations "
+            "to main reference records; they do not indicate that satellite observations were "
+            "merged into the main station matrices"
+        )
         nc.Conventions = "CF-1.8"
         nc.qc_stage_schema_version = "1"
         set_global_attr_policy(nc)
@@ -422,6 +543,54 @@ def _write_satellite_validation_nc(
         nc.validation_only_source_families = "satellite"
         nc.created = datetime.now().isoformat(timespec="seconds")
         nc.sync()
+
+
+def _build_satellite_catalog(station_rows, station_record_map):
+    catalog_rows = []
+    for station_index, station_row in enumerate(station_rows):
+        recs = station_record_map.get(station_index, [])
+        time_start, time_end = _time_bounds([item["date"] for item in recs])
+        row = {
+            "satellite_station_uid": station_row["satellite_station_uid"],
+            "satellite_location_uid": station_row["satellite_location_uid"],
+            "cluster_uid": station_row["cluster_uid"],
+            "cluster_id": station_row["cluster_id"],
+            "linked_cluster_id": station_row["linked_cluster_id"]
+            if station_row["linked_cluster_id"] >= 0
+            else np.nan,
+            "linked_cluster_uid": station_row["linked_cluster_uid"],
+            "linked_resolution": station_row["linked_resolution"],
+            "link_status": station_row["link_status"],
+            "link_method": station_row["link_method"],
+            "link_quality": station_row["link_quality"],
+            "link_distance_m": station_row["link_distance_m"],
+            "link_uparea_log10_error": station_row["link_uparea_log10_error"],
+            "link_candidate_count": station_row["link_candidate_count"],
+            "unlinked_reason": station_row["unlinked_reason"],
+            "source": station_row["source"],
+            "source_family": station_row["source_family"],
+            "observation_type": station_row["observation_type"],
+            "resolution": station_row["resolution"],
+            "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
+            "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
+            "station_name": station_row["station_name"],
+            "river_name": station_row["river_name"],
+            "source_station_native_id": station_row["source_station_native_id"],
+            "candidate_path": station_row["candidate_path"],
+            "resolved_candidate_path": station_row["resolved_candidate_path"],
+            "n_records": int(len(recs)),
+            "time_start": time_start,
+            "time_end": time_end,
+            "validation_only": 1,
+            "merge_policy": "validation_only",
+        }
+        row.update(geo_values_from_payload(station_row.get("global_attr_payload", {})))
+        catalog_rows.append(row)
+
+    return pd.DataFrame(catalog_rows).sort_values(
+        ["resolution", "cluster_uid", "source", "satellite_station_uid"],
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def main():
@@ -453,7 +622,17 @@ def main():
         return 1
 
     stations = pd.read_csv(input_path)
-    required_columns = {"source", "path", "cluster_id", "resolution", "observation_type"}
+    required_columns = {
+        "satellite_location_uid",
+        "source",
+        "path",
+        "cluster_id",
+        "cluster_uid",
+        "resolution",
+        "observation_type",
+        *LINKAGE_TEXT_FIELDS,
+        *LINKAGE_NUMERIC_FIELDS,
+    }
     missing = sorted(required_columns - set(stations.columns))
     if missing:
         print("Error: input missing columns: {}".format(", ".join(missing)))
@@ -493,11 +672,13 @@ def main():
                 "source": _safe_text(row.get("source", "")),
                 "observation_type": _safe_text(row.get("observation_type", "")),
                 "cluster_id": _safe_int(row.get("cluster_id", -1), default=-1),
+                "cluster_uid": _safe_text(row.get("cluster_uid", "")),
                 "resolution": _normalize_resolution(row.get("resolution_norm", row.get("resolution", ""))),
                 "lat": row.get("lat", np.nan),
                 "lon": row.get("lon", np.nan),
                 "candidate_path": _safe_text(row.get("_candidate_path", "")),
                 "resolved_candidate_path": _safe_text(row.get("_resolved_candidate_path", "")),
+                **_linkage_payload(row),
             }
         )
 
@@ -602,38 +783,7 @@ def main():
         source_meta_rows=source_meta_rows,
     )
 
-    catalog_rows = []
-    for station_index, station_row in enumerate(station_rows):
-        recs = station_record_map.get(station_index, [])
-        time_start, time_end = _time_bounds([item["date"] for item in recs])
-        row = {
-            "satellite_station_uid": station_row["satellite_station_uid"],
-            "cluster_uid": station_row["cluster_uid"],
-            "cluster_id": station_row["cluster_id"],
-            "source": station_row["source"],
-            "source_family": station_row["source_family"],
-            "observation_type": station_row["observation_type"],
-            "resolution": station_row["resolution"],
-            "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
-            "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
-            "station_name": station_row["station_name"],
-            "river_name": station_row["river_name"],
-            "source_station_native_id": station_row["source_station_native_id"],
-            "candidate_path": station_row["candidate_path"],
-            "resolved_candidate_path": station_row["resolved_candidate_path"],
-            "n_records": int(len(recs)),
-            "time_start": time_start,
-            "time_end": time_end,
-            "validation_only": 1,
-            "merge_policy": "validation_only",
-        }
-        row.update(geo_values_from_payload(station_row.get("global_attr_payload", {})))
-        catalog_rows.append(row)
-
-    catalog_df = pd.DataFrame(catalog_rows)
-    catalog_df = catalog_df.sort_values(
-        ["resolution", "cluster_uid", "source", "satellite_station_uid"], kind="mergesort"
-    ).reset_index(drop=True)
+    catalog_df = _build_satellite_catalog(station_rows, station_record_map)
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_df.to_csv(catalog_path, index=False)
 

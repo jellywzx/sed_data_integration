@@ -6,7 +6,7 @@ Default stage layout:
   s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
 
 Stage details:
-  s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
+  s6 = master NC + matrix NC exports + s5b linkage + climatology NC export + satellite validation NC export
   s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
   s8 = release package + catalogs + validation report
 
@@ -32,6 +32,9 @@ Typical usage:
 
   # Run explicit stages only; useful for reruns or skipping finished stages
   python run_s1_s8_basin_pipeline.py --steps s4,s5,s8
+
+  # Rerun only satellite-to-main linkage (requires existing s5 and matrix outputs)
+  python run_s1_s8_basin_pipeline.py --steps s5b
 
   # Preview the commands without executing them
   python run_s1_s8_basin_pipeline.py --steps s6,s7 --dry-run
@@ -63,6 +66,7 @@ ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
 STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
+EXPLICIT_STAGES = STAGES[:5] + ("s5b",) + STAGES[5:]
 
 # ---- Built-in runtime defaults -------------------------------------------------
 # These constants are the script's everyday defaults.
@@ -215,10 +219,10 @@ def _parse_steps_arg(steps_text):
         step = raw.strip().lower()
         if not step:
             continue
-        if step not in STAGES:
+        if step not in EXPLICIT_STAGES:
             raise SystemExit(
                 "Invalid step '{}' in --steps. Allowed: {}".format(
-                    step, ", ".join(STAGES)
+                    step, ", ".join(EXPLICIT_STAGES)
                 )
             )
         if step not in selected:
@@ -277,12 +281,14 @@ def stage_outputs():
             OUTPUT_DIR / "s5_basin_clustered_stations.csv",
             OUTPUT_DIR / "s5_basin_cluster_report.csv",
         ],
+        "s5b": [OUTPUT_DIR / "s5b_satellite_main_cluster_linkage.csv"],
         "s6": [
             OUTPUT_DIR / "s6_basin_merged_all.nc",
             OUTPUT_DIR / "s6_cluster_quality_order.csv",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_daily.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_monthly.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_annual.nc",
+            OUTPUT_DIR / "s5b_satellite_main_cluster_linkage.csv",
             OUTPUT_DIR / "s6_satellite_validation_only.nc",
             OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
@@ -317,6 +323,7 @@ def stage_outputs():
 
 def build_stage_specs(args, python_bin):
     s5_csv = OUTPUT_DIR / "s5_basin_clustered_stations.csv"
+    s5b_csv = OUTPUT_DIR / "s5b_satellite_main_cluster_linkage.csv"
     master_nc = OUTPUT_DIR / "s6_basin_merged_all.nc"
     matrix_dir = OUTPUT_DIR / "s6_matrix_by_resolution"
     cluster_catalog = OUTPUT_DIR / "s7_cluster_resolution_catalog.csv"
@@ -374,6 +381,20 @@ def build_stage_specs(args, python_bin):
         if matrix_resolution_workers is None:
             matrix_resolution_workers = 1
 
+    s5b_command = {
+        "name": "s5b_link_satellite_to_main_clusters",
+        "cmd": [
+            python_bin,
+            str(SCRIPT_DIR / "s5b_link_satellite_to_main_clusters.py"),
+            "--s5-csv",
+            str(s5_csv),
+            "--matrix-dir",
+            str(matrix_dir),
+            "--out",
+            str(s5b_csv),
+        ],
+    }
+
     s6_commands = [
         {
             "name": "s6_basin_merge_to_nc",
@@ -403,6 +424,7 @@ def build_stage_specs(args, python_bin):
             "name": "s6_export_annual_matrix_nc",
             "cmd": build_matrix_cmd("s6_export_annual_matrix_nc.py"),
         },
+        s5b_command,
     ]
     if not args.skip_climatology_export:
         s6_commands.append(
@@ -625,6 +647,10 @@ def build_stage_specs(args, python_bin):
                     ],
                 }
             ],
+        },
+        "s5b": {
+            "label": "link satellite locations to main clusters",
+            "commands": [s5b_command],
         },
         "s6": {
             "label": "build basin NetCDF outputs",
@@ -975,7 +1001,7 @@ def _confirm_config(args, stages, python_bin):
         ("Include climatology in s6 master", "--s6-include-climatology"),
         ("Skip climatology export", "--skip-climatology-export"),
         ("s8 skip validation", "--s8-skip-validation"),
-        ("[env] S6: RUN_ONLY", "export RUN_ONLY=merge,matrix_daily,..."),
+        ("[env] S6: RUN_ONLY", "export RUN_ONLY=merge,daily,monthly,annual,s5b,clim,satellite"),
         ("[env] S6: JOB_TAG", "export JOB_TAG=my_tag"),
         ("[env] S6: DAILY_WORKERS / ...", "export DAILY_WORKERS=40"),
         ("[env] S4: S4_QUEUE / S4_NCORES / ...", "export S4_QUEUE=normal"),
@@ -1173,7 +1199,7 @@ cli:
 # ============================================================
 env:
   # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
-  # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
+  # 可选: merge, daily, monthly, annual, s5b, clim, satellite
   RUN_ONLY: ""
 
   JOB_TAG: s6fast              # LSF 作业名前缀
