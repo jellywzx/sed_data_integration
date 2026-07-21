@@ -5,6 +5,7 @@ These tests use synthetic in-memory inputs only.  They do not read real release
 data and do not run any pipeline step.
 """
 
+import importlib.util
 import math
 import sys
 import tempfile
@@ -17,17 +18,21 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from s10_validation_results import (  # noqa: E402
-    TRUE_PAIR_SKIP_REASON,
-    _summarize_overlap_candidates,
-    aggregate_pair_metrics,
-    build_overlap_pair_records,
-    build_overlap_availability_diagnostic,
-    canonical_family_pair,
-    canonical_source_pair,
-    classify_source_family,
-    compute_pair_metrics,
-)
+S10_PATH = SCRIPT_DIR / "validate" / "s10_final_validation_results.py"
+S10_SPEC = importlib.util.spec_from_file_location("s10_final_validation_results", S10_PATH)
+s10_validation = importlib.util.module_from_spec(S10_SPEC)
+S10_SPEC.loader.exec_module(s10_validation)
+
+TRUE_PAIR_SKIP_REASON = s10_validation.TRUE_PAIR_SKIP_REASON
+_summarize_overlap_candidates = s10_validation._summarize_overlap_candidates
+aggregate_pair_metrics = s10_validation.aggregate_pair_metrics
+build_legacy_validation_tables = s10_validation.build_legacy_validation_tables
+build_overlap_pair_records = s10_validation.build_overlap_pair_records
+build_overlap_availability_diagnostic = s10_validation.build_overlap_availability_diagnostic
+canonical_family_pair = s10_validation.canonical_family_pair
+canonical_source_pair = s10_validation.canonical_source_pair
+classify_source_family = s10_validation.classify_source_family
+compute_pair_metrics = s10_validation.compute_pair_metrics
 import s8_publish_reference_dataset as s8_release  # noqa: E402
 
 
@@ -203,6 +208,109 @@ def test_missing_candidate_schema_diagnostic_skips_pair_metrics():
         raise AssertionError("diagnostic should include the required skipped reason")
 
 
+def test_build_legacy_validation_tables_mock():
+    records = pd.DataFrame(
+        [
+            {
+                "resolution": "daily",
+                "source": "USGS",
+                "source_family": "USGS",
+                "cluster_uid": "C1",
+                "source_station_uid": "S1",
+                "is_overlap": 1,
+            },
+            {
+                "resolution": "daily",
+                "source": "HYDAT",
+                "source_family": "HYDAT",
+                "cluster_uid": "C1",
+                "source_station_uid": "S2",
+                "is_overlap": 0,
+            },
+            {
+                "resolution": "monthly",
+                "source": "GFQA_v2",
+                "source_family": "other",
+                "cluster_uid": "C2",
+                "source_station_uid": "S3",
+                "is_overlap": 1,
+            },
+            {
+                "resolution": "annual",
+                "source": "HYBAM",
+                "source_family": "in_situ",
+                "cluster_uid": "C2",
+                "source_station_uid": "S3",
+                "is_overlap": 0,
+            },
+        ]
+    )
+    candidates = pd.DataFrame(
+        [
+            {"candidate_group_key": "G1", "selected_flag": 1, "is_overlap": 1},
+            {"candidate_group_key": "G1", "selected_flag": 0, "is_overlap": 1},
+            {"candidate_group_key": "G2", "selected_flag": 1, "is_overlap": 0},
+        ]
+    )
+    tables, summary = build_legacy_validation_tables(records, candidates)
+
+    res_family = tables["validation_resolution_source_family.csv"]
+    if list(res_family.columns) != ["res", "HYDAT", "USGS", "in_situ", "other"]:
+        raise AssertionError("unexpected resolution/source_family columns: {}".format(list(res_family.columns)))
+    daily = res_family[res_family["res"] == "daily"].iloc[0]
+    if int(daily["HYDAT"]) != 1 or int(daily["USGS"]) != 1:
+        raise AssertionError("daily family counts should include HYDAT and USGS")
+
+    by_source = tables["validation_source_by_resolution.csv"]
+    if list(by_source.columns) != ["src", "annual", "daily", "monthly"]:
+        raise AssertionError("unexpected source/resolution columns: {}".format(list(by_source.columns)))
+    usgs = by_source[by_source["src"] == "USGS"].iloc[0]
+    if int(usgs["daily"]) != 1:
+        raise AssertionError("USGS should have one daily record")
+
+    overlap_source = tables["validation_overlap_by_source.csv"]
+    gfqa = overlap_source[overlap_source["src"] == "GFQA_v2"].iloc[0]
+    if int(gfqa["count"]) != 1 or int(gfqa["sum"]) != 1:
+        raise AssertionError("GFQA_v2 overlap count/sum mismatch")
+
+    overlap_res = tables["validation_overlap_by_resolution.csv"]
+    if list(overlap_res.columns) != ["res", "0", "1"]:
+        raise AssertionError("unexpected overlap/resolution columns: {}".format(list(overlap_res.columns)))
+    daily_overlap = overlap_res[overlap_res["res"] == "daily"].iloc[0]
+    if int(daily_overlap["0"]) != 1 or int(daily_overlap["1"]) != 1:
+        raise AssertionError("daily overlap flags should have one non-overlap and one overlap")
+
+    if summary["n_master"] != 4:
+        raise AssertionError("n_master should be 4")
+    if summary["n_clusters"] != 2:
+        raise AssertionError("n_clusters should be 2")
+    if summary["n_ss"] != 3:
+        raise AssertionError("n_ss should be 3")
+    if summary["n_candidates"] != 3 or summary["n_sel"] != 2:
+        raise AssertionError("candidate summary counts mismatch")
+    if summary["n_overlap_pairs"] != 1:
+        raise AssertionError("overlap group count should count only overlap groups")
+    if summary["ov_dist"] != {"non_overlap": 2, "overlap": 2}:
+        raise AssertionError("unexpected overlap distribution: {}".format(summary["ov_dist"]))
+
+
+def test_build_legacy_validation_tables_empty_inputs():
+    tables, summary = build_legacy_validation_tables(pd.DataFrame(), pd.DataFrame())
+    expected_columns = {
+        "validation_resolution_source_family.csv": ["res"],
+        "validation_source_by_resolution.csv": ["src"],
+        "validation_overlap_by_source.csv": ["src", "count", "sum"],
+        "validation_overlap_by_resolution.csv": ["res", "0", "1"],
+    }
+    for name, columns in expected_columns.items():
+        if list(tables[name].columns) != columns:
+            raise AssertionError("{} columns mismatch: {}".format(name, list(tables[name].columns)))
+    if summary["n_master"] != 0 or summary["n_candidates"] != 0:
+        raise AssertionError("empty summary counts should be zero")
+    if summary["fam_dist"] != {}:
+        raise AssertionError("empty fam_dist should be empty")
+
+
 def test_build_overlap_candidates_sidecar_mocked_series():
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
@@ -220,6 +328,7 @@ def test_build_overlap_candidates_sidecar_mocked_series():
                     "n_candidates": 2,
                     "is_top_ranked": 1,
                     "source": "USGS",
+                    "observation_type": "in_situ",
                     "source_station_index": 0,
                     "source_station_uid": "SRC000001",
                     "path": str(first),
@@ -233,6 +342,7 @@ def test_build_overlap_candidates_sidecar_mocked_series():
                     "n_candidates": 2,
                     "is_top_ranked": 0,
                     "source": "HYDAT",
+                    "observation_type": "in_situ",
                     "source_station_index": 1,
                     "source_station_uid": "SRC000002",
                     "path": str(second),
@@ -274,7 +384,7 @@ def test_build_overlap_candidates_sidecar_mocked_series():
         finally:
             s8_release._read_candidate_series = old_reader
             s8_release.nc4 = old_nc4
-        if built_path != out_path:
+        if Path(built_path) != out_path:
             raise AssertionError("sidecar path was not returned")
         if row_count != 2:
             raise AssertionError("overlap-only sidecar should contain two candidate rows")
@@ -297,6 +407,8 @@ def main():
     test_build_overlap_pair_records_from_mock_candidates()
     test_summarize_overlap_candidates_mock()
     test_missing_candidate_schema_diagnostic_skips_pair_metrics()
+    test_build_legacy_validation_tables_mock()
+    test_build_legacy_validation_tables_empty_inputs()
     test_build_overlap_candidates_sidecar_mocked_series()
     print("s10 validation helper unit tests passed.")
 

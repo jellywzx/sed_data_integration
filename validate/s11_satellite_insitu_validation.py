@@ -24,7 +24,8 @@ VARIABLES = ("Q", "SSC", "SSL")
 WINDOW_DAYS = {"exact": 0, "pm1d": 1, "pm2d": 2}
 WINDOW_EXCLUSIVE = False
 MASTER_FILE = "sed_reference_master.nc"
-SATELLITE_VALIDATION_FILE = "sed_reference_satellite_validation.nc"
+SATELLITE_VALIDATION_FILE = "sed_reference_satellite.nc"
+LEGACY_SATELLITE_VALIDATION_FILE = "sed_reference_satellite_validation.nc"
 MAIN_MATRIX_FILES = {
     "daily": "sed_reference_timeseries_daily.nc",
     "monthly": "sed_reference_timeseries_monthly.nc",
@@ -67,6 +68,14 @@ SOURCE_PATH_COLUMNS = (
 def log_progress(message: str) -> None:
     stamp = time_module.strftime("%Y-%m-%d %H:%M:%S")
     print("[{}] {}".format(stamp, message), flush=True)
+
+
+def _find_satellite_validation_file(release_dir: Path) -> Path:
+    """Prefer the canonical satellite release file, with legacy fallback."""
+    canonical = release_dir / SATELLITE_VALIDATION_FILE
+    if canonical.is_file():
+        return canonical
+    return release_dir / LEGACY_SATELLITE_VALIDATION_FILE
 
 
 def _clean_text(value) -> str:
@@ -815,7 +824,7 @@ def load_observations_from_master_nc(release_dir: Path, progress=log_progress) -
 
 
 def load_observations_from_satellite_validation_nc(release_dir: Path, progress=log_progress) -> Tuple[pd.DataFrame, str]:
-    path = release_dir / SATELLITE_VALIDATION_FILE
+    path = _find_satellite_validation_file(release_dir)
     if not path.exists():
         return pd.DataFrame(), "satellite validation NetCDF not found"
     try:
@@ -1176,7 +1185,7 @@ def load_relevant_satellite_validation_records(
         "no_time_overlap": 0,
         "no_variable_values": 0,
     }
-    path = release_dir / SATELLITE_VALIDATION_FILE
+    path = _find_satellite_validation_file(release_dir)
     if not path.exists():
         stats["missing_file"] = 1
         return pd.DataFrame(), stats
@@ -2159,13 +2168,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-satellite-validation-nc",
         action="store_true",
-        help="Do not append matching records from sed_reference_satellite_validation.nc.",
+        help="Do not append matching records from sed_reference_satellite.nc.",
     )
     parser.add_argument(
         "--satellite-chunk-size",
         type=int,
         default=DEFAULT_SATELLITE_CHUNK_SIZE,
-        help="Record chunk size when scanning sed_reference_satellite_validation.nc.",
+        help="Record chunk size when scanning sed_reference_satellite.nc.",
     )
     parser.add_argument(
         "--workers",
