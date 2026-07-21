@@ -67,6 +67,16 @@ REACH_SCALE_POLICY_SOURCE_SET = frozenset(name.lower() for name in REACH_SCALE_P
 REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
 REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
 
+SOURCE_SPATIAL_SUPPORT_REACH_SCALE = "reach_scale"
+SOURCE_SPATIAL_SUPPORT_POINT_ANCHORED_REACH = "point_anchored_reach"
+SOURCE_SPATIAL_SUPPORT_STATION_POINT = "station_point"
+SOURCE_SPATIAL_SUPPORT_BY_SOURCE = {
+    "gsed": SOURCE_SPATIAL_SUPPORT_REACH_SCALE,
+    "riversed": SOURCE_SPATIAL_SUPPORT_REACH_SCALE,
+    "dethier": SOURCE_SPATIAL_SUPPORT_POINT_ANCHORED_REACH,
+    "deither": SOURCE_SPATIAL_SUPPORT_POINT_ANCHORED_REACH,
+}
+
 # No source is currently excluded from s4 basin matching. Dethier is the
 # canonical spelling and should follow the ordinary station policy.
 NO_BASIN_MATCH_SOURCE_SET = frozenset()
@@ -125,6 +135,14 @@ def normalize_match_quality(value):
 def normalize_source_name(value):
     """Map source names to a lowercase comparable token."""
     return _clean_text(value).lower()
+
+
+def classify_source_spatial_support(source_name):
+    """Return the spatial-support model used by source-specific linkage rules."""
+    return SOURCE_SPATIAL_SUPPORT_BY_SOURCE.get(
+        normalize_source_name(source_name),
+        SOURCE_SPATIAL_SUPPORT_STATION_POINT,
+    )
 
 
 def should_skip_basin_matching(source_name):

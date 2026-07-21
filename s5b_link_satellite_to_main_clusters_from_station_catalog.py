@@ -12,11 +12,16 @@ and of the MERIT reach (``basin_id``) assigned to each main cluster.
 
 import argparse
 import math
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 
+from basin_policy import (
+    SOURCE_SPATIAL_SUPPORT_POINT_ANCHORED_REACH,
+    classify_source_spatial_support,
+)
 from pipeline_paths import (
     RELEASE_STATION_CATALOG_CSV,
     S5_BASIN_CLUSTERED_CSV,
@@ -25,17 +30,26 @@ from pipeline_paths import (
 )
 from s5b_link_satellite_to_main_clusters import (
     DEFAULT_MAX_DISTANCE_M,
+    DEFAULT_MERIT_DIR,
+    DEFAULT_POINT_ANCHORED_MAX_AREA_LOG10_DIFF,
+    DEFAULT_POINT_ANCHORED_MAX_NETWORK_DISTANCE_M,
+    DEFAULT_POINT_ANCHORED_MAX_POINT_DISTANCE_M,
+    DEFAULT_POINT_ANCHORED_MAX_REACH_HOPS,
     LINK_METHOD,
+    GSED_DAILY_FALLBACK_LINK_METHOD,
     OUTPUT_COLUMNS,
     SUPPORTED_RESOLUTIONS,
+    MeritReachNetwork,
     _clean_text,
     _finite_float,
+    _link_dethier_point_anchored,
+    _link_legacy_reach_scale,
+    _linkage_base_defaults,
     _unlinked_row,
     _validate_station_input,
-    haversine_distance_m,
+    allowed_link_resolutions,
     normalize_resolution,
     satellite_location_uid,
-    upstream_area_log10_error,
 )
 from s6_basin_merge_to_nc import classify_source_family_from_observation_type
 
@@ -174,6 +188,7 @@ def _build_main_reach_index_from_catalog(stations, catalog):
             "cluster_id": cluster_id,
             "cluster_uid": _clean_text(row.cluster_uid),
             "resolution": resolution,
+            "basin_id": int(basin_id),
             "lat": _finite_float(row.lat),
             "lon": _finite_float(row.lon),
             "uparea": _finite_float(row.basin_area),
@@ -183,7 +198,15 @@ def _build_main_reach_index_from_catalog(stations, catalog):
 
 
 def link_satellite_to_main_clusters_from_catalog(
-    stations, station_catalog, max_distance_m=DEFAULT_MAX_DISTANCE_M
+    stations,
+    station_catalog,
+    max_distance_m=DEFAULT_MAX_DISTANCE_M,
+    merit_dir=None,
+    reach_network=None,
+    max_point_distance_m=DEFAULT_POINT_ANCHORED_MAX_POINT_DISTANCE_M,
+    max_network_distance_m=DEFAULT_POINT_ANCHORED_MAX_NETWORK_DISTANCE_M,
+    max_reach_hops=DEFAULT_POINT_ANCHORED_MAX_REACH_HOPS,
+    max_area_log10_diff=DEFAULT_POINT_ANCHORED_MAX_AREA_LOG10_DIFF,
 ):
     """Build one deterministic linkage row per satellite location/resolution."""
     _validate_station_input(stations)
@@ -215,6 +238,11 @@ def link_satellite_to_main_clusters_from_catalog(
     reach_index, catalog_resolutions = _build_main_reach_index_from_catalog(
         work, station_catalog
     )
+    if reach_network is None:
+        configured_merit_dir = merit_dir or os.environ.get("MERIT_DIR") or DEFAULT_MERIT_DIR
+        reach_network = MeritReachNetwork(configured_merit_dir)
+    elif isinstance(reach_network, dict):
+        reach_network = MeritReachNetwork(reach_rows=reach_network)
     satellites = satellites.sort_values(key_columns + ["cluster_id"], kind="mergesort")
     output_rows = []
 
@@ -237,6 +265,8 @@ def link_satellite_to_main_clusters_from_catalog(
             "basin_status": _clean_text(row.basin_status),
             "basin_flag": _clean_text(getattr(row, "basin_flag", "")),
         }
+        linkage_mode = classify_source_spatial_support(base["source"])
+        _linkage_base_defaults(base, linkage_mode)
 
         if resolution not in SUPPORTED_RESOLUTIONS:
             output_rows.append(_unlinked_row(base, "invalid_resolution"))
@@ -250,58 +280,49 @@ def link_satellite_to_main_clusters_from_catalog(
         if not math.isfinite(base["basin_id"]):
             output_rows.append(_unlinked_row(base, "missing_satellite_reach"))
             continue
-        if resolution not in catalog_resolutions:
-            output_rows.append(_unlinked_row(base, "catalog_resolution_missing"))
-            continue
 
-        reach_candidates = reach_index.get((resolution, int(base["basin_id"])), [])
-        if not reach_candidates:
-            output_rows.append(_unlinked_row(base, "no_main_cluster_on_same_reach"))
-            continue
-
-        qualified = []
-        for candidate in reach_candidates:
-            if not math.isfinite(candidate["lat"]) or not math.isfinite(candidate["lon"]):
+        if linkage_mode == SOURCE_SPATIAL_SUPPORT_POINT_ANCHORED_REACH:
+            base["link_attempted_resolutions"] = resolution
+            if resolution not in catalog_resolutions:
+                output_rows.append(_unlinked_row(base, "catalog_resolution_missing"))
                 continue
-            distance = haversine_distance_m(
-                base["lat"], base["lon"], candidate["lat"], candidate["lon"]
+            output_rows.append(
+                _link_dethier_point_anchored(
+                    base,
+                    resolution,
+                    reach_index,
+                    reach_network,
+                    max_point_distance_m=max_point_distance_m,
+                    max_network_distance_m=max_network_distance_m,
+                    max_reach_hops=max_reach_hops,
+                    max_area_log10_diff=max_area_log10_diff,
+                )
             )
-            if distance > float(max_distance_m):
+        else:
+            target_resolutions = tuple(
+                item for item in allowed_link_resolutions(base["source"], resolution)
+                if item in catalog_resolutions
+            )
+            base["link_attempted_resolutions"] = "|".join(
+                allowed_link_resolutions(base["source"], resolution)
+            )
+            if not target_resolutions:
+                output_rows.append(_unlinked_row(base, "catalog_resolution_missing"))
                 continue
-            area_error = upstream_area_log10_error(base["uparea_merit"], candidate["uparea"])
-            qualified.append((candidate, distance, area_error))
-
-        if not qualified:
-            output_rows.append(_unlinked_row(base, "no_candidate_within_5km"))
-            continue
-
-        qualified.sort(
-            key=lambda item: (
-                item[1],
-                not math.isfinite(item[2]),
-                item[2] if math.isfinite(item[2]) else math.inf,
-                item[0]["cluster_uid"],
-                item[0]["cluster_id"],
+            linked = _link_legacy_reach_scale(
+                base,
+                resolution,
+                target_resolutions,
+                reach_index,
+                max_distance_m=max_distance_m,
             )
-        )
-        candidate, distance, area_error = qualified[0]
-        base.update(
-            {
-                "linked_cluster_id": candidate["cluster_id"],
-                "linked_cluster_uid": candidate["cluster_uid"],
-                "linked_resolution": resolution,
-                "link_status": "linked",
-                "link_method": LINK_METHOD.replace("matrix", "station_catalog"),
-                "link_quality": "distance_and_area_ranked"
-                if math.isfinite(area_error)
-                else "distance_ranked_area_unavailable",
-                "link_distance_m": distance,
-                "link_uparea_log10_error": area_error,
-                "link_candidate_count": len(qualified),
-                "unlinked_reason": "",
-            }
-        )
-        output_rows.append(base)
+            if _clean_text(linked.get("link_method")) == LINK_METHOD:
+                linked["link_method"] = LINK_METHOD.replace("matrix", "station_catalog")
+            if _clean_text(linked.get("link_method")) == GSED_DAILY_FALLBACK_LINK_METHOD:
+                linked["link_method"] = GSED_DAILY_FALLBACK_LINK_METHOD.replace(
+                    "matrix", "station_catalog"
+                )
+            output_rows.append(linked)
 
     result = pd.DataFrame(output_rows, columns=OUTPUT_COLUMNS)
     if result.duplicated(["satellite_location_uid", "resolution"]).any():
@@ -317,6 +338,27 @@ def parse_args(argv=None):
     parser.add_argument("--station-catalog", default=str(DEFAULT_STATION_CATALOG))
     parser.add_argument("--out", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--max-distance-m", type=float, default=DEFAULT_MAX_DISTANCE_M)
+    parser.add_argument("--merit-dir", default=str(os.environ.get("MERIT_DIR") or DEFAULT_MERIT_DIR))
+    parser.add_argument(
+        "--point-anchored-max-point-distance-m",
+        type=float,
+        default=DEFAULT_POINT_ANCHORED_MAX_POINT_DISTANCE_M,
+    )
+    parser.add_argument(
+        "--point-anchored-max-network-distance-m",
+        type=float,
+        default=DEFAULT_POINT_ANCHORED_MAX_NETWORK_DISTANCE_M,
+    )
+    parser.add_argument(
+        "--point-anchored-max-reach-hops",
+        type=int,
+        default=DEFAULT_POINT_ANCHORED_MAX_REACH_HOPS,
+    )
+    parser.add_argument(
+        "--point-anchored-max-area-log10-diff",
+        type=float,
+        default=DEFAULT_POINT_ANCHORED_MAX_AREA_LOG10_DIFF,
+    )
     return parser.parse_args(argv)
 
 
@@ -330,7 +372,14 @@ def main(argv=None):
         stations = pd.read_csv(s5_csv, low_memory=False)
         station_catalog = load_station_catalog_table(args.station_catalog)
         result = link_satellite_to_main_clusters_from_catalog(
-            stations, station_catalog, max_distance_m=args.max_distance_m
+            stations,
+            station_catalog,
+            max_distance_m=args.max_distance_m,
+            merit_dir=args.merit_dir,
+            max_point_distance_m=args.point_anchored_max_point_distance_m,
+            max_network_distance_m=args.point_anchored_max_network_distance_m,
+            max_reach_hops=args.point_anchored_max_reach_hops,
+            max_area_log10_diff=args.point_anchored_max_area_log10_diff,
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print("Error: {}".format(exc), file=sys.stderr)

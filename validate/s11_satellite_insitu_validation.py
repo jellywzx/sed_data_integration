@@ -44,6 +44,9 @@ DEFAULT_WORKERS = max(1, min(32, os.cpu_count() or 1))
 DEFAULT_SATELLITE_CHUNK_SIZE = 1000000
 DEFAULT_HIGH_TURBIDITY_SSC = 1000.0
 DEFAULT_SSC_BIN_EDGES = (100.0, 500.0, 1000.0, 5000.0)
+DEFAULT_GSED_DAILY_AGGREGATION = "median"
+DEFAULT_GSED_MIN_VALID_DAYS = 3
+DEFAULT_GSED_VALID_FLAGS = (0, 1)
 METHOD_NOTES_BASE = (
     "satellite/reach-scale vs in-situ validation; satellite records are anchors; "
     "pairing windows are cumulative"
@@ -282,6 +285,20 @@ def _family_key(value) -> str:
     text = re.sub(r"[^a-z0-9]+", "_", text)
     text = re.sub(r"_+", "_", text).strip("_")
     return text
+
+
+def _is_gsed_source(value) -> bool:
+    return _family_key(value) == "gsed"
+
+
+def parse_valid_flags(text: str) -> Tuple[int, ...]:
+    flags = []
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        flags.append(int(token))
+    return tuple(sorted(set(flags)))
 
 
 def load_source_taxonomy(path: Optional[Path] = None) -> Dict[str, str]:
@@ -917,10 +934,12 @@ def load_observations_from_satellite_validation_nc(release_dir: Path, progress=l
         & published_link
     )
     records = records[valid_link].copy()
+    records["satellite_native_resolution"] = records["resolution"].map(_normalize_resolution)
+    records["main_native_resolution"] = records["linked_resolution"]
+    records["comparison_resolution"] = records["satellite_native_resolution"]
     records["cluster_uid"] = records["linked_cluster_uid"]
     if "linked_cluster_id" in records.columns:
         records["cluster_id"] = records["linked_cluster_id"]
-    records["resolution"] = records["linked_resolution"]
     return records, "satellite validation records loaded with linked main-cluster keys"
 
 
@@ -1007,6 +1026,7 @@ def _load_matching_satellite_station_metadata(
     linked_cluster_ids = pd.to_numeric(_station_series(ds, "linked_cluster_id", station_dim, np.nan), errors="coerce")
     linked_cluster_uids = _station_series(ds, "linked_cluster_uid", station_dim, "").map(_clean_text)
     linked_resolutions = _station_series(ds, "linked_resolution", station_dim, "").map(_normalize_resolution)
+    station_resolutions = _station_series(ds, "station_resolution", station_dim, "").map(_normalize_resolution)
     link_statuses = _station_series(ds, "link_status", station_dim, "").map(_clean_text).str.lower()
     sources = _station_series(ds, "source", station_dim, "").map(_clean_text)
     families = _station_series(ds, "source_family", station_dim, "satellite").map(_clean_text)
@@ -1040,7 +1060,10 @@ def _load_matching_satellite_station_metadata(
         meta_by_station[idx] = {
             "cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
             "cluster_uid": linked_uid,
-            "resolution": linked_resolution,
+            "resolution": station_resolutions.iloc[idx] or linked_resolution,
+            "satellite_native_resolution": station_resolutions.iloc[idx] or linked_resolution,
+            "main_native_resolution": linked_resolution,
+            "comparison_resolution": station_resolutions.iloc[idx] or linked_resolution,
             "linked_cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
             "linked_cluster_uid": linked_uid,
             "linked_resolution": linked_resolution,
@@ -1127,6 +1150,9 @@ def _satellite_chunk_worker(
                 "cluster_uid": meta.get("cluster_uid", ""),
                 "cluster_id": meta.get("cluster_id", ""),
                 "resolution": meta.get("resolution", ""),
+                "satellite_native_resolution": meta.get("satellite_native_resolution", meta.get("resolution", "")),
+                "main_native_resolution": meta.get("main_native_resolution", meta.get("linked_resolution", "")),
+                "comparison_resolution": meta.get("comparison_resolution", meta.get("resolution", "")),
                 "linked_cluster_uid": meta.get("linked_cluster_uid", ""),
                 "linked_cluster_id": meta.get("linked_cluster_id", ""),
                 "linked_resolution": meta.get("linked_resolution", ""),
@@ -1264,6 +1290,309 @@ def load_relevant_satellite_validation_records(
     return out, stats
 
 
+def _load_linked_satellite_station_metadata(ds, main_matrix_cluster_uids: Dict[str, set]) -> Tuple[Dict[int, Dict[str, object]], Dict[str, int]]:
+    station_dim = "n_satellite_stations" if "n_satellite_stations" in ds.sizes else None
+    if station_dim is None:
+        return {}, {"satellite_catalog_keys": 0, "unlinked_station_count": 0, "invalid_link_target_count": 0}
+    n_stations = int(ds.sizes[station_dim])
+    singleton_cluster_name = "cluster_id_station" if "cluster_id_station" in ds.variables else "cluster_id"
+    singleton_cluster_ids = pd.to_numeric(_station_series(ds, singleton_cluster_name, station_dim, np.nan), errors="coerce")
+    singleton_cluster_uids = _station_series(ds, "cluster_uid", station_dim, "").map(_clean_text)
+    linked_cluster_ids = pd.to_numeric(_station_series(ds, "linked_cluster_id", station_dim, np.nan), errors="coerce")
+    linked_cluster_uids = _station_series(ds, "linked_cluster_uid", station_dim, "").map(_clean_text)
+    linked_resolutions = _station_series(ds, "linked_resolution", station_dim, "").map(_normalize_resolution)
+    station_resolutions = _station_series(ds, "station_resolution", station_dim, "").map(_normalize_resolution)
+    link_statuses = _station_series(ds, "link_status", station_dim, "").map(_clean_text).str.lower()
+    sources = _station_series(ds, "source", station_dim, "").map(_clean_text)
+    families = _station_series(ds, "source_family", station_dim, "satellite").map(_clean_text)
+    station_uids = _station_series(ds, "satellite_station_uid", station_dim, "").map(_clean_text)
+    native_ids = _station_series(ds, "source_station_native_id", station_dim, "").map(_clean_text)
+    candidate_paths = _station_series(ds, "candidate_path", station_dim, "").map(_clean_text)
+    resolved_paths = _station_series(ds, "resolved_candidate_path", station_dim, "").map(_clean_text)
+
+    meta_by_station: Dict[int, Dict[str, object]] = {}
+    stats = {"satellite_catalog_keys": 0, "unlinked_station_count": 0, "invalid_link_target_count": 0}
+    for idx in range(n_stations):
+        family = classify_source_family(sources.iloc[idx], raw_family=families.iloc[idx], observation_type="Satellite")
+        if family != "satellite":
+            continue
+        if link_statuses.iloc[idx] != "linked":
+            stats["unlinked_station_count"] += 1
+            continue
+        linked_uid = linked_cluster_uids.iloc[idx]
+        linked_resolution = linked_resolutions.iloc[idx]
+        if (
+            not linked_uid
+            or linked_resolution not in LINKED_RESOLUTIONS
+            or linked_uid not in main_matrix_cluster_uids.get(linked_resolution, set())
+        ):
+            stats["invalid_link_target_count"] += 1
+            continue
+        stats["satellite_catalog_keys"] += 1
+        station_resolution = station_resolutions.iloc[idx] or linked_resolution
+        meta_by_station[idx] = {
+            "cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
+            "cluster_uid": linked_uid,
+            "resolution": station_resolution,
+            "satellite_native_resolution": station_resolution,
+            "main_native_resolution": linked_resolution,
+            "comparison_resolution": station_resolution,
+            "linked_cluster_id": int(linked_cluster_ids.iloc[idx]) if pd.notna(linked_cluster_ids.iloc[idx]) else "",
+            "linked_cluster_uid": linked_uid,
+            "linked_resolution": linked_resolution,
+            "link_status": "linked",
+            "satellite_singleton_cluster_id": int(singleton_cluster_ids.iloc[idx]) if pd.notna(singleton_cluster_ids.iloc[idx]) else "",
+            "satellite_singleton_cluster_uid": singleton_cluster_uids.iloc[idx],
+            "source": sources.iloc[idx],
+            "source_family": "satellite",
+            "observation_type": "Satellite",
+            "source_station_uid": station_uids.iloc[idx],
+            "source_station_native_id": native_ids.iloc[idx],
+            "candidate_path": candidate_paths.iloc[idx],
+            "source_station_paths": resolved_paths.iloc[idx] or candidate_paths.iloc[idx],
+        }
+    return meta_by_station, stats
+
+
+def _satellite_all_chunk_worker(
+    item: Tuple[int, str, int, int, Dict[int, Dict[str, object]], str]
+) -> Tuple[int, pd.DataFrame, Dict[str, int]]:
+    ordinal, path_text, start, stop, meta_by_station, time_units = item
+    stats = {"records_scanned": max(0, int(stop) - int(start)), "station_hits": 0, "value_hits": 0}
+    rows: List[Dict[str, object]] = []
+    ds = _open_dataset_compat(Path(path_text))
+    try:
+        record_slice = slice(start, stop)
+        station_idx = np.asarray(ds["satellite_station_index"].values[record_slice])
+        times = np.asarray(ds["time"].values[record_slice], dtype=float)
+        station_mask = np.asarray([int(idx) in meta_by_station for idx in station_idx], dtype=bool)
+        stats["station_hits"] = int(station_mask.sum())
+        if not stats["station_hits"]:
+            return ordinal, pd.DataFrame(), stats
+        keep_positions_arr = np.where(station_mask)[0].astype(int)
+        values: Dict[str, np.ndarray] = {}
+        flags: Dict[str, np.ndarray] = {}
+        for variable in VARIABLES:
+            values[variable] = (
+                np.asarray(ds[variable].values[record_slice])[keep_positions_arr]
+                if variable in ds.variables
+                else np.full(len(keep_positions_arr), np.nan)
+            )
+            flag_name = "{}_flag".format(variable)
+            flags[variable] = (
+                np.asarray(ds[flag_name].values[record_slice])[keep_positions_arr]
+                if flag_name in ds.variables
+                else np.full(len(keep_positions_arr), np.nan)
+            )
+        finite_any = np.zeros(len(keep_positions_arr), dtype=bool)
+        for variable in VARIABLES:
+            finite_any |= np.isfinite(pd.to_numeric(pd.Series(values[variable]), errors="coerce").to_numpy(dtype=float))
+        stats["value_hits"] = int(finite_any.sum())
+        if not stats["value_hits"]:
+            return ordinal, pd.DataFrame(), stats
+        for out_pos, local_pos in enumerate(keep_positions_arr):
+            if not finite_any[out_pos]:
+                continue
+            station_integer = int(station_idx[local_pos])
+            meta = meta_by_station[station_integer]
+            time_value = float(times[local_pos]) if np.isfinite(times[local_pos]) else np.nan
+            row: Dict[str, object] = {
+                "record_index": "satellite:{}".format(int(start) + int(local_pos)),
+                "cluster_uid": meta.get("cluster_uid", ""),
+                "cluster_id": meta.get("cluster_id", ""),
+                "resolution": meta.get("resolution", ""),
+                "satellite_native_resolution": meta.get("satellite_native_resolution", meta.get("resolution", "")),
+                "main_native_resolution": meta.get("main_native_resolution", meta.get("linked_resolution", "")),
+                "comparison_resolution": meta.get("comparison_resolution", meta.get("resolution", "")),
+                "linked_cluster_uid": meta.get("linked_cluster_uid", ""),
+                "linked_cluster_id": meta.get("linked_cluster_id", ""),
+                "linked_resolution": meta.get("linked_resolution", ""),
+                "link_status": meta.get("link_status", ""),
+                "satellite_singleton_cluster_uid": meta.get("satellite_singleton_cluster_uid", ""),
+                "satellite_singleton_cluster_id": meta.get("satellite_singleton_cluster_id", ""),
+                "source": meta.get("source", ""),
+                "source_family": "satellite",
+                "observation_type": "Satellite",
+                "source_station_uid": meta.get("source_station_uid", ""),
+                "source_station_native_id": meta.get("source_station_native_id", ""),
+                "source_station_paths": meta.get("source_station_paths", ""),
+                "candidate_path": meta.get("candidate_path", ""),
+                "time": time_value,
+                "_time_units": time_units,
+                "validation_only": 1,
+                "merge_policy": "validation_only",
+            }
+            if np.isfinite(time_value):
+                parsed_date = _parse_cf_days_since(pd.Series([time_value]), time_units).iloc[0]
+                row["date"] = parsed_date.strftime("%Y-%m-%d") if pd.notna(parsed_date) else ""
+            else:
+                row["date"] = ""
+            for variable in VARIABLES:
+                row[variable] = values[variable][out_pos]
+                row["{}_flag".format(variable)] = flags[variable][out_pos]
+            rows.append(row)
+    finally:
+        ds.close()
+    return ordinal, pd.DataFrame(rows), stats
+
+
+def _month_periods_from_times(times: pd.Series) -> set:
+    parsed = pd.to_datetime(times, errors="coerce")
+    return set(parsed.dropna().dt.to_period("M"))
+
+
+def _build_main_windows_from_satellite_rows(satellite_rows: pd.DataFrame, windows: Sequence[str]) -> Dict[Tuple[str, str], Dict[str, object]]:
+    max_window = max(WINDOW_DAYS[window] for window in windows) if windows else 0
+    ranges: Dict[Tuple[str, str], Dict[str, object]] = {}
+    if satellite_rows.empty:
+        return ranges
+    work = satellite_rows.copy()
+    work["_time_day"] = pd.to_datetime(work["time"], errors="coerce").dt.floor("D")
+    for (cluster_uid, main_resolution), group in _groupby_compat(work, ["linked_cluster_uid", "linked_resolution"]):
+        key = (_clean_text(cluster_uid), _normalize_resolution(main_resolution))
+        if not key[0] or key[1] not in LINKED_RESOLUTIONS:
+            continue
+        gsed_monthly = group["source"].map(_is_gsed_source).any() and group["satellite_native_resolution"].map(_normalize_resolution).eq("monthly").any()
+        entry = ranges.setdefault(key, {"ranges": [], "months": set()})
+        if gsed_monthly:
+            entry["months"].update(_month_periods_from_times(group["_time_day"]))
+        else:
+            start = group["_time_day"].min() - pd.Timedelta(days=max_window)
+            end = group["_time_day"].max() + pd.Timedelta(days=max_window)
+            if pd.notna(start) and pd.notna(end):
+                entry["ranges"].append((start, end))
+    return ranges
+
+
+def _load_main_matrix_records_for_windows(release_dir: Path, windows_by_key: Dict[Tuple[str, str], Dict[str, object]]) -> pd.DataFrame:
+    frames = []
+    for resolution, filename in MAIN_MATRIX_FILES.items():
+        keys = {cluster_uid: value for (cluster_uid, res), value in windows_by_key.items() if res == resolution}
+        if not keys:
+            continue
+        path = release_dir / filename
+        if not path.exists():
+            continue
+        ds = _open_dataset_compat(path)
+        try:
+            if "cluster_uid" not in ds.variables or "time" not in ds.variables:
+                continue
+            cluster_uids = _series_from_data_array(ds["cluster_uid"]).map(_clean_text).reset_index(drop=True)
+            cluster_ids = pd.to_numeric(_station_series(ds, "cluster_id", "n_stations", np.nan), errors="coerce")
+            cluster_to_idx = {uid: idx for idx, uid in enumerate(cluster_uids.tolist()) if uid}
+            time_units = getattr(ds["time"], "units", "days since 1970-01-01")
+            time_values = pd.to_numeric(_series_from_data_array(ds["time"]), errors="coerce")
+            time_days = _parse_cf_days_since(time_values, time_units).dt.floor("D")
+            source_uid_values = ds["selected_source_station_uid"].values if "selected_source_station_uid" in ds.variables else None
+            for cluster_uid, window in sorted(keys.items()):
+                station_idx = cluster_to_idx.get(cluster_uid)
+                if station_idx is None:
+                    continue
+                mask = pd.Series(False, index=time_days.index)
+                for start, end in window.get("ranges", []):
+                    mask |= time_days.between(start, end)
+                months = window.get("months", set())
+                if months:
+                    mask |= time_days.dt.to_period("M").isin(months)
+                positions = np.where(mask.to_numpy(dtype=bool))[0]
+                if len(positions) == 0:
+                    continue
+                data: Dict[str, object] = {
+                    "record_index": ["main:{}:{}:{}".format(resolution, station_idx, int(pos)) for pos in positions],
+                    "cluster_uid": [cluster_uid] * len(positions),
+                    "cluster_id": [int(cluster_ids.iloc[station_idx]) if pd.notna(cluster_ids.iloc[station_idx]) else ""] * len(positions),
+                    "resolution": [resolution] * len(positions),
+                    "main_native_resolution": [resolution] * len(positions),
+                    "comparison_resolution": [resolution] * len(positions),
+                    "date": [time_days.iloc[pos].strftime("%Y-%m-%d") if pd.notna(time_days.iloc[pos]) else "" for pos in positions],
+                    "time": [time_days.iloc[pos] for pos in positions],
+                    "source": ["main_matrix"] * len(positions),
+                    "source_family": ["in_situ"] * len(positions),
+                    "observation_type": ["in_situ"] * len(positions),
+                    "source_station_uid": [""] * len(positions),
+                }
+                if source_uid_values is not None:
+                    data["source_station_uid"] = [
+                        _clean_text(source_uid_values[station_idx, int(pos)]) for pos in positions
+                    ]
+                for variable in VARIABLES:
+                    if variable in ds.variables:
+                        data[variable] = np.asarray(ds[variable].isel(n_stations=station_idx, time=positions).values)
+                    else:
+                        data[variable] = np.full(len(positions), np.nan)
+                    flag_name = "{}_flag".format(variable)
+                    if flag_name in ds.variables:
+                        data[flag_name] = np.asarray(ds[flag_name].isel(n_stations=station_idx, time=positions).values)
+                    else:
+                        data[flag_name] = np.full(len(positions), np.nan)
+                frames.append(pd.DataFrame(data))
+        finally:
+            ds.close()
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+
+def load_observations_from_satellite_main_matrices(
+    release_dir: Path,
+    windows: Sequence[str] = ("exact", "pm1d", "pm2d"),
+    workers: int = 1,
+    chunk_size: int = DEFAULT_SATELLITE_CHUNK_SIZE,
+    progress=log_progress,
+) -> Tuple[pd.DataFrame, Dict[str, int], str]:
+    stats = {
+        "satellite_catalog_keys": 0,
+        "unlinked_station_count": 0,
+        "invalid_link_target_count": 0,
+        "satellite_rows": 0,
+        "main_matrix_rows": 0,
+        "missing_file": 0,
+    }
+    path = _find_satellite_validation_file(release_dir)
+    if not path.exists():
+        stats["missing_file"] = 1
+        return pd.DataFrame(), stats, "satellite validation NetCDF not found"
+    ds = _open_dataset_compat(path)
+    try:
+        if "satellite_station_index" not in ds.variables or "time" not in ds.variables:
+            return pd.DataFrame(), stats, "satellite validation NetCDF missing record index/time"
+        main_matrix_cluster_uids = _load_main_matrix_cluster_uids(release_dir)
+        meta_by_station, station_stats = _load_linked_satellite_station_metadata(ds, main_matrix_cluster_uids)
+        stats.update({key: int(value) for key, value in station_stats.items()})
+        if not meta_by_station:
+            return pd.DataFrame(), stats, "no linked satellite stations with published main matrix targets"
+        time_units = getattr(ds["time"], "units", "days since 1970-01-01")
+        n_records = int(ds.sizes.get("n_satellite_records", 0))
+    finally:
+        ds.close()
+
+    chunk_size = max(1, int(chunk_size or DEFAULT_SATELLITE_CHUNK_SIZE))
+    chunks = [(start, min(start + chunk_size, n_records)) for start in range(0, n_records, chunk_size)]
+    tasks = [(ordinal, str(path), start, stop, meta_by_station, time_units) for ordinal, (start, stop) in enumerate(chunks)]
+    workers = max(1, int(workers or 1))
+    if progress:
+        progress("Matrix-driven satellite scan: linked_stations={}, chunks={}, workers={}".format(len(meta_by_station), len(chunks), workers))
+    if workers == 1 or len(tasks) <= 1:
+        results = [_satellite_all_chunk_worker(task) for task in tasks]
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_satellite_all_chunk_worker, tasks, chunksize=1))
+    satellite_frames = []
+    for _, frame, chunk_stats in sorted(results, key=lambda item: item[0]):
+        if not frame.empty:
+            satellite_frames.append(frame)
+        stats["satellite_rows"] += int(chunk_stats.get("value_hits", 0))
+    if not satellite_frames:
+        return pd.DataFrame(), stats, "no linked satellite records with values"
+    satellite_rows = pd.concat(satellite_frames, ignore_index=True, sort=False)
+    satellite_rows["time"] = pd.to_datetime(satellite_rows["date"], errors="coerce").dt.floor("D")
+    windows_by_key = _build_main_windows_from_satellite_rows(satellite_rows, windows)
+    main_rows = _load_main_matrix_records_for_windows(release_dir, windows_by_key)
+    stats["main_matrix_rows"] = int(len(main_rows))
+    if main_rows.empty:
+        return pd.DataFrame(), stats, "no main matrix rows overlapping linked satellite records"
+    combined = pd.concat([main_rows, satellite_rows], ignore_index=True, sort=False)
+    return combined, stats, "satellite and linked main matrix records loaded"
+
+
 def _normalize_resolution(value) -> str:
     text = _clean_text(value)
     if not text:
@@ -1315,6 +1644,9 @@ def normalize_observation_table(
     out["cluster_uid"] = _extract_column(raw, ("cluster_uid", "station_uid", "cluster_uuid"), "")
     out["cluster_id"] = _extract_column(raw, ("cluster_id", "station_id", "master_station_index", "station_index"), "")
     out["resolution"] = _extract_column(raw, ("resolution", "time_resolution", "temporal_resolution"), "").map(_normalize_resolution)
+    out["satellite_native_resolution"] = _extract_column(raw, ("satellite_native_resolution",), "").map(_normalize_resolution)
+    out["main_native_resolution"] = _extract_column(raw, ("main_native_resolution",), "").map(_normalize_resolution)
+    out["comparison_resolution"] = _extract_column(raw, ("comparison_resolution",), "").map(_normalize_resolution)
     out["linked_cluster_uid"] = _extract_column(raw, ("linked_cluster_uid",), "").map(_clean_text)
     out["linked_cluster_id"] = _extract_column(raw, ("linked_cluster_id",), "")
     out["linked_resolution"] = _extract_column(raw, ("linked_resolution",), "").map(_normalize_resolution)
@@ -1353,11 +1685,31 @@ def normalize_observation_table(
         & out["linked_cluster_uid"].astype(str).str.strip().ne("")
         & out["linked_resolution"].isin(LINKED_RESOLUTIONS)
     )
+    same_resolution_link = out["resolution"].eq(out["linked_resolution"])
+    gsed_monthly_daily_link = (
+        out["source"].map(_is_gsed_source)
+        & out["resolution"].eq("monthly")
+        & out["linked_resolution"].eq("daily")
+    )
+    linked_satellite_mask &= same_resolution_link | gsed_monthly_daily_link
     # Satellite singleton IDs are provenance only. Pairing is always keyed by
-    # the explicitly published main-cluster linkage at the same resolution.
+    # the explicitly published main-cluster linkage. The native satellite
+    # resolution is preserved separately from the linked main resolution.
+    out.loc[satellite_mask & out["satellite_native_resolution"].eq(""), "satellite_native_resolution"] = out.loc[
+        satellite_mask & out["satellite_native_resolution"].eq(""), "resolution"
+    ]
+    out.loc[~satellite_mask & out["main_native_resolution"].eq(""), "main_native_resolution"] = out.loc[
+        ~satellite_mask & out["main_native_resolution"].eq(""), "resolution"
+    ]
     out.loc[linked_satellite_mask, "cluster_uid"] = out.loc[linked_satellite_mask, "linked_cluster_uid"]
     out.loc[linked_satellite_mask, "cluster_id"] = out.loc[linked_satellite_mask, "linked_cluster_id"]
-    out.loc[linked_satellite_mask, "resolution"] = out.loc[linked_satellite_mask, "linked_resolution"]
+    out.loc[linked_satellite_mask, "main_native_resolution"] = out.loc[linked_satellite_mask, "linked_resolution"]
+    out.loc[out["comparison_resolution"].eq(""), "comparison_resolution"] = out.loc[
+        out["comparison_resolution"].eq(""), "resolution"
+    ]
+    out.loc[linked_satellite_mask & out["comparison_resolution"].eq(""), "comparison_resolution"] = out.loc[
+        linked_satellite_mask & out["comparison_resolution"].eq(""), "satellite_native_resolution"
+    ]
 
     for variable in VARIABLES:
         col = _first_existing(raw.columns, (variable, variable.lower()))
@@ -1410,6 +1762,13 @@ def _method_notes(input_mode: str) -> str:
     return "{}; input_mode={}; window_exclusive={}".format(METHOD_NOTES_BASE, input_mode, str(WINDOW_EXCLUSIVE).lower())
 
 
+def _is_gsed_monthly_satellite_row(row: pd.Series) -> bool:
+    native_resolution = _normalize_resolution(
+        row.get("satellite_native_resolution", row.get("resolution", ""))
+    )
+    return _is_gsed_source(row.get("source", "")) and native_resolution == "monthly"
+
+
 def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> Tuple[int, List[Dict[str, object]]]:
     ordinal, group, windows, input_mode = item
     rows: List[Dict[str, object]] = []
@@ -1419,6 +1778,8 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
         return ordinal, rows
 
     for _, sat in satellites.iterrows():
+        if _is_gsed_monthly_satellite_row(sat):
+            continue
         for variable in VARIABLES:
             sat_value = pd.to_numeric(pd.Series([sat.get(variable, np.nan)]), errors="coerce").iloc[0]
             if pd.isna(sat_value):
@@ -1455,6 +1816,9 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
                         "cluster_uid": sat.get("cluster_uid", ""),
                         "cluster_id": sat.get("cluster_id", ""),
                         "resolution": sat.get("resolution", ""),
+                        "satellite_native_resolution": sat.get("satellite_native_resolution", sat.get("resolution", "")),
+                        "main_native_resolution": sat.get("main_native_resolution", sat.get("resolution", "")),
+                        "comparison_resolution": sat.get("comparison_resolution", sat.get("resolution", "")),
                         "variable": variable,
                         "pairing_window": window,
                         "window_exclusive": WINDOW_EXCLUSIVE,
@@ -1475,6 +1839,9 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
                         "pct_error_vs_insitu": pct,
                         "satellite_flag": sat.get("{}_flag".format(variable), np.nan),
                         "insitu_flag": best.get("{}_flag".format(variable), np.nan),
+                        "temporal_match_method": window,
+                        "insitu_aggregation": "none",
+                        "n_valid_insitu_days": 1,
                         "source_pair": "{} vs {}".format(sat.get("source", ""), best.get("source", "")),
                         "satellite_ssc": sat.get("SSC", np.nan),
                         "insitu_ssc": best.get("SSC", np.nan),
@@ -1491,17 +1858,14 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
     return ordinal, rows
 
 
-def pair_satellite_insitu_records(
-    observations: pd.DataFrame,
-    windows: Sequence[str] = ("exact", "pm1d", "pm2d"),
-    input_mode: str = "",
-    workers: int = 1,
-    progress=log_progress,
-) -> pd.DataFrame:
-    columns = [
+def _empty_pair_columns() -> List[str]:
+    return [
         "cluster_uid",
         "cluster_id",
         "resolution",
+        "satellite_native_resolution",
+        "main_native_resolution",
+        "comparison_resolution",
         "variable",
         "pairing_window",
         "window_exclusive",
@@ -1522,6 +1886,9 @@ def pair_satellite_insitu_records(
         "pct_error_vs_insitu",
         "satellite_flag",
         "insitu_flag",
+        "temporal_match_method",
+        "insitu_aggregation",
+        "n_valid_insitu_days",
         "source_pair",
         "satellite_ssc",
         "insitu_ssc",
@@ -1534,6 +1901,142 @@ def pair_satellite_insitu_records(
         "method_notes",
         "assumptions",
     ]
+
+
+def _pair_gsed_monthly_records(
+    observations: pd.DataFrame,
+    aggregation: str,
+    min_valid_days: int,
+    valid_flags: Sequence[int],
+    input_mode: str,
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    if observations.empty:
+        return rows
+    valid_flag_set = set(int(flag) for flag in valid_flags)
+    satellites = observations[
+        observations["source_family"].eq("satellite")
+        & observations.apply(_is_gsed_monthly_satellite_row, axis=1)
+    ].copy()
+    if satellites.empty:
+        return rows
+    insitu = observations[observations["source_family"].eq("in_situ")].copy()
+    if insitu.empty:
+        return rows
+
+    satellites["_month"] = pd.to_datetime(satellites["time"], errors="coerce").dt.to_period("M")
+    insitu["_time_day"] = pd.to_datetime(insitu["time"], errors="coerce").dt.floor("D")
+    insitu["_month"] = insitu["_time_day"].dt.to_period("M")
+    insitu["_cluster_key"] = _cluster_group_key(insitu)
+    satellites["_cluster_key"] = _cluster_group_key(satellites)
+    insitu["SSC_numeric"] = pd.to_numeric(insitu["SSC"], errors="coerce")
+    insitu["SSC_flag_numeric"] = pd.to_numeric(insitu["SSC_flag"], errors="coerce")
+    insitu = insitu[
+        insitu["SSC_numeric"].notna()
+        & insitu["SSC_flag_numeric"].isin(valid_flag_set)
+        & insitu["_time_day"].notna()
+        & insitu["_month"].notna()
+    ].copy()
+    if insitu.empty:
+        return rows
+    insitu["_flag_rank"] = insitu["SSC_flag"].map(_flag_rank)
+    insitu["_source_sort"] = insitu["source"].astype(str).str.lower()
+    insitu["_uid_sort"] = insitu["source_station_uid"].astype(str).str.lower()
+    insitu["_record_sort"] = insitu["record_id"].astype(str)
+
+    for _, sat in satellites.sort_values(["_cluster_key", "_month", "record_id"], kind="mergesort").iterrows():
+        sat_value = pd.to_numeric(pd.Series([sat.get("SSC", np.nan)]), errors="coerce").iloc[0]
+        if pd.isna(sat_value) or pd.isna(sat.get("_month")):
+            continue
+        main_resolution = _normalize_resolution(sat.get("main_native_resolution", sat.get("linked_resolution", "")))
+        candidates = insitu[
+            insitu["_cluster_key"].eq(sat["_cluster_key"])
+            & insitu["_month"].eq(sat["_month"])
+        ].copy()
+        if main_resolution:
+            candidates = candidates[candidates["resolution"].map(_normalize_resolution).eq(main_resolution)].copy()
+        if candidates.empty:
+            continue
+        candidates = candidates.sort_values(
+            ["_time_day", "_flag_rank", "_source_sort", "_uid_sort", "_record_sort"],
+            kind="mergesort",
+        )
+        daily = candidates.drop_duplicates("_time_day", keep="first").copy()
+        n_valid_days = int(daily["_time_day"].nunique())
+        if n_valid_days < int(min_valid_days):
+            continue
+        values = pd.to_numeric(daily["SSC"], errors="coerce")
+        insitu_value = float(values.mean()) if aggregation == "mean" else float(values.median())
+        if not np.isfinite(insitu_value):
+            continue
+        representative = daily.sort_values(
+            ["_flag_rank", "_source_sort", "_uid_sort", "_time_day", "_record_sort"],
+            kind="mergesort",
+        ).iloc[0]
+        diff = float(sat_value) - insitu_value
+        pct = float(diff / insitu_value * 100.0) if insitu_value != 0 else float("nan")
+        rows.append(
+            {
+                "cluster_uid": sat.get("cluster_uid", ""),
+                "cluster_id": sat.get("cluster_id", ""),
+                "resolution": sat.get("resolution", ""),
+                "satellite_native_resolution": sat.get("satellite_native_resolution", sat.get("resolution", "")),
+                "main_native_resolution": main_resolution,
+                "comparison_resolution": "monthly",
+                "variable": "SSC",
+                "pairing_window": "same_calendar_month",
+                "window_exclusive": WINDOW_EXCLUSIVE,
+                "satellite_time": sat["_time_day"],
+                "insitu_time": pd.Timestamp(sat["_month"].start_time),
+                "time_delta_days": 0,
+                "satellite_source": sat.get("source", ""),
+                "insitu_source": representative.get("source", ""),
+                "satellite_source_family": sat.get("source_family", ""),
+                "insitu_source_family": representative.get("source_family", ""),
+                "satellite_source_station_uid": sat.get("source_station_uid", ""),
+                "insitu_source_station_uid": representative.get("source_station_uid", ""),
+                "satellite_record_id": sat.get("record_id", ""),
+                "insitu_record_id": "calendar_month:{}:{}:{}".format(
+                    sat.get("cluster_uid", ""),
+                    sat["_month"],
+                    aggregation,
+                ),
+                "satellite_value": float(sat_value),
+                "insitu_value": insitu_value,
+                "diff_satellite_minus_insitu": diff,
+                "pct_error_vs_insitu": pct,
+                "satellite_flag": sat.get("SSC_flag", np.nan),
+                "insitu_flag": representative.get("SSC_flag", np.nan),
+                "temporal_match_method": "same_calendar_month",
+                "insitu_aggregation": aggregation,
+                "n_valid_insitu_days": n_valid_days,
+                "source_pair": "{} vs {}".format(sat.get("source", ""), representative.get("source", "")),
+                "satellite_ssc": sat.get("SSC", np.nan),
+                "insitu_ssc": insitu_value,
+                "satellite_river_width_class": sat.get("river_width_class", ""),
+                "insitu_river_width_class": representative.get("river_width_class", ""),
+                "satellite_river_width_m": sat.get("river_width_m", np.nan),
+                "insitu_river_width_m": representative.get("river_width_m", np.nan),
+                "satellite_climate_zone": sat.get("climate_zone", ""),
+                "insitu_climate_zone": representative.get("climate_zone", ""),
+                "method_notes": _method_notes(input_mode),
+                "assumptions": ASSUMPTIONS_BASE,
+            }
+        )
+    return rows
+
+
+def pair_satellite_insitu_records(
+    observations: pd.DataFrame,
+    windows: Sequence[str] = ("exact", "pm1d", "pm2d"),
+    input_mode: str = "",
+    workers: int = 1,
+    progress=log_progress,
+    gsed_daily_aggregation: str = DEFAULT_GSED_DAILY_AGGREGATION,
+    gsed_min_valid_days: int = DEFAULT_GSED_MIN_VALID_DAYS,
+    gsed_valid_flags: Sequence[int] = DEFAULT_GSED_VALID_FLAGS,
+) -> pd.DataFrame:
+    columns = _empty_pair_columns()
     if observations.empty:
         return pd.DataFrame(columns=columns)
 
@@ -1562,6 +2065,15 @@ def pair_satellite_insitu_records(
 
     for _, group_rows in sorted(results, key=lambda item: item[0]):
         rows.extend(group_rows)
+    rows.extend(
+        _pair_gsed_monthly_records(
+            work,
+            aggregation=gsed_daily_aggregation,
+            min_valid_days=gsed_min_valid_days,
+            valid_flags=gsed_valid_flags,
+            input_mode=input_mode,
+        )
+    )
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -2036,6 +2548,9 @@ def run_validation(
     workers: int = DEFAULT_WORKERS,
     include_satellite_validation_nc: bool = True,
     satellite_chunk_size: int = DEFAULT_SATELLITE_CHUNK_SIZE,
+    gsed_daily_aggregation: str = DEFAULT_GSED_DAILY_AGGREGATION,
+    gsed_min_valid_days: int = DEFAULT_GSED_MIN_VALID_DAYS,
+    gsed_valid_flags: Sequence[int] = DEFAULT_GSED_VALID_FLAGS,
     progress=log_progress,
 ) -> None:
     release_dir = release_dir.resolve()
@@ -2060,7 +2575,25 @@ def run_validation(
     raw = pd.DataFrame()
     load_note = ""
     input_mode = ""
-    if input_path is not None:
+    if include_satellite_validation_nc:
+        raw, matrix_stats, load_note = load_observations_from_satellite_main_matrices(
+            release_dir,
+            windows=windows,
+            workers=workers,
+            chunk_size=satellite_chunk_size,
+            progress=progress,
+        )
+        if progress:
+            progress(
+                "Satellite/main matrix load: satellite_rows={satellite_rows}, main_matrix_rows={main_matrix_rows}, "
+                "unlinked_stations={unlinked_station_count}, invalid_link_targets={invalid_link_target_count}".format(
+                    **matrix_stats
+                )
+            )
+        if not raw.empty:
+            input_mode = "satellite_main_matrix"
+            input_path = _find_satellite_validation_file(release_dir)
+    if raw.empty and input_path is not None:
         raw, input_path, input_mode = load_observations_from_candidate_sidecar(release_dir, input_path, progress=progress)
         load_note = "candidate sidecar loaded"
     if raw.empty:
@@ -2105,6 +2638,9 @@ def run_validation(
         input_mode=input_mode,
         workers=workers,
         progress=progress,
+        gsed_daily_aggregation=gsed_daily_aggregation,
+        gsed_min_valid_days=gsed_min_valid_days,
+        gsed_valid_flags=gsed_valid_flags,
     )
     pair_records = assign_strata(
         pair_records,
@@ -2163,6 +2699,23 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--windows", nargs="+", default=["exact", "pm1d", "pm2d"], choices=sorted(WINDOW_DAYS))
     parser.add_argument("--high-turbidity-ssc", type=float, default=DEFAULT_HIGH_TURBIDITY_SSC)
     parser.add_argument("--ssc-bin-edges", default=",".join(_format_edge(v) for v in DEFAULT_SSC_BIN_EDGES))
+    parser.add_argument(
+        "--gsed-daily-aggregation",
+        choices=("median", "mean"),
+        default=DEFAULT_GSED_DAILY_AGGREGATION,
+        help="Aggregation for daily in-situ SSC when GSED monthly links to a daily main cluster.",
+    )
+    parser.add_argument(
+        "--gsed-min-valid-days",
+        type=int,
+        default=DEFAULT_GSED_MIN_VALID_DAYS,
+        help="Minimum unique valid daily in-situ dates required for one GSED monthly SSC pair.",
+    )
+    parser.add_argument(
+        "--gsed-valid-flags",
+        default=",".join(str(flag) for flag in DEFAULT_GSED_VALID_FLAGS),
+        help="Comma-separated SSC_flag values accepted for GSED daily-to-monthly aggregation.",
+    )
     parser.add_argument("--figure-variables", nargs="+", default=["SSC"], choices=list(VARIABLES))
     parser.add_argument("--no-figures", action="store_true")
     parser.add_argument(
@@ -2197,6 +2750,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         windows=args.windows,
         high_turbidity_ssc=float(args.high_turbidity_ssc),
         ssc_bin_edges=parse_ssc_bin_edges(args.ssc_bin_edges),
+        gsed_daily_aggregation=args.gsed_daily_aggregation,
+        gsed_min_valid_days=int(args.gsed_min_valid_days),
+        gsed_valid_flags=parse_valid_flags(args.gsed_valid_flags),
         figure_variables=args.figure_variables,
         write_plots=not args.no_figures,
         workers=args.workers,

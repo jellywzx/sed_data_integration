@@ -75,13 +75,26 @@ LINKAGE_TEXT_FIELDS = (
     "satellite_location_uid",
     "linked_cluster_uid",
     "linked_resolution",
+    "link_resolution_relation",
+    "link_attempted_resolutions",
     "link_status",
+    "link_reason",
     "link_method",
+    "linkage_mode",
     "link_quality",
     "unlinked_reason",
 )
 LINKAGE_NUMERIC_FIELDS = (
     "linked_cluster_id",
+    "satellite_reach_id",
+    "main_reach_id",
+    "same_reach",
+    "reach_hops",
+    "point_distance_m",
+    "network_distance_m",
+    "area_log10_diff",
+    "candidate_count",
+    "eligible_candidate_count",
     "link_distance_m",
     "link_uparea_log10_error",
     "link_candidate_count",
@@ -150,6 +163,22 @@ def _safe_int(value, default=-1):
         return int(default)
 
 
+def _safe_bool_int(value, default=-1):
+    try:
+        if pd.isna(value):
+            return int(default)
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return 1 if value else 0
+    text = _safe_text(value).lower()
+    if text in {"true", "1", "yes", "y", "t"}:
+        return 1
+    if text in {"false", "0", "no", "n", "f"}:
+        return 0
+    return _safe_int(value, default=default)
+
+
 def _safe_text(value):
     if value is None:
         return ""
@@ -163,9 +192,27 @@ def _linkage_payload(row):
         "linked_cluster_id": _safe_int(row.get("linked_cluster_id", -1), default=-1),
         "linked_cluster_uid": _safe_text(row.get("linked_cluster_uid", "")),
         "linked_resolution": _safe_text(row.get("linked_resolution", "")),
+        "link_resolution_relation": _safe_text(row.get("link_resolution_relation", "")),
+        "link_attempted_resolutions": _safe_text(row.get("link_attempted_resolutions", "")),
         "link_status": _safe_text(row.get("link_status", "")),
+        "link_reason": _safe_text(row.get("link_reason", row.get("unlinked_reason", ""))),
         "link_method": _safe_text(row.get("link_method", "")),
+        "linkage_mode": _safe_text(row.get("linkage_mode", "")),
         "link_quality": _safe_text(row.get("link_quality", "")),
+        "satellite_reach_id": _safe_int(row.get("satellite_reach_id", -1), default=-1),
+        "main_reach_id": _safe_int(row.get("main_reach_id", -1), default=-1),
+        "same_reach": _safe_bool_int(row.get("same_reach", -1), default=-1),
+        "reach_hops": _safe_int(row.get("reach_hops", -1), default=-1),
+        "point_distance_m": _safe_float(row.get("point_distance_m", row.get("link_distance_m", np.nan))),
+        "network_distance_m": _safe_float(row.get("network_distance_m", np.nan)),
+        "area_log10_diff": _safe_float(
+            row.get("area_log10_diff", row.get("link_uparea_log10_error", np.nan))
+        ),
+        "candidate_count": _safe_int(row.get("candidate_count", row.get("link_candidate_count", 0)), default=0),
+        "eligible_candidate_count": _safe_int(
+            row.get("eligible_candidate_count", row.get("link_candidate_count", 0)),
+            default=0,
+        ),
         "link_distance_m": _safe_float(row.get("link_distance_m", np.nan)),
         "link_uparea_log10_error": _safe_float(
             row.get("link_uparea_log10_error", np.nan)
@@ -310,8 +357,18 @@ def _write_satellite_validation_nc(
         linked_resolution_v = _str_station_var(
             "linked_resolution", "main reference resolution used by the linkage"
         )
+        link_resolution_relation_v = _str_station_var(
+            "link_resolution_relation",
+            "relationship between satellite native resolution and linked main reference resolution",
+        )
+        link_attempted_resolutions_v = _str_station_var(
+            "link_attempted_resolutions",
+            "ordered main reference resolutions attempted by s5b linkage",
+        )
         link_status_v = _str_station_var("link_status", "satellite-to-main linkage status")
+        link_reason_v = _str_station_var("link_reason", "satellite-to-main linkage reason")
         link_method_v = _str_station_var("link_method", "satellite-to-main linkage method")
+        linkage_mode_v = _str_station_var("linkage_mode", "source spatial-support linkage mode")
         link_quality_v = _str_station_var("link_quality", "satellite-to-main linkage quality")
         unlinked_reason_v = _str_station_var(
             "unlinked_reason", "standard reason when no main reference cluster is linked"
@@ -339,6 +396,46 @@ def _write_satellite_validation_nc(
         linked_cluster_id_v.long_name = (
             "main reference cluster lookup id; does not merge satellite data into main matrices"
         )
+        satellite_reach_id_v = nc.createVariable(
+            "satellite_reach_id", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        satellite_reach_id_v.long_name = "MERIT reach id for the satellite validation station"
+        main_reach_id_v = nc.createVariable(
+            "main_reach_id", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        main_reach_id_v.long_name = "MERIT reach id for the linked main reference cluster"
+        same_reach_v = nc.createVariable(
+            "same_reach", "i1", ("n_satellite_stations",), fill_value=np.int8(-1)
+        )
+        same_reach_v.long_name = "whether satellite and linked main cluster use the same MERIT reach"
+        same_reach_v.flag_values = np.array([0, 1], dtype=np.int8)
+        same_reach_v.flag_meanings = "false true"
+        reach_hops_v = nc.createVariable(
+            "reach_hops", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        reach_hops_v.long_name = "number of MERIT reach hops used by the linkage"
+        point_distance_v = nc.createVariable(
+            "point_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
+        )
+        point_distance_v.long_name = "point distance between satellite location and linked main representative"
+        point_distance_v.units = "m"
+        network_distance_v = nc.createVariable(
+            "network_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
+        )
+        network_distance_v.long_name = "along-network distance used by point-anchored reach linkage"
+        network_distance_v.units = "m"
+        area_log10_diff_v = nc.createVariable(
+            "area_log10_diff", "f4", ("n_satellite_stations",), fill_value=FILL
+        )
+        area_log10_diff_v.long_name = "absolute log10 upstream-area ratio used for linkage diagnostics"
+        candidate_count_v = nc.createVariable(
+            "candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        candidate_count_v.long_name = "number of raw linkage candidates considered"
+        eligible_candidate_count_v = nc.createVariable(
+            "eligible_candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
+        )
+        eligible_candidate_count_v.long_name = "number of linkage candidates satisfying all constraints"
         link_distance_v = nc.createVariable(
             "link_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
         )
@@ -411,8 +508,16 @@ def _write_satellite_validation_nc(
         linked_resolution_v[:] = np.asarray(
             [row["linked_resolution"] for row in station_rows], dtype=object
         )
+        link_resolution_relation_v[:] = np.asarray(
+            [row["link_resolution_relation"] for row in station_rows], dtype=object
+        )
+        link_attempted_resolutions_v[:] = np.asarray(
+            [row["link_attempted_resolutions"] for row in station_rows], dtype=object
+        )
         link_status_v[:] = np.asarray([row["link_status"] for row in station_rows], dtype=object)
+        link_reason_v[:] = np.asarray([row["link_reason"] for row in station_rows], dtype=object)
         link_method_v[:] = np.asarray([row["link_method"] for row in station_rows], dtype=object)
+        linkage_mode_v[:] = np.asarray([row["linkage_mode"] for row in station_rows], dtype=object)
         link_quality_v[:] = np.asarray([row["link_quality"] for row in station_rows], dtype=object)
         unlinked_reason_v[:] = np.asarray(
             [row["unlinked_reason"] for row in station_rows], dtype=object
@@ -429,6 +534,20 @@ def _write_satellite_validation_nc(
         cluster_id_v[:] = np.asarray([row["cluster_id"] for row in station_rows], dtype=np.int32)
         linked_cluster_id_v[:] = np.asarray(
             [row["linked_cluster_id"] for row in station_rows], dtype=np.int32
+        )
+        satellite_reach_id_v[:] = np.asarray(
+            [row["satellite_reach_id"] for row in station_rows], dtype=np.int32
+        )
+        main_reach_id_v[:] = np.asarray(
+            [row["main_reach_id"] for row in station_rows], dtype=np.int32
+        )
+        same_reach_v[:] = np.asarray([row["same_reach"] for row in station_rows], dtype=np.int8)
+        reach_hops_v[:] = np.asarray([row["reach_hops"] for row in station_rows], dtype=np.int32)
+        candidate_count_v[:] = np.asarray(
+            [row["candidate_count"] for row in station_rows], dtype=np.int32
+        )
+        eligible_candidate_count_v[:] = np.asarray(
+            [row["eligible_candidate_count"] for row in station_rows], dtype=np.int32
         )
         link_candidate_count_v[:] = np.asarray(
             [row["link_candidate_count"] for row in station_rows], dtype=np.int32
@@ -453,10 +572,37 @@ def _write_satellite_validation_nc(
             ],
             dtype=np.float32,
         )
+        point_distance_vals = np.asarray(
+            [
+                row["point_distance_m"] if row["point_distance_m"] is not None else np.nan
+                for row in station_rows
+            ],
+            dtype=np.float32,
+        )
+        network_distance_vals = np.asarray(
+            [
+                row["network_distance_m"] if row["network_distance_m"] is not None else np.nan
+                for row in station_rows
+            ],
+            dtype=np.float32,
+        )
+        area_log10_diff_vals = np.asarray(
+            [
+                row["area_log10_diff"] if row["area_log10_diff"] is not None else np.nan
+                for row in station_rows
+            ],
+            dtype=np.float32,
+        )
         link_distance_vals[np.isnan(link_distance_vals)] = FILL
         link_area_error_vals[np.isnan(link_area_error_vals)] = FILL
+        point_distance_vals[np.isnan(point_distance_vals)] = FILL
+        network_distance_vals[np.isnan(network_distance_vals)] = FILL
+        area_log10_diff_vals[np.isnan(area_log10_diff_vals)] = FILL
         link_distance_v[:] = link_distance_vals
         link_area_error_v[:] = link_area_error_vals
+        point_distance_v[:] = point_distance_vals
+        network_distance_v[:] = network_distance_vals
+        area_log10_diff_v[:] = area_log10_diff_vals
 
         write_global_attr_payload_variables(
             nc,
@@ -560,8 +706,29 @@ def _build_satellite_catalog(station_rows, station_record_map):
             else np.nan,
             "linked_cluster_uid": station_row["linked_cluster_uid"],
             "linked_resolution": station_row["linked_resolution"],
+            "link_resolution_relation": station_row["link_resolution_relation"],
+            "link_attempted_resolutions": station_row["link_attempted_resolutions"],
             "link_status": station_row["link_status"],
+            "link_reason": station_row["link_reason"],
             "link_method": station_row["link_method"],
+            "linkage_mode": station_row["linkage_mode"],
+            "satellite_reach_id": station_row["satellite_reach_id"]
+            if station_row["satellite_reach_id"] >= 0
+            else np.nan,
+            "main_reach_id": station_row["main_reach_id"]
+            if station_row["main_reach_id"] >= 0
+            else np.nan,
+            "same_reach": station_row["same_reach"]
+            if station_row["same_reach"] >= 0
+            else np.nan,
+            "reach_hops": station_row["reach_hops"]
+            if station_row["reach_hops"] >= 0
+            else np.nan,
+            "point_distance_m": station_row["point_distance_m"],
+            "network_distance_m": station_row["network_distance_m"],
+            "area_log10_diff": station_row["area_log10_diff"],
+            "candidate_count": station_row["candidate_count"],
+            "eligible_candidate_count": station_row["eligible_candidate_count"],
             "link_quality": station_row["link_quality"],
             "link_distance_m": station_row["link_distance_m"],
             "link_uparea_log10_error": station_row["link_uparea_log10_error"],
