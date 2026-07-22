@@ -52,14 +52,33 @@ DEFAULT_MATRIX_DIR = PROJECT_ROOT / S6_MATRIX_DIR
 DEFAULT_MERIT_DIR = PROJECT_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 SUPPORTED_RESOLUTIONS = ("daily", "monthly", "annual")
 DEFAULT_MAX_DISTANCE_M = 5000.0
-DEFAULT_POINT_ANCHORED_MAX_POINT_DISTANCE_M = 5000.0
-DEFAULT_POINT_ANCHORED_MAX_NETWORK_DISTANCE_M = 5000.0
-DEFAULT_POINT_ANCHORED_MAX_REACH_HOPS = 1
+DEFAULT_POINT_ANCHORED_MAX_POINT_DISTANCE_M = 10000.0
+DEFAULT_POINT_ANCHORED_MAX_NETWORK_DISTANCE_M = 20000.0
+DEFAULT_POINT_ANCHORED_MAX_REACH_HOPS = 5
 DEFAULT_POINT_ANCHORED_MAX_AREA_LOG10_DIFF = 0.3
+DETHIER_HIGH_CONFIDENCE_MAX_POINT_DISTANCE_M = 5000.0
+DETHIER_HIGH_CONFIDENCE_MAX_NETWORK_DISTANCE_M = 5000.0
+DETHIER_HIGH_CONFIDENCE_MAX_REACH_HOPS = 1
+DETHIER_HIGH_CONFIDENCE_MAX_AREA_LOG10_DIFF = 0.30
+DETHIER_MODERATE_CONFIDENCE_MAX_POINT_DISTANCE_M = 10000.0
+DETHIER_MODERATE_CONFIDENCE_MAX_NETWORK_DISTANCE_M = 20000.0
+DETHIER_MODERATE_CONFIDENCE_MAX_REACH_HOPS = 5
+DETHIER_MODERATE_CONFIDENCE_MAX_AREA_LOG10_DIFF = 0.15
+DETHIER_CONNECTED_REACH_MAX_PATH_LENGTH_M = 20000.0
 LINK_METHOD = "same_merit_reach_resolution_matrix_5km"
 GSED_DAILY_FALLBACK_LINK_METHOD = "gsed_monthly_to_daily_same_merit_reach_matrix_5km"
-POINT_ANCHORED_LINK_METHOD = "point_anchored_merit_reach_network_1hop_5km"
+POINT_ANCHORED_LINK_METHOD = "point_anchored_merit_reach_network_5hop_20km"
+GSED_NETWORK_LINK_METHOD = "gsed_merit_reach_network_1hop"
+GSED_DAILY_FALLBACK_NETWORK_LINK_METHOD = "gsed_monthly_to_daily_merit_reach_network_1hop"
 GSED_SOURCE_NAMES = frozenset(("gsed",))
+GSED_RESOLVED_SAME_REACH_MAX_DISTANCE_M = 10000.0
+GSED_RESOLVED_ADJACENT_MAX_POINT_DISTANCE_M = 15000.0
+GSED_RESOLVED_ADJACENT_MAX_NETWORK_DISTANCE_M = 10000.0
+GSED_RESOLVED_ADJACENT_MAX_AREA_LOG10_DIFF = 0.15
+GSED_PROVISIONAL_MAX_POINT_DISTANCE_M = 5000.0
+GSED_PROVISIONAL_MAX_NETWORK_DISTANCE_M = 5000.0
+GSED_PROVISIONAL_MAX_AREA_LOG10_DIFF = 0.10
+GSED_PROVISIONAL_BASIN_FLAGS = frozenset(("large_offset", "geometry_inconsistent"))
 
 OUTPUT_COLUMNS = [
     "satellite_location_uid",
@@ -99,6 +118,12 @@ OUTPUT_COLUMNS = [
     "link_distance_m",
     "link_uparea_log10_error",
     "link_candidate_count",
+    "nearest_candidate_cluster_uid",
+    "nearest_candidate_point_distance_m",
+    "nearest_candidate_network_distance_m",
+    "nearest_candidate_reach_hops",
+    "nearest_candidate_area_log10_diff",
+    "candidate_rejection_reason",
     "unlinked_reason",
 ]
 
@@ -273,6 +298,63 @@ class MeritReachNetwork:
         self._cache[reach_id] = loaded
         return loaded
 
+    def prefetch(self, reach_ids):
+        if pyogrio is None or self.merit_dir is None:
+            return
+        pending = sorted(
+            {
+                int(reach_id)
+                for reach_id in (_finite_int(value) for value in reach_ids)
+                if reach_id is not None and int(reach_id) not in self._cache
+            }
+        )
+        by_pfaf = {}
+        for reach_id in pending:
+            pfaf_code = _reach_file_code(reach_id)
+            if pfaf_code:
+                by_pfaf.setdefault(pfaf_code, []).append(reach_id)
+        for pfaf_code, ids in by_pfaf.items():
+            path = (
+                self.merit_dir
+                / "pfaf_level_02"
+                / "riv_pfaf_{}_MERIT_Hydro_v07_Basins_v01_bugfix1.shp".format(pfaf_code)
+            )
+            if not path.is_file():
+                for reach_id in ids:
+                    self._cache.setdefault(reach_id, None)
+                continue
+            loaded_ids = set()
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                where = "COMID IN ({})".format(",".join(str(item) for item in chunk))
+                try:
+                    frame = pyogrio.read_dataframe(
+                        str(path),
+                        where=where,
+                        columns=[
+                            "COMID",
+                            "NextDownID",
+                            "up1",
+                            "up2",
+                            "up3",
+                            "up4",
+                            "lengthkm",
+                            "uparea",
+                        ],
+                    )
+                except Exception:
+                    continue
+                for _, row in frame.iterrows():
+                    normalized = _normalize_reach_row(None, row)
+                    if normalized is None:
+                        continue
+                    reach_id = int(normalized["reach_id"])
+                    self._cache[reach_id] = normalized
+                    loaded_ids.add(reach_id)
+            for reach_id in ids:
+                if reach_id not in loaded_ids:
+                    self._cache.setdefault(reach_id, None)
+
     def _load_from_merit(self, reach_id):
         if pyogrio is None or self.merit_dir is None:
             return None
@@ -319,6 +401,81 @@ class MeritReachNetwork:
         if reach["downstream_id"] is not None:
             adjacent[int(reach["downstream_id"])] = "downstream"
         return adjacent
+
+    def connected_reaches(
+        self,
+        reach_id,
+        max_hops=5,
+        max_path_length_m=DETHIER_CONNECTED_REACH_MAX_PATH_LENGTH_M,
+    ):
+        start_id = _finite_int(reach_id)
+        if start_id is None or int(max_hops) < 1:
+            return []
+        start = self.get(start_id)
+        if start is None:
+            return []
+
+        def reach_length_m(item):
+            reach = self.get(item)
+            if reach is None:
+                return 0.0
+            length = _finite_float(reach.get("length_m", math.nan))
+            return length if math.isfinite(length) and length > 0 else 0.0
+
+        connected = []
+
+        def add_direction(seed_ids, relation):
+            frontier = []
+            for next_id in seed_ids:
+                next_id = _finite_int(next_id)
+                if next_id is None or next_id == start_id:
+                    continue
+                path_length = reach_length_m(next_id)
+                if path_length > float(max_path_length_m):
+                    continue
+                path = (start_id, int(next_id))
+                frontier.append((int(next_id), path, 1, path_length))
+
+            while frontier:
+                current_id, path, hops, path_length = frontier.pop(0)
+                connected.append(
+                    {
+                        "reach_id": int(current_id),
+                        "relation": relation,
+                        "reach_hops": int(hops),
+                        "reach_path": path,
+                    }
+                )
+                if hops >= int(max_hops):
+                    continue
+                current = self.get(current_id)
+                if current is None:
+                    continue
+                if relation == "upstream":
+                    next_ids = current["upstream_ids"]
+                else:
+                    next_ids = (current["downstream_id"],)
+                for next_id in next_ids:
+                    next_id = _finite_int(next_id)
+                    if next_id is None or next_id in path:
+                        continue
+                    next_path_length = path_length + reach_length_m(next_id)
+                    if next_path_length > float(max_path_length_m):
+                        continue
+                    frontier.append(
+                        (
+                            int(next_id),
+                            path + (int(next_id),),
+                            hops + 1,
+                            next_path_length,
+                        )
+                    )
+
+        add_direction(start["upstream_ids"], "upstream")
+        if start["downstream_id"] is not None:
+            add_direction((start["downstream_id"],), "downstream")
+        connected.sort(key=lambda item: (item["reach_hops"], item["relation"], item["reach_id"]))
+        return connected
 
 
 def _reach_measure_m(reach, lat, lon):
@@ -370,7 +527,16 @@ def _endpoint_pair_measures_m(first_reach, second_reach):
     return best[1], best[3]
 
 
-def _network_distance_m(network, satellite_reach_id, main_reach_id, satellite_lat, satellite_lon, main_lat, main_lon):
+def _network_distance_m(
+    network,
+    satellite_reach_id,
+    main_reach_id,
+    satellite_lat,
+    satellite_lon,
+    main_lat,
+    main_lon,
+    reach_path=None,
+):
     satellite_reach = network.get(satellite_reach_id)
     main_reach = network.get(main_reach_id)
     if satellite_reach is None or main_reach is None:
@@ -381,10 +547,31 @@ def _network_distance_m(network, satellite_reach_id, main_reach_id, satellite_la
         return math.nan
     if int(satellite_reach_id) == int(main_reach_id):
         return abs(satellite_measure - main_measure)
-    sat_endpoint, main_endpoint = _endpoint_pair_measures_m(satellite_reach, main_reach)
-    if not math.isfinite(sat_endpoint) or not math.isfinite(main_endpoint):
+
+    if reach_path is None:
+        reach_path = (int(satellite_reach_id), int(main_reach_id))
+    reach_path = tuple(int(item) for item in reach_path)
+    if len(reach_path) < 2 or reach_path[0] != int(satellite_reach_id) or reach_path[-1] != int(main_reach_id):
         return math.nan
-    return abs(satellite_measure - sat_endpoint) + abs(main_measure - main_endpoint)
+
+    connection_measures = {}
+    for first_id, second_id in zip(reach_path[:-1], reach_path[1:]):
+        first_reach = network.get(first_id)
+        second_reach = network.get(second_id)
+        first_endpoint, second_endpoint = _endpoint_pair_measures_m(first_reach, second_reach)
+        if not math.isfinite(first_endpoint) or not math.isfinite(second_endpoint):
+            return math.nan
+        connection_measures.setdefault(int(first_id), []).append(first_endpoint)
+        connection_measures.setdefault(int(second_id), []).append(second_endpoint)
+
+    total = abs(satellite_measure - connection_measures[int(satellite_reach_id)][0])
+    for intermediate_id in reach_path[1:-1]:
+        measures = connection_measures[int(intermediate_id)]
+        if len(measures) < 2:
+            return math.nan
+        total += abs(measures[0] - measures[1])
+    total += abs(main_measure - connection_measures[int(main_reach_id)][-1])
+    return total
 
 
 def _read_text_variable(dataset, name, size):
@@ -507,6 +694,18 @@ def _unlinked_row(base, reason):
             "link_distance_m": math.nan,
             "link_uparea_log10_error": math.nan,
             "link_candidate_count": _count_value(base.get("eligible_candidate_count", 0)),
+            "nearest_candidate_cluster_uid": _clean_text(base.get("nearest_candidate_cluster_uid", "")),
+            "nearest_candidate_point_distance_m": _finite_float(
+                base.get("nearest_candidate_point_distance_m", math.nan)
+            ),
+            "nearest_candidate_network_distance_m": _finite_float(
+                base.get("nearest_candidate_network_distance_m", math.nan)
+            ),
+            "nearest_candidate_reach_hops": base.get("nearest_candidate_reach_hops", pd.NA),
+            "nearest_candidate_area_log10_diff": _finite_float(
+                base.get("nearest_candidate_area_log10_diff", math.nan)
+            ),
+            "candidate_rejection_reason": _clean_text(base.get("candidate_rejection_reason", "")),
             "unlinked_reason": reason,
         }
     )
@@ -529,6 +728,12 @@ def _linkage_base_defaults(base, linkage_mode):
             "area_log10_diff": math.nan,
             "candidate_count": 0,
             "eligible_candidate_count": 0,
+            "nearest_candidate_cluster_uid": "",
+            "nearest_candidate_point_distance_m": math.nan,
+            "nearest_candidate_network_distance_m": math.nan,
+            "nearest_candidate_reach_hops": pd.NA,
+            "nearest_candidate_area_log10_diff": math.nan,
+            "candidate_rejection_reason": "",
         }
     )
     return base
@@ -639,11 +844,263 @@ def _link_legacy_reach_scale(
     return _unlinked_row(base, last_reason)
 
 
-def _candidate_with_dethier_metrics(base, candidate, network, relation):
+def _candidate_with_gsed_metrics(base, candidate, relation, reach_hops):
     satellite_reach_id = int(base["basin_id"])
     main_reach_id = int(candidate["basin_id"])
     same_reach = satellite_reach_id == main_reach_id
-    reach_hops = 0 if same_reach else 1
+    point_distance = haversine_distance_m(
+        base["lat"], base["lon"], candidate["lat"], candidate["lon"]
+    )
+    area_error = upstream_area_log10_error(base["uparea_merit"], candidate["uparea"])
+    return {
+        "candidate": candidate,
+        "relation": relation,
+        "same_reach": same_reach,
+        "reach_hops": int(reach_hops),
+        "point_distance_m": point_distance,
+        "network_distance_m": math.nan,
+        "area_log10_diff": area_error,
+    }
+
+
+def _ensure_gsed_network_distance(base, metrics, reach_network):
+    if math.isfinite(metrics["network_distance_m"]):
+        return metrics["network_distance_m"]
+    candidate = metrics["candidate"]
+    metrics["network_distance_m"] = _network_distance_m(
+        reach_network,
+        int(base["basin_id"]),
+        int(candidate["basin_id"]),
+        base["lat"],
+        base["lon"],
+        candidate["lat"],
+        candidate["lon"],
+    )
+    return metrics["network_distance_m"]
+
+
+def _gsed_resolved_failure_reason(base, metrics, reach_network):
+    if metrics["same_reach"]:
+        point_distance = metrics["point_distance_m"]
+        if (
+            not math.isfinite(point_distance)
+            or point_distance > GSED_RESOLVED_SAME_REACH_MAX_DISTANCE_M
+        ):
+            return "candidate_point_distance_exceeded"
+        network_distance = _ensure_gsed_network_distance(base, metrics, reach_network)
+        if math.isfinite(network_distance):
+            if network_distance > GSED_RESOLVED_SAME_REACH_MAX_DISTANCE_M:
+                return "candidate_network_distance_exceeded"
+            return ""
+        return ""
+
+    point_distance = metrics["point_distance_m"]
+    if (
+        not math.isfinite(point_distance)
+        or point_distance > GSED_RESOLVED_ADJACENT_MAX_POINT_DISTANCE_M
+    ):
+        return "candidate_point_distance_exceeded"
+    area_error = metrics["area_log10_diff"]
+    if (
+        not math.isfinite(area_error)
+        or area_error > GSED_RESOLVED_ADJACENT_MAX_AREA_LOG10_DIFF
+    ):
+        return "candidate_area_inconsistent"
+    network_distance = _ensure_gsed_network_distance(base, metrics, reach_network)
+    if (
+        not math.isfinite(network_distance)
+        or network_distance > GSED_RESOLVED_ADJACENT_MAX_NETWORK_DISTANCE_M
+    ):
+        return "candidate_network_distance_exceeded"
+    return ""
+
+
+def _gsed_provisional_failure_reason(base, metrics, reach_network):
+    if int(metrics["reach_hops"]) > 1:
+        return "no_main_cluster_within_1hop"
+    point_distance = metrics["point_distance_m"]
+    if (
+        not math.isfinite(point_distance)
+        or point_distance > GSED_PROVISIONAL_MAX_POINT_DISTANCE_M
+    ):
+        return "candidate_point_distance_exceeded"
+    area_error = metrics["area_log10_diff"]
+    if (
+        not math.isfinite(area_error)
+        or area_error > GSED_PROVISIONAL_MAX_AREA_LOG10_DIFF
+    ):
+        return "candidate_area_inconsistent"
+    network_distance = _ensure_gsed_network_distance(base, metrics, reach_network)
+    if (
+        not math.isfinite(network_distance)
+        or network_distance > GSED_PROVISIONAL_MAX_NETWORK_DISTANCE_M
+    ):
+        return "candidate_network_distance_exceeded"
+    return ""
+
+
+def _sort_gsed_candidates(candidates):
+    candidates.sort(
+        key=lambda item: (
+            item["target_resolution_order"],
+            0 if item["basin_link_class"] == "resolved" else 1,
+            0 if item["same_reach"] else 1,
+            item["reach_hops"],
+            item["area_log10_diff"] if math.isfinite(item["area_log10_diff"]) else math.inf,
+            item["network_distance_m"] if math.isfinite(item["network_distance_m"]) else math.inf,
+            item["point_distance_m"] if math.isfinite(item["point_distance_m"]) else math.inf,
+            item["candidate"]["cluster_uid"],
+            item["candidate"]["cluster_id"],
+        )
+    )
+
+
+def _link_gsed_reach_scale_network(base, satellite_resolution, target_resolutions, reach_index, reach_network):
+    attempted = tuple(normalize_resolution(item) for item in target_resolutions if normalize_resolution(item))
+    base["link_attempted_resolutions"] = _clean_text(
+        base.get("link_attempted_resolutions", "")
+    ) or "|".join(attempted)
+
+    basin_status = base["basin_status"].lower()
+    basin_flag = base["basin_flag"].lower()
+    if basin_status == "unresolved":
+        if basin_flag == "no_match":
+            return _unlinked_row(base, "satellite_basin_no_match")
+        if basin_flag == "area_mismatch":
+            return _unlinked_row(base, "satellite_basin_area_mismatch")
+        if basin_flag not in GSED_PROVISIONAL_BASIN_FLAGS or not math.isfinite(base["basin_id"]):
+            return _unlinked_row(base, "unresolved_without_strong_link_evidence")
+        basin_link_class = "provisional"
+    elif basin_status == "resolved":
+        if not math.isfinite(base["basin_id"]):
+            return _unlinked_row(base, "missing_satellite_reach")
+        basin_link_class = "resolved"
+    else:
+        return _unlinked_row(base, "satellite_basin_unresolved")
+
+    satellite_reach_id = int(base["basin_id"])
+    total_candidates = 0
+    total_eligible = 0
+    failure_reasons = []
+    selected = None
+
+    for resolution_order, target_resolution in enumerate(attempted):
+        same_reach_candidates = [
+            candidate
+            for candidate in reach_index.get((target_resolution, satellite_reach_id), [])
+            if math.isfinite(candidate["lat"]) and math.isfinite(candidate["lon"])
+        ]
+        same_metrics = [
+            _candidate_with_gsed_metrics(base, candidate, "same", 0)
+            for candidate in same_reach_candidates
+        ]
+        total_candidates += len(same_metrics)
+        eligible = []
+        for metrics in same_metrics:
+            reason = (
+                _gsed_provisional_failure_reason(base, metrics, reach_network)
+                if basin_link_class == "provisional"
+                else _gsed_resolved_failure_reason(base, metrics, reach_network)
+            )
+            if reason:
+                failure_reasons.append(reason)
+                continue
+            metrics["target_resolution"] = target_resolution
+            metrics["target_resolution_order"] = resolution_order
+            metrics["basin_link_class"] = basin_link_class
+            eligible.append(metrics)
+
+        if not eligible:
+            adjacent_by_reach = reach_network.adjacent_reaches(satellite_reach_id, max_hops=1)
+            adjacent_metrics = []
+            for adjacent_reach_id, relation in sorted(adjacent_by_reach.items()):
+                for candidate in reach_index.get((target_resolution, int(adjacent_reach_id)), []):
+                    if not math.isfinite(candidate["lat"]) or not math.isfinite(candidate["lon"]):
+                        continue
+                    adjacent_metrics.append(
+                        _candidate_with_gsed_metrics(base, candidate, relation, 1)
+                    )
+            total_candidates += len(adjacent_metrics)
+            for metrics in adjacent_metrics:
+                reason = (
+                    _gsed_provisional_failure_reason(base, metrics, reach_network)
+                    if basin_link_class == "provisional"
+                    else _gsed_resolved_failure_reason(base, metrics, reach_network)
+                )
+                if reason:
+                    failure_reasons.append(reason)
+                    continue
+                metrics["target_resolution"] = target_resolution
+                metrics["target_resolution_order"] = resolution_order
+                metrics["basin_link_class"] = basin_link_class
+                eligible.append(metrics)
+
+        total_eligible += len(eligible)
+        if eligible:
+            _sort_gsed_candidates(eligible)
+            selected = eligible[0]
+            break
+
+    base["candidate_count"] = total_candidates
+    base["eligible_candidate_count"] = total_eligible
+    if selected is None:
+        if basin_link_class == "provisional":
+            return _unlinked_row(base, "unresolved_without_strong_link_evidence")
+        reason = failure_reasons[0] if failure_reasons else "no_main_cluster_within_1hop"
+        return _unlinked_row(base, reason)
+
+    candidate = selected["candidate"]
+    target_resolution = selected["target_resolution"]
+    is_provisional = selected["basin_link_class"] == "provisional"
+    link_reason = (
+        "provisional_basin_unresolved_strong_network_evidence"
+        if is_provisional
+        else "same_reach_network_constrained"
+        if selected["same_reach"]
+        else "adjacent_reach_network_constrained"
+    )
+    link_quality = (
+        "provisional_satellite_basin_unresolved"
+        if is_provisional
+        else "network_distance_and_area_ranked"
+        if math.isfinite(selected["area_log10_diff"])
+        else "network_distance_ranked_area_unavailable"
+    )
+    base.update(
+        {
+            "linked_cluster_id": candidate["cluster_id"],
+            "linked_cluster_uid": candidate["cluster_uid"],
+            "linked_resolution": target_resolution,
+            "link_resolution_relation": _link_resolution_relation(
+                satellite_resolution, target_resolution
+            ),
+            "link_status": "linked",
+            "link_reason": link_reason,
+            "link_method": GSED_NETWORK_LINK_METHOD
+            if normalize_resolution(satellite_resolution) == target_resolution
+            else GSED_DAILY_FALLBACK_NETWORK_LINK_METHOD,
+            "main_reach_id": int(candidate["basin_id"]),
+            "same_reach": bool(selected["same_reach"]),
+            "reach_hops": int(selected["reach_hops"]),
+            "point_distance_m": selected["point_distance_m"],
+            "network_distance_m": selected["network_distance_m"],
+            "area_log10_diff": selected["area_log10_diff"],
+            "candidate_count": total_candidates,
+            "eligible_candidate_count": total_eligible,
+            "link_quality": link_quality,
+            "link_distance_m": selected["point_distance_m"],
+            "link_uparea_log10_error": selected["area_log10_diff"],
+            "link_candidate_count": total_eligible,
+            "unlinked_reason": "",
+        }
+    )
+    return base
+
+
+def _candidate_with_dethier_metrics(base, candidate, network, relation, reach_hops, reach_path):
+    satellite_reach_id = int(base["basin_id"])
+    main_reach_id = int(candidate["basin_id"])
+    same_reach = satellite_reach_id == main_reach_id
     point_distance = haversine_distance_m(
         base["lat"], base["lon"], candidate["lat"], candidate["lon"]
     )
@@ -655,37 +1112,102 @@ def _candidate_with_dethier_metrics(base, candidate, network, relation):
         base["lon"],
         candidate["lat"],
         candidate["lon"],
+        reach_path=reach_path,
     )
     area_error = upstream_area_log10_error(base["uparea_merit"], candidate["uparea"])
     return {
         "candidate": candidate,
         "relation": relation,
         "same_reach": same_reach,
-        "reach_hops": reach_hops,
+        "reach_hops": int(reach_hops),
+        "reach_path": tuple(reach_path),
         "point_distance_m": point_distance,
         "network_distance_m": network_distance,
         "area_log10_diff": area_error,
     }
 
 
-def _dethier_candidate_is_eligible(
+def _dethier_candidate_confidence_and_reason(
     metrics,
     max_point_distance_m,
     max_network_distance_m,
+    max_reach_hops,
     max_area_log10_diff,
 ):
+    max_point_distance_m = min(
+        float(max_point_distance_m),
+        DETHIER_MODERATE_CONFIDENCE_MAX_POINT_DISTANCE_M,
+    )
+    max_network_distance_m = min(
+        float(max_network_distance_m),
+        DETHIER_MODERATE_CONFIDENCE_MAX_NETWORK_DISTANCE_M,
+    )
+    max_reach_hops = min(
+        int(max_reach_hops),
+        DETHIER_MODERATE_CONFIDENCE_MAX_REACH_HOPS,
+    )
+    high_area_limit = min(
+        float(max_area_log10_diff),
+        DETHIER_HIGH_CONFIDENCE_MAX_AREA_LOG10_DIFF,
+    )
+    moderate_area_limit = min(
+        float(max_area_log10_diff),
+        DETHIER_MODERATE_CONFIDENCE_MAX_AREA_LOG10_DIFF,
+    )
+
     if not math.isfinite(metrics["point_distance_m"]):
-        return False
-    if metrics["point_distance_m"] > float(max_point_distance_m):
-        return False
+        return "", "candidate_point_distance_unavailable"
+    if metrics["point_distance_m"] > max_point_distance_m:
+        return "", "candidate_point_distance_exceeded"
     if not math.isfinite(metrics["network_distance_m"]):
-        return False
-    if metrics["network_distance_m"] > float(max_network_distance_m):
-        return False
+        return "", "candidate_network_distance_unavailable"
+    if metrics["network_distance_m"] > max_network_distance_m:
+        return "", "candidate_network_distance_exceeded"
+    if int(metrics["reach_hops"]) > max_reach_hops:
+        return "", "candidate_reach_hops_exceeded"
+
     area_error = metrics["area_log10_diff"]
-    if math.isfinite(area_error) and area_error > float(max_area_log10_diff):
-        return False
-    return True
+    if (
+        metrics["point_distance_m"] <= DETHIER_HIGH_CONFIDENCE_MAX_POINT_DISTANCE_M
+        and metrics["network_distance_m"] <= DETHIER_HIGH_CONFIDENCE_MAX_NETWORK_DISTANCE_M
+        and int(metrics["reach_hops"]) <= DETHIER_HIGH_CONFIDENCE_MAX_REACH_HOPS
+        and (not math.isfinite(area_error) or area_error <= high_area_limit)
+    ):
+        return "high_confidence", ""
+
+    if not math.isfinite(area_error):
+        return "", "candidate_area_missing_for_moderate_confidence"
+    if area_error > moderate_area_limit:
+        return "", "candidate_area_inconsistent"
+    return "moderate_confidence", ""
+
+
+def _set_nearest_dethier_candidate_diagnostics(base, candidates):
+    if not candidates:
+        return
+    nearest = sorted(
+        candidates,
+        key=lambda item: (
+            item["point_distance_m"] if math.isfinite(item["point_distance_m"]) else math.inf,
+            item["network_distance_m"] if math.isfinite(item["network_distance_m"]) else math.inf,
+            item["reach_hops"],
+            item["area_log10_diff"] if math.isfinite(item["area_log10_diff"]) else math.inf,
+            item["candidate"]["cluster_uid"],
+            item["candidate"]["cluster_id"],
+        ),
+    )[0]
+    base.update(
+        {
+            "nearest_candidate_cluster_uid": nearest["candidate"]["cluster_uid"],
+            "nearest_candidate_point_distance_m": nearest["point_distance_m"],
+            "nearest_candidate_network_distance_m": nearest["network_distance_m"],
+            "nearest_candidate_reach_hops": int(nearest["reach_hops"]),
+            "nearest_candidate_area_log10_diff": nearest["area_log10_diff"],
+            "candidate_rejection_reason": _clean_text(
+                nearest.get("candidate_rejection_reason", "")
+            ),
+        }
+    )
 
 
 def _link_dethier_point_anchored(
@@ -705,64 +1227,79 @@ def _link_dethier_point_anchored(
 
     same_reach_candidates = reach_index.get((resolution, satellite_reach_id), [])
     raw_same = [
-        _candidate_with_dethier_metrics(base, candidate, reach_network, "same")
+        _candidate_with_dethier_metrics(
+            base,
+            candidate,
+            reach_network,
+            "same",
+            0,
+            (satellite_reach_id,),
+        )
         for candidate in same_reach_candidates
         if math.isfinite(candidate["lat"]) and math.isfinite(candidate["lon"])
     ]
-    eligible = [
-        item
-        for item in raw_same
-        if _dethier_candidate_is_eligible(
+
+    connected_metrics = []
+    if int(max_reach_hops) >= 1:
+        connected_reaches = reach_network.connected_reaches(
+            satellite_reach_id,
+            max_hops=max_reach_hops,
+            max_path_length_m=DETHIER_CONNECTED_REACH_MAX_PATH_LENGTH_M,
+        )
+        for connected in connected_reaches:
+            connected_reach_id = int(connected["reach_id"])
+            for candidate in reach_index.get((resolution, connected_reach_id), []):
+                if not math.isfinite(candidate["lat"]) or not math.isfinite(candidate["lon"]):
+                    continue
+                connected_metrics.append(
+                    _candidate_with_dethier_metrics(
+                        base,
+                        candidate,
+                        reach_network,
+                        connected["relation"],
+                        connected["reach_hops"],
+                        connected["reach_path"],
+                    )
+                )
+
+    candidates = raw_same + connected_metrics
+    eligible = []
+    for item in candidates:
+        confidence, reason = _dethier_candidate_confidence_and_reason(
             item,
             max_point_distance_m,
             max_network_distance_m,
+            max_reach_hops,
             max_area_log10_diff,
         )
-    ]
-    candidate_count = len(raw_same)
-    if not eligible and int(max_reach_hops) >= 1:
-        adjacent_by_reach = reach_network.adjacent_reaches(satellite_reach_id, max_hops=max_reach_hops)
-        adjacent_metrics = []
-        for adjacent_reach_id, relation in sorted(adjacent_by_reach.items()):
-            for candidate in reach_index.get((resolution, int(adjacent_reach_id)), []):
-                if not math.isfinite(candidate["lat"]) or not math.isfinite(candidate["lon"]):
-                    continue
-                adjacent_metrics.append(
-                    _candidate_with_dethier_metrics(base, candidate, reach_network, relation)
-                )
-        candidate_count += len(adjacent_metrics)
-        eligible = [
-            item
-            for item in adjacent_metrics
-            if _dethier_candidate_is_eligible(
-                item,
-                max_point_distance_m,
-                max_network_distance_m,
-                max_area_log10_diff,
-            )
-        ]
+        item["confidence"] = confidence
+        item["candidate_rejection_reason"] = reason
+        if confidence:
+            eligible.append(item)
 
+    candidate_count = len(candidates)
     base["candidate_count"] = candidate_count
     base["eligible_candidate_count"] = len(eligible)
     if not eligible:
         if candidate_count == 0:
-            return _unlinked_row(base, "no_main_cluster_on_same_or_adjacent_reach")
+            return _unlinked_row(base, "no_main_cluster_on_same_or_connected_reach")
+        _set_nearest_dethier_candidate_diagnostics(base, candidates)
         return _unlinked_row(base, "no_eligible_point_anchored_candidate")
 
     eligible.sort(
         key=lambda item: (
-            0 if item["same_reach"] else 1,
-            item["reach_hops"],
+            0 if item["confidence"] == "high_confidence" else 1,
             item["network_distance_m"],
             item["area_log10_diff"] if math.isfinite(item["area_log10_diff"]) else math.inf,
             item["point_distance_m"],
+            item["reach_hops"],
             item["candidate"]["cluster_uid"],
             item["candidate"]["cluster_id"],
         )
     )
     best = eligible[0]
     candidate = best["candidate"]
-    link_reason = "same_reach_point_anchored" if best["same_reach"] else "adjacent_reach_point_anchored"
+    link_reason = "same_reach_point_anchored" if best["same_reach"] else "connected_reach_point_anchored"
     base.update(
         {
             "linked_cluster_id": candidate["cluster_id"],
@@ -781,9 +1318,7 @@ def _link_dethier_point_anchored(
             "area_log10_diff": best["area_log10_diff"],
             "candidate_count": candidate_count,
             "eligible_candidate_count": len(eligible),
-            "link_quality": "network_distance_and_area_ranked"
-            if math.isfinite(best["area_log10_diff"])
-            else "network_distance_ranked_area_unavailable",
+            "link_quality": best["confidence"],
             "link_distance_m": best["point_distance_m"],
             "link_uparea_log10_error": best["area_log10_diff"],
             "link_candidate_count": len(eligible),
@@ -835,6 +1370,17 @@ def link_satellite_to_main_clusters(
         reach_network = MeritReachNetwork(configured_merit_dir)
     elif isinstance(reach_network, dict):
         reach_network = MeritReachNetwork(reach_rows=reach_network)
+    gsed_satellites = satellites.loc[
+        satellites["source"].map(_source_key).isin(GSED_SOURCE_NAMES)
+    ]
+    if not gsed_satellites.empty and hasattr(reach_network, "prefetch"):
+        gsed_reach_ids = pd.to_numeric(gsed_satellites["basin_id"], errors="coerce").dropna()
+        main_reach_ids = [
+            candidate["basin_id"]
+            for candidates in reach_index.values()
+            for candidate in candidates
+        ]
+        reach_network.prefetch(list(gsed_reach_ids) + main_reach_ids)
     satellites = satellites.sort_values(key_columns + ["cluster_id"], kind="mergesort")
     output_rows = []
 
@@ -865,6 +1411,27 @@ def link_satellite_to_main_clusters(
             continue
         if not math.isfinite(base["lat"]) or not math.isfinite(base["lon"]):
             output_rows.append(_unlinked_row(base, "missing_satellite_coordinates"))
+            continue
+        if _source_key(base["source"]) in GSED_SOURCE_NAMES:
+            target_resolutions = tuple(
+                item for item in allowed_link_resolutions(base["source"], resolution)
+                if item in matrix_resolutions
+            )
+            base["link_attempted_resolutions"] = "|".join(
+                allowed_link_resolutions(base["source"], resolution)
+            )
+            if not target_resolutions:
+                output_rows.append(_unlinked_row(base, "matrix_missing"))
+                continue
+            output_rows.append(
+                _link_gsed_reach_scale_network(
+                    base,
+                    resolution,
+                    target_resolutions,
+                    reach_index,
+                    reach_network,
+                )
+            )
             continue
         if base["basin_status"].lower() != "resolved":
             output_rows.append(_unlinked_row(base, "satellite_basin_unresolved"))
