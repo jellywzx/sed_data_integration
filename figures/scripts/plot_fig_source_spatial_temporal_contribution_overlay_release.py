@@ -43,6 +43,9 @@ DPI = 300
 SPATIAL_COLOR = "#0072B2"
 TEMPORAL_LINE_COLOR = "#555555"
 TEMPORAL_POINT_COLOR = "#E69F00"
+TEMPORAL_LINE_WIDTH = 1.7
+TEMPORAL_LINE_ALPHA = 0.9
+TEMPORAL_POINT_SIZE = 52
 
 OKABE_ITO = {
     "black": "#000000",
@@ -488,14 +491,14 @@ def plot_other_product_panel(
                 row["first_year"],
                 row["last_year"],
                 color=TEMPORAL_LINE_COLOR,
-                linewidth=1.7,
-                alpha=0.9,
+                linewidth=TEMPORAL_LINE_WIDTH,
+                alpha=TEMPORAL_LINE_ALPHA,
                 zorder=3,
             )
         ax_year.scatter(
             time_df["last_year"],
             y[time_df.index],
-            s=52,
+            s=TEMPORAL_POINT_SIZE,
             color=TEMPORAL_POINT_COLOR,
             alpha=0.82,
             edgecolor="white",
@@ -591,14 +594,14 @@ def plot_overlay_source_contribution(
                 row["first_year"],
                 row["last_year"],
                 color=TEMPORAL_LINE_COLOR,
-                linewidth=1.7,
-                alpha=0.9,
+                linewidth=TEMPORAL_LINE_WIDTH,
+                alpha=TEMPORAL_LINE_ALPHA,
                 zorder=3,
             )
         ax_year.scatter(
             time_df["last_year"],
             y[time_df.index],
-            s=52,
+            s=TEMPORAL_POINT_SIZE,
             color=TEMPORAL_POINT_COLOR,
             alpha=0.82,
             edgecolor="white",
@@ -616,7 +619,7 @@ def plot_overlay_source_contribution(
     legend_handles = [
         Patch(facecolor=SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="clusters"),
         Patch(facecolor=SPATIAL_COLOR, alpha=0.72, edgecolor="#2f4f6f", linewidth=0.5, label="clusters / records"),
-        Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
+        Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=TEMPORAL_LINE_WIDTH, label="temporal span"),
         Line2D(
             [0],
             [0],
@@ -679,7 +682,7 @@ def plot_other_products_source_contribution(
         Patch(facecolor=OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology stations"),
         Patch(facecolor=OKABE_ITO["reddish_purple"], alpha=0.48, edgecolor="none", label="satellite linked clusters"),
         Patch(facecolor=SPATIAL_COLOR, alpha=0.48, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
-        Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
+        Line2D([0], [0], color=TEMPORAL_LINE_COLOR, linewidth=TEMPORAL_LINE_WIDTH, label="temporal span"),
         Line2D(
             [0],
             [0],

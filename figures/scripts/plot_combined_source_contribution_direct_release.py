@@ -68,6 +68,9 @@ def configure_matplotlib() -> None:
     SOURCE.AXES_TITLE_SIZE = AXES_TITLE_SIZE
     SOURCE.TICK_LABEL_SIZE = TICK_LABEL_SIZE
     SOURCE.LEGEND_FONT_SIZE = LEGEND_FONT_SIZE
+    SOURCE.TEMPORAL_LINE_WIDTH = 3.5
+    SOURCE.TEMPORAL_LINE_ALPHA = 1.0
+    SOURCE.TEMPORAL_POINT_SIZE = 80
     SOURCE.configure_matplotlib(plt)
 
 
@@ -142,14 +145,14 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
                 row["first_year"],
                 row["last_year"],
                 color=SOURCE.TEMPORAL_LINE_COLOR,
-                linewidth=1.7,
-                alpha=0.9,
+                linewidth=SOURCE.TEMPORAL_LINE_WIDTH,
+                alpha=SOURCE.TEMPORAL_LINE_ALPHA,
                 zorder=3,
             )
         ax_year.scatter(
             time_df["last_year"],
             y[time_df.index],
-            s=52,
+            s=SOURCE.TEMPORAL_POINT_SIZE,
             color=SOURCE.TEMPORAL_POINT_COLOR,
             alpha=0.82,
             edgecolor="white",
@@ -191,7 +194,7 @@ def legend_handles() -> List[object]:
             label="satellite linked clusters",
         ),
         Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.72, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
-        Line2D([0], [0], color=SOURCE.TEMPORAL_LINE_COLOR, linewidth=1.7, label="temporal span"),
+        Line2D([0], [0], color=SOURCE.TEMPORAL_LINE_COLOR, linewidth=SOURCE.TEMPORAL_LINE_WIDTH, label="temporal span"),
         Line2D(
             [0],
             [0],

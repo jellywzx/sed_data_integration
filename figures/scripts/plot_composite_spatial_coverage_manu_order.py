@@ -794,29 +794,9 @@ def create_figure(ctx: ReleaseContext, figures_root: Path, dpi: int, plot_only: 
     climatology = point_data["climatology"]
     timeseries = {key: point_data[key] for key in ("Daily", "Monthly", "Annual")}
 
-    # 三张出图的版本
-    # fig = plt.figure(figsize=FIGSIZE)
-    # gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.05)
-
-    # ax_a = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    # draw_climatology_timeseries_map(ax_a, climatology, timeseries)
-    # add_panel_label(ax_a, "(a)")
-
-    # ax_b = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
-    # draw_cluster_map(ax_b, clusters, area_dist)
-    # add_panel_label(ax_b, "(b)")
-
-    # ax_c = fig.add_subplot(gs[2, 0], projection=ccrs.PlateCarree())
-    # draw_satellite_map(ax_c, satellite, satellite_area)
-    # add_panel_label(ax_c, "(c)")
-
-    # fig.savefig(pdf_path, dpi=dpi, bbox_inches="tight")
-    # fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
-    # plt.close(fig)
-
-    # === Alternative: 不画 satellite，只画 (a) climatology+timeseries 和 (b) cluster map ===
-    fig = plt.figure(figsize=(FIGSIZE[0], FIGSIZE[1] * 2 / 3))  # 按比例缩小高度
-    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1], hspace=0.05)
+    # === Three panels: (a) climatology+timeseries, (b) cluster map, (c) satellite map ===
+    fig = plt.figure(figsize=FIGSIZE)
+    gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.05)
 
     ax_a = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
     draw_climatology_timeseries_map(ax_a, climatology, timeseries)
@@ -825,6 +805,10 @@ def create_figure(ctx: ReleaseContext, figures_root: Path, dpi: int, plot_only: 
     ax_b = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
     draw_cluster_map(ax_b, clusters, area_dist)
     add_panel_label(ax_b, "(b)")
+
+    ax_c = fig.add_subplot(gs[2, 0], projection=ccrs.PlateCarree())
+    draw_satellite_map(ax_c, satellite, satellite_area)
+    add_panel_label(ax_c, "(c)")
 
     fig.savefig(pdf_path, dpi=dpi, bbox_inches="tight")
     fig.savefig(png_path, dpi=dpi, bbox_inches="tight")
