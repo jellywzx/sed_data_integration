@@ -957,7 +957,7 @@ def _process_satellite_data_batch(
     full_candidate_audit,
 ):
     """Worker function: process a batch of satellite row dicts within one process.
-    
+
     Each worker creates its own MeritReachNetwork (loads shapefiles
     independently) so there are no thread-safety concerns with the
     lazy-fill caches.  Returns (links_list, candidate_rows_list).
@@ -993,7 +993,7 @@ def _link_satellite_parallel(
     full_candidate_audit=False,
 ):
     """Dispatch satellite-row processing across a process pool.
-    
+
     Each worker gets its own MeritReachNetwork so lazy-fill caches are
     process-local and safe.  Returns (links_df, candidates_df, report_df).
     """

@@ -10,10 +10,9 @@ script treats the s5b satellite-to-main-cluster linkage CSV as the authoritative
 linkage catalogue and reads satellite observations directly from their source
 NetCDF files.
 
-Both the legacy s5b CSV and the accelerated v2 linkage CSV are supported. The
-v2 links identify satellite rows by ``satellite_key`` and no longer carry source
-paths, so this script recovers ``path`` and satellite source metadata from
-``s5_basin_clustered_stations.csv`` via ``--s5-csv``.
+The accelerated s5b v2 links identify satellite rows by ``satellite_key`` and
+do not carry source paths, so this script recovers ``path`` and satellite
+source metadata from ``s5_basin_clustered_stations.csv`` via ``--s5-csv``.
 
 The in-situ side follows the original s11 logic:
 1. prefer a candidate sidecar when available;
@@ -49,6 +48,18 @@ try:
 except ImportError:  # allows module-style execution from the repository root
     from validate import s11_satellite_insitu_validation as base  # type: ignore
 
+try:
+    from pipeline_paths import (
+        S5_BASIN_CLUSTERED_CSV,
+        S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+    )
+except ImportError:  # allows module-style execution from the validate directory
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from pipeline_paths import (  # type: ignore
+        S5_BASIN_CLUSTERED_CSV,
+        S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+    )
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
@@ -58,11 +69,11 @@ OUTPUT_R_ROOT = Path(
 
 DEFAULT_LINKAGE_CSV = (
     OUTPUT_R_ROOT
-    / "scripts_basin_test/output/s5b_satellite_main_cluster_links_v2.csv"
+    / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
 )
 DEFAULT_S5_CSV = (
     OUTPUT_R_ROOT
-    / "scripts_basin_test/output/s5_basin_clustered_stations.csv"
+    / S5_BASIN_CLUSTERED_CSV
 )
 DEFAULT_SOURCE_ROOT = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_RELEASE_DIR = (
@@ -682,15 +693,16 @@ def _normalize_v2_linkage_table(linkage: pd.DataFrame, s5_csv: Path) -> pd.DataF
 
 
 def _validate_linkage_table(linkage: pd.DataFrame, s5_csv: Optional[Path] = None) -> pd.DataFrame:
-    if "satellite_key" in linkage.columns and "satellite_source" in linkage.columns:
-        if s5_csv is None:
-            raise ValueError("v2 s5b linkage requires --s5-csv")
-        linkage = _normalize_v2_linkage_table(linkage, s5_csv)
+    if "satellite_key" not in linkage.columns or "satellite_source" not in linkage.columns:
+        raise ValueError("expected s5b v2 linkage CSV with satellite_key and satellite_source columns")
+    if s5_csv is None:
+        raise ValueError("v2 s5b linkage requires --s5-csv")
+    linkage = _normalize_v2_linkage_table(linkage, s5_csv)
 
     missing = sorted(REQUIRED_LINKAGE_COLUMNS - set(linkage.columns))
     if missing:
         raise ValueError(
-            "s5b linkage CSV missing columns: {}".format(", ".join(missing))
+            "normalized s5b v2 linkage CSV missing columns: {}".format(", ".join(missing))
         )
 
     work = linkage.copy()
@@ -709,9 +721,6 @@ def _validate_linkage_table(linkage: pd.DataFrame, s5_csv: Optional[Path] = None
         work["source_station_id"] = work["source_station_id"].map(_clean_text)
     if "path" in work.columns:
         work["path"] = work["path"].map(_clean_text)
-    if "s5b_schema" not in work.columns:
-        work["s5b_schema"] = "legacy"
-
     duplicates = work.duplicated(
         ["satellite_location_uid", "resolution"],
         keep=False,

@@ -54,7 +54,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from pipeline_paths import OUTPUT_LOG_DIR
+from pipeline_paths import (
+    OUTPUT_LOG_DIR,
+    S5_BASIN_CLUSTERED_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -64,6 +70,7 @@ ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
 STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
+EXPLICIT_STAGES = STAGES[:5] + ("s5b",) + STAGES[5:]
 
 # ---- Built-in runtime defaults -------------------------------------------------
 # These constants are the script's everyday defaults.
@@ -91,6 +98,9 @@ BUILTIN_MERIT_DIR = DEFAULT_MERIT_DIR
 BUILTIN_S6_WORKERS = 24
 BUILTIN_MATRIX_WORKERS = None
 BUILTIN_MATRIX_RESOLUTION_WORKERS = None
+BUILTIN_S5B_WORKERS = 0
+BUILTIN_S5B_CHUNK_SIZE = 0
+BUILTIN_S5B_FULL_CANDIDATE_AUDIT = False
 BUILTIN_S6_INCLUDE_CLIMATOLOGY = False
 BUILTIN_SKIP_CLIMATOLOGY_EXPORT = False
 
@@ -216,10 +226,10 @@ def _parse_steps_arg(steps_text):
         step = raw.strip().lower()
         if not step:
             continue
-        if step not in STAGES:
+        if step not in EXPLICIT_STAGES:
             raise SystemExit(
                 "Invalid step '{}' in --steps. Allowed: {}".format(
-                    step, ", ".join(STAGES)
+                    step, ", ".join(EXPLICIT_STAGES)
                 )
             )
         if step not in selected:
@@ -278,12 +288,20 @@ def stage_outputs():
             OUTPUT_DIR / "s5_basin_clustered_stations.csv",
             OUTPUT_DIR / "s5_basin_cluster_report.csv",
         ],
+        "s5b": [
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
+        ],
         "s6": [
             OUTPUT_DIR / "s6_basin_merged_all.nc",
             OUTPUT_DIR / "s6_cluster_quality_order.csv",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_daily.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_monthly.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_annual.nc",
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
             OUTPUT_DIR / "s6_satellite_validation_only.nc",
             OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
@@ -317,7 +335,10 @@ def stage_outputs():
 
 
 def build_stage_specs(args, python_bin):
-    s5_csv = OUTPUT_DIR / "s5_basin_clustered_stations.csv"
+    s5_csv = OUTPUT_R_ROOT / S5_BASIN_CLUSTERED_CSV
+    s5b_links_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
+    s5b_candidates_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV
+    s5b_report_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV
     master_nc = OUTPUT_DIR / "s6_basin_merged_all.nc"
     matrix_dir = OUTPUT_DIR / "s6_matrix_by_resolution"
     cluster_catalog = OUTPUT_DIR / "s7_cluster_resolution_catalog.csv"
@@ -374,6 +395,30 @@ def build_stage_specs(args, python_bin):
             matrix_workers = 32
         if matrix_resolution_workers is None:
             matrix_resolution_workers = 1
+
+    s5b_command = {
+        "name": "s5b_link_satellite_to_main_clusters_v2",
+        "cmd": [
+            python_bin,
+            str(SCRIPT_DIR / "s5b_link_satellite_to_main_clusters_v2.py"),
+            "--input",
+            str(s5_csv),
+            "--output-links",
+            str(s5b_links_csv),
+            "--output-candidates",
+            str(s5b_candidates_csv),
+            "--output-report",
+            str(s5b_report_csv),
+            "--merit-basins-dir",
+            str(Path(args.merit_dir).expanduser().resolve()),
+            "--workers",
+            str(args.s5b_workers),
+            "--chunk-size",
+            str(args.s5b_chunk_size),
+        ],
+    }
+    if args.s5b_full_candidate_audit:
+        s5b_command["cmd"].append("--full-candidate-audit")
 
     s6_commands = [
         {
@@ -440,7 +485,13 @@ def build_stage_specs(args, python_bin):
         str(args.cluster_poll_seconds),
         "--s6-workers",
         str(args.s6_workers),
+        "--s5b-workers",
+        str(args.s5b_workers),
+        "--s5b-chunk-size",
+        str(args.s5b_chunk_size),
     ]
+    if args.s5b_full_candidate_audit:
+        s6_cluster_cmd.append("--s5b-full-candidate-audit")
     if matrix_workers is not None:
         s6_cluster_cmd += ["--matrix-workers", str(matrix_workers)]
     if matrix_resolution_workers is not None:
@@ -627,6 +678,10 @@ def build_stage_specs(args, python_bin):
                 }
             ],
         },
+        "s5b": {
+            "label": "link satellite locations to main clusters",
+            "commands": [s5b_command],
+        },
         "s6": {
             "label": "build basin NetCDF outputs",
             "commands": s6_commands if args.local_s6 else s6_cluster_commands,
@@ -756,6 +811,24 @@ def parse_args(defaults=None):
         help="MERIT Hydro directory passed to s4 via MERIT_DIR.",
     )
     parser.add_argument("--s6-workers", type=int, default=BUILTIN_S6_WORKERS, help="Worker count for s6_basin_merge_to_nc.py.")
+    parser.add_argument(
+        "--s5b-workers",
+        type=int,
+        default=BUILTIN_S5B_WORKERS,
+        help="Worker count for s5b_link_satellite_to_main_clusters_v2.py (0=auto).",
+    )
+    parser.add_argument(
+        "--s5b-chunk-size",
+        type=int,
+        default=BUILTIN_S5B_CHUNK_SIZE,
+        help="Satellite rows per s5b v2 worker task (0=auto).",
+    )
+    parser.add_argument(
+        "--s5b-full-candidate-audit",
+        action="store_true",
+        default=BUILTIN_S5B_FULL_CANDIDATE_AUDIT,
+        help="Pass --full-candidate-audit to s5b v2.",
+    )
     parser.add_argument(
         "--matrix-workers",
         type=int,
@@ -912,6 +985,8 @@ def _confirm_config(args, stages, python_bin):
     merge_mem = _env("MERGE_MEM_MB", "240000")
     clim_n = _env("CLIM_N", "4")
     clim_mem = _env("CLIM_MEM_MB", "16000")
+    s5b_n = _env("S5B_N", "24")
+    s5b_mem = _env("S5B_MEM_MB", "16000")
     satval_n = _env("SATVAL_N", "24")
     satval_mem = _env("SATVAL_MEM_MB", "64000")
 
@@ -940,6 +1015,9 @@ def _confirm_config(args, stages, python_bin):
         ("s2 dataset filter", ", ".join(_split_multi_value(args.s2_dataset)) or "all"),
         ("s3 workers", str(args.s3_workers)),
         ("s6 workers", str(args.s6_workers)),
+        ("s5b workers", str(args.s5b_workers)),
+        ("s5b chunk size", str(args.s5b_chunk_size)),
+        ("s5b full candidate audit", str(args.s5b_full_candidate_audit)),
         ("matrix workers", str(args.matrix_workers)),
         ("matrix resolution workers", str(args.matrix_resolution_workers)),
         ("s8 link mode", str(args.s8_link_mode)),
@@ -965,6 +1043,7 @@ def _confirm_config(args, stages, python_bin):
         ("S6: MONTHLY_WORKERS", mo_workers),
         ("S6: ANNUAL_WORKERS", an_workers),
         ("S6: MERGE_N / MERGE_MEM_MB", "{} / {}".format(merge_n, merge_mem)),
+        ("S6: S5B_N / S5B_MEM_MB", "{} / {}".format(s5b_n, s5b_mem)),
         ("S6: CLIM_N / CLIM_MEM_MB", "{} / {}".format(clim_n, clim_mem)),
         ("S6: SATVAL_N / SATVAL_MEM_MB", "{} / {}".format(satval_n, satval_mem)),
         ("S4: QUEUE / NCORES / MEM / PTILE", "{} / {} / {} / {}".format(s4_queue, s4_ncores, s4_mem, s4_ptile)),
@@ -987,6 +1066,7 @@ def _confirm_config(args, stages, python_bin):
         ("[env] S6: RUN_ONLY", "export RUN_ONLY=merge,matrix_daily,..."),
         ("[env] S6: JOB_TAG", "export JOB_TAG=my_tag"),
         ("[env] S6: DAILY_WORKERS / ...", "export DAILY_WORKERS=40"),
+        ("[env] S6: S5B_N / S5B_MEM_MB", "export S5B_N=24 S5B_MEM_MB=16000"),
         ("[env] S4: S4_QUEUE / S4_NCORES / ...", "export S4_QUEUE=normal"),
         ("[env] LSF: LSF_QUEUE / LSF_PROJECT", "export LSF_QUEUE=normal"),
         ("s2 workers", "--s2-workers N"),
@@ -997,6 +1077,9 @@ def _confirm_config(args, stages, python_bin):
         ("s4 array size", "--s4-array-size N"),
         ("s4 maxtasksperchild", "--s4-maxtasksperchild N"),
         ("s6 workers", "--s6-workers N"),
+        ("s5b workers", "--s5b-workers N (0=auto)"),
+        ("s5b chunk size", "--s5b-chunk-size N (0=auto)"),
+        ("s5b full candidate audit", "--s5b-full-candidate-audit"),
         ("matrix workers", "--matrix-workers N"),
         ("matrix resolution workers", "--matrix-resolution-workers N"),
         ("s8 link mode", "--s8-link-mode hardlink|symlink|copy"),
@@ -1070,6 +1153,9 @@ _CONFIG_FIELDS = [
     ("s4_no_gpkg", "--s4-no-gpkg"),
     ("merit_dir", "--merit-dir"),
     ("s6_workers", "--s6-workers"),
+    ("s5b_workers", "--s5b-workers"),
+    ("s5b_chunk_size", "--s5b-chunk-size"),
+    ("s5b_full_candidate_audit", "--s5b-full-candidate-audit"),
     ("s6_include_climatology", "--s6-include-climatology"),
     ("skip_climatology_export", "--skip-climatology-export"),
     ("matrix_workers", "--matrix-workers"),
@@ -1156,6 +1242,9 @@ cli:
 
   # s6: NetCDF 导出
   s6_workers: 24               # merge worker 数，推荐 8-40
+  s5b_workers: 0               # s5b v2 worker 数；0=自动
+  s5b_chunk_size: 0            # 每个 s5b v2 任务处理的 satellite 行数；0=自动
+  s5b_full_candidate_audit: false  # 写完整候选审计；生产默认 false
   matrix_workers:              # 每个 resolution matrix 导出的总 worker；留空=脚本默认
   matrix_resolution_workers:   # 每个 resolution 内部 worker；留空=脚本默认
   s6_include_climatology: false   # 将 climatology 合并到 master NC
@@ -1194,6 +1283,8 @@ env:
 
   MERGE_N: "48"                # merge 步骤 LSF 核数，推荐 24-64
   MERGE_MEM_MB: "240000"       # merge 步骤 LSF 内存 MB，推荐 120000-480000
+  S5B_N: "24"                  # s5b v2 LSF 核数，推荐 8-48
+  S5B_MEM_MB: "16000"          # s5b v2 LSF 内存 MB，推荐 16000-64000
   CLIM_N: "4"                  # 气候导出 LSF 核数，推荐 2-8
   CLIM_MEM_MB: "16000"         # 气候导出 LSF 内存 MB，推荐 8000-32000
   SATVAL_N: "24"               # 卫星验证 LSF 核数，推荐 8-32
@@ -1327,6 +1418,9 @@ def main():
         _print_and_log(log_fp, "s2 dataset filter:       {}".format(", ".join(_split_multi_value(args.s2_dataset)) or "all"))
         _print_and_log(log_fp, "s3 workers:              {}".format(args.s3_workers))
         _print_and_log(log_fp, "s6 workers:              {}".format(args.s6_workers))
+        _print_and_log(log_fp, "s5b workers:             {}".format(args.s5b_workers))
+        _print_and_log(log_fp, "s5b chunk size:          {}".format(args.s5b_chunk_size))
+        _print_and_log(log_fp, "s5b full candidate audit: {}".format(args.s5b_full_candidate_audit))
         _print_and_log(log_fp, "matrix workers:          {}".format(args.matrix_workers))
         _print_and_log(log_fp, "matrix resolution workers: {}".format(args.matrix_resolution_workers))
         _print_and_log(log_fp, "s8 link mode:            {}".format(args.s8_link_mode))
@@ -1350,6 +1444,8 @@ def main():
         _print_and_log(log_fp, "ANNUAL_WORKERS:          {}".format(_env("ANNUAL_WORKERS", "4")))
         _print_and_log(log_fp, "MERGE_N:                 {}".format(_env("MERGE_N", "48")))
         _print_and_log(log_fp, "MERGE_MEM_MB:            {}".format(_env("MERGE_MEM_MB", "240000")))
+        _print_and_log(log_fp, "S5B_N:                   {}".format(_env("S5B_N", "24")))
+        _print_and_log(log_fp, "S5B_MEM_MB:              {}".format(_env("S5B_MEM_MB", "16000")))
         _print_and_log(log_fp, "CLIM_N:                  {}".format(_env("CLIM_N", "4")))
         _print_and_log(log_fp, "CLIM_MEM_MB:             {}".format(_env("CLIM_MEM_MB", "16000")))
         _print_and_log(log_fp, "SATVAL_N:                {}".format(_env("SATVAL_N", "24")))

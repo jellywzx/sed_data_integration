@@ -54,6 +54,9 @@ S4_REPORTED_AREA_CHECK_CSV = "scripts_basin_test/output/s4_reported_area_check.c
 # ── s5：流域聚类合并 ──────────────────────────────────────────────────────────
 S5_BASIN_CLUSTERED_CSV  = "scripts_basin_test/output/s5_basin_clustered_stations.csv"
 S5_BASIN_REPORT_CSV     = "scripts_basin_test/output/s5_basin_cluster_report.csv"
+S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV = "scripts_basin_test/output/s5b_satellite_main_cluster_links_v2.csv"
+S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV = "scripts_basin_test/output/s5b_satellite_main_cluster_candidates_v2.csv"
+S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV = "scripts_basin_test/output/s5b_satellite_main_cluster_report_v2.csv"
 
 # ── s6：时间序列合并输出 ──────────────────────────────────────────────────────
 S6_MERGED_NC            = "scripts_basin_test/output/s6_basin_merged_all.nc"
