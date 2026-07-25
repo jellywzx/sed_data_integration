@@ -21,6 +21,8 @@ def _write_s3(root):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         {
+            "station_key": "S3_skip_001",
+            "station_id": 0,
             "path": "monthly/Dethier_monthly_c.nc",
             "source": "Dethier",
             "lat": 12.0,
@@ -32,6 +34,8 @@ def _write_s3(root):
             "reported_area": 3456.0,
         },
         {
+            "station_key": "S3_skip_002",
+            "station_id": 1,
             "path": "monthly/Deither_monthly_d.nc",
             "source": "Deither",
             "lat": 13.0,

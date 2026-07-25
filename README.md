@@ -166,9 +166,9 @@ s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
 |---|---|---|---|
 | s1 | `s1_verify_time_resolution.py` | 校验输入 NetCDF 的时间语义，生成主分类结果、人工 review queue 和 override 模板 | `s1_verify_time_resolution_results.csv`、`s1_resolution_review_queue.csv`、`s1_resolution_review_overrides.csv` |
 | s2 | `s2_reorganize_qc_by_resolution.py` | 按 s1 判定结果重组 QC 文件到标准分辨率目录 | `../output_resolution_organized/`、`s2_resolution_classification_details.csv` |
-| s3 | `s3_collect_qc_stations.py` | 扫描整理后的 NetCDF，提取 basin 主线使用的站点元数据 | `s3_collected_stations.csv` |
-| s4 | `s4_basin_trace_watch.py` 或 `submit_s4_lsf.sh` | 为站点执行 upstream basin tracing，生成 basin 匹配结果和诊断字段 | `s4_upstream_basins.csv`、`s4_upstream_basins.gpkg`、`s4_local_catchments.gpkg`、`s4_reported_area_check.csv` |
-| s5 | `s5_basin_merge.py` | 基于 s4 basin 结果分配 `cluster_id`，生成 cluster 级站点表 | `s5_basin_clustered_stations.csv`、`s5_basin_cluster_report.csv` |
+| s3 | `s3_collect_qc_stations.py` | 扫描整理后的 NetCDF，提取 basin 主线使用的站点元数据，并生成稳定内部键 `station_key` | `s3_collected_stations.csv` |
+| s4 | `s4_basin_trace_watch.py` 或 `submit_s4_lsf.sh` | 按 `station_key` 为站点执行 upstream basin tracing，生成 basin 匹配结果和诊断字段 | `s4_upstream_basins.csv`、`s4_upstream_basins.gpkg`、`s4_local_catchments.gpkg`、`s4_reported_area_check.csv` |
+| s5 | `s5_basin_merge.py` | 按 `station_key` 合并 s4 basin 结果并分配 `cluster_id`，生成 cluster 级站点表 | `s5_basin_clustered_stations.csv`、`s5_basin_cluster_report.csv` |
 | s6 | `submit_s6_fast.sh` 或 s6 系列脚本 | 生成 master、matrix、climatology 和 satellite NetCDF | `s6_basin_merged_all.nc`、`s6_matrix_by_resolution/*.nc`、`s6_climatology_only.nc`、`s6_satellite_validation_only.nc` |
 | s7 | `s7_export_cluster_shp.py`、`s7_export_source_station_shp.py`、`s7_export_cluster_basin_shp.py` | 导出 cluster/source/basin 空间 sidecar 和 catalog | `s7_cluster_points.gpkg`、`s7_source_stations.gpkg`、`s7_cluster_basins.gpkg`、相关 catalog |
 | s8 | `s8_publish_reference_dataset.py` | 把 s6/s7 产物整理成标准发布包，并执行发布校验 | `sed_reference_release/` |
@@ -552,6 +552,12 @@ scripts_basin_test/output/logs/s4_lsf/
 scripts_basin_test/output/s4_shards/
 ```
 
+s4 shard resume 受输入指纹 manifest 保护。每个 shard 会写入 `s4_shard_XXX.meta.json`，
+记录当前 s3 CSV SHA256、s3 行数、shard_count/shard_index、MERIT_DIR、s4 脚本 SHA256
+和关键运行配置。`S4_RESUME=1` 时，已有 work/shard 文件必须与 manifest 完全匹配；
+缺少 manifest 的旧 shard 会被拒绝复用。需要重算当前 shard 时使用 `S4_RESUME=0`，
+s4 只会清理当前 shard 对应的 work CSV、完成 CSV 和 manifest。
+
 如只是在本地调试，也可以直接运行：
 
 ```bash
@@ -802,7 +808,7 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 
 | 变化 | 建议重跑范围 | 原因 |
 |---|---|---|
-| 时间分辨率规则变化 | 从 s2 起 | s2 会改变整理后的文件目录，后续站点表和 station_id 都会变化 |
+| 时间分辨率规则变化 | 从 s2 起 | s2 会改变整理后的文件目录，后续站点表、`station_key` 和当前运行内 `station_id` 都可能变化 |
 | `single_point / quarterly / annual / climatology` 判定逻辑变化 | 从 s2 起 | 会改变进入各分辨率目录的文件 |
 | basin tracing 或 `basin_status` 规则变化 | 从 s4 起 | s4 重新生成 basin 诊断，s5 以后都依赖它 |
 | cluster merge 规则变化 | 从 s5 起 | cluster_id / cluster_uid 可能变化 |
@@ -815,8 +821,9 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 
 1. `s2` 会改变整理后的文件目录。
 2. `s3` 会重建站点列表。
-3. `s3` 的站点顺序会影响后续 `station_id`。
-4. `station_id` 又会影响 `s4 / s5 / s6 / s7`。
+3. `s3` 会基于规范化的 `source`、`resolution` 和相对 `path` 生成稳定内部键 `station_key`。
+4. `station_id` 只是当前 s3 输出中的可复现整数索引，s4/s5 不会按行号重新创建它。
+5. s4 shards 只能在 s3 指纹、MERIT_DIR、s4 脚本指纹和关键运行配置一致时 resume。
 
 如果不确定上游是否变化，优先从较早阶段重跑。
 

@@ -26,6 +26,7 @@ def _build_inputs():
             {"station_id": 14, "basin_id": 7, "basin_status": "resolved", "uparea_merit": 103.0},
         ]
     )
+    basin_df["station_key"] = basin_df["station_id"].map(lambda sid: "k{}".format(sid))
     station_df = pd.DataFrame(
         [
             {"station_id": 0, "lat": 0.0, "lon": 0.0},
@@ -60,6 +61,7 @@ def _build_inputs():
             },
         ]
     )
+    station_df["station_key"] = station_df["station_id"].map(lambda sid: "k{}".format(sid))
     return basin_df, station_df
 
 

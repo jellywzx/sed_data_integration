@@ -43,6 +43,7 @@ Notes:
 """
 
 import argparse
+import hashlib
 import os
 import shlex
 import shutil
@@ -863,6 +864,14 @@ def _review_queue_count(path):
     return int(len(df))
 
 
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for block in iter(lambda: fp.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _confirm_config(args, stages, python_bin):
     """Print the resolved configuration and ask the user to confirm before proceeding."""
     s4_env = {
@@ -1299,6 +1308,14 @@ def main():
         _print_and_log(log_fp, "S4_SAVE_GPKG:            {}".format(not args.s4_no_gpkg))
         _print_and_log(log_fp, "S4_MAXTASKSPERCHILD:     {}".format(args.s4_maxtasksperchild))
         _print_and_log(log_fp, "S4_ARRAY_SIZE:           {}".format(args.s4_array_size))
+        if "s4" in stages and stages[0] == "s4" and not args.s4_no_resume:
+            s3_path = OUTPUT_DIR / "s3_collected_stations.csv"
+            _print_and_log(log_fp, "S4 resume safety:        shard manifest validation enabled")
+            _print_and_log(log_fp, "S4 current s3 path:      {}".format(s3_path))
+            if s3_path.is_file():
+                _print_and_log(log_fp, "S4 current s3 SHA256:    {}".format(_sha256_file(s3_path)))
+            else:
+                _print_and_log(log_fp, "S4 current s3 SHA256:    unavailable (s3 CSV missing)")
         _print_and_log(log_fp, "s3 exclude resolutions:  {}".format(args.s3_exclude_resolutions))
         _print_and_log(log_fp, "s8 force overwrite:      {}".format(args.s8_force))
         _print_and_log(log_fp, "s8 skip validation:      {}".format(args.s8_skip_validation))
