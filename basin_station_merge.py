@@ -234,7 +234,7 @@ def _merge_basin_with_station_coordinates(df, station_df):
 def load_station_to_basin_cluster_map(
     basin_csv_path: Path,
     station_df=None,
-    max_station_distance_m=5000.0,
+    max_station_distance_m=1000.0,
     max_upstream_rel_error=0.10,
     upstream_area_col="uparea_merit",
 ):
