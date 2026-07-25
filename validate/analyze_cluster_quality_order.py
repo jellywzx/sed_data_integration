@@ -264,9 +264,13 @@ def classify_time_overlap(groups: Dict[str, List[Dict]]
             "cluster_detail": cluster_detail}
 
 
-def check_glorise_exact_date(groups: Dict[str, List[Dict]]) -> None:
-    """Print exact-date overlap for large GloRiSe clusters."""
+def check_glorise_exact_date(groups: Dict[str, List[Dict]]) -> List[Dict]:
+    """Check exact-date overlap for large GloRiSe clusters.
+
+    Returns a list of per-cluster detail dicts.
+    """
     print("\n── GloRiSe clusters — exact-date check ──")
+    results = []
     for cuid, members in groups.items():
         if len(members) < 5:
             continue
@@ -284,14 +288,31 @@ def check_glorise_exact_date(groups: Dict[str, List[Dict]]) -> None:
         cnt = Counter(d for d, _ in dates_list)
         print(f"  {cuid} ({len(members)} candidates): "
               f"{len(unique_dates)} unique date(s)")
+        date_entries = []
         for dt, c in sorted(cnt.items()):
             marker = " ← ALL" if c == len(members) else ""
             print(f"    {dt.date()}: {c} stations{marker}")
+            date_entries.append({
+                "date": str(dt.date()),
+                "station_count": c,
+                "is_all": c == len(members),
+            })
+        results.append({
+            "cluster_uid": cuid,
+            "n_candidates": len(members),
+            "n_unique_dates": len(unique_dates),
+            "all_same_date": len(unique_dates) == 1,
+            "date_detail": date_entries,
+        })
+    return results
 
 
-def check_gfqa_exact_date_overlap(groups: Dict[str, List[Dict]]) -> None:
+def check_gfqa_exact_date_overlap(groups: Dict[str, List[Dict]]) -> Dict[str, int]:
     """Count how many 2-candidate GFQA_v2 clusters share exact dates vs
-    only year-level overlap."""
+    only year-level overlap.
+
+    Returns a dict with exact_match, year_only, total_both.
+    """
     exact_match = 0
     year_only = 0
     for cuid, members in groups.items():
@@ -309,13 +330,15 @@ def check_gfqa_exact_date_overlap(groups: Dict[str, List[Dict]]) -> None:
             exact_match += 1
         elif yr0 & yr1:
             year_only += 1
+    total_both = exact_match + year_only
     print("\n── GFQA_v2 2-candidate clusters — date overlap ──")
     print(f"  Exact-date overlap: {exact_match}")
     print(f"  Year-only overlap:  {year_only}")
-    total_both = exact_match + year_only
     if total_both:
         print(f"  (within-year complementary: "
               f"{year_only / total_both * 100:.0f}%)")
+    return {"exact_match": exact_match, "year_only": year_only,
+            "total_both": total_both}
 
 
 # ── Cross-source deep dive ────────────────────────────────────────────
@@ -482,6 +505,374 @@ def analyze_crosssource(cluster_id: str,
     return report
 
 
+# ── Markdown helpers ──────────────────────────────────────────────────
+
+
+def _normalize_text(value) -> str:
+    """Normalize a value to a clean string for markdown tables."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    return str(value).strip()
+
+
+def _md_table(rows: List[Dict], max_rows: int = 100) -> str:
+    """Convert a list of dicts to a markdown table string.
+
+    Parameters
+    ----------
+    rows : list of dict
+    max_rows : int
+        Maximum rows to include in the table.
+
+    Returns
+    -------
+    str : Markdown-formatted table.
+    """
+    if not rows:
+        return "_No rows._"
+    work = rows[:max_rows]
+    cols = list(work[0].keys())
+    lines_md = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join(["---"] * len(cols)) + " |",
+    ]
+    for row in work:
+        values = [_normalize_text(row.get(col)).replace("|", "\\|")
+                  for col in cols]
+        lines_md.append("| " + " | ".join(values) + " |")
+    if len(rows) > max_rows:
+        lines_md.append("\n_" + str(len(rows) - max_rows) + " more rows omitted — "
+                        "see CSV export for full table._")
+    return "\n".join(lines_md)
+
+
+def _fmt_pct(num: float, denom: float) -> str:
+    """Format a fraction as a percentage string."""
+    if denom == 0:
+        return "N/A"
+    return f"{num / denom * 100:.1f}%"
+
+
+# ── Markdown report ──────────────────────────────────────────────────
+
+
+def write_markdown_report(
+    report_path: Path,
+    csv_path: Path,
+    master_path: Optional[Path],
+    inv: Dict,
+    overlap: Dict,
+    glorise_data: List[Dict],
+    gfqa_data: Dict[str, int],
+    cross_reports: List[Dict],
+) -> None:
+    """Write the complete diagnostic report as a Markdown file.
+
+    Parameters
+    ----------
+    report_path : Path
+        Output path for the .md report.
+    csv_path : Path
+        Path to the s6 quality order CSV input.
+    master_path : Path or None
+        Path to sed_reference_master.nc (may be None).
+    inv : dict from analyze_cluster_inventory
+    overlap : dict from classify_time_overlap
+    glorise_data : list from check_glorise_exact_date
+    gfqa_data : dict from check_gfqa_exact_date_overlap
+    cross_reports : list of cross-source results
+    """
+    report_lines: List[str] = []
+
+    # ── Title ──
+    report_lines.append("# Cluster Quality Order — Diagnostic Report")
+    report_lines.append("")
+    report_lines.append(
+        "This analysis evaluates the s6 cluster quality order output "
+        "for cluster composition, within-cluster temporal overlap, "
+        "cross-source consistency, and merged-reference completeness. "
+        "It is a read-only diagnostic; it does not modify pipeline outputs."
+    )
+    report_lines.append("")
+
+    # ── Inputs ──
+    report_lines.append("## Inputs")
+    report_lines.append("")
+    report_lines.append(f"- s6 quality order CSV: `{csv_path}`")
+    if master_path:
+        report_lines.append(f"- master reference NC: `{master_path}`")
+    else:
+        report_lines.append("- master reference NC: _(not found — merged-output analysis skipped)_")
+    report_lines.append("")
+
+    # ── 1. Cluster Inventory ──
+    report_lines.append("## 1. Cluster Inventory")
+    report_lines.append("")
+    report_lines.append(f"- **Total clusters**: {inv['n_total']:,}")
+    report_lines.append(f"- **Single-candidate**: {inv['n_single']:,} "
+                        f"({_fmt_pct(inv['n_single'], inv['n_total'])})")
+    report_lines.append(f"- **Multi-candidate (>=2)**: {inv['n_multi']:,} "
+                        f"({_fmt_pct(inv['n_multi'], inv['n_total'])})")
+    report_lines.append("")
+
+    report_lines.append("### Size Distribution")
+    report_lines.append("")
+    sz_rows = [{"candidates_per_cluster": sz, "n_clusters": cnt}
+               for sz, cnt in sorted(inv["size_dist"].items())]
+    report_lines.append(_md_table(sz_rows))
+    report_lines.append("")
+
+    # ── 2. Time Overlap ──
+    n_multi = inv['n_multi']
+    report_lines.append("## 2. Within-Cluster Time Overlap "
+                        f"({n_multi} multi-candidate clusters)")
+    report_lines.append("")
+    cats = overlap["categories"]
+    n_fully = cats.get("fully_overlap", 0)
+    n_partial = cats.get("partially", 0)
+    n_compl = cats.get("complementary", 0)
+    report_lines.append(f"| Category | Count | Pct of multi-candidate |")
+    report_lines.append(f"| --- | --- | --- |")
+    denom_multi = n_multi if n_multi else 1
+    report_lines.append(f"| Fully overlapping | {n_fully} | "
+                        f"{_fmt_pct(n_fully, denom_multi)} |")
+    report_lines.append(f"| Partial | {n_partial} | "
+                        f"{_fmt_pct(n_partial, denom_multi)} |")
+    report_lines.append(f"| Complementary | {n_compl} | "
+                        f"{_fmt_pct(n_compl, denom_multi)} |")
+    report_lines.append("")
+
+    tpa = overlap["total_pairs_all"]
+    opa = overlap["overlap_pairs_all"]
+    if tpa:
+        report_lines.append(f"- **Pair-wise overlap**: {opa}/{tpa} pairs "
+                            f"({_fmt_pct(opa, tpa)})")
+        report_lines.append("")
+
+    # Complementary clusters
+    comp = [d for d in overlap["cluster_detail"]
+            if d["category"] == "complementary"]
+    if comp:
+        report_lines.append("### Complementary Clusters (no temporal overlap)")
+        report_lines.append("")
+        comp_rows = [{
+            "cluster_uid": c["cluster_uid"],
+            "n_candidates": str(c["n_candidates"]),
+            "sources": c["sources"],
+        } for c in comp]
+        report_lines.append(_md_table(comp_rows))
+        report_lines.append("")
+
+    # Large fully-overlapping
+    large = [d for d in overlap["cluster_detail"]
+             if d["category"] == "fully_overlap" and d["n_candidates"] >= 5]
+    if large:
+        report_lines.append("### Large Fully-Overlapping Clusters (>=5 candidates)")
+        report_lines.append("")
+        large_rows = [{
+            "cluster_uid": c["cluster_uid"],
+            "n_candidates": str(c["n_candidates"]),
+            "sources": c["sources"],
+            "overlap_pairs": f"{c['overlap_pairs']}/{c['total_pairs']}",
+        } for c in sorted(large, key=lambda x: -x["n_candidates"])]
+        report_lines.append(_md_table(large_rows))
+        report_lines.append("")
+
+    # ── 3. GloRiSe check ──
+    report_lines.append("## 3. GloRiSe Exact-Date Check")
+    report_lines.append("")
+    if glorise_data:
+        report_lines.append(
+            "Large GloRiSe clusters (>=5 candidates) checked for whether "
+            "all members share the exact same observation date."
+        )
+        report_lines.append("")
+        for entry in glorise_data:
+            report_lines.append(f"### {entry['cluster_uid']}")
+            report_lines.append("")
+            report_lines.append(f"- **Candidates**: {entry['n_candidates']}")
+            report_lines.append(f"- **Unique dates**: {entry['n_unique_dates']}")
+            report_lines.append(f"- **All same date**: "
+                                f"{'Yes' if entry['all_same_date'] else 'No'}")
+            report_lines.append("")
+            if entry["date_detail"]:
+                dt_rows = entry["date_detail"]
+                report_lines.append(_md_table(dt_rows))
+                report_lines.append("")
+    else:
+        report_lines.append("_No large GloRiSe clusters found._")
+        report_lines.append("")
+
+    # ── 4. GFQA_v2 check ──
+    report_lines.append("## 4. GFQA_v2 Date Overlap")
+    report_lines.append("")
+    report_lines.append("2-candidate GFQA_v2 clusters examined for exact-date "
+                        "vs year-only overlap.")
+    report_lines.append("")
+    report_lines.append(f"| Metric | Count |")
+    report_lines.append(f"| --- | --- |")
+    report_lines.append(f"| Exact-date overlap | {gfqa_data['exact_match']} |")
+    report_lines.append(f"| Year-only overlap | {gfqa_data['year_only']} |")
+    total_both = gfqa_data["total_both"]
+    if total_both:
+        report_lines.append(f"| Within-year complementary | "
+                            f"{gfqa_data['year_only']} "
+                            f"({_fmt_pct(gfqa_data['year_only'], total_both)}) |")
+    report_lines.append("")
+
+    # ── 5. Cross-source merge analysis ──
+    if cross_reports:
+        report_lines.append("## 5. Cross-Source Merge Analysis")
+        report_lines.append("")
+        for r in cross_reports:
+            if "error" in r:
+                report_lines.append(f"### {r['cluster_uid']}")
+                report_lines.append(f"_Error: {r['error']}_")
+                report_lines.append("")
+                continue
+
+            report_lines.append(f"### {r['cluster_uid']}")
+            report_lines.append("")
+            report_lines.append(f"- **Source A**: {r['source_a']} (`{r['uid_a']}`)")
+            report_lines.append(f"- **Source B**: {r['source_b']} (`{r['uid_b']}`)")
+            report_lines.append("")
+
+            # Per-source info
+            for label in ("A", "B"):
+                sid = r.get(f"start_{label}", "?")
+                eid = r.get(f"end_{label}", "?")
+                sp = r.get(f"span_yr_{label}", "?")
+                nd = r.get(f"n_days_{label}", "?")
+                report_lines.append(f"**Source {label}**: {sid} - {eid} "
+                                    f"({nd} days, {sp} yr)")
+            report_lines.append("")
+
+            # Overlap stats per variable
+            for var in ("Q", "SSC", "SSL"):
+                rkey = f"r_{var}"
+                if rkey not in r:
+                    continue
+                report_lines.append(f"#### Variable: {var}")
+                report_lines.append("")
+                report_lines.append(f"| Metric | Value |")
+                report_lines.append(f"| --- | --- |")
+                report_lines.append(f"| Overlap days | {r.get(f'overlap_n_{var}', 'N/A')} |")
+                r_val = r.get(f'r_{var}', float('nan'))
+                mape_val = r.get(f'mape_{var}', float('nan'))
+                mdape_val = r.get(f'mdape_{var}', float('nan'))
+                rmse_val = r.get(f'rmse_{var}', float('nan'))
+                nse_val = r.get(f'nse_{var}', float('nan'))
+                report_lines.append(f"| Pearson r | {r_val:.6f} |")
+                report_lines.append(f"| MAPE | {mape_val:.2f}% |")
+                report_lines.append(f"| MdAPE | {mdape_val:.2f}% |")
+                report_lines.append(f"| RMSE | {rmse_val:.4f} |")
+                report_lines.append(f"| NSE | {nse_val:.6f} |")
+                report_lines.append("")
+
+            # Merged output
+            if r.get("merged_n"):
+                report_lines.append("#### Merged Output (sed_reference_master.nc)")
+                report_lines.append("")
+                report_lines.append(f"| Metric | Value |")
+                report_lines.append(f"| --- | --- |")
+                report_lines.append(f"| Time steps | {r['merged_n']} |")
+                report_lines.append(f"| Time span | "
+                                    f"{r.get('merged_start', '?')} - "
+                                    f"{r.get('merged_end', '?')} "
+                                    f"({r.get('merged_span_yr', '?')} yr) |")
+                report_lines.append("")
+                comp_str = ", ".join(
+                    f"{src}: {cnt} days"
+                    for src, cnt in r.get("merged_composition", {}).items())
+                report_lines.append(f"**Composition**: {comp_str}")
+                report_lines.append("")
+                coex = r.get("merged_coexist", 0)
+                mn = r["merged_n"]
+                report_lines.append(f"**Q+SSC+SSL coexistence**: "
+                                    f"{coex}/{mn} ({_fmt_pct(coex, mn)})")
+                report_lines.append("")
+
+    # ── 6. Summary statistics ──
+    report_lines.append("## 6. Summary Statistics")
+    report_lines.append("")
+    report_lines.append(f"| Metric | Value |")
+    report_lines.append(f"| --- | --- |")
+    report_lines.append(f"| Total clusters | {inv['n_total']:,} |")
+    report_lines.append(f"| Single-candidate clusters | {inv['n_single']:,} |")
+    report_lines.append(f"| Multi-candidate clusters | {inv['n_multi']:,} |")
+    report_lines.append(f"| Fully-overlapping multi-clusters | {n_fully} |")
+    report_lines.append(f"| Partially-overlapping multi-clusters | {n_partial} |")
+    report_lines.append(f"| Complementary multi-clusters | {n_compl} |")
+    pw_rate = _fmt_pct(opa, tpa) if tpa else 'N/A'
+    report_lines.append(f"| Pair-wise overlapping rate | {pw_rate} |")
+    if glorise_data:
+        glorise_all_same = sum(1 for g in glorise_data if g["all_same_date"])
+        report_lines.append(f"| GloRiSe large clusters (>=5) | {len(glorise_data)} |")
+        report_lines.append(f"| GloRiSe all-same-date clusters | {glorise_all_same} |")
+    report_lines.append(f"| GFQA_v2 exact-date overlap pairs | "
+                        f"{gfqa_data['exact_match']} |")
+    report_lines.append(f"| GFQA_v2 year-only overlap pairs | "
+                        f"{gfqa_data['year_only']} |")
+    report_lines.append("")
+
+    # ── 7. Manuscript candidate text ──
+    report_lines.append("## 7. Manuscript Results Candidate Text")
+    report_lines.append("")
+    text = (
+        f"A diagnostic analysis of the s6 cluster quality order examined "
+        f"{inv['n_total']:,} clusters assembled from candidate station "
+        f"records, of which {inv['n_multi']:,} "
+        f"({_fmt_pct(inv['n_multi'], inv['n_total'])}) contained two or "
+        f"more candidates. Within-cluster temporal overlap classification "
+        f"(at annual resolution) found {n_fully} clusters with full "
+        f"pairwise overlap, {n_partial} with partial overlap, and "
+        f"{n_compl} with complementary (non-overlapping) time series. "
+    )
+    if tpa:
+        text += (
+            f"Across all multi-candidate cluster pairs, "
+            f"{_fmt_pct(opa, tpa)} of candidate pairs shared at least "
+            f"one year of observations. "
+        )
+    if glorise_data:
+        text += (
+            f"Among {len(glorise_data)} large GloRiSe clusters (>=5 "
+            f"candidates), {glorise_all_same} consisted entirely of "
+            f"stations sharing a single observation date. "
+        )
+    text += (
+        f"For the {total_both} GFQA_v2 two-candidate clusters with "
+        f"year-level overlap, {gfqa_data['exact_match']} shared exact "
+        f"dates while {gfqa_data['year_only']} overlapped only at the "
+        f"year level, consistent with within-year complementary sampling."
+    )
+    report_lines.append(text)
+    report_lines.append("")
+
+    # ── 8. Overlap detail table ──
+    report_lines.append("## 8. Multi-Candidate Overlap Detail")
+    report_lines.append("")
+    detail = sorted(overlap["cluster_detail"],
+                    key=lambda x: (x["category"], -x["n_candidates"]))
+    detail_rows = [{
+        "cluster_uid": d["cluster_uid"],
+        "n_candidates": str(d["n_candidates"]),
+        "category": d["category"],
+        "overlap_pairs": f"{d['overlap_pairs']}/{d['total_pairs']}",
+        "sources": d["sources"],
+    } for d in detail]
+    report_lines.append(_md_table(detail_rows, max_rows=50))
+    report_lines.append("")
+
+    # ── Footer ──
+    report_lines.append("---")
+    report_lines.append(f"_Report generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_")
+    report_lines.append("")
+
+    report_path.write_text("\n".join(report_lines), encoding="utf-8")
+
 # ── Main report ──────────────────────────────────────────────────────
 
 
@@ -631,25 +1022,25 @@ def main() -> int:
     overlap = classify_time_overlap(inv["groups"])
 
     # ── 3. GloRiSe exact-date check ──
-    check_glorise_exact_date(inv["groups"])
+    glorise_data = check_glorise_exact_date(inv["groups"])
 
     # ── 4. GFQA_v2 exact-date check ──
-    check_gfqa_exact_date_overlap(inv["groups"])
+    gfqa_data = check_gfqa_exact_date_overlap(inv["groups"])
 
     # ── 5. Cross-source deep-dive ──
     cross_source_targets = {"SED000774", "SED000961"}
     cross_reports = []
-    try:
-        master_file = h5py.File(str(master_path), "r")
-        cuids = master_file["cluster_uid"][:]
-        master_cidx_map: Dict[str, int] = {}
-        for i in range(len(cuids)):
-            c = cuids[i].decode() if isinstance(cuids[i], bytes) else str(cuids[i])
-            master_cidx_map[c] = i
-        master_file.close()
-    except Exception:
-        master_cidx_map = {}
-
+    master_cidx_map: Dict[str, int] = {}
+    if master_path is not None:
+        try:
+            master_file = h5py.File(str(master_path), "r")
+            cuids = master_file["cluster_uid"][:]
+            for i in range(len(cuids)):
+                c = cuids[i].decode() if isinstance(cuids[i], bytes) else str(cuids[i])
+                master_cidx_map[c] = i
+            master_file.close()
+        except Exception:
+            master_cidx_map = {}
     for cuid, members in inv["groups"].items():
         if cuid in cross_source_targets and len(members) >= 2:
             cr = analyze_crosssource(
@@ -668,6 +1059,37 @@ def main() -> int:
         detail_path = out_dir / "multi_candidate_overlap.csv"
         df_detail.to_csv(detail_path, index=False)
         print(f"\nWrote {detail_path}")
+
+        # Write Markdown report
+        report_md_path = out_dir / "cluster_quality_order_report.md"
+        write_markdown_report(
+            report_path=report_md_path,
+            csv_path=csv_path,
+            master_path=master_path,
+            inv=inv,
+            overlap=overlap,
+            glorise_data=glorise_data,
+            gfqa_data=gfqa_data,
+            cross_reports=cross_reports,
+        )
+        print(f"Wrote {report_md_path}")
+
+        # Write GloRiSe detail CSV
+        if glorise_data:
+            glorise_flat = []
+            for entry in glorise_data:
+                for dt in entry["date_detail"]:
+                    glorise_flat.append({
+                        "cluster_uid": entry["cluster_uid"],
+                        "n_candidates": entry["n_candidates"],
+                        "n_unique_dates": entry["n_unique_dates"],
+                        "all_same_date": entry["all_same_date"],
+                        **dt,
+                    })
+            df_glorise = pd.DataFrame(glorise_flat)
+            glorise_path = out_dir / "glorise_exact_date_check.csv"
+            df_glorise.to_csv(glorise_path, index=False)
+            print(f"Wrote {glorise_path}")
 
     print(f"\n{'=' * 72}")
     print("  Report complete.")
