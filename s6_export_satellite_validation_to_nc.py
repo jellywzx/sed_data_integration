@@ -8,6 +8,8 @@ without passing CLI arguments.
 """
 
 import os
+import hashlib
+import argparse
 import socket
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
@@ -32,7 +34,8 @@ from geo_boundary_enrichment import (
 )
 from pipeline_paths import (
     S2_ORGANIZED_DIR,
-    S5B_SATELLITE_MAIN_CLUSTER_LINKAGE_CSV,
+    S5_BASIN_CLUSTERED_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
     S6_SATELLITE_VALIDATION_CATALOG_CSV,
     S6_SATELLITE_VALIDATION_NC,
     get_output_r_root,
@@ -56,7 +59,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
-DEFAULT_INPUT = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKAGE_CSV
+DEFAULT_INPUT = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
+DEFAULT_S5_CSV = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_OUTPUT = PROJECT_ROOT / S6_SATELLITE_VALIDATION_NC
 DEFAULT_CATALOG = PROJECT_ROOT / S6_SATELLITE_VALIDATION_CATALOG_CSV
 DEFAULT_RESOLUTIONS = ("daily", "monthly", "annual")
@@ -64,6 +68,7 @@ DEFAULT_WORKERS = min(8, max(1, os.cpu_count() or 1))
 
 # ---- built-in runtime parameters (edit here; no CLI input required) ----
 BUILTIN_INPUT = DEFAULT_INPUT
+BUILTIN_S5_CSV = DEFAULT_S5_CSV
 BUILTIN_OUTPUT = DEFAULT_OUTPUT
 BUILTIN_CATALOG = DEFAULT_CATALOG
 BUILTIN_RESOLUTIONS = DEFAULT_RESOLUTIONS
@@ -99,6 +104,26 @@ LINKAGE_NUMERIC_FIELDS = (
     "link_uparea_log10_error",
     "link_candidate_count",
 )
+
+REQUIRED_V2_LINKAGE_COLUMNS = {
+    "satellite_key",
+    "satellite_station_id",
+    "satellite_source",
+    "satellite_resolution",
+    "satellite_comid",
+    "link_status",
+    "link_method",
+    "link_confidence",
+    "linked_cluster_id",
+    "linked_cluster_uid",
+    "linked_comid",
+    "same_reach",
+    "topology_hops",
+    "area_rel_error",
+    "representative_point_distance_m",
+    "n_valid_candidates",
+    "rejection_reason",
+}
 
 
 def _default_workers_for_host():
@@ -182,8 +207,177 @@ def _safe_bool_int(value, default=-1):
 def _safe_text(value):
     if value is None:
         return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
     text = str(value).strip()
-    return "" if text.lower() == "nan" else text
+    return "" if text.lower() in {"nan", "none", "nat"} else text
+
+
+def _satellite_key_from_row(row):
+    station_id = _safe_text(row.get("station_id", ""))
+    source = _safe_text(row.get("source", "")).lower()
+    native = _safe_text(row.get("source_station_id", ""))
+    resolution = _normalize_resolution(row.get("resolution", ""))
+    payload = "\x1f".join([station_id, source, native, resolution])
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16].upper()
+    return "SATV2{}".format(digest)
+
+
+def _is_satellite_s5_row(row):
+    observation_type = _safe_text(row.get("observation_type", "")).lower()
+    if observation_type:
+        return "satellite" in observation_type
+    source = _safe_text(row.get("source", "")).lower()
+    return any(token in source for token in ("riversed", "river_sed", "gsed", "dethier", "aquasat"))
+
+
+def _cluster_uid_from_id(value):
+    cluster_id = _safe_int(value, default=-1)
+    return "SED{:06d}".format(cluster_id) if cluster_id >= 0 else ""
+
+
+def _numeric_series(frame, column, default=np.nan):
+    if column in frame.columns:
+        return pd.to_numeric(frame[column], errors="coerce")
+    return pd.Series([default] * len(frame), index=frame.index)
+
+
+def _text_series(frame, column, default=""):
+    if column in frame.columns:
+        return frame[column].map(_safe_text)
+    return pd.Series([default] * len(frame), index=frame.index)
+
+
+def _load_s5_satellite_lookup(s5_csv):
+    s5_csv = Path(s5_csv)
+    if not s5_csv.is_file():
+        raise ValueError("s5b v2 links require S5 CSV to recover source paths: {}".format(s5_csv))
+    s5 = pd.read_csv(s5_csv, low_memory=False)
+    needed = {
+        "station_id",
+        "source",
+        "source_station_id",
+        "path",
+        "resolution",
+        "observation_type",
+        "cluster_id",
+        "lat",
+        "lon",
+    }
+    missing = sorted(needed - set(s5.columns))
+    if missing:
+        raise ValueError("S5 CSV missing columns needed for s5b v2 links: {}".format(", ".join(missing)))
+
+    sat = s5.loc[s5.apply(_is_satellite_s5_row, axis=1)].copy()
+    sat["satellite_key"] = sat.apply(_satellite_key_from_row, axis=1)
+    sat["resolution"] = sat["resolution"].map(_normalize_resolution)
+    sat["satellite_location_uid"] = sat["satellite_key"]
+    sat["cluster_uid"] = sat["cluster_id"].map(_cluster_uid_from_id)
+
+    keep = [
+        "satellite_key",
+        "satellite_location_uid",
+        "station_id",
+        "cluster_id",
+        "cluster_uid",
+        "source",
+        "source_station_id",
+        "path",
+        "resolution",
+        "observation_type",
+        "lat",
+        "lon",
+    ]
+    sat = sat[keep].copy()
+    duplicates = sat.duplicated("satellite_key", keep=False)
+    if duplicates.any():
+        examples = sat.loc[
+            duplicates,
+            ["satellite_key", "station_id", "source", "source_station_id", "resolution"],
+        ].head(10)
+        raise ValueError("duplicate satellite_key values in S5 CSV: {}".format(examples.to_dict("records")))
+    return sat
+
+
+def _normalize_v2_linkage_table(linkage, s5_csv):
+    missing = sorted(REQUIRED_V2_LINKAGE_COLUMNS - set(linkage.columns))
+    if missing:
+        raise ValueError("s5b v2 links CSV missing columns: {}".format(", ".join(missing)))
+
+    s5_sat = _load_s5_satellite_lookup(s5_csv)
+    work = linkage.copy()
+    work["satellite_key"] = work["satellite_key"].map(_safe_text)
+    merged = work.merge(
+        s5_sat,
+        how="left",
+        on="satellite_key",
+        suffixes=("", "_s5"),
+        validate="many_to_one",
+    )
+
+    missing_path = merged["path"].fillna("").astype(str).str.strip().eq("")
+    if missing_path.any():
+        examples = merged.loc[
+            missing_path,
+            ["satellite_key", "satellite_station_id", "satellite_source", "satellite_resolution"],
+        ].head(10)
+        raise ValueError(
+            "could not recover source path for {} s5b v2 row(s): {}".format(
+                int(missing_path.sum()),
+                examples.to_dict("records"),
+            )
+        )
+
+    sat_resolution = merged["satellite_resolution"].map(_normalize_resolution)
+    reason = _text_series(merged, "rejection_reason")
+    normalized = pd.DataFrame(index=merged.index)
+    normalized["satellite_location_uid"] = merged["satellite_key"].map(_safe_text)
+    normalized["source"] = merged["source"].map(_safe_text)
+    normalized["path"] = merged["path"].map(_safe_text)
+    normalized["cluster_id"] = merged["cluster_id"]
+    normalized["cluster_uid"] = merged["cluster_uid"].map(_safe_text)
+    normalized["resolution"] = merged["resolution"].map(_normalize_resolution)
+    normalized["observation_type"] = merged["observation_type"].map(_safe_text)
+    normalized["lat"] = _numeric_series(merged, "satellite_lat").fillna(_numeric_series(merged, "lat"))
+    normalized["lon"] = _numeric_series(merged, "satellite_lon").fillna(_numeric_series(merged, "lon"))
+
+    normalized["linked_cluster_uid"] = merged["linked_cluster_uid"].map(_safe_text)
+    normalized["linked_resolution"] = sat_resolution
+    normalized["link_resolution_relation"] = "same_resolution"
+    normalized["link_attempted_resolutions"] = sat_resolution
+    normalized["link_status"] = merged["link_status"].map(_safe_text).str.lower()
+    normalized["link_reason"] = reason
+    normalized.loc[normalized["link_reason"].eq(""), "link_reason"] = normalized["link_status"]
+    normalized["link_method"] = merged["link_method"].map(_safe_text)
+    normalized["linkage_mode"] = "s5b_v2_topology"
+    normalized["link_quality"] = merged["link_confidence"].map(_safe_text)
+    normalized["unlinked_reason"] = reason
+
+    normalized["linked_cluster_id"] = _numeric_series(merged, "linked_cluster_id")
+    normalized["satellite_reach_id"] = _numeric_series(merged, "satellite_comid")
+    normalized["main_reach_id"] = _numeric_series(merged, "linked_comid")
+    normalized["same_reach"] = merged["same_reach"] if "same_reach" in merged.columns else -1
+    normalized["reach_hops"] = _numeric_series(merged, "topology_hops")
+    normalized["point_distance_m"] = _numeric_series(merged, "representative_point_distance_m")
+    normalized["network_distance_m"] = np.nan
+    normalized["area_log10_diff"] = _numeric_series(merged, "area_rel_error")
+    normalized["candidate_count"] = _numeric_series(merged, "n_valid_candidates")
+    normalized["eligible_candidate_count"] = _numeric_series(merged, "n_valid_candidates")
+    normalized["link_distance_m"] = _numeric_series(merged, "representative_point_distance_m")
+    normalized["link_uparea_log10_error"] = _numeric_series(merged, "area_rel_error")
+    normalized["link_candidate_count"] = _numeric_series(merged, "n_valid_candidates")
+    normalized["s5b_schema"] = "v2"
+    return normalized
+
+
+def _load_linkage_input(input_path, s5_csv):
+    linkage = pd.read_csv(input_path, low_memory=False)
+    if "satellite_key" not in linkage.columns:
+        raise ValueError("expected s5b v2 links CSV with satellite_key column: {}".format(input_path))
+    return _normalize_v2_linkage_table(linkage, s5_csv)
 
 
 def _linkage_payload(row):
@@ -427,7 +621,7 @@ def _write_satellite_validation_nc(
         area_log10_diff_v = nc.createVariable(
             "area_log10_diff", "f4", ("n_satellite_stations",), fill_value=FILL
         )
-        area_log10_diff_v.long_name = "absolute log10 upstream-area ratio used for linkage diagnostics"
+        area_log10_diff_v.long_name = "relative upstream-area error used for s5b v2 linkage diagnostics"
         candidate_count_v = nc.createVariable(
             "candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
         )
@@ -444,7 +638,7 @@ def _write_satellite_validation_nc(
         link_area_error_v = nc.createVariable(
             "link_uparea_log10_error", "f4", ("n_satellite_stations",), fill_value=FILL
         )
-        link_area_error_v.long_name = "absolute log10 upstream-area ratio used for linkage ranking"
+        link_area_error_v.long_name = "relative upstream-area error used for s5b v2 linkage ranking"
         link_candidate_count_v = nc.createVariable(
             "link_candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
         )
@@ -672,7 +866,7 @@ def _write_satellite_validation_nc(
         nc.intended_use = (
             "satellite-vs-station validation and diagnostic comparison; not used for station-reference merging"
         )
-        nc.source = "Exported from s5b_satellite_main_cluster_linkage.csv and source NetCDF files"
+        nc.source = "Exported from s5b v2 satellite-main-cluster links and source NetCDF files"
         nc.linked_cluster_semantics = (
             "linked_cluster_uid and linked_cluster_id connect validation-only satellite locations "
             "to main reference records; they do not indicate that satellite observations were "
@@ -760,35 +954,44 @@ def _build_satellite_catalog(station_rows, station_record_map):
     ).reset_index(drop=True)
 
 
+def _parse_runtime_args(argv):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--input", default=str(BUILTIN_INPUT))
+    parser.add_argument("--s5-csv", default=str(BUILTIN_S5_CSV))
+    parser.add_argument("--output", default=str(BUILTIN_OUTPUT))
+    parser.add_argument("--catalog", default=str(BUILTIN_CATALOG))
+    parser.add_argument("--progress-log", default="")
+    args, _unknown = parser.parse_known_args(argv)
+    return args
+
+
 def main():
-    # parse optional --progress-log (no other CLI args)
-    _progress_log = ""
+    runtime_args = _parse_runtime_args(sys.argv[1:])
     _geo_options = boundary_options_from_argv(sys.argv[1:])
-    _skip_next = False
-    for _i, _a in enumerate(sys.argv[1:]):
-        if _skip_next:
-            _skip_next = False
-            continue
-        if _a == "--progress-log" and _i + 2 < len(sys.argv):
-            _progress_log = sys.argv[_i + 2]
-            _skip_next = True
-        elif _a.startswith("--progress-log="):
-            _progress_log = _a.split("=", 1)[1]
+    _progress_log = runtime_args.progress_log
 
     if not HAS_NC or nc4 is None:
         print("Error: netCDF4 is required.")
         return 1
 
-    input_path = Path(BUILTIN_INPUT).resolve()
-    output_path = Path(BUILTIN_OUTPUT).resolve()
-    catalog_path = Path(BUILTIN_CATALOG).resolve()
+    input_path = Path(runtime_args.input).resolve()
+    s5_csv = Path(runtime_args.s5_csv).resolve()
+    output_path = Path(runtime_args.output).resolve()
+    catalog_path = Path(runtime_args.catalog).resolve()
     allowed_resolutions = set(_normalize_resolution(item) for item in BUILTIN_RESOLUTIONS)
 
     if not input_path.is_file():
         print("Error: input not found: {}".format(input_path))
         return 1
+    if not s5_csv.is_file():
+        print("Error: S5 CSV not found: {}".format(s5_csv))
+        return 1
 
-    stations = pd.read_csv(input_path)
+    try:
+        stations = _load_linkage_input(input_path, s5_csv)
+    except Exception as exc:
+        print("Error: {}".format(exc))
+        return 1
     required_columns = {
         "satellite_location_uid",
         "source",

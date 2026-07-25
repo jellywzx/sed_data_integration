@@ -2019,13 +2019,13 @@ This directory is the user-facing release layer of the sediment reference datase
 - `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, geographic metadata, record count, and time coverage.
 - `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, original file path, and source NetCDF geographic metadata.
 - `source_dataset_catalog.csv`: one row per source dataset with metadata, aggregate counts, and aggregated geographic coverage fields.
-- `satellite_catalog.csv`: one row per satellite validation station, keyed by `satellite_station_uid` with `cluster_uid / cluster_id` linkage back to the main reference cluster.
+- `satellite_catalog.csv`: one row per satellite validation station, keyed by `satellite_station_uid` with s5b v2 `linked_cluster_uid / linked_cluster_id` lookup fields back to the main reference cluster.
 - `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
 ## Satellite Dataset
 
 - `sed_reference_satellite.nc` contains required validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
-- `satellite_catalog.csv` describes the satellite stations and links them to the main reference clusters through `cluster_uid / cluster_id`.
+- `satellite_catalog.csv` describes the satellite stations and links them to the main reference clusters through s5b v2 `linked_cluster_uid / linked_cluster_id` fields.
 - Satellite records are excluded from the main station-reference merge and do not enter `sed_reference_master.nc` or the daily/monthly/annual matrix NetCDF files.
 - Use this dataset for satellite-vs-station validation, spatial diagnostics, and downstream comparison.
 - Legacy names such as `sed_reference_satellite_validation.nc` and `satellite_validation_catalog.csv` are compatibility aliases only; new workflows should use `sed_reference_satellite.nc` and `satellite_catalog.csv`.
