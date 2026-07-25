@@ -19,9 +19,6 @@ from pathlib import Path
 
 from pipeline_paths import (
     S5_BASIN_CLUSTERED_CSV,
-    S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
-    S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
-    S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -283,9 +280,6 @@ def python_cmd(python_bin, script_name, *args):
 
 def build_jobs(args, python_bin):
     s5_csv = OUTPUT_R_ROOT / S5_BASIN_CLUSTERED_CSV
-    s5b_links_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
-    s5b_candidates_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV
-    s5b_report_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV
     jobs = []
     merge_workers = positive_int(args.s6_workers, "MERGE_WORKERS")
     merge_metadata_workers = positive_int(env_value("MERGE_METADATA_WORKERS", "32"), "MERGE_METADATA_WORKERS")
@@ -356,38 +350,6 @@ def build_jobs(args, python_bin):
             }
         )
 
-    s5b_cmd = [
-        python_bin,
-        "s5b_link_satellite_to_main_clusters_v2.py",
-        "--input",
-        str(s5_csv),
-        "--output-links",
-        str(s5b_links_csv),
-        "--output-candidates",
-        str(s5b_candidates_csv),
-        "--output-report",
-        str(s5b_report_csv),
-        "--workers",
-        str(args.s5b_workers),
-        "--chunk-size",
-        str(args.s5b_chunk_size),
-    ]
-    merit_dir = Path(env_value("MERIT_DIR", str(DEFAULT_MERIT_DIR))).expanduser().resolve()
-    s5b_cmd += ["--merit-basins-dir", str(merit_dir)]
-    if args.s5b_full_candidate_audit:
-        s5b_cmd.append("--full-candidate-audit")
-    jobs.append(
-        {
-            "step": "s5b",
-            "job_name": "{}_s5b".format(args.job_tag),
-            "ncores": positive_int(env_value("S5B_N", "24"), "S5B_N"),
-            "mem_mb": positive_int(env_value("S5B_MEM_MB", "16000"), "S5B_MEM_MB"),
-            "script": cd_script(shell_join(s5b_cmd)),
-            "outputs": [s5b_links_csv, s5b_candidates_csv, s5b_report_csv],
-            "depends_on_steps": ["daily", "monthly", "annual"],
-        }
-    )
-
     if not args.skip_climatology_export:
         clim_cmd = [
             python_bin,
@@ -452,13 +414,6 @@ def parse_args(argv=None):
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--job-tag", default=env_value("JOB_TAG", "s6fast"))
     parser.add_argument("--s6-workers", default=env_value("MERGE_WORKERS", "40"))
-    parser.add_argument("--s5b-workers", default=env_value("S5B_WORKERS", "0"))
-    parser.add_argument("--s5b-chunk-size", default=env_value("S5B_CHUNK_SIZE", "0"))
-    parser.add_argument(
-        "--s5b-full-candidate-audit",
-        action="store_true",
-        default=env_value("S5B_FULL_CANDIDATE_AUDIT", "0").lower() in {"1", "true", "yes", "y"},
-    )
     parser.add_argument("--matrix-workers", default=None)
     parser.add_argument("--matrix-resolution-workers", default=None)
     parser.add_argument("--s6-include-climatology", action="store_true")

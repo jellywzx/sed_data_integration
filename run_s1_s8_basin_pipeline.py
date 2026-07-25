@@ -287,6 +287,9 @@ def stage_outputs():
         "s5": [
             OUTPUT_DIR / "s5_basin_clustered_stations.csv",
             OUTPUT_DIR / "s5_basin_cluster_report.csv",
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
+            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
         ],
         "s5b": [
             OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
@@ -299,9 +302,6 @@ def stage_outputs():
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_daily.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_monthly.nc",
             OUTPUT_DIR / "s6_matrix_by_resolution" / "s6_basin_matrix_annual.nc",
-            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
-            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
-            OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
             OUTPUT_DIR / "s6_satellite_validation_only.nc",
             OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
@@ -485,13 +485,7 @@ def build_stage_specs(args, python_bin):
         str(args.cluster_poll_seconds),
         "--s6-workers",
         str(args.s6_workers),
-        "--s5b-workers",
-        str(args.s5b_workers),
-        "--s5b-chunk-size",
-        str(args.s5b_chunk_size),
     ]
-    if args.s5b_full_candidate_audit:
-        s6_cluster_cmd.append("--s5b-full-candidate-audit")
     if matrix_workers is not None:
         s6_cluster_cmd += ["--matrix-workers", str(matrix_workers)]
     if matrix_resolution_workers is not None:
@@ -675,7 +669,8 @@ def build_stage_specs(args, python_bin):
                         "--report",
                         str(OUTPUT_DIR / "s5_basin_cluster_report.csv"),
                     ],
-                }
+                },
+            s5b_command,
             ],
         },
         "s5b": {
