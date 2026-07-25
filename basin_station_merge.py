@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 流域合并站点工具：
-读取 basin_tracer 结果（含 station_id, basin_id），构建
+读取 basin_tracer 结果（含 station_key, station_id, basin_id），构建
 station_id -> basin-merged cluster_id 映射。
 
 合并规则：
@@ -12,11 +12,15 @@ station_id -> basin-merged cluster_id 映射。
    - upstream area 对称相对误差 <= max_upstream_rel_error
    才允许合并（complete-linkage 风格）；
 4) 不满足条件的站点保留 singleton（cluster_id=station_id）。
+
+station_key 是 s3-s5 的稳定内部关联键。普通站点 lat/lon 必须来自 s3；
+s4 的普通 lat/lon 只用于一致性审计，reach_anchor_lat/lon 不参与普通聚类距离。
 """
 
 import math
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -84,6 +88,149 @@ def _can_merge_clusters(
     return True
 
 
+def _normalize_key_series(series):
+    return series.fillna("").astype(str).map(lambda x: x.strip())
+
+
+def _sample_rows(df, columns, limit=20):
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return "(no sample columns available)"
+    return df.loc[:, cols].head(limit).to_string(index=False)
+
+
+def _require_unique_station_key(df, label):
+    if "station_key" not in df.columns:
+        raise ValueError(
+            "{} must contain station_key; rerun s3 and rerun s4 with S4_RESUME=0.".format(
+                label
+            )
+        )
+    df["station_key"] = _normalize_key_series(df["station_key"])
+    missing = df["station_key"].eq("")
+    if missing.any():
+        raise ValueError(
+            "{} has {} missing station_key values. First rows:\n{}".format(
+                label,
+                int(missing.sum()),
+                _sample_rows(df.loc[missing], ["station_key", "station_id", "path"]),
+            )
+        )
+    dup = df["station_key"].duplicated(keep=False)
+    if dup.any():
+        raise ValueError(
+            "{} has {} duplicate station_key values. First rows:\n{}".format(
+                label,
+                int(dup.sum()),
+                _sample_rows(df.loc[dup], ["station_key", "station_id", "path"]),
+            )
+        )
+
+
+def _coerce_station_id(df, label):
+    if "station_id" not in df.columns:
+        raise ValueError("{} must contain station_id".format(label))
+    numeric = pd.to_numeric(df["station_id"], errors="coerce")
+    invalid = numeric.isna() | (numeric % 1 != 0)
+    if invalid.any():
+        raise ValueError(
+            "{} has {} invalid station_id values. First rows:\n{}".format(
+                label,
+                int(invalid.sum()),
+                _sample_rows(df.loc[invalid], ["station_key", "station_id", "path"]),
+            )
+        )
+    df["station_id"] = numeric.astype("int64")
+
+
+def _merge_basin_with_station_coordinates(df, station_df):
+    required_cols = {"station_key", "station_id", "lat", "lon"}
+    missing = required_cols.difference(station_df.columns)
+    if missing:
+        raise ValueError("station_df must contain {}; missing={}".format(sorted(required_cols), sorted(missing)))
+
+    basin = df.copy()
+    stations = station_df.copy()
+    _require_unique_station_key(basin, "Basin CSV")
+    _require_unique_station_key(stations, "station_df")
+    _coerce_station_id(basin, "Basin CSV")
+    _coerce_station_id(stations, "station_df")
+
+    basin_keys = set(basin["station_key"].tolist())
+    station_keys = set(stations["station_key"].tolist())
+    missing_in_basin = sorted(station_keys.difference(basin_keys))
+    extra_in_basin = sorted(basin_keys.difference(station_keys))
+    if missing_in_basin:
+        raise ValueError(
+            "Basin CSV is missing {} station_df station_key values. First rows:\n{}".format(
+                len(missing_in_basin),
+                _sample_rows(stations[stations["station_key"].isin(missing_in_basin[:20])], ["station_key", "station_id", "path"]),
+            )
+        )
+    if extra_in_basin:
+        raise ValueError(
+            "Basin CSV has {} extra station_key values. First rows:\n{}".format(
+                len(extra_in_basin),
+                _sample_rows(basin[basin["station_key"].isin(extra_in_basin[:20])], ["station_key", "station_id", "lat", "lon"]),
+            )
+        )
+
+    station_cols = ["station_key", "station_id", "lat", "lon"]
+    if "observation_type" in stations.columns:
+        station_cols.append("observation_type")
+    station_loc = stations[station_cols].copy()
+    station_loc = station_loc.rename(
+        columns={
+            "station_id": "station_id_s3",
+            "lat": "lat_s3",
+            "lon": "lon_s3",
+            "observation_type": "observation_type_s3",
+        }
+    )
+    merged = basin.merge(station_loc, on="station_key", how="inner", validate="one_to_one")
+    id_mismatch = merged["station_id"].astype("int64") != merged["station_id_s3"].astype("int64")
+    if id_mismatch.any():
+        raise ValueError(
+            "Basin CSV station_id disagrees with s3 for {} station_key values. First rows:\n{}".format(
+                int(id_mismatch.sum()),
+                merged.loc[id_mismatch, ["station_key", "station_id", "station_id_s3"]].head(20).to_string(index=False),
+            )
+        )
+
+    for col in ["lat", "lon"]:
+        s4_col = col
+        s3_col = "{}_s3".format(col)
+        if s4_col in merged.columns:
+            left = pd.to_numeric(merged[s4_col], errors="coerce")
+            right = pd.to_numeric(merged[s3_col], errors="coerce")
+            mismatch = ~np.isclose(left, right, rtol=0.0, atol=1e-10, equal_nan=True)
+            if mismatch.any():
+                raise ValueError(
+                    "Basin CSV ordinary {} disagrees with s3 for {} station_key values. First rows:\n{}".format(
+                        col,
+                        int(mismatch.sum()),
+                        merged.loc[
+                            mismatch,
+                            ["station_key", "station_id", s4_col, s3_col],
+                        ].head(20).to_string(index=False),
+                    )
+                )
+
+    merged["station_id"] = merged["station_id_s3"].astype("int64")
+    merged["lat"] = pd.to_numeric(merged["lat_s3"], errors="coerce")
+    merged["lon"] = pd.to_numeric(merged["lon_s3"], errors="coerce")
+    if "observation_type_s3" in merged.columns:
+        if "observation_type" in merged.columns:
+            existing = merged["observation_type"].fillna("").astype(str).str.strip()
+            merged["observation_type"] = merged["observation_type"].where(
+                existing.ne(""),
+                merged["observation_type_s3"],
+            )
+        else:
+            merged["observation_type"] = merged["observation_type_s3"]
+    return merged.drop(columns=["station_id_s3", "lat_s3", "lon_s3", "observation_type_s3"], errors="ignore")
+
+
 def load_station_to_basin_cluster_map(
     basin_csv_path: Path,
     station_df=None,
@@ -92,7 +239,7 @@ def load_station_to_basin_cluster_map(
     upstream_area_col="uparea_merit",
 ):
     """
-    读取 basin_tracer 输出（s6_upstream_basins.csv），生成：
+    读取 basin_tracer 输出（s4_upstream_basins.csv），生成：
       station_id(cluster_id) -> basin-merged cluster_id 映射。
 
     返回：
@@ -114,8 +261,8 @@ def load_station_to_basin_cluster_map(
         raise FileNotFoundError("Basin CSV not found: {}".format(basin_csv_path))
 
     df = pd.read_csv(basin_csv_path)
-    if "station_id" not in df.columns or "basin_id" not in df.columns:
-        raise ValueError("Basin CSV must contain columns: station_id, basin_id")
+    if "station_key" not in df.columns or "station_id" not in df.columns or "basin_id" not in df.columns:
+        raise ValueError("Basin CSV must contain columns: station_key, station_id, basin_id")
 
     df = df.dropna(subset=["station_id"]).copy()
     if len(df) == 0:
@@ -131,43 +278,11 @@ def load_station_to_basin_cluster_map(
             "upstream_area_col": str(upstream_area_col),
         }
 
-    df["station_id"] = df["station_id"].astype(int)
-    df = df.drop_duplicates(subset=["station_id"], keep="first").copy()
+    _require_unique_station_key(df, "Basin CSV")
+    _coerce_station_id(df, "Basin CSV")
 
     if station_df is not None:
-        required_cols = {"station_id", "lat", "lon"}
-        missing = required_cols.difference(station_df.columns)
-        if missing:
-            raise ValueError(
-                "station_df must contain columns: station_id, lat, lon; missing={}".format(
-                    sorted(missing)
-                )
-            )
-        station_cols = ["station_id", "lat", "lon"]
-        if "observation_type" in station_df.columns:
-            station_cols.append("observation_type")
-        station_loc = station_df[station_cols].dropna(subset=["station_id"]).copy()
-        station_loc["station_id"] = station_loc["station_id"].astype(int)
-        station_loc = station_loc.drop_duplicates(subset=["station_id"], keep="first")
-        df = df.merge(station_loc, on="station_id", how="left", suffixes=("", "_station"))
-        for c in ["lat", "lon"]:
-            station_c = "{}_station".format(c)
-            if station_c in df.columns:
-                if c in df.columns:
-                    df[c] = df[c].where(df[c].notna(), df[station_c])
-                else:
-                    df[c] = df[station_c]
-                df = df.drop(columns=[station_c])
-        if "observation_type_station" in df.columns:
-            if "observation_type" in df.columns:
-                existing = df["observation_type"].fillna("").astype(str).str.strip()
-                df["observation_type"] = df["observation_type"].where(
-                    existing.ne(""),
-                    df["observation_type_station"],
-                )
-            else:
-                df["observation_type"] = df["observation_type_station"]
-            df = df.drop(columns=["observation_type_station"])
+        df = _merge_basin_with_station_coordinates(df, station_df)
 
     resolved_mask = (
         df["basin_status"].fillna("").astype(str).str.strip().str.lower().eq("resolved")

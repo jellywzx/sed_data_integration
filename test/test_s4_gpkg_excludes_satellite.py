@@ -13,6 +13,7 @@ import s4_basin_trace_watch as s4
 
 def _row(station_id, include_in_gpkg):
     return {
+        "station_key": "S3_gpkg_{:03d}".format(station_id),
         "station_id": station_id,
         "lon": 100.0 + station_id,
         "lat": 10.0 + station_id,

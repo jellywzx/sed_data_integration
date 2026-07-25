@@ -10,16 +10,18 @@
   - 采用 complete-linkage 风格，避免链式跨阈值合并；
   - cluster_id = 该流域中最小的 station_id；
   - 无流域信息的站点以其 station_id 作为独立的 cluster_id（单独成组）。
+station_key 是 s3-s5 的稳定 one-to-one 关联键；station_id 仅来自当前 s3 输出，
+s5 不会再按 s3 行号重新创建 station_id。
 
 输入：
-  1. s3_collected_stations.csv（s3 步骤输出，列：path, source, lat, lon, resolution）
-  2. basin CSV（basin tracer 输出，列：station_id, basin_id）
-       station_id 对应 s3 CSV 的行号（从 0 开始）
+  1. s3_collected_stations.csv（s3 步骤输出，列：station_key, station_id, path, source, lat, lon, resolution）
+  2. basin CSV（basin tracer 输出，列：station_key, station_id, basin_id）
+       station_key 对应 s3 CSV 的稳定内部键；station_id 必须与同 key 的 s3 station_id 一致
 
 输出：
   1. s4_basin_clustered_stations.csv
        在 s3 基础上增加两列：
-         station_id  —— s3 行号（0 起），与 basin CSV 中的 station_id 对应
+         station_id  —— s3 当前输出中的整数索引，与同 station_key 的 basin CSV station_id 一致
          cluster_id  —— 流域代表站点的 station_id（同流域取最小值）
   2. s4_basin_cluster_report.csv
        每个 cluster 的汇总信息：
@@ -101,6 +103,103 @@ def _mask_unresolved_basin_fields(df: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
+def _normalize_key_series(series):
+    return series.fillna("").astype(str).map(lambda x: x.strip())
+
+
+def _sample_rows(df, columns, limit=20):
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return "(no sample columns available)"
+    return df.loc[:, cols].head(limit).to_string(index=False)
+
+
+def _require_station_key_unique(df, label):
+    if "station_key" not in df.columns:
+        raise ValueError(
+            "{} missing station_key. Rerun s3, then rerun s4 with S4_RESUME=0 before running s5.".format(
+                label
+            )
+        )
+    df["station_key"] = _normalize_key_series(df["station_key"])
+    missing = df["station_key"].eq("")
+    if missing.any():
+        raise ValueError(
+            "{} has {} missing station_key values. First rows:\n{}".format(
+                label,
+                int(missing.sum()),
+                _sample_rows(df.loc[missing], ["station_key", "station_id", "path"]),
+            )
+        )
+    dup = df["station_key"].duplicated(keep=False)
+    if dup.any():
+        raise ValueError(
+            "{} has {} duplicate station_key values. First rows:\n{}".format(
+                label,
+                int(dup.sum()),
+                _sample_rows(df.loc[dup], ["station_key", "station_id", "path"]),
+            )
+        )
+
+
+def _coerce_station_id(df, label):
+    if "station_id" not in df.columns:
+        raise ValueError("{} missing station_id".format(label))
+    numeric = pd.to_numeric(df["station_id"], errors="coerce")
+    invalid = numeric.isna() | (numeric % 1 != 0)
+    if invalid.any():
+        raise ValueError(
+            "{} has {} invalid station_id values. First rows:\n{}".format(
+                label,
+                int(invalid.sum()),
+                _sample_rows(df.loc[invalid], ["station_key", "station_id", "path"]),
+            )
+        )
+    df["station_id"] = numeric.astype("int64")
+
+
+def validate_station_key_join(s3_df, basin_df):
+    """Validate that s3 and s4 basin metadata form a strict one-to-one station_key join."""
+    _require_station_key_unique(s3_df, "s3 CSV")
+    _require_station_key_unique(basin_df, "s4 basin CSV")
+    _coerce_station_id(s3_df, "s3 CSV")
+    _coerce_station_id(basin_df, "s4 basin CSV")
+    s3_keys = set(s3_df["station_key"].tolist())
+    basin_keys = set(basin_df["station_key"].tolist())
+    missing = sorted(s3_keys.difference(basin_keys))
+    extra = sorted(basin_keys.difference(s3_keys))
+    if missing:
+        sample = s3_df[s3_df["station_key"].isin(missing[:20])]
+        raise ValueError(
+            "s4 basin CSV is missing {} s3 station_key values. First rows:\n{}".format(
+                len(missing),
+                _sample_rows(sample, ["station_key", "station_id", "path"]),
+            )
+        )
+    if extra:
+        sample = basin_df[basin_df["station_key"].isin(extra[:20])]
+        raise ValueError(
+            "s4 basin CSV has {} extra station_key values. First rows:\n{}".format(
+                len(extra),
+                _sample_rows(sample, ["station_key", "station_id", "lat", "lon"]),
+            )
+        )
+    merged = s3_df[["station_key", "station_id"]].merge(
+        basin_df[["station_key", "station_id"]],
+        on="station_key",
+        suffixes=("_s3", "_s4"),
+        validate="one_to_one",
+    )
+    mismatch = merged["station_id_s3"].astype("int64") != merged["station_id_s4"].astype("int64")
+    if mismatch.any():
+        raise ValueError(
+            "s3/s4 station_id mismatch for {} station_key values. First rows:\n{}".format(
+                int(mismatch.sum()),
+                merged.loc[mismatch].head(20).to_string(index=False),
+            )
+        )
+
+
 def main():
     raw_argv = sys.argv[1:]
     has_distance_override = any(
@@ -122,14 +221,14 @@ def main():
     ap.add_argument(
         "--s3-csv",
         default=str(_DEFAULT_S3_CSV),
-        help="s3 输出 CSV（列：path, source, lat, lon, resolution）。默认: {}".format(_DEFAULT_S3_CSV),
+        help="s3 输出 CSV（列：station_key, station_id, path, source, lat, lon, resolution）。默认: {}".format(_DEFAULT_S3_CSV),
     )
     ap.add_argument(
         "--basin-csv",
         default=str(_DEFAULT_BASIN_CSV),
         help=(
-            "basin tracer 输出 CSV（列：station_id, basin_id）。\n"
-            "station_id 须对应 s3 CSV 的行号（从 0 开始）。\n"
+            "basin tracer 输出 CSV（列：station_key, station_id, basin_id）。\n"
+            "station_key 须与 s3 CSV 一一对应；station_id 必须与同 key 的 s3 station_id 一致。\n"
             "默认: {}".format(_DEFAULT_BASIN_CSV)
         ),
     )
@@ -179,16 +278,28 @@ def main():
         return 1
 
     df = pd.read_csv(s3_path)
-    df = df.reset_index(drop=True)
-    df.insert(0, "station_id", df.index)   # station_id = 行号（0 起）
+    basin_df = pd.read_csv(basin_path) if basin_path.is_file() else None
+    if basin_df is not None:
+        try:
+            validate_station_key_join(df, basin_df)
+        except ValueError as exc:
+            print("Error: {}".format(exc))
+            return 1
+    else:
+        try:
+            _require_station_key_unique(df, "s3 CSV")
+            _coerce_station_id(df, "s3 CSV")
+        except ValueError as exc:
+            print("Error: {}".format(exc))
+            return 1
     print("Loaded s3 stations: {} rows".format(len(df)))
 
     # ── 2. 读取 basin 映射 ──
     if not basin_path.is_file():
         print("Error: basin CSV not found: {}".format(basin_path))
         print(
-            "  请先以 s3_collected_stations.csv 的行号（0 起）作为 station_id，\n"
-            "  运行 basin tracer 生成该文件后再执行本脚本。"
+            "  请先运行新版 s3 生成 station_key/station_id，\n"
+            "  再以 S4_RESUME=0 运行 basin tracer 生成新版 s4 后执行本脚本。"
         )
         return 1
 
@@ -228,14 +339,13 @@ def main():
 
     # ── 3b. 合并 basin 元数据（match_quality、basin_area 等）──
     BASIN_META_COLS = [
-        "station_id", "basin_id", "basin_area", "match_quality",
+        "station_key", "basin_id", "basin_area", "match_quality",
         "area_error", "uparea_merit", "pfaf_code", "method", "n_upstream_reaches",
         "distance_m", "point_in_local", "point_in_basin", "basin_status", "basin_flag",
     ]
-    basin_df = pd.read_csv(basin_path)
     available = [c for c in BASIN_META_COLS if c in basin_df.columns]
-    basin_meta = basin_df[available].drop_duplicates(subset=["station_id"])
-    df = df.merge(basin_meta, on="station_id", how="left")
+    basin_meta = basin_df[available].drop_duplicates(subset=["station_key"])
+    df = df.merge(basin_meta, on="station_key", how="left", validate="one_to_one")
     df = _mask_unresolved_basin_fields(df)
 
     n_clusters = df["cluster_id"].nunique()

@@ -7,9 +7,10 @@
   - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
 输出（默认）：
   - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 path, source, lat, lon, resolution, observation_type, continent_region, country,
+    列 station_key, station_id, path, source, lat, lon, resolution, observation_type, continent_region, country,
     station_name, river_name, source_station_id, reported_area）
 resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
+station_key 是 s3-s5 的稳定内部关联键；station_id 仅是当前 s3 输出中的可复现整数索引。
 
 当前默认规则：
   - basin 主线默认不收集 climatology；
@@ -27,8 +28,10 @@ resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
   python scripts/s3_collect_qc_stations.py [--root .] [--out scripts/output/s3_collected_stations.csv] [-j 32]
 """
 
-import re
 import argparse
+import hashlib
+import re
+from pathlib import PurePosixPath
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 
@@ -76,6 +79,8 @@ _REACH_HINT_TEXT_NAMES = [
     "reach_geometry_source",
 ]
 _REACH_HINT_SOURCES = {"gsed", "riversed"}
+STATION_KEY_PREFIX = "S3_"
+STATION_KEY_DIGEST_CHARS = 24
 
 
 def _get_scalar(var):
@@ -195,6 +200,89 @@ def _clean_text(value):
         return _clean_text(value.flat[0])
     text = str(value).strip()
     return "" if text.lower() in {"", "nan", "none"} else text
+
+
+def _normalize_station_key_part(value):
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip().lower()
+
+
+def _normalize_station_path(value):
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return PurePosixPath(text).as_posix()
+
+
+def build_station_key(source, resolution, path):
+    """Build the stable s3-s5 station identity key from normalized source/resolution/path."""
+    payload = "\n".join(
+        [
+            _normalize_station_key_part(source),
+            _normalize_station_key_part(resolution),
+            _normalize_station_path(path),
+        ]
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return "{}{}".format(STATION_KEY_PREFIX, digest[:STATION_KEY_DIGEST_CHARS])
+
+
+def _format_duplicate_rows(df, columns, limit=20):
+    dup_mask = df.duplicated(subset=columns, keep=False)
+    shown = df.loc[dup_mask, list(columns)].head(limit)
+    return shown.to_string(index=False)
+
+
+def _fail_on_duplicates(df, columns, label):
+    dup_mask = df.duplicated(subset=columns, keep=False)
+    if dup_mask.any():
+        raise ValueError(
+            "Duplicate {} detected in s3 station collection (count={}). First rows:\n{}".format(
+                label,
+                int(dup_mask.sum()),
+                _format_duplicate_rows(df, columns),
+            )
+        )
+
+
+def prepare_s3_station_table(stations):
+    """Normalize path, generate station_key/station_id, and enforce stable ordering."""
+    if stations is None or len(stations) == 0:
+        return pd.DataFrame()
+    required = {"path", "source", "resolution"}
+    missing = required.difference(stations.columns)
+    if missing:
+        raise ValueError("s3 station collection missing required columns: {}".format(sorted(missing)))
+
+    work = stations.copy()
+    work = work.drop(columns=["station_key", "station_id"], errors="ignore")
+    work["path"] = work["path"].map(_normalize_station_path)
+    work["_sort_resolution"] = work["resolution"].map(_normalize_station_key_part)
+    work["_sort_source"] = work["source"].map(_normalize_station_key_part)
+    work["_sort_path"] = work["path"].map(_normalize_station_path)
+    work["station_key"] = [
+        build_station_key(source, resolution, path)
+        for source, resolution, path in zip(work["source"], work["resolution"], work["path"])
+    ]
+    work = work.sort_values(
+        ["_sort_resolution", "_sort_source", "_sort_path"],
+        kind="mergesort",
+    ).reset_index(drop=True)
+    work.insert(1, "station_id", np.arange(len(work), dtype=np.int64))
+    work = work.drop(columns=["_sort_resolution", "_sort_source", "_sort_path"])
+
+    _fail_on_duplicates(work, ["station_key"], "station_key")
+    _fail_on_duplicates(work, ["station_id"], "station_id")
+    _fail_on_duplicates(work, ["path"], "path")
+
+    preferred = ["station_key", "station_id", "path", "source", "lat", "lon", "resolution"]
+    columns = [c for c in preferred if c in work.columns] + [
+        c for c in work.columns if c not in preferred
+    ]
+    return work[columns]
 
 
 def _get_nc_text(nc, name):
@@ -319,7 +407,7 @@ def _collect_one_nc(path, root_dir):
         if source.strip().lower() in _REACH_HINT_SOURCES:
             reported_area = None
         # 存相对路径，跨平台可移植
-        rel_path = str(Path(path).relative_to(root_dir))
+        rel_path = Path(path).relative_to(root_dir).as_posix()
         return {
             "path": rel_path,
             "source": source,
@@ -368,7 +456,7 @@ def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None):
         with Pool(min(workers, len(paths), cpu_count() or 1)) as pool:
             rows = pool.starmap(_collect_one_nc, [(p, root_str) for p in paths])
     rows = [r for r in rows if r is not None]
-    return pd.DataFrame(rows)
+    return prepare_s3_station_table(pd.DataFrame(rows))
 
 
 _LOG_TEE_ENABLED = False

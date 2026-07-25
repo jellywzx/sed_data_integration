@@ -3,9 +3,9 @@
 s4：站点流域匹配脚本（并行版）
 
 流程：
-  1. 读取 s3_collected_stations.csv（核心列：path, source, lat, lon, resolution；
+  1. 读取 s3_collected_stations.csv（核心列：station_key, station_id, path, source, lat, lon, resolution；
      可选列：reported_area）
-  2. 以行号（0 起）作为 station_id
+  2. 复用 s3 生成的 station_key/station_id；不在 s4 中重新按行号生成身份
   3. 将站点按经度排序后分块，多进程并行追溯上游流域
      （按经度分块使同一 worker 内的站点集中在同一 pfaf 区，减少重复 I/O）
   4. 汇总结果，输出 basin CSV 和可选 GPKG，供 s5_basin_merge.py 使用
@@ -27,8 +27,10 @@ s4：站点流域匹配脚本（并行版）
     下游 MERIT reach，然后直接复用该 reach 追溯上游流域。
   - RiverSed 在 basin 主线下只按 lon/lat 匹配 MERIT，不再使用其源产品内的
     upstream_area，也不再保留 NHDPlus reach/basin 辅助字段。
+  - s4 shard resume 只能在 s3 输入指纹、MERIT_DIR、s4 脚本指纹和关键配置一致时复用。
 """
 
+import hashlib
 import logging
 import multiprocessing as mp
 import os
@@ -40,7 +42,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import psutil
-from tqdm import tqdm
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    class tqdm:
+        def __init__(self, *args, **kwargs):
+            self.n = 0
+
+        def refresh(self):
+            return None
+
+        def close(self):
+            return None
 
 # ── 路径设置 ────────────────────────────────────────────────────────────────
 from basin_policy import classify_basin_result, should_skip_basin_matching
@@ -113,6 +127,7 @@ SHARD_INDEX = _env_int("S4_SHARD_INDEX", 0)
 FINALIZE_ONLY = _env_bool("S4_FINALIZE_ONLY", False)
 PROGRESS_LOG_INTERVAL = _env_int("S4_PROGRESS_LOG_INTERVAL", 30)
 CSV_COLUMNS = [
+    "station_key",
     "station_id",
     "lon",
     "lat",
@@ -201,6 +216,215 @@ def _safe_float(value, default=np.nan):
 
 def _has_valid_coordinate_pair(lat, lon):
     return np.isfinite(_safe_float(lat)) and np.isfinite(_safe_float(lon))
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fp:
+        for block in iter(lambda: fp.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _normalize_key_series(series):
+    return series.fillna("").astype(str).map(lambda x: x.strip())
+
+
+def _sample_rows(df, columns, limit=20):
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return "(no sample columns available)"
+    return df.loc[:, cols].head(limit).to_string(index=False)
+
+
+def _require_unique_nonempty(df, column, context):
+    if column not in df.columns:
+        raise ValueError(
+            "{} missing required column '{}'. Rerun s3, then rerun s4 with S4_RESUME=0.".format(
+                context, column
+            )
+        )
+    values = _normalize_key_series(df[column])
+    missing = values.eq("")
+    if missing.any():
+        raise ValueError(
+            "{} has {} missing '{}'. First rows:\n{}".format(
+                context,
+                int(missing.sum()),
+                column,
+                _sample_rows(df.loc[missing], [column, "station_id", "path", "source", "resolution"]),
+            )
+        )
+    dup = values.duplicated(keep=False)
+    if dup.any():
+        raise ValueError(
+            "{} has {} duplicate '{}'. First rows:\n{}".format(
+                context,
+                int(dup.sum()),
+                column,
+                _sample_rows(df.loc[dup], [column, "station_id", "path", "source", "resolution"]),
+            )
+        )
+    df[column] = values
+
+
+def _coerce_unique_station_id(df, context):
+    if "station_id" not in df.columns:
+        raise ValueError(
+            "{} missing required column 'station_id'. Rerun s3, then rerun s4 with S4_RESUME=0.".format(
+                context
+            )
+        )
+    numeric = pd.to_numeric(df["station_id"], errors="coerce")
+    invalid = numeric.isna() | (numeric % 1 != 0)
+    if invalid.any():
+        raise ValueError(
+            "{} has {} station_id values that cannot be safely converted to int64. First rows:\n{}".format(
+                context,
+                int(invalid.sum()),
+                _sample_rows(df.loc[invalid], ["station_key", "station_id", "path", "source", "resolution"]),
+            )
+        )
+    as_int = numeric.astype("int64")
+    dup = as_int.duplicated(keep=False)
+    if dup.any():
+        sample = df.loc[dup, ["station_key", "station_id"]].copy()
+        raise ValueError(
+            "{} has {} duplicate station_id values. First rows:\n{}".format(
+                context,
+                int(dup.sum()),
+                sample.head(20).to_string(index=False),
+            )
+        )
+    df["station_id"] = as_int
+
+
+def _load_s3_stations(s3_csv=S3_CSV):
+    required = {"station_key", "station_id", "path", "source", "resolution", "lat", "lon"}
+    stations = pd.read_csv(s3_csv)
+    missing = required.difference(stations.columns)
+    if missing:
+        raise ValueError(
+            "s3 CSV missing required columns {}. Rerun s3_collect_qc_stations.py, then rerun s4 with S4_RESUME=0.".format(
+                sorted(missing)
+            )
+        )
+    _require_unique_nonempty(stations, "station_key", "s3 CSV")
+    _coerce_unique_station_id(stations, "s3 CSV")
+    for col in ["lat", "lon"]:
+        numeric = pd.to_numeric(stations[col], errors="coerce")
+        invalid = numeric.isna()
+        if invalid.any():
+            raise ValueError(
+                "s3 CSV has {} missing/non-numeric {} values. First rows:\n{}".format(
+                    int(invalid.sum()),
+                    col,
+                    _sample_rows(stations.loc[invalid], ["station_key", "station_id", "path", "lat", "lon"]),
+                )
+            )
+        stations[col] = numeric.astype(float)
+    return stations
+
+
+def _shard_manifest_path(shard_index):
+    return SHARD_DIR / f"s4_shard_{shard_index:03d}.meta.json"
+
+
+def _build_shard_manifest(s3_csv=S3_CSV, shard_index=SHARD_INDEX):
+    s3_df = pd.read_csv(s3_csv)
+    return {
+        "manifest_version": 1,
+        "s3_sha256": _sha256_file(s3_csv),
+        "s3_row_count": int(len(s3_df)),
+        "shard_count": int(SHARD_COUNT),
+        "shard_index": int(shard_index),
+        "merit_dir": str(MERIT_DIR.expanduser().resolve()),
+        "s4_script_sha256": _sha256_file(Path(__file__).resolve()),
+        "config": {
+            "batch_size": int(BATCH_SIZE),
+            "save_gpkg": bool(SAVE_GPKG),
+            "gpkg_exclude_satellite": bool(GPKG_EXCLUDE_SATELLITE),
+        },
+    }
+
+
+def _manifest_mismatches(existing, expected):
+    checks = [
+        ("s3_sha256", existing.get("s3_sha256"), expected.get("s3_sha256")),
+        ("s3_row_count", existing.get("s3_row_count"), expected.get("s3_row_count")),
+        ("shard_count", existing.get("shard_count"), expected.get("shard_count")),
+        ("shard_index", existing.get("shard_index"), expected.get("shard_index")),
+        ("merit_dir", existing.get("merit_dir"), expected.get("merit_dir")),
+        ("s4_script_sha256", existing.get("s4_script_sha256"), expected.get("s4_script_sha256")),
+        (
+            "config.batch_size",
+            (existing.get("config") or {}).get("batch_size"),
+            (expected.get("config") or {}).get("batch_size"),
+        ),
+        (
+            "config.save_gpkg",
+            (existing.get("config") or {}).get("save_gpkg"),
+            (expected.get("config") or {}).get("save_gpkg"),
+        ),
+        (
+            "config.gpkg_exclude_satellite",
+            (existing.get("config") or {}).get("gpkg_exclude_satellite"),
+            (expected.get("config") or {}).get("gpkg_exclude_satellite"),
+        ),
+    ]
+    return [(name, old, new) for name, old, new in checks if old != new]
+
+
+def _write_manifest(path, manifest):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        json.dump(manifest, fp, indent=2, sort_keys=True)
+        fp.write("\n")
+
+
+def _ensure_shard_manifest_for_resume(shard_index, existing_files, logger):
+    manifest_path = _shard_manifest_path(shard_index)
+    expected = _build_shard_manifest(S3_CSV, shard_index)
+    if existing_files:
+        if not manifest_path.is_file():
+            raise ValueError(
+                "Existing shard predates input fingerprint protection; rerun with S4_RESUME=0 after removing old shards."
+            )
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as fp:
+                existing = json.load(fp)
+        except Exception as exc:
+            raise ValueError("Failed to read shard manifest {}: {}".format(manifest_path, exc))
+        mismatches = _manifest_mismatches(existing, expected)
+        if mismatches:
+            details = "\n".join(
+                "  - {}: existing={!r}, current={!r}".format(name, old, new)
+                for name, old, new in mismatches
+            )
+            raise ValueError(
+                "Refusing to resume incompatible s4 shard {}. Manifest mismatch:\n{}".format(
+                    shard_index,
+                    details,
+                )
+            )
+        logger.info("Shard manifest validated: %s", manifest_path)
+    else:
+        _write_manifest(manifest_path, expected)
+        logger.info("Wrote shard manifest: %s", manifest_path)
+    return manifest_path
+
+
+def _remove_current_shard_files(shard_index, logger):
+    for path in (
+        _shard_work_csv_path(shard_index),
+        _shard_csv_path(shard_index),
+        _shard_manifest_path(shard_index),
+    ):
+        try:
+            path.unlink()
+            logger.info("Removed stale current-shard file -> %s", path)
+        except FileNotFoundError:
+            pass
 
 
 def _parse_endpoint_candidates(raw):
@@ -400,6 +624,7 @@ def _trace_chunk(args):
     results = []
 
     for station in chunk:
+        station_key = str(station["station_key"]).strip()
         station_id = int(station["station_id"])
         lon = float(station["lon"])
         lat = float(station["lat"])
@@ -451,6 +676,7 @@ def _trace_chunk(args):
         )
         results.append(
             {
+                "station_key": station_key,
                 "station_id": station_id,
                 "lon": lon,
                 "lat": lat,
@@ -493,6 +719,7 @@ def _build_skip_result(station):
     lat = _safe_float(station.get("lat"))
     basin_result = _empty_basin_result()
     return {
+        "station_key": str(station["station_key"]).strip(),
         "station_id": int(station["station_id"]),
         "lon": lon,
         "lat": lat,
@@ -529,6 +756,7 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
     rows = []
     for row in chunk_results:
         out_row = {
+            "station_key": row["station_key"],
             "station_id": row["station_id"],
             "lon": row["lon"],
             "lat": row["lat"],
@@ -643,10 +871,119 @@ def _shard_work_csv_path(shard_index):
     return SHARD_DIR / f"s4_upstream_basins.shard_{shard_index:04d}.work.csv"
 
 
-def _merge_and_write_outputs(result_df, logger):
-    result_df = result_df.sort_values("station_id").drop_duplicates(
-        subset=["station_id"], keep="last"
+def _dedupe_s4_results(result_df):
+    if "station_key" not in result_df.columns:
+        raise ValueError(
+            "s4 results missing station_key. Existing shard predates station_key protection; rerun s3 and rerun s4 with S4_RESUME=0."
+        )
+    _require_unique_nonempty(
+        result_df.drop_duplicates(subset=["station_key"], keep="last").copy(),
+        "station_key",
+        "s4 result",
     )
+    station_id_by_key = result_df.dropna(subset=["station_key"]).groupby("station_key")["station_id"].nunique(dropna=False)
+    inconsistent = station_id_by_key[station_id_by_key > 1]
+    if len(inconsistent) > 0:
+        sample = result_df[result_df["station_key"].isin(inconsistent.index)].loc[
+            :, ["station_key", "station_id", "lat", "lon"]
+        ]
+        raise ValueError(
+            "s4 result has station_id conflicts within station_key (count={}). First rows:\n{}".format(
+                len(inconsistent),
+                sample.head(20).to_string(index=False),
+            )
+        )
+    return result_df.sort_values("station_id").drop_duplicates(
+        subset=["station_key"], keep="last"
+    )
+
+
+def _numeric_series(df, column, context):
+    numeric = pd.to_numeric(df[column], errors="coerce")
+    invalid = numeric.isna() & df[column].notna()
+    if invalid.any():
+        raise ValueError(
+            "{} has {} non-numeric {} values. First rows:\n{}".format(
+                context,
+                int(invalid.sum()),
+                column,
+                _sample_rows(df.loc[invalid], ["station_key", "station_id", column]),
+            )
+        )
+    return numeric.astype(float)
+
+
+def _validate_s3_s4_integrity(s3_df, s4_df, logger):
+    s3 = s3_df.copy()
+    s4 = s4_df.copy()
+    _require_unique_nonempty(s3, "station_key", "s3 CSV")
+    _require_unique_nonempty(s4, "station_key", "s4 shards")
+    _coerce_unique_station_id(s3, "s3 CSV")
+    _coerce_unique_station_id(s4, "s4 shards")
+
+    s3_keys = set(s3["station_key"].tolist())
+    s4_keys = set(s4["station_key"].tolist())
+    missing = sorted(s3_keys.difference(s4_keys))
+    extra = sorted(s4_keys.difference(s3_keys))
+    if missing or extra:
+        logger.error(
+            "s3/s4 station_key set mismatch | missing_in_s4=%d | extra_in_s4=%d",
+            len(missing),
+            len(extra),
+        )
+        if missing:
+            logger.error(
+                "First missing station_key rows:\n%s",
+                _sample_rows(s3[s3["station_key"].isin(missing[:20])], ["station_key", "station_id", "path"]),
+            )
+        if extra:
+            logger.error(
+                "First extra station_key rows:\n%s",
+                _sample_rows(s4[s4["station_key"].isin(extra[:20])], ["station_key", "station_id", "lat", "lon"]),
+            )
+        raise ValueError("s3/s4 station_key sets differ")
+
+    merged = s3[["station_key", "station_id", "lat", "lon"]].merge(
+        s4[["station_key", "station_id", "lat", "lon"]],
+        on="station_key",
+        how="inner",
+        suffixes=("_s3", "_s4"),
+        validate="one_to_one",
+    )
+    station_id_mismatch = merged["station_id_s3"].astype("int64") != merged["station_id_s4"].astype("int64")
+    if station_id_mismatch.any():
+        bad = merged.loc[station_id_mismatch, ["station_key", "station_id_s3", "station_id_s4"]]
+        logger.error(
+            "s3/s4 station_id mismatch count=%d. First rows:\n%s",
+            int(station_id_mismatch.sum()),
+            bad.head(20).to_string(index=False),
+        )
+        raise ValueError("s3/s4 station_id mismatch")
+
+    for col in ["lat", "lon"]:
+        left = _numeric_series(merged, "{}_s3".format(col), "s3/s4 integrity merge")
+        right = _numeric_series(merged, "{}_s4".format(col), "s3/s4 integrity merge")
+        mismatch = ~np.isclose(left, right, rtol=0.0, atol=1e-10, equal_nan=True)
+        if mismatch.any():
+            bad = merged.loc[
+                mismatch,
+                ["station_key", "station_id_s3", "{}_s3".format(col), "{}_s4".format(col)],
+            ]
+            logger.error(
+                "s3/s4 ordinary %s mismatch count=%d. First rows:\n%s",
+                col,
+                int(mismatch.sum()),
+                bad.head(20).to_string(index=False),
+            )
+            raise ValueError("s3/s4 ordinary {} mismatch".format(col))
+
+    logger.info(
+        "s3/s4 integrity OK | station_key_missing=0 | key_set_diff=0 | station_id_mismatch=0 | lat_lon_mismatch=0"
+    )
+
+
+def _merge_and_write_outputs(result_df, logger):
+    result_df = _dedupe_s4_results(result_df)
     csv_df = _drop_geometry_export_columns(result_df)
     csv_df.to_csv(OUT_CSV, index=False)
 
@@ -723,6 +1060,11 @@ def _finalize_from_shards(logger):
         if not shard_csv.is_file():
             missing.append(str(shard_csv))
             continue
+        try:
+            _ensure_shard_manifest_for_resume(idx, existing_files=True, logger=logger)
+        except ValueError as exc:
+            logger.error(str(exc))
+            return 1
         shard_files.append(shard_csv)
 
     if missing:
@@ -742,7 +1084,14 @@ def _finalize_from_shards(logger):
     else:
         result_df = pd.DataFrame(columns=CSV_COLUMNS_WITH_GEOM if SAVE_GPKG else CSV_COLUMNS)
 
-    _merge_and_write_outputs(result_df, logger)
+    try:
+        result_df = _dedupe_s4_results(result_df)
+        s3_df = _load_s3_stations(S3_CSV)
+        _validate_s3_s4_integrity(s3_df, result_df, logger)
+        _merge_and_write_outputs(result_df, logger)
+    except ValueError as exc:
+        logger.error("Cannot finalize s4 outputs: %s", exc)
+        return 1
     logger.info("Finalize completed from %d shard files", len(shard_files))
     return 0
 
@@ -784,11 +1133,28 @@ def main():
     if FINALIZE_ONLY:
         return _finalize_from_shards(logger)
 
+    shard_csv = _shard_csv_path(SHARD_INDEX)
+    shard_work_csv = _shard_work_csv_path(SHARD_INDEX)
+
+    if not RESUME:
+        _remove_current_shard_files(SHARD_INDEX, logger)
+
     # ── 2. 读取 s3 站点并按 shard 切分 ───────────────────────────────────────
-    stations = pd.read_csv(S3_CSV)
-    stations = stations.reset_index(drop=True)
-    stations.insert(0, "station_id", stations.index)
-    stations = stations.dropna(subset=["lon", "lat"]).copy()
+    try:
+        stations = _load_s3_stations(S3_CSV)
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+
+    try:
+        _ensure_shard_manifest_for_resume(
+            SHARD_INDEX,
+            existing_files=RESUME and (shard_csv.is_file() or shard_work_csv.is_file()),
+            logger=logger,
+        )
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
 
     stations = stations[stations["station_id"] % SHARD_COUNT == SHARD_INDEX].copy()
     shard_total = len(stations)
@@ -799,21 +1165,6 @@ def main():
         shard_total,
     )
 
-    shard_csv = _shard_csv_path(SHARD_INDEX)
-    shard_work_csv = _shard_work_csv_path(SHARD_INDEX)
-
-    if not RESUME:
-        try:
-            shard_work_csv.unlink()
-        except FileNotFoundError:
-            pass
-        try:
-            shard_csv.unlink()
-        except FileNotFoundError:
-            pass
-
-    completed_station_ids = set()
-
     if RESUME and shard_csv.is_file() and not shard_work_csv.is_file():
         logger.info("Shard output already exists, skipping: %s", shard_csv)
         if SHARD_COUNT == 1:
@@ -821,14 +1172,24 @@ def main():
         return 0
 
     if RESUME and shard_work_csv.is_file():
-        partial_df = pd.read_csv(shard_work_csv, usecols=["station_id"])
-        completed_station_ids = set(partial_df["station_id"].dropna().astype(int).tolist())
+        try:
+            partial_df = pd.read_csv(shard_work_csv, usecols=["station_key"])
+        except ValueError as exc:
+            logger.error(
+                "Cannot resume %s: station_key column is required in work CSV (%s). Rerun with S4_RESUME=0.",
+                shard_work_csv,
+                exc,
+            )
+            return 1
+        completed_station_keys = set(_normalize_key_series(partial_df["station_key"]).tolist())
         logger.info(
             "Resume mode: found %d completed stations in %s",
-            len(completed_station_ids),
+            len(completed_station_keys),
             shard_work_csv,
         )
-        stations = stations[~stations["station_id"].isin(completed_station_ids)].copy()
+        stations = stations[~stations["station_key"].isin(completed_station_keys)].copy()
+    else:
+        completed_station_keys = set()
 
     n_pending = len(stations)
     n_total = shard_total
@@ -896,6 +1257,7 @@ def main():
         return 1
 
     record_columns = [
+        "station_key",
         "station_id",
         "lon",
         "lat",
@@ -929,7 +1291,7 @@ def main():
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
         disable=SHARD_COUNT > 1,
     )
-    pbar.n = len(completed_station_ids)
+    pbar.n = len(completed_station_keys)
     pbar.refresh()
 
     last_mem_log = time.time()
@@ -937,7 +1299,7 @@ def main():
     peak_total_mb = 0.0
 
     with counter.get_lock():
-        counter.value = len(completed_station_ids)
+        counter.value = len(completed_station_keys)
 
     if args_list:
         with mp.Pool(processes=actual_workers,
@@ -981,14 +1343,14 @@ def main():
                     )
                     last_mem_log = now
 
-    pbar.n = len(completed_station_ids) + n_pending
+    pbar.n = len(completed_station_keys) + n_pending
     pbar.refresh()
     pbar.close()
 
     # 最终内存报告
     main_mb, children_mb, total_mb = _get_memory_info()
     peak_total_mb = max(peak_total_mb, total_mb)
-    done_total = len(completed_station_ids) + n_pending
+    done_total = len(completed_station_keys) + n_pending
     logger.info("All %d shard stations processed", done_total)
     logger.info(
         "shard_progress | shard=%d/%d | processed=%d/%d | %.2f%% | elapsed=%.1fs | mem_total=%.1fMB | mem_peak=%.1fMB",
@@ -1015,9 +1377,11 @@ def main():
         return 1
 
     result_df = pd.read_csv(shard_work_csv)
-    result_df = result_df.sort_values("station_id").drop_duplicates(
-        subset=["station_id"], keep="last"
-    )
+    try:
+        result_df = _dedupe_s4_results(result_df)
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
     result_df.to_csv(shard_csv, index=False)
     logger.info("Saved shard CSV -> %s", shard_csv)
 
