@@ -6,9 +6,14 @@ This script is a companion to ``s11_satellite_insitu_validation.py``.
 Key difference
 --------------
 The satellite side is not read from ``sed_reference_satellite.nc``. Instead, this
-script treats ``s5b_satellite_main_cluster_linkage.csv`` as the authoritative
-linkage catalogue and reads satellite observations directly from the source
-NetCDF files referenced by its ``path`` column.
+script treats the s5b satellite-to-main-cluster linkage CSV as the authoritative
+linkage catalogue and reads satellite observations directly from their source
+NetCDF files.
+
+Both the legacy s5b CSV and the accelerated v2 linkage CSV are supported. The
+v2 links identify satellite rows by ``satellite_key`` and no longer carry source
+paths, so this script recovers ``path`` and satellite source metadata from
+``s5_basin_clustered_stations.csv`` via ``--s5-csv``.
 
 The in-situ side follows the original s11 logic:
 1. prefer a candidate sidecar when available;
@@ -21,6 +26,7 @@ stratification, metrics, figures, and the standard summary.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 import re
@@ -52,7 +58,11 @@ OUTPUT_R_ROOT = Path(
 
 DEFAULT_LINKAGE_CSV = (
     OUTPUT_R_ROOT
-    / "scripts_basin_test/output/s5b_satellite_main_cluster_linkage.csv"
+    / "scripts_basin_test/output/s5b_satellite_main_cluster_links_v2.csv"
+)
+DEFAULT_S5_CSV = (
+    OUTPUT_R_ROOT
+    / "scripts_basin_test/output/s5_basin_clustered_stations.csv"
 )
 DEFAULT_SOURCE_ROOT = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_RELEASE_DIR = (
@@ -77,8 +87,24 @@ REQUIRED_LINKAGE_COLUMNS = {
     "link_status",
 }
 
+REQUIRED_V2_LINKAGE_COLUMNS = {
+    "satellite_key",
+    "satellite_station_id",
+    "satellite_source",
+    "satellite_resolution",
+    "link_status",
+    "link_method",
+    "link_confidence",
+    "linked_cluster_id",
+    "linked_cluster_uid",
+    "representative_point_distance_m",
+    "n_valid_candidates",
+}
+
 LINK_META_COLUMNS = [
     "satellite_location_uid",
+    "satellite_key",
+    "s5b_schema",
     "source",
     "source_station_id",
     "path",
@@ -89,6 +115,7 @@ LINK_META_COLUMNS = [
     "link_quality",
     "link_distance_m",
     "link_uparea_log10_error",
+    "link_area_rel_error",
     "link_candidate_count",
 ]
 
@@ -119,6 +146,34 @@ def _normalize_resolution(value) -> str:
         "single_point": "daily",
         "annually_climatology": "climatology",
     }.get(text, text)
+
+
+def _satellite_key_from_row(row) -> str:
+    station_id = _clean_text(row.get("station_id", ""))
+    source = _clean_text(row.get("source", "")).lower()
+    native = _clean_text(row.get("source_station_id", ""))
+    resolution = _normalize_resolution(row.get("resolution", ""))
+    payload = "\x1f".join([station_id, source, native, resolution])
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16].upper()
+    return "SATV2{}".format(digest)
+
+
+def _is_satellite_s5_row(row) -> bool:
+    observation_type = _clean_text(row.get("observation_type", "")).lower()
+    if observation_type:
+        return "satellite" in observation_type
+    source = _clean_text(row.get("source", "")).lower()
+    return any(token in source for token in ("riversed", "river_sed", "gsed", "dethier", "aquasat"))
+
+
+def _cluster_uid_from_id(value) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return ""
+        number = int(float(value))
+    except Exception:
+        return ""
+    return "SED{:06d}".format(number) if number >= 0 else ""
 
 
 def _first_existing(names: Iterable[str], candidates: Sequence[str]) -> Optional[str]:
@@ -523,7 +578,115 @@ def _read_one_satellite_source(
             ds.close()
 
 
-def _validate_linkage_table(linkage: pd.DataFrame) -> pd.DataFrame:
+def _load_s5_satellite_lookup(s5_csv: Path) -> pd.DataFrame:
+    if not s5_csv.is_file():
+        raise ValueError(
+            "v2 s5b linkage requires --s5-csv to recover source paths; missing: {}".format(s5_csv)
+        )
+    s5 = pd.read_csv(s5_csv, low_memory=False)
+    needed = {"station_id", "source", "source_station_id", "path", "resolution", "cluster_id"}
+    missing = sorted(needed - set(s5.columns))
+    if missing:
+        raise ValueError("s5 CSV missing columns needed for v2 linkage: {}".format(", ".join(missing)))
+
+    mask = s5.apply(_is_satellite_s5_row, axis=1)
+    sat = s5.loc[mask].copy()
+    sat["satellite_key"] = sat.apply(_satellite_key_from_row, axis=1)
+    sat["resolution"] = sat["resolution"].map(_normalize_resolution)
+    sat["satellite_location_uid"] = sat["satellite_key"]
+    sat["cluster_uid"] = sat["cluster_id"].map(_cluster_uid_from_id)
+    keep = [
+        "satellite_key",
+        "satellite_location_uid",
+        "station_id",
+        "cluster_id",
+        "cluster_uid",
+        "source",
+        "source_station_id",
+        "path",
+        "resolution",
+    ]
+    sat = sat[keep].copy()
+    duplicates = sat.duplicated("satellite_key", keep=False)
+    if duplicates.any():
+        examples = sat.loc[duplicates, ["satellite_key", "station_id", "source", "source_station_id", "resolution"]].head(10)
+        raise ValueError(
+            "duplicate satellite_key values in s5 CSV; examples: {}".format(
+                examples.to_dict("records")
+            )
+        )
+    return sat
+
+
+def _normalize_v2_linkage_table(linkage: pd.DataFrame, s5_csv: Path) -> pd.DataFrame:
+    missing = sorted(REQUIRED_V2_LINKAGE_COLUMNS - set(linkage.columns))
+    if missing:
+        raise ValueError(
+            "s5b v2 linkage CSV missing columns: {}".format(", ".join(missing))
+        )
+
+    s5_sat = _load_s5_satellite_lookup(s5_csv)
+    work = linkage.copy()
+    work["satellite_key"] = work["satellite_key"].map(_clean_text)
+    merged = work.merge(
+        s5_sat,
+        how="left",
+        on="satellite_key",
+        suffixes=("", "_s5"),
+        validate="many_to_one",
+    )
+    missing_path = merged["path"].fillna("").astype(str).str.strip().eq("")
+    if missing_path.any():
+        examples = merged.loc[missing_path, ["satellite_key", "satellite_station_id", "satellite_source", "satellite_resolution"]].head(10)
+        raise ValueError(
+            "could not recover source path for {} v2 linkage row(s); examples: {}".format(
+                int(missing_path.sum()),
+                examples.to_dict("records"),
+            )
+        )
+
+    normalized = pd.DataFrame(index=merged.index)
+    normalized["satellite_location_uid"] = merged["satellite_key"].map(_clean_text)
+    normalized["cluster_id"] = merged["cluster_id"]
+    normalized["cluster_uid"] = merged["cluster_uid"].map(_clean_text)
+    normalized["source"] = merged["source"].map(_clean_text)
+    normalized["source_station_id"] = merged["source_station_id"].map(_clean_text)
+    normalized["path"] = merged["path"].map(_clean_text)
+    normalized["resolution"] = merged["resolution"].map(_normalize_resolution)
+    normalized["linked_cluster_id"] = merged["linked_cluster_id"]
+    normalized["linked_cluster_uid"] = merged["linked_cluster_uid"].map(_clean_text)
+    normalized["linked_resolution"] = merged["satellite_resolution"].map(_normalize_resolution)
+    normalized["link_status"] = merged["link_status"].map(_clean_text).str.lower()
+    normalized["link_method"] = merged["link_method"].map(_clean_text)
+    normalized["link_quality"] = merged["link_confidence"].map(_clean_text)
+    normalized["link_distance_m"] = pd.to_numeric(
+        merged.get("representative_point_distance_m", np.nan),
+        errors="coerce",
+    )
+    normalized["link_uparea_log10_error"] = pd.to_numeric(
+        merged.get("area_rel_error", np.nan),
+        errors="coerce",
+    )
+    normalized["link_area_rel_error"] = normalized["link_uparea_log10_error"]
+    normalized["link_candidate_count"] = pd.to_numeric(
+        merged.get("n_valid_candidates", np.nan),
+        errors="coerce",
+    )
+    normalized["unlinked_reason"] = merged.get(
+        "rejection_reason",
+        pd.Series([""] * len(merged), index=merged.index),
+    ).map(_clean_text)
+    normalized["s5b_schema"] = "v2"
+    normalized["satellite_key"] = merged["satellite_key"].map(_clean_text)
+    return normalized
+
+
+def _validate_linkage_table(linkage: pd.DataFrame, s5_csv: Optional[Path] = None) -> pd.DataFrame:
+    if "satellite_key" in linkage.columns and "satellite_source" in linkage.columns:
+        if s5_csv is None:
+            raise ValueError("v2 s5b linkage requires --s5-csv")
+        linkage = _normalize_v2_linkage_table(linkage, s5_csv)
+
     missing = sorted(REQUIRED_LINKAGE_COLUMNS - set(linkage.columns))
     if missing:
         raise ValueError(
@@ -540,6 +703,14 @@ def _validate_linkage_table(linkage: pd.DataFrame) -> pd.DataFrame:
     work["satellite_location_uid"] = work[
         "satellite_location_uid"
     ].map(_clean_text)
+    if "source" in work.columns:
+        work["source"] = work["source"].map(_clean_text)
+    if "source_station_id" in work.columns:
+        work["source_station_id"] = work["source_station_id"].map(_clean_text)
+    if "path" in work.columns:
+        work["path"] = work["path"].map(_clean_text)
+    if "s5b_schema" not in work.columns:
+        work["s5b_schema"] = "legacy"
 
     duplicates = work.duplicated(
         ["satellite_location_uid", "resolution"],
@@ -815,6 +986,8 @@ def _attach_linkage_metadata(
     metadata = metadata.drop_duplicates("satellite_location_uid")
 
     rename = {
+        "satellite_key": "s5b_satellite_key",
+        "s5b_schema": "s5b_schema",
         "source": "s5b_satellite_source",
         "source_station_id": "s5b_source_station_id",
         "path": "s5b_source_path",
@@ -837,6 +1010,7 @@ def run_validation(
     linkage_csv: Path,
     source_root: Path,
     out_dir: Path,
+    s5_csv: Path = DEFAULT_S5_CSV,
     candidate_sidecar: Optional[Path] = None,
     source_taxonomy_csv: Optional[Path] = None,
     external_attributes_csv: Optional[Path] = None,
@@ -852,6 +1026,7 @@ def run_validation(
 ) -> None:
     release_dir = release_dir.expanduser().resolve()
     linkage_csv = linkage_csv.expanduser().resolve()
+    s5_csv = s5_csv.expanduser().resolve()
     source_root = source_root.expanduser().resolve()
     out_dir = out_dir.expanduser().resolve()
 
@@ -879,6 +1054,7 @@ def run_validation(
     log_progress("Starting s11b validation from s5b linkage CSV")
     log_progress("Release dir: {}".format(release_dir))
     log_progress("Linkage CSV: {}".format(linkage_csv))
+    log_progress("S5 CSV: {}".format(s5_csv))
     log_progress("Satellite source root: {}".format(source_root))
     log_progress("Output dir: {}".format(out_dir))
 
@@ -888,7 +1064,8 @@ def run_validation(
     )
 
     linkage = _validate_linkage_table(
-        pd.read_csv(linkage_csv, low_memory=False)
+        pd.read_csv(linkage_csv, low_memory=False),
+        s5_csv=s5_csv,
     )
     log_progress(
         "s5b rows={}, linked={}, unlinked={}".format(
@@ -1044,6 +1221,14 @@ def run_validation(
             "- Linkage CSV: `{}`.\n".format(linkage_csv)
         )
         handle.write(
+            "- S5 CSV used for v2 path recovery: `{}`.\n".format(s5_csv)
+        )
+        handle.write(
+            "- s5b linkage schema counts: `{}`.\n".format(
+                linkage.get("s5b_schema", pd.Series(dtype=object)).value_counts(dropna=False).to_dict()
+            )
+        )
+        handle.write(
             "- Satellite source root: `{}`.\n".format(source_root)
         )
         handle.write(
@@ -1094,6 +1279,14 @@ def parse_args(
         "--s5b-linkage-csv",
         default=str(DEFAULT_LINKAGE_CSV),
         help="s5b satellite-to-main-cluster linkage CSV.",
+    )
+    parser.add_argument(
+        "--s5-csv",
+        default=str(DEFAULT_S5_CSV),
+        help=(
+            "s5 basin-clustered stations CSV. Required when --s5b-linkage-csv "
+            "points to v2 links because v2 stores source paths in the s5 table."
+        ),
     )
     parser.add_argument(
         "--source-root",
@@ -1181,6 +1374,7 @@ def main(
     run_validation(
         release_dir=Path(args.release_dir),
         linkage_csv=Path(args.s5b_linkage_csv),
+        s5_csv=Path(args.s5_csv),
         source_root=Path(args.source_root),
         out_dir=Path(args.out_dir),
         candidate_sidecar=(
@@ -1212,4 +1406,3 @@ def main(
 
 if __name__ == "__main__":
     main()
-
