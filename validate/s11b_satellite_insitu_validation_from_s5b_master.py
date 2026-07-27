@@ -783,13 +783,15 @@ def _load_insitu_observations(
             # cluster_uid is on n_stations dim; map via station_index
             uid_arr = _read_station_var_to_record_space(ds, "cluster_uid", record_dim, n_records)
             res_arr = _read_var_array(ds, "resolution", record_dim)
+            # Pre-clean uid array ONCE (was inside the loop — 151x overhead)
+            clean_uid = np_clean_text_array(uid_arr)
             mask = np.zeros(n_records, dtype=bool)
             for uid, res in target_pairs:
                 # resolution in master NC is stored as int8 codes
                 res_code = _resolution_text_to_code(res)
                 if res_code is not None:
                     mask |= (
-                        (np_clean_text_array(uid_arr) == uid)
+                        (clean_uid == uid)
                         & (res_arr == res_code)
                     )
             n_matched = int(mask.sum())

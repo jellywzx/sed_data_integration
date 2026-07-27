@@ -47,6 +47,7 @@ ASSUMPTIONS_BASE = (
     "missing climate zone is 'unknown'"
 )
 RESOLUTION_CODE = {0: "daily", 1: "monthly", 2: "annual", 3: "climatology"}
+LINKED_RESOLUTIONS = frozenset(RESOLUTION_CODE.values())
 OBSERVATION_TYPE_ATTRS = ("observation_type", "Type", "type")
 SOURCE_PATH_COLUMNS = (
     "source_station_paths",
@@ -1301,78 +1302,128 @@ def _method_notes(input_mode: str) -> str:
 def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> Tuple[int, List[Dict[str, object]]]:
     ordinal, group, windows, input_mode = item
     rows: List[Dict[str, object]] = []
-    satellites = group[group["source_family"] == "satellite"].copy()
-    insitu = group[group["source_family"] == "in_situ"].copy()
+    satellites = group[group["source_family"] == "satellite"]
+    insitu = group[group["source_family"] == "in_situ"]
     if satellites.empty or insitu.empty:
         return ordinal, rows
 
+    # --- Pre-compute per-variable validity masks (hoisted from inner loop) ---
+    # For each variable, pre-filter insitu to rows with finite values,
+    # and pre-compute tiebreaker sort columns once per variable.
+    insitu_per_var = {}
+    for variable in VARIABLES:
+        var_flag_col = "{}_flag".format(variable)
+        mask = pd.to_numeric(insitu[variable], errors="coerce").notna()
+        valid = insitu.loc[mask]
+        if valid.empty:
+            continue
+        # Pre-compute tiebreaker columns (identical for all satellite rows)
+        valid = valid.assign(
+            _flag_rank=valid[var_flag_col].map(_flag_rank),
+            _source_sort=valid["source"].astype(str).str.lower(),
+            _uid_sort=valid["source_station_uid"].astype(str).str.lower(),
+            _record_sort=valid["record_id"].astype(str),
+        )
+        insitu_per_var[variable] = valid
+
+    method_notes = _method_notes(input_mode)
+
+    # --- Hoist constant satellite fields outside variable loop ---
     for _, sat in satellites.iterrows():
+        sat_cluster_uid = sat.get("cluster_uid", "")
+        sat_cluster_id = sat.get("cluster_id", "")
+        sat_resolution = sat.get("resolution", "")
+        sat_time = sat["_time_day"]
+        sat_source = sat.get("source", "")
+        sat_source_family = sat.get("source_family", "")
+        sat_source_station_uid = sat.get("source_station_uid", "")
+        sat_record_id = sat.get("record_id", "")
+        sat_ssc = sat.get("SSC", np.nan)
+        sat_river_width_class = sat.get("river_width_class", "")
+        sat_river_width_m = sat.get("river_width_m", np.nan)
+        sat_climate_zone = sat.get("climate_zone", "")
+
         for variable in VARIABLES:
-            sat_value = pd.to_numeric(pd.Series([sat.get(variable, np.nan)]), errors="coerce").iloc[0]
-            if pd.isna(sat_value):
+            valid = insitu_per_var.get(variable)
+            if valid is None:
                 continue
-            insitu_valid = insitu[pd.to_numeric(insitu[variable], errors="coerce").notna()].copy()
-            if insitu_valid.empty:
+
+            # Extract satellite scalar value (replaces pd.to_numeric on scalar)
+            sat_value_raw = sat.get(variable, np.nan)
+            try:
+                sat_value = float(sat_value_raw)
+            except (ValueError, TypeError):
+                sat_value = np.nan
+            if not np.isfinite(sat_value):
                 continue
-            deltas = (insitu_valid["_time_day"] - sat["_time_day"]).dt.days
-            insitu_valid = insitu_valid.assign(
+
+            # Compute time deltas in one vectorized operation
+            deltas = (valid["_time_day"] - sat_time).dt.days
+            candidates = valid.assign(
                 _time_delta_days=deltas,
                 _abs_delta=deltas.abs(),
-                _flag_rank=insitu_valid["{}_flag".format(variable)].map(_flag_rank),
-                _source_sort=insitu_valid["source"].astype(str).str.lower(),
-                _uid_sort=insitu_valid["source_station_uid"].astype(str).str.lower(),
-                _record_sort=insitu_valid["record_id"].astype(str),
             )
+
+            # Single sort on widest-window criterion, then filter per window
+            sorted_candidates = candidates.sort_values(
+                ["_abs_delta", "_flag_rank", "_source_sort", "_uid_sort", "_time_day", "_record_sort"],
+                kind="mergesort",
+            )
+
             for window in windows:
                 max_days = WINDOW_DAYS[window]
                 if window == "exact":
-                    candidates = insitu_valid[insitu_valid["_abs_delta"] == 0].copy()
+                    match = sorted_candidates[sorted_candidates["_abs_delta"] == 0]
                 else:
-                    candidates = insitu_valid[insitu_valid["_abs_delta"] <= max_days].copy()
-                if candidates.empty:
+                    match = sorted_candidates[sorted_candidates["_abs_delta"] <= max_days]
+                if match.empty:
                     continue
-                best = candidates.sort_values(
-                    ["_abs_delta", "_flag_rank", "_source_sort", "_uid_sort", "_time_day", "_record_sort"],
-                    kind="mergesort",
-                ).iloc[0]
-                insitu_value = pd.to_numeric(pd.Series([best.get(variable, np.nan)]), errors="coerce").iloc[0]
-                diff = float(sat_value) - float(insitu_value)
-                pct = float(diff / float(insitu_value) * 100.0) if float(insitu_value) != 0 else float("nan")
+                best = match.iloc[0]
+
+                insitu_value_raw = best.get(variable, np.nan)
+                try:
+                    insitu_value = float(insitu_value_raw)
+                except (ValueError, TypeError):
+                    insitu_value = np.nan
+
+                diff = sat_value - insitu_value
+                pct = (diff / insitu_value * 100.0) if insitu_value != 0 else float("nan")
+
                 rows.append(
                     {
-                        "cluster_uid": sat.get("cluster_uid", ""),
-                        "cluster_id": sat.get("cluster_id", ""),
-                        "resolution": sat.get("resolution", ""),
+                        "cluster_uid": sat_cluster_uid,
+                        "cluster_id": sat_cluster_id,
+                        "resolution": sat_resolution,
                         "variable": variable,
                         "pairing_window": window,
                         "window_exclusive": WINDOW_EXCLUSIVE,
-                        "satellite_time": sat["_time_day"],
+                        "satellite_time": sat_time,
                         "insitu_time": best["_time_day"],
                         "time_delta_days": int(best["_time_delta_days"]),
-                        "satellite_source": sat.get("source", ""),
+                        "satellite_source": sat_source,
                         "insitu_source": best.get("source", ""),
-                        "satellite_source_family": sat.get("source_family", ""),
+                        "satellite_source_family": sat_source_family,
                         "insitu_source_family": best.get("source_family", ""),
-                        "satellite_source_station_uid": sat.get("source_station_uid", ""),
+                        "satellite_source_station_uid": sat_source_station_uid,
                         "insitu_source_station_uid": best.get("source_station_uid", ""),
-                        "satellite_record_id": sat.get("record_id", ""),
+                        "satellite_record_id": sat_record_id,
                         "insitu_record_id": best.get("record_id", ""),
-                        "satellite_value": float(sat_value),
-                        "insitu_value": float(insitu_value),
+                        "satellite_value": sat_value,
+                        "insitu_value": insitu_value,
                         "diff_satellite_minus_insitu": diff,
                         "pct_error_vs_insitu": pct,
                         "satellite_flag": sat.get("{}_flag".format(variable), np.nan),
                         "insitu_flag": best.get("{}_flag".format(variable), np.nan),
-                        "source_pair": "{} vs {}".format(sat.get("source", ""), best.get("source", "")),
-                        "satellite_ssc": sat.get("SSC", np.nan),
+                        "source_pair": "{} vs {}".format(sat_source, best.get("source", "")),
+                        "satellite_ssc": sat_ssc,
                         "insitu_ssc": best.get("SSC", np.nan),
-                        "satellite_river_width_class": sat.get("river_width_class", ""),
+                        "satellite_river_width_class": sat_river_width_class,
                         "insitu_river_width_class": best.get("river_width_class", ""),
-                        "satellite_river_width_m": sat.get("river_width_m", np.nan),
+                        "satellite_river_width_m": sat_river_width_m,
                         "insitu_river_width_m": best.get("river_width_m", np.nan),
-                        "satellite_climate_zone": sat.get("climate_zone", ""),
+                        "satellite_climate_zone": sat_climate_zone,
                         "insitu_climate_zone": best.get("climate_zone", ""),
-                        "method_notes": _method_notes(input_mode),
+                        "method_notes": method_notes,
                         "assumptions": ASSUMPTIONS_BASE,
                     }
                 )
