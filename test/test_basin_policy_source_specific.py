@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke tests for no-basin-match source policy."""
+"""Smoke tests for source-specific basin policy."""
 
 import sys
 from pathlib import Path
@@ -22,6 +22,7 @@ def _assert_case(label, expected, **kwargs):
 def main():
     expected_flags = {
         "ok",
+        # Legacy-compatible flag retained for old CSV/NC products.
         "reach_product_offset_ok",
         "large_offset",
         "area_mismatch",
@@ -31,11 +32,7 @@ def main():
     if set(BASIN_FLAG_ORDER) != expected_flags:
         raise AssertionError("Unexpected basin flags: {}".format(BASIN_FLAG_ORDER))
 
-    for source_name in ("Dethier", "Deither", "dethier"):
-        if not should_skip_basin_matching(source_name):
-            raise AssertionError("{} should skip basin matching".format(source_name))
-
-    for source_name in ("RiverSed", "GSED", "USGS", "HYBAM"):
+    for source_name in ("RiverSed", "GSED", "USGS", "HYBAM", "Dethier", "Deither", "dethier"):
         if should_skip_basin_matching(source_name):
             raise AssertionError("{} should not skip basin matching".format(source_name))
 
@@ -51,7 +48,7 @@ def main():
     )
     _assert_case(
         "gsed_reach_scale_offset",
-        ("resolved", "reach_product_offset_ok"),
+        ("unresolved", "large_offset"),
         basin_id=12345,
         match_quality="distance_only",
         distance_m=2000,
@@ -60,11 +57,21 @@ def main():
         point_in_basin=True,
     )
     _assert_case(
-        "riversed_small_offset",
+        "riversed_local_offset_within_1km",
         ("resolved", "ok"),
         basin_id=12345,
         match_quality="distance_only",
-        distance_m=250,
+        distance_m=750,
+        source_name="RiverSed",
+        point_in_local=True,
+        point_in_basin=True,
+    )
+    _assert_case(
+        "riversed_reach_scale_offset",
+        ("unresolved", "large_offset"),
+        basin_id=12345,
+        match_quality="distance_only",
+        distance_m=2000,
         source_name="RiverSed",
         point_in_local=True,
         point_in_basin=True,
