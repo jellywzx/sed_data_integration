@@ -60,12 +60,9 @@ BASIN_FLAG_MEANINGS = " ".join(BASIN_FLAG_ORDER + ("unknown",))
 
 # Some source products are reach-based remote-sensing products rather than bank
 # gauges. They often represent a river segment centroid or centerline footprint,
-# so a few kilometers of point-to-line offset can still be acceptable when the
-# original coordinate remains inside the matched local catchment.
+# but publication still rejects automatic basin assignments beyond 1 km.
 REACH_SCALE_POLICY_SOURCES = ("GSED", "RiverSed")
 REACH_SCALE_POLICY_SOURCE_SET = frozenset(name.lower() for name in REACH_SCALE_POLICY_SOURCES)
-REACH_SCALE_POLICY_MAX_DISTANCE_M = 5000.0
-REACH_SCALE_POLICY_FLAG = "reach_product_offset_ok"
 
 # No source is currently excluded from s4 basin matching. Dethier is the
 # canonical spelling and should follow the ordinary station policy.
@@ -176,7 +173,7 @@ def classify_basin_result(
       1. reject missing / failed matches first;
       2. reject area-mismatch cases;
       3. accept only a small set of high-confidence rules;
-      4. allow one source-specific reach-product override;
+      4. apply the same >1 km rejection to reach-scale products;
       5. otherwise keep the record but mark the basin unresolved.
     """
     basin_missing = math.isnan(_coerce_float(basin_id))
@@ -196,13 +193,6 @@ def classify_basin_result(
             return "resolved", "ok"
         if math.isfinite(distance) and distance <= 1000.0 and local_ok:
             return "resolved", "ok"
-        if (
-            math.isfinite(distance)
-            and distance > 1000.0
-            and distance <= REACH_SCALE_POLICY_MAX_DISTANCE_M
-            and local_ok
-        ):
-            return "resolved", REACH_SCALE_POLICY_FLAG
         if math.isfinite(distance) and distance > 1000.0:
             return "unresolved", "large_offset"
         return "unresolved", "geometry_inconsistent"

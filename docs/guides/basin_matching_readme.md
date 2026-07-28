@@ -150,13 +150,13 @@
 
 判定顺序是有优先级的，前面命中的分支会覆盖后面：
 
-1. `source in {RiverSed, GSED, Dethier}` 时不发布 MERIT basin assignment，返回 `unresolved / no_match`
+1. 当前没有 source 被整体跳过 basin matching；`Dethier` 走普通站点规则，`RiverSed / GSED` 保留 reach hint 锚点匹配逻辑
 2. `basin_id` 缺失或 `match_quality=failed` 时返回 `unresolved / no_match`
 3. `match_quality=area_mismatch` 时返回 `unresolved / area_mismatch`
 4. `distance_m <= 300` 时返回 `resolved / ok`
 5. `distance_m <= 1000` 且 `area_matched / area_approximate` 时返回 `resolved / ok`
 6. `distance_m <= 1000` 且 `point_in_local=True` 时返回 `resolved / ok`
-7. 普通 matched stations 若 `distance_m > 1000`，则返回 `unresolved / large_offset`
+7. `RiverSed / GSED` 和普通 matched stations 若 `distance_m > 1000`，均返回 `unresolved / large_offset`
 8. 其余未被接受的情况返回 `unresolved / geometry_inconsistent`
 
 ### 4.5 当前已删除的规则
@@ -281,7 +281,7 @@
 3. `distance_m <= 300` 时返回 `resolved / ok`
 4. `distance_m <= 1000` 且 `area_matched / area_approximate` 时返回 `resolved / ok`
 5. `distance_m <= 1000` 且 `point_in_local=True` 时返回 `resolved / ok`
-6. `RiverSed / GSED / Dethier` 等 source 返回 `unresolved / no_match`
+6. `RiverSed / GSED` 在 `distance_m > 1000` 时返回 `unresolved / large_offset`
 7. 普通 matched stations 若 `distance_m > 1000`，则返回 `unresolved / large_offset`
 8. 名称字段中的 `estuary / delta / tidal / coastal` 等关键词，不再影响判定结果
 

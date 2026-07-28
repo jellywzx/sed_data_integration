@@ -1,6 +1,6 @@
 # Basin Matching Flowchart
 
-下面给出更新后流域匹配流程的流程图版本。该图对应当前保守发布主线：几何证据由 `basin_tracer.py` 生成，发布级判定由 `basin_policy.py` 负责，最终只有 `resolved` 对象进入 basin polygon 产品。当前版本还包含一个 source-specific 特例：`GSED / RiverSed` 这类 `reach-scale` 遥感产品在满足局地几何一致性时，可以通过 `reach_product_offset_ok` 分支进入 `resolved`。
+下面给出更新后流域匹配流程的流程图版本。该图对应当前保守发布主线：几何证据由 `basin_tracer.py` 生成，发布级判定由 `basin_policy.py` 负责，最终只有 `resolved` 对象进入 basin polygon 产品。`GSED / RiverSed` 这类 `reach-scale` 遥感产品保留专门的锚点匹配逻辑，但发布级规则不再允许 `distance_m > 1000` 的自动放行。
 
 ```mermaid
 flowchart TD
@@ -26,9 +26,7 @@ flowchart TD
     N -- 是 --> N1[resolved / ok]
     N -- 否 --> O{distance_m <= 1000 且<br/>point_in_local=True?}
     O -- 是 --> O1[resolved / ok]
-    O -- 否 --> P{source in GSED / RiverSed 且<br/>1000 < distance_m <= 5000 且<br/>point_in_local=True?}
-    P -- 是 --> P1[resolved / reach_product_offset_ok]
-    P -- 否 --> Q{distance_m > 1000?}
+    O -- 否 --> Q{distance_m > 1000?}
     Q -- 是 --> Q1[unresolved / large_offset]
     Q -- 否 --> R[unresolved / geometry_inconsistent]
 
@@ -37,7 +35,6 @@ flowchart TD
     M1 --> S
     N1 --> S
     O1 --> S
-    P1 --> S
     Q1 --> S
     R --> S
 
@@ -60,7 +57,7 @@ flowchart TD
 4. `point_in_basin`
    保留为辅助诊断字段，但本身不足以单独放宽自动接受。
 5. `reach_product_offset_ok`
-   仅用于 `GSED / RiverSed` 这类 `reach-scale` 遥感产品；表示虽然点到河线偏移超过 `1000 m`，但仍在 `5000 m` 以内且 `point_in_local=True`，因此按 source-specific 规则接受。
+   作为历史兼容 flag 保留在受控词表中；当前自动规则不再产生该值。
 6. 名称字段中的 `estuary / delta / tidal / coastal` 等关键词，当前已不再参与自动判定。
 7. `resolved`
    可发布 basin polygon。
@@ -119,6 +116,5 @@ flowchart TD
 3. `distance_m <= 300` -> `resolved / ok`
 4. `distance_m <= 1000` 且 `area_matched / area_approximate` -> `resolved / ok`
 5. `distance_m <= 1000` 且 `point_in_local=True` -> `resolved / ok`
-6. `GSED / RiverSed` 且 `1000 < distance_m <= 5000` 且 `point_in_local=True` -> `resolved / reach_product_offset_ok`
-7. `distance_m > 1000` -> `unresolved / large_offset`
-8. 其他剩余情况 -> `unresolved / geometry_inconsistent`
+6. `distance_m > 1000` -> `unresolved / large_offset`
+7. 其他剩余情况 -> `unresolved / geometry_inconsistent`
