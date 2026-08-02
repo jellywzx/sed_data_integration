@@ -187,8 +187,15 @@ def _payload_count(payloads):
     return np.asarray([int(payload.get("count", 0) or 0) for payload in payloads], dtype=np.int32)
 
 
-def write_global_attr_payload_variables(nc, dimension, prefix, payloads, subject):
-    """Write JSON/name/count variables for station-level upstream attrs."""
+def write_global_attr_payload_variables(nc, dimension, prefix, payloads, subject,
+                                        include_names=True, include_count=True):
+    """Write JSON/name/count variables for station-level upstream attrs.
+
+    Set *include_names* or *include_count* to False to omit the derived
+    ``_global_attr_names`` / ``_global_attr_count`` variables (they are
+    fully recoverable from the JSON payload).  The JSON variable is always
+    written.
+    """
     json_name = "{}_global_attrs_json".format(prefix)
     names_name = "{}_global_attr_names".format(prefix)
     count_name = "{}_global_attr_count".format(prefix)
@@ -199,18 +206,28 @@ def write_global_attr_payload_variables(nc, dimension, prefix, payloads, subject
     json_v.schema_version = GLOBAL_ATTR_SCHEMA_VERSION
     json_v[:] = _payload_text(payloads, "json")
 
-    names_v = nc.createVariable(names_name, str, (dimension,))
-    names_v.long_name = "pipe-separated upstream global attribute names for {}".format(subject)
-    names_v[:] = _payload_text(payloads, "names")
+    if include_names:
+        names_v = nc.createVariable(names_name, str, (dimension,))
+        names_v.long_name = "pipe-separated upstream global attribute names for {}".format(subject)
+        names_v[:] = _payload_text(payloads, "names")
 
-    count_v = nc.createVariable(count_name, "i4", (dimension,))
-    count_v.long_name = "number of upstream global attribute keys stored for {}".format(subject)
-    count_v[:] = _payload_count(payloads)
+    if include_count:
+        count_v = nc.createVariable(count_name, "i4", (dimension,))
+        count_v.long_name = "number of upstream global attribute keys stored for {}".format(subject)
+        count_v[:] = _payload_count(payloads)
 
 
-def write_promoted_global_attr_variables(nc, dimension, payloads, var_prefix="", subject="station"):
-    """Write common upstream attrs as plain string variables for direct query."""
+def write_promoted_global_attr_variables(nc, dimension, payloads, var_prefix="", subject="station",
+                                           omit_fields=()):
+    """Write common upstream attrs as plain string variables for direct query.
+
+    Pass a sequence of field names in *omit_fields* to skip specific promoted
+    attributes (e.g. when a product does not need every promoted field).
+    """
+    omit = set(omit_fields)
     for field in PROMOTED_ATTR_ALIASES:
+        if field in omit:
+            continue
         name = "{}{}".format(var_prefix, field)
         if name in nc.variables:
             continue
