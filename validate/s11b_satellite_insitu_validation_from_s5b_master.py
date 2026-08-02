@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate satellite source records against main station-reference records using s5b linkage CSV.
 
-This script is a companion to ``s11_satellite_insitu_validation.py``.
+This script is a companion to ``satellite_insitu_validation.py``.
 
 Key difference
 --------------
@@ -44,9 +44,9 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("xarray is required: {}".format(exc))
 
 try:
-    import s11_satellite_insitu_validation as base
+    import satellite_insitu_validation as base
 except ImportError:  # allows module-style execution from the repository root
-    from validate import s11_satellite_insitu_validation as base  # type: ignore
+    from validate import satellite_insitu_validation as base  # type: ignore
 
 try:
     from pipeline_paths import (
