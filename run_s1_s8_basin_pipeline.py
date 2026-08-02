@@ -327,7 +327,7 @@ def stage_outputs():
             release_dir / "release_validation_report.csv",
             release_dir / "release_inventory.csv",
             release_dir / "README.md",
-            OUTPUT_DIR / "sed_reference_release_minimal" / "minimal_release_validation_report.csv",
+            OUTPUT_DIR / "sed_reference_release_minimal" / "release_validation_report.csv",
             OUTPUT_DIR / "sed_reference_release_minimal" / "release_inventory.csv",
             OUTPUT_DIR / "sed_reference_release_minimal" / "README.md",
         ],

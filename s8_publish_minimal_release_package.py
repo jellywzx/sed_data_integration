@@ -67,6 +67,11 @@ MINIMAL_KEEP_VARS = ()
 MINIMAL_REQUIRED_VARS = ()
 COMPRESSED_MATRIX_VARS = set()
 GLOBAL_ATTRS_TO_KEEP = ()
+SATELLITE_KEEP_VARS = ()
+SATELLITE_REQUIRED_VARS = ()
+COMPRESSED_SATELLITE_VARS = set()
+SATELLITE_GLOBAL_ATTRS_TO_KEEP = ()
+SATELLITE_FORBIDDEN_VARS = ()
 CLIMATOLOGY_PACKAGE_FILES = (
     "sed_reference_climatology.nc",
 )
@@ -90,19 +95,7 @@ MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = ()
 MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = ()
 MINIMAL_SATELLITE_CATALOG_COLUMNS = ()
 DEFAULT_CLIMATOLOGY_QUERY_COLUMNS = (
-    "record_index",
-    "station_index",
     "station_uid",
-    "lat",
-    "lon",
-    "station_name",
-    "river_name",
-    "source_station_id",
-    "source_name",
-    "source_long_name",
-    "institution",
-    "reference",
-    "source_url",
     "time",
     "time_raw",
     "resolution",
@@ -112,10 +105,16 @@ DEFAULT_CLIMATOLOGY_QUERY_COLUMNS = (
     "Q_flag",
     "SSC_flag",
     "SSL_flag",
+    "station_name",
+    "river_name",
+    "lat",
+    "lon",
+    "geographic_coverage",
+    "source_name",
+    "source_station_id",
     "source_station_time_coverage_start",
     "source_station_time_coverage_end",
     "source_station_variables_provided",
-    "source_station_path",
 )
 CLIMATOLOGY_QUERY_COLUMNS = DEFAULT_CLIMATOLOGY_QUERY_COLUMNS
 DEFAULT_NATURALEARTH_LOWRES_RELATIVE = Path(
@@ -210,6 +209,11 @@ def load_minimal_schema(path):
         "keep_variables": _schema_list(schema, "keep_variables"),
         "required_variables": _schema_list(schema, "required_variables"),
         "compressed_variables": _schema_list(schema, "compressed_variables"),
+        "satellite_keep_variables": _schema_list(schema, "satellite_keep_variables"),
+        "satellite_required_variables": _schema_list(schema, "satellite_required_variables"),
+        "satellite_compressed_variables": _schema_list(schema, "satellite_compressed_variables"),
+        "satellite_global_attributes_to_keep": _schema_list(schema, "satellite_global_attributes_to_keep"),
+        "satellite_forbidden_variables": _schema_list(schema, "satellite_forbidden_variables"),
         "global_attributes_to_keep": _schema_list(schema, "global_attributes_to_keep"),
         "forbidden_files": _schema_list(schema, "forbidden_files"),
         "forbidden_variables": _schema_list(schema, "forbidden_variables"),
@@ -225,6 +229,11 @@ def apply_minimal_schema(schema):
     global MINIMAL_REQUIRED_VARS
     global COMPRESSED_MATRIX_VARS
     global GLOBAL_ATTRS_TO_KEEP
+    global SATELLITE_KEEP_VARS
+    global SATELLITE_REQUIRED_VARS
+    global COMPRESSED_SATELLITE_VARS
+    global SATELLITE_GLOBAL_ATTRS_TO_KEEP
+    global SATELLITE_FORBIDDEN_VARS
     global MINIMAL_FORBIDDEN_FILES
     global MINIMAL_FORBIDDEN_VARS
     global MINIMAL_CATALOG_COLUMNS
@@ -238,6 +247,11 @@ def apply_minimal_schema(schema):
     MINIMAL_KEEP_VARS = schema["keep_variables"]
     MINIMAL_REQUIRED_VARS = schema["required_variables"]
     COMPRESSED_MATRIX_VARS = set(schema["compressed_variables"])
+    SATELLITE_KEEP_VARS = schema["satellite_keep_variables"]
+    SATELLITE_REQUIRED_VARS = schema["satellite_required_variables"]
+    COMPRESSED_SATELLITE_VARS = set(schema["satellite_compressed_variables"])
+    SATELLITE_GLOBAL_ATTRS_TO_KEEP = schema["satellite_global_attributes_to_keep"]
+    SATELLITE_FORBIDDEN_VARS = schema["satellite_forbidden_variables"]
     GLOBAL_ATTRS_TO_KEEP = schema["global_attributes_to_keep"]
     MINIMAL_FORBIDDEN_FILES = schema["forbidden_files"]
     MINIMAL_FORBIDDEN_VARS = schema["forbidden_variables"]
@@ -421,17 +435,43 @@ def _release_provenance_nc_candidates(release_dir):
 def _read_release_nc_attrs(path):
     if HAS_NC:
         with nc4.Dataset(path, "r") as ds:
+            version = _clean_attr_value(_source_attr(ds, "release_version", ""))
+            if not version:
+                version = _clean_attr_value(_source_attr(ds, "dataset_version", ""))
+            date_created = _clean_attr_value(_source_attr(ds, "date_created", ""))
+            if not date_created:
+                date_created = _history_created_time(ds)
+            date_modified = _clean_attr_value(_source_attr(ds, "date_modified", ""))
+            if not date_modified:
+                try:
+                    mtime = path.stat().st_mtime
+                    date_modified = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+                except OSError:
+                    date_modified = ""
             return {
-                "source_release_version": _clean_attr_value(_source_attr(ds, "release_version", "")),
-                "source_release_date_created": _clean_attr_value(_source_attr(ds, "date_created", "")),
-                "source_release_date_modified": _clean_attr_value(_source_attr(ds, "date_modified", "")),
+                "source_release_version": version,
+                "source_release_date_created": date_created,
+                "source_release_date_modified": date_modified,
             }
     if HAS_H5NETCDF:
         with h5netcdf.File(path, "r") as ds:
+            version = _clean_attr_value(_source_attr(ds, "release_version", ""))
+            if not version:
+                version = _clean_attr_value(_source_attr(ds, "dataset_version", ""))
+            date_created = _clean_attr_value(_source_attr(ds, "date_created", ""))
+            if not date_created:
+                date_created = _history_created_time(ds)
+            date_modified = _clean_attr_value(_source_attr(ds, "date_modified", ""))
+            if not date_modified:
+                try:
+                    mtime = path.stat().st_mtime
+                    date_modified = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+                except OSError:
+                    date_modified = ""
             return {
-                "source_release_version": _clean_attr_value(_source_attr(ds, "release_version", "")),
-                "source_release_date_created": _clean_attr_value(_source_attr(ds, "date_created", "")),
-                "source_release_date_modified": _clean_attr_value(_source_attr(ds, "date_modified", "")),
+                "source_release_version": version,
+                "source_release_date_created": date_created,
+                "source_release_date_modified": date_modified,
             }
     return {
         "source_release_version": "",
@@ -617,7 +657,7 @@ def _minimal_global_attrs(src, variable_names):
     geo = _geospatial_attrs(src)
 
     attrs["title"] = attrs["title"] or _first_nonempty_attr(src, "title")
-    attrs["product_role"] = attrs["product_role"] or "minimal {} station-time matrix".format(
+    attrs["product_role"] = attrs["product_role"] or "{} station-time matrix".format(
         _first_nonempty_attr(src, "time_type") or "resolution-specific"
     )
     attrs["release_version"] = attrs["release_version"] or _first_nonempty_attr(
@@ -627,7 +667,7 @@ def _minimal_global_attrs(src, variable_names):
     attrs["date_modified"] = attrs["date_modified"] or datetime.now().isoformat(timespec="seconds")
     attrs["Conventions"] = attrs["Conventions"] or _first_nonempty_attr(src, "Conventions", "conventions")
     attrs["summary"] = attrs["summary"] or (
-        "Minimal station-by-time matrix product for river discharge, suspended sediment concentration, "
+        "Station-by-time matrix product for river discharge, suspended sediment concentration, "
         "and suspended sediment load."
     )
     attrs["citation"] = ""
@@ -650,12 +690,14 @@ def _copy_variable_attrs(src_var, dst_var):
         dst_var.setncattr(name, src_var.getncattr(name))
 
 
-def _create_output_variable(dst, name, src_var, compression_level):
+def _create_output_variable(dst, name, src_var, compression_level, compressed_vars=None):
     kwargs = {}
     if "_FillValue" in src_var.ncattrs():
         kwargs["fill_value"] = src_var.getncattr("_FillValue")
 
-    if name in COMPRESSED_MATRIX_VARS:
+    if compressed_vars is None:
+        compressed_vars = COMPRESSED_MATRIX_VARS
+    if name in compressed_vars:
         kwargs["zlib"] = True
         kwargs["complevel"] = compression_level
 
@@ -697,6 +739,47 @@ def _copy_h5_variable_data(name, src_var, dst_var, station_chunk_size=128):
             stop = min(start + station_chunk_size, n_stations)
             slices = [slice(None)] * len(src_var.dimensions)
             slices[station_axis] = slice(start, stop)
+            slices = tuple(slices)
+            dst_var[slices] = src_var[slices]
+    elif src_var.shape == ():
+        print("[copy] variable {}".format(name), flush=True)
+        dst_var[...] = src_var[()]
+    else:
+        print("[copy] variable {}".format(name), flush=True)
+        dst_var[:] = src_var[:]
+
+
+def _copy_satellite_variable_data(name, src_var, dst_var, record_chunk_size=1000000):
+    if "n_satellite_records" in src_var.dimensions:
+        record_axis = src_var.dimensions.index("n_satellite_records")
+        n_records = src_var.shape[record_axis]
+        print(
+            "[copy] variable {} in satellite-record chunks of {}".format(name, record_chunk_size),
+            flush=True,
+        )
+        for start in range(0, n_records, record_chunk_size):
+            stop = min(start + record_chunk_size, n_records)
+            slices = [slice(None)] * len(src_var.dimensions)
+            slices[record_axis] = slice(start, stop)
+            slices = tuple(slices)
+            dst_var[slices] = src_var[slices]
+    else:
+        print("[copy] variable {}".format(name), flush=True)
+        dst_var[:] = src_var[:]
+
+
+def _copy_h5_satellite_variable_data(name, src_var, dst_var, record_chunk_size=1000000):
+    if "n_satellite_records" in src_var.dimensions:
+        record_axis = src_var.dimensions.index("n_satellite_records")
+        n_records = src_var.shape[record_axis]
+        print(
+            "[copy] variable {} in satellite-record chunks of {}".format(name, record_chunk_size),
+            flush=True,
+        )
+        for start in range(0, n_records, record_chunk_size):
+            stop = min(start + record_chunk_size, n_records)
+            slices = [slice(None)] * len(src_var.dimensions)
+            slices[record_axis] = slice(start, stop)
             slices = tuple(slices)
             dst_var[slices] = src_var[slices]
     elif src_var.shape == ():
@@ -843,7 +926,199 @@ def copy_minimal_matrix_nc(src_path, dst_path, keep_vars, required_vars, compres
             required_vars,
             compression_level=compression_level,
         )
-    print("[fail] netCDF4 or h5netcdf is required to build minimal NetCDF files")
+    print("[fail] netCDF4 or h5netcdf is required to build NetCDF files")
+    return False
+
+
+def _dimension_size(src, name):
+    try:
+        return len(src.dimensions[name])
+    except Exception:
+        return ""
+
+
+def _minimal_satellite_global_attrs(src, variable_names):
+    attrs = {name: _clean_attr_value(_source_attr(src, name, "")) for name in SATELLITE_GLOBAL_ATTRS_TO_KEEP}
+    variable_names = set(variable_names)
+    time_start, time_end = _time_coverage_attrs(src)
+    geo = _geospatial_attrs(src)
+
+    attrs["title"] = attrs["title"] or _first_nonempty_attr(src, "title")
+    attrs["product_role"] = attrs["product_role"] or "satellite validation-only observations"
+    attrs["Conventions"] = attrs["Conventions"] or _first_nonempty_attr(src, "Conventions", "conventions")
+    attrs["summary"] = attrs["summary"] or (
+        "Satellite validation-only product for satellite-vs-station sediment comparison."
+    )
+    attrs["intended_use"] = attrs["intended_use"] or _first_nonempty_attr(src, "intended_use")
+    attrs["variables_provided"] = attrs["variables_provided"] or _variables_provided(variable_names)
+    attrs["qc_flag_meanings"] = attrs["qc_flag_meanings"] or _qc_flag_meanings(src)
+    attrs["time_coverage_start"] = attrs["time_coverage_start"] or time_start
+    attrs["time_coverage_end"] = attrs["time_coverage_end"] or time_end
+    for key, value in geo.items():
+        attrs[key] = attrs[key] or value
+    attrs["n_satellite_stations"] = attrs["n_satellite_stations"] or str(_dimension_size(src, "n_satellite_stations"))
+    attrs["n_satellite_records"] = attrs["n_satellite_records"] or str(_dimension_size(src, "n_satellite_records"))
+    attrs["date_created"] = attrs["date_created"] or _first_nonempty_attr(src, "date_created", "created")
+    attrs["date_created"] = attrs["date_created"] or _history_created_time(src)
+    attrs["date_modified"] = attrs["date_modified"] or datetime.now().isoformat(timespec="seconds")
+    return attrs
+
+
+def _copy_satellite_global_attrs(src, dst):
+    attrs = _minimal_satellite_global_attrs(src, src.variables.keys())
+    for name in SATELLITE_GLOBAL_ATTRS_TO_KEEP:
+        dst.setncattr(name, attrs.get(name, ""))
+
+
+def _copy_h5_satellite_global_attrs(src, dst):
+    attrs = _minimal_satellite_global_attrs(src, src.variables.keys())
+    for name in SATELLITE_GLOBAL_ATTRS_TO_KEEP:
+        dst.attrs[name] = attrs.get(name, "")
+
+
+def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_vars, compression_level=4):
+    if not HAS_NC:
+        print("[fail] netCDF4 is not available")
+        return False
+
+    if not src_path.is_file():
+        print("[fail] source NetCDF not found: {}".format(src_path))
+        return False
+
+    tmp_path = dst_path.with_name(dst_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    with nc4.Dataset(src_path, "r") as src:
+        missing_required = [name for name in required_vars if name not in src.variables]
+        if missing_required:
+            print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
+            return False
+
+        vars_to_copy = []
+        for name in keep_vars:
+            if name in src.variables:
+                vars_to_copy.append(name)
+            else:
+                print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
+
+        required_dims = []
+        for name in vars_to_copy:
+            for dim_name in src.variables[name].dimensions:
+                if dim_name not in required_dims:
+                    required_dims.append(dim_name)
+
+        with nc4.Dataset(tmp_path, "w", format=src.data_model) as dst:
+            _copy_satellite_global_attrs(src, dst)
+            for dim_name in required_dims:
+                dim = src.dimensions[dim_name]
+                dim_size = None if dim.isunlimited() else len(dim)
+                dst.createDimension(dim_name, dim_size)
+
+            for name in vars_to_copy:
+                src_var = src.variables[name]
+                dst_var = _create_output_variable(
+                    dst,
+                    name,
+                    src_var,
+                    compression_level,
+                    compressed_vars=COMPRESSED_SATELLITE_VARS,
+                )
+                _copy_variable_attrs(src_var, dst_var)
+                _copy_satellite_variable_data(name, src_var, dst_var)
+
+    if dst_path.exists():
+        dst_path.unlink()
+    tmp_path.rename(dst_path)
+    print("[write] {}".format(dst_path))
+    return True
+
+
+def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_vars, compression_level=4):
+    if not HAS_H5NETCDF:
+        print("[fail] h5netcdf is not available")
+        return False
+
+    if not src_path.is_file():
+        print("[fail] source NetCDF not found: {}".format(src_path))
+        return False
+
+    tmp_path = dst_path.with_name(dst_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    with h5netcdf.File(src_path, "r") as src:
+        missing_required = [name for name in required_vars if name not in src.variables]
+        if missing_required:
+            print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
+            return False
+
+        vars_to_copy = []
+        for name in keep_vars:
+            if name in src.variables:
+                vars_to_copy.append(name)
+            else:
+                print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
+
+        required_dims = []
+        for name in vars_to_copy:
+            for dim_name in src.variables[name].dimensions:
+                if dim_name not in required_dims:
+                    required_dims.append(dim_name)
+
+        with h5netcdf.File(tmp_path, "w") as dst:
+            _copy_h5_satellite_global_attrs(src, dst)
+
+            for dim_name in required_dims:
+                dst.dimensions[dim_name] = len(src.dimensions[dim_name])
+
+            for name in vars_to_copy:
+                src_var = src.variables[name]
+                fill_value = src_var.attrs.get("_FillValue", None)
+                dtype = src_var._h5ds.dtype
+                kwargs = {}
+                if name in COMPRESSED_SATELLITE_VARS:
+                    kwargs["compression"] = "gzip"
+                    kwargs["compression_opts"] = compression_level
+                dst_var = dst.create_variable(
+                    name,
+                    dimensions=src_var.dimensions,
+                    dtype=dtype,
+                    fillvalue=fill_value,
+                    **kwargs,
+                )
+                for attr_name, attr_value in src_var.attrs.items():
+                    if attr_name == "_FillValue":
+                        continue
+                    dst_var.attrs[attr_name] = attr_value
+                _copy_h5_satellite_variable_data(name, src_var, dst_var)
+
+    if dst_path.exists():
+        dst_path.unlink()
+    tmp_path.rename(dst_path)
+    print("[write] {}".format(dst_path))
+    return True
+
+
+def copy_minimal_satellite_nc(src_path, dst_path, keep_vars, required_vars, compression_level=4):
+    print("[copy] satellite NetCDF {} -> {}".format(src_path, dst_path), flush=True)
+    if HAS_NC:
+        return _copy_minimal_satellite_nc_netCDF4(
+            src_path,
+            dst_path,
+            keep_vars,
+            required_vars,
+            compression_level=compression_level,
+        )
+    if HAS_H5NETCDF:
+        return _copy_minimal_satellite_nc_h5netcdf(
+            src_path,
+            dst_path,
+            keep_vars,
+            required_vars,
+            compression_level=compression_level,
+        )
+    print("[fail] netCDF4 or h5netcdf is required to build satellite NetCDF files")
     return False
 
 
@@ -859,203 +1134,203 @@ def _warn(warnings, message):
 _manuscript_source_registry_list = [
     {
         "aliases": ["GloRiSe v1.1", "GloRiSe", "glorise_v1_1"],
-        "source_long_name": "Global River Sediments database version 1.1",
+        "source_long_name": "Global River Sediment database, version 1.1",
         "source_category": "global",
-        "reference": "",
-        "source_url": "https://github.com/GerritMuller/GloRiSe",
-        "preferred_citation": "Muller et al. (2021)",
+        "reference": "Müller, G., Middelburg, J. J., and Sluijs, A.: Introducing GloRiSe – a global database on river sediment composition, Earth Syst. Sci. Data, 13, 3565-3575, 10.5194/essd-13-3565-2021, 2021.",
+        "source_url": "https://doi.org/10.5281/zenodo.4485795",
+        "preferred_citation": "Müller et al. (2021)",
     },
     {
         "aliases": ["GFQA_v2", "GFQA", "GEMS", "GEMS_Water", "GEMStat"],
-        "source_long_name": "Global Freshwater Quality Assessment v2 / GEMS-water-derived source",
+        "source_long_name": "The UNEP GEMS/Water Global Freshwater Quality Archive",
         "source_category": "global",
-        "reference": "",
-        "source_url": "",
+        "reference": "Heinle, M., Lisniak, D., and Saile, P.: UNEP GEMS/Water Global Freshwater Quality Archive [dataset], https://doi.org/10.5281/zenodo.14230628, 2024.",
+        "source_url": "https://doi.org/10.5281/zenodo.14230628",
         "preferred_citation": "Heinle et al. (2024)",
     },
     {
         "aliases": ["USGS NWIS", "USGS_NWIS", "NWIS", "USGS"],
         "source_long_name": "U.S. Geological Survey National Water Information System",
         "source_category": "national",
-        "reference": "",
-        "source_url": "https://waterdata.usgs.gov/nwis",
+        "reference": "U.S. Geological Survey: National Water Information System data available on the World Wide Web (USGS Water Data for the Nation) [dataset], http://dx.doi.org/10.5066/F7P55KJN, 2016.",
+        "source_url": "https://doi.org/10.5066/F7P55KJN",
         "preferred_citation": "U.S. Geological Survey (2016)",
     },
     {
         "aliases": ["HYDAT", "Water Survey of Canada"],
-        "source_long_name": "HYDAT / Water Survey of Canada hydrometric database",
+        "source_long_name": "HYDAT/Water Survey of Canada",
         "source_category": "national",
-        "reference": "",
-        "source_url": "https://wateroffice.ec.gc.ca/",
-        "preferred_citation": "Water Survey of Canada",
+        "reference": "Environment and Climate Change Canada: National Water Data Archive: HYDAT, Water Survey of Canada, Government of Canada [dataset], 2026.",
+        "source_url": "https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/national-archive-hydat.html",
+        "preferred_citation": "Environment and Climate Change Canada (2026)",
     },
     {
         "aliases": ["Bayern", "GKD Bayern", "Bayern_GKD"],
-        "source_long_name": "Bavarian Hydrological Service / Gewaesserkundlicher Dienst Bayern",
+        "source_long_name": "Bayern Dataset",
         "source_category": "national",
-        "reference": "",
+        "reference": "Bayerisches Landesamt für Umwelt: Gewässerkundlicher Dienst Bayern (GKD): Abfluss- und Schwebstoffdaten [dataset], https://www.gkd.bayern.de/, 2026.",
         "source_url": "https://www.gkd.bayern.de/",
-        "preferred_citation": "GKD Bayern",
+        "preferred_citation": "Bayerisches Landesamt Für Umwelt (2026)",
     },
     {
         "aliases": ["HYBAM"],
-        "source_long_name": "Observation Service HYBAM",
+        "source_long_name": "HYBAM",
         "source_category": "basin_specific",
-        "reference": "",
+        "reference": "HYBAM Observatory: HYBAM hydrological, sedimentary, and geochemical observation data [dataset], 2026.",
         "source_url": "https://hybam.obs-mip.fr/",
-        "preferred_citation": "HYBAM Observatory",
+        "preferred_citation": "Hybam Observatory (2026)",
     },
     {
-        "aliases": ["Eurasian Dataset", "Eurasian_River", "Eurasian_Arctic", "Eurasian"],
+        "aliases": ["Eurasian River", "Eurasian Dataset", "Eurasian_River", "Eurasian_Arctic", "Eurasian"],
         "source_long_name": "Eurasian Arctic river sediment/discharge dataset",
         "source_category": "regional",
-        "reference": "",
-        "source_url": "",
+        "reference": "Holmes, R. M. and Peterson, B. J.: Eurasian River Historical Nutrient and Sediment Flux Data [dataset], doi:10.5065/D6F769PB, 2016.",
+        "source_url": "https://doi.org/10.5065/D6F769PB",
         "preferred_citation": "Holmes and Peterson (2016)",
     },
     {
         "aliases": ["EUSEDcollab", "EUSEDcollab.v1", "EUSED"],
-        "source_long_name": "European Sediments Collaboration database",
+        "source_long_name": "EUSEDcollab",
         "source_category": "regional",
-        "reference": "",
-        "source_url": "",
+        "reference": "Matthews, F., Verstraeten, G., Borrelli, P., Vanmaercke, M., Poesen, J., Steegen, A., Degré, A., Rodríguez, B. C., Bielders, C., Franke, C., Alary, C., Zumr, D., Patault, E., Nadal-Romero, E., Smolska, E., Licciardello, F., Swerts, G., Thodsen, H., Casalí, J., Eslava, J., Richet, J.-B., Ouvry, J.-F., Farguell, J., Święchowicz, J., Nunes, J. P., Pak, L. T., Liakos, L., Campo-Bescós, M. A., Żelazny, M., Delaporte, M., Pineux, N., Henin, N., Bezak, N., Lana-Renault, N., Tzoraki, O., Giménez, R., Li, T., Zuazo, V. H. D., Bagarello, V., Pampalone, V., Ferro, V., Úbeda, X., and Panagos, P.: EUSEDcollab: a network of data from European catchments to monitor net soil erosion by water, Scientific Data, 10, 515, 10.1038/s41597-023-02393-8, 2023.",
+        "source_url": "https://esdac.jrc.ec.europa.eu/content/european-sediment-collaboration-eusedcollab-database",
         "preferred_citation": "Matthews et al. (2023)",
     },
     {
         "aliases": ["Rhine", "Rhine Basin"],
-        "source_long_name": "Rhine suspended sediment / SPM-MPM dataset",
+        "source_long_name": "Rhine",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Slabon, A., Terweh, S., and Hoffmann, T. O.: Vertical and Lateral Variability of Suspended Sediment Transport in the Rhine River, Hydrological Processes, 39, e70070, https://doi.org/10.1002/hyp.70070, 2025.",
+        "source_url": "https://doi.org/10.1002/hyp.70070",
         "preferred_citation": "Slabon et al. (2025)",
     },
     {
         "aliases": ["Mekong Delta", "Mekong_Delta"],
-        "source_long_name": "Vietnamese Mekong Delta ADCP/sediment dataset",
+        "source_long_name": "Mekong Delta",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Darby, S. E., Hackney, C. R., Parsons, D. R., and Tri, P. D. V.: Water and suspended sediment discharges for the Mekong Delta, Vietnam (2005-2015), NERC Environmental Information Data Centre [dataset], https://doi.org/10.5285/ac5b28ca-e087-4aec-974a-5a9f84b06595, 2020.",
+        "source_url": "https://doi.org/10.5285/ac5b28ca-e087-4aec-974a-5a9f84b06595",
         "preferred_citation": "Darby et al. (2020)",
     },
     {
         "aliases": ["Myanmar Rivers", "Myanmar_Rivers", "Irrawaddy Salween"],
-        "source_long_name": "Irrawaddy and Salween river sediment dataset",
+        "source_long_name": "Myanmar Rivers",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Baronas, J. J., Tipper, E. T., Bickle, M. J., Stevenson, E. I., and Hilton, R. G.: Flow velocity, discharge, and suspended sediment compositions of the Irrawaddy and Salween Rivers, 2017-2019, NERC Environmental Information Data Centre [dataset], https://doi.org/10.5285/86f17d61-141f-4500-9aa5-26a82aef0b33, 2020.",
+        "source_url": "https://doi.org/10.5285/86f17d61-141f-4500-9aa5-26a82aef0b33",
         "preferred_citation": "Baronas et al. (2020)",
     },
     {
         "aliases": ["Yajiang / Yarlung Tsangpo", "Yajiang", "Yajiang_Yarlung_Tsangpo", "Yarlung_Tsangpo"],
-        "source_long_name": "Yajiang / Yarlung Tsangpo river basin dataset",
+        "source_long_name": "Yajiang / Yarlung Tsangpo",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Shi Xiaonan, Z. C.: Atlas of observation data on sediment transport water quality parameters of multi section runoff in the main and tributary rivers of the Yajiang River, National Tibetan Plateau Data Center [dataset], 10.11888/Terre.tpdc.302054, 2025.",
+        "source_url": "https://doi.org/10.11888/Terre.tpdc.302054",
         "preferred_citation": "Shi Xiaonan (2025)",
     },
     {
         "aliases": ["Chao Phraya River", "Chao_Phraya", "Chao Phraya"],
-        "source_long_name": "Chao Phraya River annual sediment flux dataset",
+        "source_long_name": "Chao Phraya River",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
-        "preferred_citation": "Wei Bingbing (2025)",
+        "reference": "Wei, B.: Measured and estimated discharge and suspended sediment flux of the Chao Phraya River, along with the Phetchaburi, Mae Klong, Tha Chin, and Bang Pakong Rivers during 1912-2020, PANGAEA [dataset], 10.1594/PANGAEA.981111, 2025.",
+        "source_url": "https://doi.org/10.1594/PANGAEA.981111",
+        "preferred_citation": "Wei (2025)",
     },
     {
         "aliases": ["Robotham", "Littlestock Brook"],
-        "source_long_name": "Littlestock Brook dataset",
+        "source_long_name": "Robotham",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Robotham, J., Old, G., Rameshwaran, P., Trill, E., and Bishop, J.: High-resolution time series of turbidity, suspended sediment concentration, total phosphorus concentration, and discharge in the Littlestock Brook, England, 2017-2021, 2022.",
+        "source_url": "https://doi.org/10.5285/9f80e349-0594-4ae1-bff3-b055638569f8",
         "preferred_citation": "Robotham et al. (2022)",
     },
     {
-        "aliases": ["NERC-Hampshire Avon", "NERC_Hampshire_Avon", "Hampshire Avon"],
-        "source_long_name": "NERC Hampshire Avon / River Avon dataset",
+        "aliases": ["NERC Avon", "NERC-Hampshire Avon", "NERC_Hampshire_Avon", "Hampshire Avon"],
+        "source_long_name": "NERC-Hampshire Avon",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Heppell, C. M. and Binley, A.: Hampshire Avon: Daily discharge, stage and water chemistry data from four tributaries (Sem, Nadder, West Avon, Ebble), NERC Environmental Information Data Centre [dataset], 2016.",
+        "source_url": "https://doi.org/10.5285/0dd10858-7b96-41f1-8db5-e7b4c4168af5",
         "preferred_citation": "Heppell and Binley (2016)",
     },
     {
         "aliases": ["Fukushima", "Fukushima_Niida", "Niida River"],
-        "source_long_name": "Fukushima Niida River dataset",
+        "source_long_name": "Fukushima/Niida River",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
-        "preferred_citation": "Bin et al. (2022)",
+        "reference": "Feng, B., Onda, Y., Wakiyama, Y., Taniguchi, K., Hashimoto, A., and Zhang, Y.: Dataset of water discharge and suspended sediment at Niida river basin downstream (Haramachi) during 2013 to 2018 and upstream (Notegami) during 2015 to 2018, Center for Research in Isotopes and Environmental Dynamics, University of Tsukuba [dataset], 10.34355/CRiED.U.Tsukuba.00147, 2022.",
+        "source_url": "https://doi.org/10.34355/CRiED.U.Tsukuba.00147",
+        "preferred_citation": "Feng et al. (2022)",
     },
     {
         "aliases": ["Shashi_Jianli", "Shashi-Jianli", "Shashi Jianli"],
         "source_long_name": "Shashi and Jianli Yangtze River stations",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Nones, M. and Guo, C.: Remote sensing as a support tool to map suspended sediment concentration over extended river reaches, Acta Geophysica, 73, 4655-4668, 10.1007/s11600-025-01638-x, 2025.",
+        "source_url": "https://doi.org/10.1007/s11600-025-01638-x",
         "preferred_citation": "Nones and Guo (2025)",
     },
     {
         "aliases": ["Huanghe", "Huanghe (Yellow River)", "Yellow River", "Huanghe_Yellow_River"],
-        "source_long_name": "Yellow River / Huanghe dataset",
+        "source_long_name": "Huanghe (Yellow River)",
         "source_category": "basin_specific",
-        "reference": "",
-        "source_url": "",
+        "reference": "Zhang Yaonan, Kang Jianfang, and Liu, c.: Data on Sediment Observation in the Yellow River Basin from 2015 to 2019, National Cryosphere Desert Data Center [dataset], 10.12072/ncdc.YRiver.db0054.2021, 2021.",
+        "source_url": "https://doi.org/10.12072/ncdc.YRiver.db0054.2021",
         "preferred_citation": "Zhang Yaonan et al. (2021)",
     },
     {
-        "aliases": ["Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth"],
-        "source_long_name": "Global river discharge and sediment flux compilation",
+        "aliases": ["Milliman", "Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth"],
+        "source_long_name": "Milliman & Farnsworth",
         "source_category": "global_climatology",
-        "reference": "",
-        "source_url": "",
-        "preferred_citation": "Milliman and Farnsworth (2013)",
+        "reference": "Milliman, J. D. and Farnsworth, K. L.: River Discharge to the Coastal Ocean: A Global Synthesis, Cambridge University Press, Cambridge, DOI: 10.1017/CBO9780511781247, 2011.",
+        "source_url": "https://doi.org/10.1017/CBO9780511781247",
+        "preferred_citation": "Milliman and Farnsworth (2011)",
     },
     {
         "aliases": ["High Mountain Asia", "HMA"],
-        "source_long_name": "High Mountain Asia sediment flux compilation",
+        "source_long_name": "High Mountain Asia (HMA)",
         "source_category": "regional_climatology",
-        "reference": "",
-        "source_url": "",
+        "reference": "Li, D., Lu, X., Overeem, I., Walling, D. E., Syvitski, J., Kettner, A. J., Bookhagen, B., Zhou, Y., and Zhang, T.: Exceptional increases in fluvial sediment fluxes in a warmer and wetter High Mountain Asia, Science, 374, 599-603, 10.1126/science.abi9649, 2021.",
+        "source_url": "https://doi.org/10.1126/science.abi9649",
         "preferred_citation": "Li et al. (2021)",
     },
     {
         "aliases": ["Ali & De Boer", "Ali_De_Boer", "Upper Indus"],
-        "source_long_name": "Upper Indus sediment yield compilation",
+        "source_long_name": "Ali & De Boer (Upper Indus)",
         "source_category": "regional_climatology",
-        "reference": "",
-        "source_url": "",
+        "reference": "Ali, K. F. and De Boer, D. H.: Spatial patterns and variation of suspended sediment yield in the upper Indus river basin, northern Pakistan, Journal of Hydrology, 334, 368-387, https://doi.org/10.1016/j.jhydrol.2006.10.013, 2007.",
+        "source_url": "https://doi.org/10.1016/j.jhydrol.2006.10.013",
         "preferred_citation": "Ali and De Boer (2007)",
     },
     {
         "aliases": ["Vanmaercke", "Vanmaercke et al.", "Vanmaercke_Africa"],
-        "source_long_name": "African sediment yield synthesis",
+        "source_long_name": "Vanmaercke",
         "source_category": "regional_climatology",
-        "reference": "",
-        "source_url": "",
+        "reference": "Vanmaercke, M., Poesen, J., Broeckx, J., and Nyssen, J.: Sediment yield in Africa, Earth-Science Reviews, 136, 350-368, https://doi.org/10.1016/j.earscirev.2014.06.004, 2014.",
+        "source_url": "https://doi.org/10.1016/j.earscirev.2014.06.004",
         "preferred_citation": "Vanmaercke et al. (2014)",
     },
     {
         "aliases": ["GSED"],
-        "source_long_name": "Global Suspended Sediment Dynamics",
+        "source_long_name": "GSED",
         "source_category": "satellite_derived",
-        "reference": "",
-        "source_url": "",
+        "reference": "Sun, X., Tian, L., Fang, H., Walling, D. E., Huang, L., Park, E., Li, D., Zheng, C., and Feng, L.: Changes in global fluvial sediment concentrations and fluxes between 1985 and 2020, Nature Sustainability, 8, 142-151, 10.1038/s41893-024-01476-7, 2025.",
+        "source_url": "https://figshare.com/s/dde3bffd8e12227e2b26",
         "preferred_citation": "Sun et al. (2025)",
     },
     {
         "aliases": ["Dethier", "Dethier et al."],
-        "source_long_name": "Satellite-derived virtual station sediment dataset",
+        "source_long_name": "Dethier",
         "source_category": "satellite_derived",
-        "reference": "",
-        "source_url": "",
-        "preferred_citation": "Dethier et al. (2022, 2023)",
+        "reference": "Dethier, E. N., Renshaw, C. E., and Magilligan, F. J.: Rapid changes to global river suspended sediment flux by humans, Science, 376, 1447-1452, 10.1126/science.abn7980, 2022.",
+        "source_url": "https://doi.org/10.1126/science.abn7980",
+        "preferred_citation": "Dethier et al. (2022)",
     },
     {
         "aliases": ["RiverSed", "RiverSed (USA)", "RiverSed_USA"],
-        "source_long_name": "RiverSed USA satellite-derived suspended sediment dataset",
+        "source_long_name": "RiverSed",
         "source_category": "satellite_derived",
-        "reference": "",
-        "source_url": "",
-        "preferred_citation": "Gardner et al. (2021/2023)",
+        "reference": "Gardner, J., Pavelsky, T., Topp, S., Yang, X., Ross, M. R., and Cohen, S.: Human activities change suspended sediment concentration along rivers, Environmental Research Letters, 18, 064032, 2023.",
+        "source_url": "https://doi.org/10.5281/zenodo.7938267",
+        "preferred_citation": "Gardner et al. (2023)",
     },
 ]
 
@@ -1445,6 +1720,18 @@ def _open_climatology_query_nc(path):
     return None
 
 
+def _global_attr_value(ds, name, default=None):
+    """Read a global attribute across netCDF4 and h5netcdf backends."""
+    try:
+        if hasattr(ds, "ncattrs"):               # netCDF4
+            return getattr(ds, name) if name in ds.ncattrs() else default
+        if hasattr(ds, "attrs"):                 # h5netcdf
+            return ds.attrs[name] if name in ds.attrs else default
+    except Exception:
+        pass
+    return default
+
+
 def build_climatology_observation_csv(args):
     if args.skip_climatology:
         print("[skip] climatology query CSV skipped by command-line option")
@@ -1474,28 +1761,23 @@ def build_climatology_observation_csv(args):
         "source_station_time_coverage_start",
         "source_station_time_coverage_end",
         "source_station_variables_provided",
-        "source_station_path",
+        "geographic_coverage",
     )
     source_fields = (
         "source_name",
-        "source_long_name",
-        "institution",
-        "reference",
-        "source_url",
     )
     record_fields = (
         "time",
-        "resolution",
         "Q",
         "SSC",
         "SSL",
         "Q_flag",
         "SSC_flag",
         "SSL_flag",
-        "source",
     )
 
     with _open_climatology_query_nc(input_nc) as ds:
+        resolution_code = _global_attr_value(ds, "resolution", 3)
         station_index_values = _nc_query_variable_values(ds, "station_index")
         station_source_index_values = _nc_query_variable_values(ds, "source_index")
         station_values = {name: _nc_query_variable_values(ds, name) for name in station_fields}
@@ -1528,29 +1810,20 @@ def build_climatology_observation_csv(args):
             if station_idx is not None
             else None
         )
-        record_source = _query_value_at(record_values.get("source", []), record_idx)
         source_name = _query_value_at(source_values.get("source_name", []), source_idx)
-        if not source_name and record_source:
-            source_name = record_source
 
         rows.append(
             {
-                "record_index": record_idx,
-                "station_index": "" if station_idx is None else station_idx,
                 "station_uid": _query_value_at(station_values.get("station_uid", []), station_idx),
                 "lat": _query_value_at(station_values.get("lat", []), station_idx),
                 "lon": _query_value_at(station_values.get("lon", []), station_idx),
                 "station_name": _query_value_at(station_values.get("station_name", []), station_idx),
                 "river_name": _query_value_at(station_values.get("river_name", []), station_idx),
                 "source_station_id": _query_value_at(station_values.get("source_station_id", []), station_idx),
-                "source_name": source_name,
-                "source_long_name": _query_value_at(source_values.get("source_long_name", []), source_idx),
-                "institution": _query_value_at(source_values.get("institution", []), source_idx),
-                "reference": _query_value_at(source_values.get("reference", []), source_idx),
-                "source_url": _query_value_at(source_values.get("source_url", []), source_idx),
+                "source_name": _display_source_name(source_name),
                 "time": _query_value_at(decoded_time_values, record_idx),
                 "time_raw": _query_value_at(time_values, record_idx),
-                "resolution": _query_value_at(record_values.get("resolution", []), record_idx),
+                "resolution": resolution_code,
                 "Q": _query_value_at(record_values.get("Q", []), record_idx),
                 "SSC": _query_value_at(record_values.get("SSC", []), record_idx),
                 "SSL": _query_value_at(record_values.get("SSL", []), record_idx),
@@ -1569,7 +1842,7 @@ def build_climatology_observation_csv(args):
                     station_values.get("source_station_variables_provided", []),
                     station_idx,
                 ),
-                "source_station_path": _query_value_at(station_values.get("source_station_path", []), station_idx),
+                "geographic_coverage": _query_value_at(station_values.get("geographic_coverage", []), station_idx),
             }
         )
 
@@ -1595,7 +1868,6 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
         return []
 
     with opener(path, **open_kwargs) as ds:
-        source_values = _nc_variable_values(ds, "source")
         source_names = _nc_variable_values(ds, "source_name")
         long_names = _nc_variable_values(ds, "source_long_name")
         references = _nc_variable_values(ds, "reference")
@@ -1606,6 +1878,27 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
         time_starts = _nc_variable_values(ds, "source_station_time_coverage_start")
         time_ends = _nc_variable_values(ds, "source_station_time_coverage_end")
         variables = _nc_variable_values(ds, "source_station_variables_provided")
+
+        # Derive per-record source from the station_index -> source_index -> source_name chain
+        station_index_values = _nc_variable_values(ds, "station_index")
+        source_index_values = _nc_variable_values(ds, "source_index")
+        source_values = []
+        for si in station_index_values:
+            try:
+                st = int(float(si))
+            except (ValueError, TypeError):
+                source_values.append("")
+                continue
+            if 0 <= st < len(source_index_values):
+                try:
+                    src_idx = int(float(source_index_values[st]))
+                except (ValueError, TypeError):
+                    source_values.append("")
+                    continue
+                if 0 <= src_idx < len(source_names):
+                    source_values.append(_clean_ms(source_names[src_idx]))
+                    continue
+            source_values.append("")
 
     source_meta = {}
     for idx, source_name in enumerate(source_names):
@@ -1632,8 +1925,8 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
         ) or "Q; SSC; SSL"
         country_text = _join_unique_ms((countries[idx] for idx in indices if idx < len(countries)), sep="|")
         geo_text = _join_unique_ms((geos[idx] for idx in indices if idx < len(geos)), sep="|")
-        reference = _first_nonempty_ms(meta.get("reference", ""), _source_registry_value(source, "reference"))
-        source_url = _first_nonempty_ms(meta.get("source_url", ""), _source_registry_value(source, "source_url"))
+        reference = _first_nonempty_ms(_source_registry_value(source, "reference"), meta.get("reference", ""))
+        source_url = _first_nonempty_ms(_source_registry_value(source, "source_url"), meta.get("source_url", ""))
         station_count = len({_clean_ms(station_ids[idx]) for idx in indices if idx < len(station_ids) and _clean_ms(station_ids[idx])})
         if station_count == 0:
             station_count = len(indices)
@@ -1647,8 +1940,6 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
                 "Variables Provided": vars_text,
                 "Geographic coverage": geo_text or country_text,
                 "Citation": _catalog_citation_for_source(source, reference),
-                "reference": reference,
-                "source_url": source_url,
                 "access_date": _access_date_for_source(access_dates, display_name, source),
                 "n_source_stations": station_count,
                 "n_clusters": "",
@@ -1704,8 +1995,6 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
                 "Variables Provided": "Q; SSC; SSL",
                 "Geographic coverage": geo_text or country_text,
                 "Citation": _catalog_citation_for_source(source),
-                "reference": _source_registry_value(source, "reference"),
-                "source_url": _source_registry_value(source, "source_url"),
                 "access_date": _access_date_for_source(access_dates, display_name, source),
                 "n_source_stations": len({_clean_ms(v) for v in group["satellite_station_uid"] if _clean_ms(v)}),
                 "n_clusters": len({_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}),
@@ -1892,15 +2181,14 @@ def build_manuscript_style_source_dataset_catalog(
         if col not in enriched.columns:
             enriched[col] = ""
 
-    # Fill registry fields
+    # Registry fields come from the manuscript reference table and are authoritative.
     for idx, row in enriched.iterrows():
         entry = _lookup_registry(row.get("source_name", ""))
         if entry:
             for field in ["source_long_name", "source_category", "reference",
                           "source_url", "preferred_citation"]:
-                current = _clean_ms(row.get(field, ""))
                 registered = _clean_ms(entry.get(field, ""))
-                if not current and registered:
+                if registered:
                     enriched.at[idx, field] = registered
             # Merge geographic_coverage from entry if present
             current_geo = _clean_ms(row.get("geographic_coverage", ""))
@@ -2106,7 +2394,7 @@ def _fill_missing_satellite_country_from_boundary(df, warnings, boundary_options
         payloads,
         work.get("lat", pd.Series([""] * len(work), index=work.index)).tolist(),
         work.get("lon", pd.Series([""] * len(work), index=work.index)).tolist(),
-        subject="minimal satellite catalog stations",
+        subject="satellite catalog stations",
         logger=print,
         **options,
     )
@@ -2221,7 +2509,7 @@ def build_minimal_catalogs(args, warnings):
     )
     if args.dry_run:
         for name, _, _ in catalog_jobs:
-            print("[dry-run] would build minimal catalog CSV: {}".format(args.minimal_dir / name))
+            print("[dry-run] would build catalog CSV: {}".format(args.minimal_dir / name))
         return
 
     for name, func, needs_args in catalog_jobs:
@@ -2247,17 +2535,17 @@ def write_inventory(
     all_files = list(source_files) + [name for name in skipped_files if name not in source_files]
     for name in all_files:
         source_path = release_dir / name
-        if package_name == "sed_reference_release_minimal":
+        if package_name == "sed_reference_release":
             if name in skipped_files:
                 row_status = "skipped"
             elif name in MINIMAL_MATRIX_FILES:
-                row_status = "minimal_nc"
+                row_status = "matrix_nc"
             elif name == CLIMATOLOGY_QUERY_TABLE:
                 row_status = "generated_query_table"
             elif name in INTEGRATED_EXTENSION_FILES:
                 row_status = "integrated_extension"
             elif name in MINIMAL_CATALOG_COLUMNS:
-                row_status = "minimal_catalog"
+                row_status = "catalog"
             else:
                 row_status = status if source_path.is_file() else "missing_source"
         else:
@@ -2308,9 +2596,9 @@ def _readme_provenance_block(provenance, package_role):
 
 def write_readme(package_dir, package_name, release_dir, provenance, compression_level=None, dry_run=False):
     readme_path = package_dir / "README.md"
-    if package_name == "sed_reference_release_minimal":
-        package_role = "minimal station-reference package with integrated climatology and satellite extensions."
-        text = """# sed_reference_release_minimal
+    if package_name == "sed_reference_release":
+        package_role = "station-reference package with integrated climatology and satellite extensions."
+        text = """# sed_reference_release
 
 Generated by `s8_publish_minimal_release_package.py`.
 
@@ -2380,9 +2668,22 @@ def copy_integrated_extension_files(args):
         if src.is_file():
             if name == "satellite_catalog.csv":
                 if args.dry_run:
-                    print("[dry-run] would build minimal satellite catalog CSV: {}".format(dst))
+                    print("[dry-run] would build satellite catalog CSV: {}".format(dst))
                 else:
                     slim_satellite_catalog(src, dst, BUILD_WARNINGS)
+            elif name == "sed_reference_satellite.nc":
+                if args.dry_run:
+                    print("[dry-run] would build satellite NetCDF: {}".format(dst))
+                else:
+                    ok = copy_minimal_satellite_nc(
+                        src,
+                        dst,
+                        SATELLITE_KEEP_VARS,
+                        SATELLITE_REQUIRED_VARS,
+                        compression_level=args.compression_level,
+                    )
+                    if not ok:
+                        BUILD_FAILURES.append("satellite NetCDF failed: {}".format(name))
             else:
                 copy_release_file(src, dst, dry_run=args.dry_run)
         else:
@@ -2435,7 +2736,7 @@ def _matrix_global_attr_names(path):
 
 
 def validate_minimal_package(args):
-    report_path = args.minimal_dir / "minimal_release_validation_report.csv"
+    report_path = args.minimal_dir / "release_validation_report.csv"
     if args.dry_run:
         print("[dry-run] would write validation report: {}".format(report_path))
         return
@@ -2457,7 +2758,7 @@ def validate_minimal_package(args):
         add(
             "required_file:{}".format(name),
             "pass" if path.is_file() else "fail",
-            "required minimal file present" if path.is_file() else "required minimal file missing",
+            "required file present" if path.is_file() else "required file missing",
             str(path),
         )
 
@@ -2498,6 +2799,106 @@ def validate_minimal_package(args):
             str(climatology_query_path),
         )
 
+    if not args.skip_satellite:
+        satellite_nc_path = args.minimal_dir / "sed_reference_satellite.nc"
+        if not satellite_nc_path.is_file():
+            add(
+                "satellite_variables:sed_reference_satellite.nc",
+                "fail",
+                "satellite NetCDF missing; cannot inspect variables",
+                str(satellite_nc_path),
+            )
+        else:
+            try:
+                satellite_variables = _matrix_variables(satellite_nc_path)
+            except Exception as exc:
+                add(
+                    "satellite_variables:sed_reference_satellite.nc",
+                    "fail",
+                    "cannot inspect satellite variables",
+                    str(exc),
+                )
+                satellite_variables = []
+            if satellite_variables:
+                missing_satellite_vars = [
+                    name for name in SATELLITE_REQUIRED_VARS if name not in satellite_variables
+                ]
+                add(
+                    "satellite_required_vars:sed_reference_satellite.nc",
+                    "fail" if missing_satellite_vars else "pass",
+                    "required satellite variables present"
+                    if not missing_satellite_vars
+                    else "required satellite variables missing",
+                    ";".join(missing_satellite_vars),
+                )
+                forbidden_satellite_vars = [
+                    name for name in SATELLITE_FORBIDDEN_VARS if name in satellite_variables
+                ]
+                add(
+                    "satellite_forbidden_vars:sed_reference_satellite.nc",
+                    "fail" if forbidden_satellite_vars else "pass",
+                    "forbidden satellite variables absent"
+                    if not forbidden_satellite_vars
+                    else "forbidden satellite variables present",
+                    ";".join(forbidden_satellite_vars),
+                )
+            try:
+                satellite_attr_names = _matrix_global_attr_names(satellite_nc_path)
+            except Exception as exc:
+                add(
+                    "satellite_global_attrs:sed_reference_satellite.nc",
+                    "fail",
+                    "cannot inspect satellite global attributes",
+                    str(exc),
+                )
+            else:
+                satellite_attr_name_set = set(satellite_attr_names)
+                missing_satellite_attrs = [
+                    name for name in SATELLITE_GLOBAL_ATTRS_TO_KEEP if name not in satellite_attr_name_set
+                ]
+                add(
+                    "satellite_global_attrs:sed_reference_satellite.nc",
+                    "fail" if missing_satellite_attrs else "pass",
+                    "required satellite global attributes present"
+                    if not missing_satellite_attrs
+                    else "required satellite global attributes missing",
+                    ";".join(missing_satellite_attrs),
+                )
+
+        satellite_catalog_path = args.minimal_dir / "satellite_catalog.csv"
+        if not satellite_catalog_path.is_file():
+            add(
+                "satellite_catalog_columns:satellite_catalog.csv",
+                "fail",
+                "satellite catalog missing; cannot inspect columns",
+                str(satellite_catalog_path),
+            )
+        else:
+            try:
+                satellite_catalog_columns = list(
+                    pd.read_csv(satellite_catalog_path, nrows=0, keep_default_na=False).columns
+                )
+            except Exception as exc:
+                add(
+                    "satellite_catalog_columns:satellite_catalog.csv",
+                    "fail",
+                    "cannot inspect satellite catalog columns",
+                    str(exc),
+                )
+            else:
+                expected_columns = list(MINIMAL_SATELLITE_CATALOG_COLUMNS)
+                add(
+                    "satellite_catalog_columns:satellite_catalog.csv",
+                    "pass" if satellite_catalog_columns == expected_columns else "fail",
+                    "satellite catalog columns follow schema order"
+                    if satellite_catalog_columns == expected_columns
+                    else "satellite catalog columns differ from schema",
+                    "expected={}; actual={}".format(
+                        "|".join(expected_columns),
+                        "|".join(satellite_catalog_columns),
+                    ),
+                )
+
     for name in MINIMAL_FORBIDDEN_FILES:
         path = args.minimal_dir / name
         add(
@@ -2511,7 +2912,7 @@ def validate_minimal_package(args):
     add(
         "forbidden_file_type:gpkg",
         "fail" if gpkg_files else "pass",
-        "no GPKG files in minimal package" if not gpkg_files else "GPKG files found",
+        "no GPKG files in package" if not gpkg_files else "GPKG files found",
         ";".join(gpkg_files),
     )
 
@@ -2523,7 +2924,7 @@ def validate_minimal_package(args):
     add(
         "forbidden_file_type:overlap_candidates",
         "fail" if overlap_candidate_files else "pass",
-        "no overlap candidate files in minimal package"
+        "no overlap candidate files in package"
         if not overlap_candidate_files
         else "overlap candidate files found",
         ";".join(overlap_candidate_files),
@@ -2533,7 +2934,7 @@ def validate_minimal_package(args):
     add(
         "forbidden_file_type:parquet",
         "fail" if parquet_files else "pass",
-        "no parquet files in minimal package" if not parquet_files else "parquet files found",
+        "no parquet files in package" if not parquet_files else "parquet files found",
         ";".join(parquet_files),
     )
 
@@ -2606,22 +3007,22 @@ def validate_minimal_package(args):
     status_counts = df["status"].value_counts().to_dict()
     if status_counts.get("fail", 0):
         BUILD_FAILURES.append(
-            "minimal validation failed: {} failing check(s)".format(status_counts.get("fail", 0))
+            "validation failed: {} failing check(s)".format(status_counts.get("fail", 0))
         )
     if status_counts.get("warning", 0):
         BUILD_WARNINGS.append(
-            "minimal validation warning: {} warning check(s)".format(status_counts.get("warning", 0))
+            "validation warning: {} warning check(s)".format(status_counts.get("warning", 0))
         )
 
 
 def build_minimal_package(args):
-    package_name = "sed_reference_release_minimal"
+    package_name = "sed_reference_release"
     print("[build] {} package".format(package_name))
     prepare_output_dir(args.minimal_dir, force=args.force, dry_run=args.dry_run)
 
     if args.dry_run:
         for name in MINIMAL_MATRIX_FILES:
-            print("[dry-run] would build minimal matrix NetCDF: {}".format(args.minimal_dir / name))
+            print("[dry-run] would build matrix NetCDF: {}".format(args.minimal_dir / name))
         print("[dry-run] matrix workers: {}".format(min(args.matrix_workers, len(MINIMAL_MATRIX_FILES))))
     else:
         worker_count = min(args.matrix_workers, len(MINIMAL_MATRIX_FILES))
@@ -2643,7 +3044,7 @@ def build_minimal_package(args):
             for payload in payloads:
                 name, ok = _copy_minimal_matrix_worker(payload)
                 if not ok:
-                    BUILD_FAILURES.append("minimal matrix failed: {}".format(name))
+                    BUILD_FAILURES.append("matrix failed: {}".format(name))
         else:
             with ProcessPoolExecutor(max_workers=worker_count) as executor:
                 future_to_name = {
@@ -2656,11 +3057,11 @@ def build_minimal_package(args):
                         _, ok = future.result()
                     except Exception as exc:
                         ok = False
-                        print("[fail] minimal matrix {} raised: {}".format(name, exc))
+                        print("[fail] matrix {} raised: {}".format(name, exc))
                     if ok:
-                        print("[done] minimal matrix: {}".format(name))
+                        print("[done] matrix: {}".format(name))
                     else:
-                        BUILD_FAILURES.append("minimal matrix failed: {}".format(name))
+                        BUILD_FAILURES.append("matrix failed: {}".format(name))
 
     copy_integrated_extension_files(args)
     build_climatology_observation_csv(args)
@@ -2693,10 +3094,10 @@ def main(argv=None):
     args = parse_args(argv)
 
     print("[config] full release dir:       {}".format(args.release_dir))
-    print("[config] minimal output dir:     {}".format(args.minimal_dir))
-    print("[config] climatology output dir: {} (deprecated; integrated into minimal)".format(args.climatology_dir))
-    print("[config] satellite output dir:   {} (deprecated; integrated into minimal)".format(args.satellite_dir))
-    print("[config] minimal schema:         {}".format(args.schema))
+    print("[config] output dir:     {}".format(args.minimal_dir))
+    print("[config] climatology output dir: {} (deprecated; integrated)".format(args.climatology_dir))
+    print("[config] satellite output dir:   {} (deprecated; integrated)".format(args.satellite_dir))
+    print("[config] schema:         {}".format(args.schema))
     print("[config] compression level:      {}".format(args.compression_level))
     print("[config] matrix workers:         {}".format(args.matrix_workers))
     print("[config] dry run:                {}".format(args.dry_run))
@@ -2718,12 +3119,12 @@ def main(argv=None):
     if args.skip_climatology:
         print("[skip] climatology extension")
     else:
-        print("[done] climatology extension integrated into minimal package")
+        print("[done] climatology extension integrated into package")
 
     if args.skip_satellite:
         print("[skip] satellite extension")
     else:
-        print("[done] satellite extension integrated into minimal package")
+        print("[done] satellite extension integrated into package")
 
     if BUILD_WARNINGS:
         print("[warn] {} build warning(s):".format(len(BUILD_WARNINGS)))
