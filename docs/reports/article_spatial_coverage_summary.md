@@ -2,115 +2,111 @@
 
 ## Manuscript-ready summary
 
-The S8 release contains 3,528 final main-product clusters. Resolution-specific coverage is 1,607 daily clusters, 1,875 monthly clusters, and 58 annual clusters. Basin assignment resolved 2,849 clusters (80.8% of all clusters), while 665 clusters (18.8%) remain unresolved and 14 clusters (0.4%) have unknown or other basin status. The published basin sidecar contains polygons for 2,447 clusters (69.4% of all clusters).
+The S8 release contains 3,762 final main-product clusters. Resolution-specific coverage is 1,596 daily clusters, 2,117 monthly clusters, and 58 annual clusters. Basin assignment resolved 2,969 clusters (78.92%), while 793 clusters (21.08%) remain unresolved and 0 clusters (0%) have unknown or other basin status. The published basin sidecar contains polygons for 2,978 clusters (79.16%).
 
-The main-product coordinates span -10.6 to 80.6 degrees latitude and -159.5 to 158.7 degrees longitude. Valid upstream basin areas are available for 2,849 clusters; the median area is 2191.8 km2, with an interquartile range of 443.7-15374.8 km2 and a maximum of 5200432.0 km2.
+The main-product coordinates span -10.61 to 80.60 degrees latitude and -159.47 to 158.72 degrees longitude. Valid upstream basin areas are available for 2,969 clusters; the median area is 1,641.78 km2, with an interquartile range of 347.44-9,621.79 km2 and a maximum of 2,959,787.75 km2.
 
-Main source contributions by cluster count: GFQA_v2: 1,692 clusters, 56,297 records; USGS: 873 clusters, 1,651,590 records; HYDAT: 480 clusters, 661,138 records; EUSEDcollab: 216 clusters, 63,208 records; GloRiSe: 128 clusters, 154 records
+Main source contributions by cluster count: GFQA_v2: 1,901 clusters, 56,457 records; USGS: 887 clusters, 1,657,251 records; HYDAT: 505 clusters, 669,567 records; EUSEDcollab: 244 clusters, 66,637 records; GloRiSe: 77 clusters, 103 records
 
-The satellite-validation product contains 47,785 station rows linked to 47,785 clusters, with coordinates spanning -50.2 to 75.6 degrees latitude and -163.8 to 175.8 degrees longitude.
+The satellite-validation product contains 38,550 station-resolution rows linked to 38,550 clusters.
 
 ## Key Metrics
 
-- Final clusters: 3,528
-- Station catalog rows: 3,540
-- Main-product record count: 2,847,547
-- Basin-resolved clusters: 2,849 (80.8%)
-- Published basin polygons: 2,447 (69.4%)
-- Unknown country clusters: 128 (3.6%)
+- Final clusters: 3,762
+- Station catalog rows: 3,771
+- Main-product record count: 2,873,420
+- Basin-resolved clusters: 2,969 (78.92%)
+- Published basin polygons: 2,978 (79.16%)
+- Unknown country clusters: 77
 
 ## Resolution Coverage
 
-| Resolution | Clusters | Records | Record share | Resolved | Polygons | Median area km2 | Latitude | Longitude |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| daily | 1,607 | 2,724,382 | 95.67% | 1,214 (59.6%) | 957 (59.6%) | 2265.7 | -10.6 to 80.6 | -159.5 to 144.8 |
-| monthly | 1,875 | 122,546 | 4.30% | 1,600 (77.4%) | 1,451 (77.4%) | 2120.9 | 14.5 to 74.5 | -157.8 to 158.7 |
-| annual | 58 | 619 | 0.02% | 47 (81.0%) | 47 (81.0%) | 12920.1 | 12.9 to 40.3 | -117.0 to 118.3 |
+| Resolution | Station rows | Clusters | Records | Record share | Countries |
+|---|---|---|---|---|---|
+| annual | 58 | 58 | 619 | 0.02% | 3 |
+| daily | 1,596 | 1,596 | 2,746,665 | 95.59% | 15 |
+| monthly | 2,117 | 2,117 | 126,136 | 4.39% | 13 |
 
-Resolution-specific records are highly uneven, so spatial coverage should be interpreted together with temporal record volume. Annual coverage is spatially narrow but can still contain long individual records.
+Resolution-specific records are uneven, so spatial coverage should be interpreted together with temporal record volume.
 
 ## Upstream Basin Area
 
 | Area bin | Clusters | Share of valid-area clusters |
-| --- | --- | --- |
-| <10 km2 | 0 | 0.0% |
-| 10-100 km2 | 240 | 8.4% |
-| 100-1,000 km2 | 810 | 28.4% |
-| 1,000-10,000 km2 | 946 | 33.2% |
-| 10,000-100,000 km2 | 651 | 22.9% |
-| >100,000 km2 | 202 | 7.1% |
-
-The basin-area distribution is right-skewed: most resolved clusters fall below 10,000 km2, while a smaller set of very large basins controls the upper tail.
+|---|---|---|
+| <10 km2 | 0 | 0% |
+| 10-100 km2 | 289 | 9.73% |
+| 100-1,000 km2 | 926 | 31.19% |
+| 1,000-10,000 km2 | 1,032 | 34.76% |
+| 10,000-100,000 km2 | 540 | 18.19% |
+| >100,000 km2 | 182 | 6.13% |
 
 ## Geographic Hotspots
 
 ### Regions by Cluster Count
 
-| Region | Clusters | Resolved | Polygons |
-| --- | --- | --- | --- |
-| North America | 3,036 | 82.2% | 70.5% |
-| Europe | 228 | 69.3% | 64.9% |
-| Unknown | 128 | 57.0% | 57.0% |
-| Asia, East Asia | 51 | 100.0% | 54.9% |
-| Europe, Central Europe | 32 | 100.0% | 100.0% |
-| Asia, Southeast Asia | 16 | 87.5% | 37.5% |
-| Europe, Eastern Europe | 14 | 85.7% | 85.7% |
-| South America | 11 | 45.5% | 45.5% |
-| Europe, Western Europe | 7 | 57.1% | 14.3% |
-| Europe, Eastern Europe\|North America | 3 | 100.0% | 100.0% |
+| continent region | cluster count | record count | country count |
+|---|---|---|---|
+| North America | 3,291 | 2,383,275 | 4 |
+| Europe | 314 | 463,173 | 13 |
+| Unknown | 77 | 103 | 1 |
+| Asia | 68 | 15,043 | 5 |
+| South America | 11 | 11,398 | 4 |
+| Africa | 1 | 428 | 1 |
 
 ### Countries by Cluster Count
 
-| Country | Clusters | Resolved | Polygons |
-| --- | --- | --- | --- |
-| Mexico | 1,684 | 87.4% | 78.8% |
-| United States | 871 | 72.6% | 56.6% |
-| Canada | 478 | 81.6% | 66.3% |
-| Denmark | 188 | 66.0% | 66.0% |
-| Unknown | 128 | 57.0% | 57.0% |
-| China | 49 | 100.0% | 53.1% |
-| Germany | 32 | 100.0% | 100.0% |
-| Russia | 14 | 85.7% | 85.7% |
-| Germany | 12 | 83.3% | 0.0% |
-| Brazil | 7 | 42.9% | 42.9% |
-| Spain | 7 | 85.7% | 85.7% |
-| Thailand | 7 | 85.7% | 85.7% |
-| United Kingdom | 7 | 57.1% | 14.3% |
-| Belgium | 6 | 50.0% | 50.0% |
-| Myanmar | 6 | 83.3% | 0.0% |
+| country | iso a3 | continent region | cluster count | record count |
+|---|---|---|---|---|
+| Mexico | MEX | North America | 1,900 | 56,453 |
+| United States | USA | North America | 886 | 1,655,754 |
+| Canada | CAN | North America | 503 | 664,492 |
+| Denmark | DNK | Europe | 211 | 15,561 |
+| Unknown |  | Unknown | 77 | 103 |
+| China | CHN | Asia | 49 | 297 |
+| Germany | DEU | Europe | 46 | 389,276 |
+| Russia | RUS | Europe | 17 | 3,204 |
+| Spain | ESP | Europe | 8 | 26,881 |
+| Brazil | BRA | South America | 7 | 5,169 |
+| United Kingdom | GBR | Europe | 7 | 4,056 |
+| Thailand | THA | Asia | 7 | 348 |
+| Belgium | BEL | Europe | 6 | 237 |
+| Myanmar | MMR | Asia | 6 | 6 |
+| Greece | GRC | Europe | 5 | 3,040 |
+
+_Showing first 15 of 28 rows._
 
 ### Region-Resolution Record Hotspots
 
-| Continent | Region | Resolution | Clusters | Source stations | Records |
-| --- | --- | --- | --- | --- | --- |
-| North America | North America | daily | 1,393 | 1,428 | 2,312,780 |
-| Europe, Central Europe | Europe, Central Europe | daily | 32 | 34 | 380,719 |
-| Europe | Europe | monthly | 216 | 226 | 63,208 |
-| North America | North America | monthly | 1,628 | 1,989 | 56,005 |
-| South America | South America | daily | 11 | 11 | 11,398 |
-| Asia, Southeast Asia | Asia, Southeast Asia | daily | 9 | 9 | 8,772 |
-| Europe, Western Europe | Europe, Western Europe | daily | 7 | 7 | 4,056 |
-| Asia, East Asia | Asia, East Asia | daily | 27 | 27 | 3,246 |
-| Europe, Eastern Europe | Europe, Eastern Europe | monthly | 14 | 14 | 2,574 |
-| North America\|Asia, Southeast Asia | North America\|Asia, Southeast Asia | daily | 1 | 1 | 2,557 |
-| Europe, Eastern Europe\|North America | Europe, Eastern Europe\|North America | monthly | 3 | 7 | 719 |
-| Africa | Africa | daily | 1 | 1 | 428 |
-| Asia, Southeast Asia | Asia, Southeast Asia | annual | 7 | 7 | 348 |
-| Europe | Europe | daily | 12 | 12 | 312 |
-| North America | North America | annual | 27 | 27 | 151 |
+| continent region | resolution | cluster count | record count |
+|---|---|---|---|
+| North America | daily | 1,431 | 2,326,869 |
+| Europe, Central Europe | daily | 34 | 388,964 |
+| Europe | monthly | 244 | 66,637 |
+| North America | monthly | 1,842 | 56,255 |
+| South America | daily | 11 | 11,398 |
+| Asia, Southeast Asia | daily | 10 | 11,329 |
+| Europe, Western Europe | daily | 7 | 4,056 |
+| Asia, East Asia | daily | 27 | 3,246 |
+| Europe, Eastern Europe | monthly | 17 | 3,204 |
+| Africa | daily | 1 | 428 |
+| Asia, Southeast Asia | annual | 7 | 348 |
+| Europe | daily | 12 | 312 |
+| North America | annual | 27 | 151 |
+| Asia, East Asia | annual | 24 | 120 |
+|  | daily | 63 | 63 |
+
+_Showing first 15 of 16 rows._
 
 ## Source Spatial Contribution
 
-### Top Sources by Clusters
-
-| Source | Clusters | Source stations | Records | Resolutions |
-| --- | --- | --- | --- | --- |
-| GFQA_v2 | 1,692 | 2,062 | 56,297 | annual\|daily\|monthly |
-| USGS | 873 | 885 | 1,651,590 | daily |
-| HYDAT | 480 | 501 | 661,138 | daily |
-| EUSEDcollab | 216 | 226 | 63,208 | monthly |
-| GloRiSe | 128 | 128 | 154 | daily\|monthly |
-| Bayern | 32 | 34 | 380,719 | daily |
+| source name | cluster count | source station count | record count | available resolutions |
+|---|---|---|---|---|
+| GFQA_v2 | 1,901 | 2,050 | 56,457 | annual\|daily\|monthly |
+| USGS | 887 | 887 | 1,657,251 | daily |
+| HYDAT | 505 | 505 | 669,567 | daily |
+| EUSEDcollab | 244 | 244 | 66,637 | monthly |
+| GloRiSe | 77 | 77 | 103 | daily\|monthly |
+| Bayern | 34 | 34 | 388,964 | daily |
 | Huanghe | 24 | 24 | 120 | annual |
 | Yajiang | 23 | 23 | 23 | daily |
 | Eurasian_River | 17 | 17 | 3,204 | monthly |
@@ -118,46 +114,37 @@ The basin-area distribution is right-skewed: most resolved clusters fall below 1
 | Rhine | 12 | 12 | 312 | daily |
 | Chao_Phraya_River | 7 | 7 | 348 | annual |
 
-### Top Sources by Records
+_Showing first 12 of 18 rows._
 
-| Source | Clusters | Source stations | Records | Resolutions |
-| --- | --- | --- | --- | --- |
-| USGS | 873 | 885 | 1,651,590 | daily |
-| HYDAT | 480 | 501 | 661,138 | daily |
-| Bayern | 32 | 34 | 380,719 | daily |
-| EUSEDcollab | 216 | 226 | 63,208 | monthly |
-| GFQA_v2 | 1,692 | 2,062 | 56,297 | annual\|daily\|monthly |
-| HYBAM | 12 | 12 | 11,826 | daily |
-| Mekong_Delta | 4 | 4 | 11,323 | daily |
-| Robotham | 3 | 3 | 3,432 | daily |
-| Eurasian_River | 17 | 17 | 3,204 | monthly |
-| Fukushima | 2 | 2 | 3,069 | daily |
-| NERC | 4 | 4 | 624 | daily |
-| Chao_Phraya_River | 7 | 7 | 348 | annual |
-
-The cluster-based and record-based rankings answer different questions: the former describes spatial footprint, while the latter describes the amount of time-series information contributed by each source.
+The cluster-based and record-based rankings answer different questions: the former describes spatial footprint, while the latter describes record volume.
 
 ## Satellite Validation Spatial Coverage
 
-| Source | Station rows | Linked clusters | Records | Latitude | Longitude | Time span |
-| --- | --- | --- | --- | --- | --- | --- |
-| all | 47,785 | 47,785 | 16,506,461 | -50.2 to 75.6 | -163.8 to 175.8 | 1984-01-15 to 2020-12-15 |
-| RiverSed | 42,177 | 42,177 | 14,228,483 | 25.1 to 49.4 | -124.4 to -67.1 | 1984-03-22 to 2019-08-23 |
-| GSED | 5,237 | 5,237 | 2,144,599 | -50.2 to 71.8 | -162.9 to 175.8 | 1985-01-01 to 2020-12-01 |
-| Dethier | 371 | 371 | 133,379 | -50.0 to 75.6 | -163.8 to 174.2 | 1984-01-15 to 2020-12-15 |
+| source | resolution | satellite station count | linked cluster count | record count |
+|---|---|---|---|---|
+| RiverSed | daily | 32,941 | 32,941 | 14,199,854 |
+| GSED | monthly | 5,237 | 5,237 | 2,144,599 |
+| Dethier | monthly | 372 | 372 | 133,823 |
 
 ## Basin Polygon Layers
 
-| Layer | Resolution | Polygon features | Polygon clusters |
-| --- | --- | --- | --- |
-| basin_daily | daily | 957 | 957 |
-| basin_monthly | monthly | 1,451 | 1,451 |
-| basin_annual | annual | 47 | 47 |
+| file name | layer name | feature count |
+|---|---|---|
+| sed_reference_cluster_points.gpkg | cluster_summary | 3,762 |
+| sed_reference_source_stations.gpkg | source_monthly | 2,257 |
+| sed_reference_cluster_points.gpkg | cluster_monthly | 2,117 |
+| sed_reference_cluster_basins.gpkg | basin_monthly | 1,785 |
+| sed_reference_source_stations.gpkg | source_daily | 1,598 |
+| sed_reference_cluster_points.gpkg | cluster_daily | 1,596 |
+| sed_reference_cluster_basins.gpkg | basin_daily | 1,146 |
+| sed_reference_cluster_points.gpkg | cluster_annual | 58 |
+| sed_reference_source_stations.gpkg | source_annual | 58 |
+| sed_reference_cluster_basins.gpkg | basin_annual | 47 |
 
 ## Diagnostics and Limitations
 
-- Unknown country/region rows written for review: 128
-- Regional summaries depend on S8 release catalog geography; unknown geography should be reviewed before strong continent/country claims.
+- Unknown country/region rows written for review: 77
+- Regional summaries depend on release catalog geography; unknown geography should be reviewed before strong continent/country claims.
 - Cluster counts by source are not additive across sources because multiple datasets can contribute to the same merged cluster.
 
 ## Output Tables
@@ -175,19 +162,11 @@ The cluster-based and record-based rankings answer different questions: the form
 
 ## Figure Suggestions
 
-- Main text: `fig_global_cluster_distribution`, `fig_spatial_coverage_by_resolution`, and `fig_upstream_area_distribution`.
-- Supplement: `fig_spatial_coverage_by_region_country`, `fig_source_spatial_contribution`, and satellite-validation spatial figures.
+- Main text: `fig_spatial_coverage_by_resolution`, `fig_top_countries_by_clusters`, and `fig_upstream_area_distribution`.
+- Supplement: source contribution, basin status, and satellite-validation spatial figures.
 
 ## Manuscript-Usable Statements
 
 - The release provides broad river-basin coverage, but regional completeness should be interpreted together with unresolved basin and unknown-geography diagnostics.
-- The published basin sidecar covers the same cluster count as the resolved-basin subset, making polygon availability a direct proxy for basin-resolution success in this release.
-- Source rankings should be separated into spatial footprint and record-volume contribution, because a source can cover many clusters with few records or fewer clusters with dense long records.
-
-<!-- Compact legacy paragraph values
-
-Upstream-area bins: <10 km2: 0 clusters (0.0%); 10-100 km2: 240 clusters (8.4%); 100-1,000 km2: 810 clusters (28.4%); 1,000-10,000 km2: 946 clusters (33.2%); 10,000-100,000 km2: 651 clusters (22.9%); >100,000 km2: 202 clusters (7.1%)
-
-Main source contributions by cluster count: GFQA_v2: 1,692 clusters, 56,297 records; USGS: 873 clusters, 1,651,590 records; HYDAT: 480 clusters, 661,138 records; EUSEDcollab: 216 clusters, 63,208 records; GloRiSe: 128 clusters, 154 records
-
--->
+- Polygon availability provides a direct release-side indicator of basin sidecar coverage.
+- Source rankings should separate spatial footprint from record-volume contribution.

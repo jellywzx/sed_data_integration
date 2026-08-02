@@ -2,164 +2,209 @@
 
 ## Overview
 
-The temporal coverage statistics are reported for three product groups: the basin-cluster time-series matrices (daily, monthly, and annual), the standalone climatology stations, and the satellite-validation product. These groups use different statistical units and should therefore be described separately.
+The temporal coverage statistics are reported for three product groups: the basin-cluster time-series matrices, the standalone climatology stations, and the satellite-validation product. These groups use different statistical units and should therefore be described separately.
 
 ## Main Time-Series Products
 
-| Product | Unit | First year | Last year | Units | Records | Median length (yr) | Max length (yr) | >50 yr | >100 yr |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| daily | cluster | 1948 | 2025 | 1,607 | 2,724,382 | 2.9 | 60.0 | 15 | 0 |
-| monthly | cluster | 1938 | 2021 | 1,875 | 122,546 | 7.5 | 72.8 | 5 | 0 |
-| annual | cluster | 1912 | 2021 | 58 | 619 | 5.0 | 109.0 | 3 | 3 |
-
-### Product-Level Coverage Detail
-
-| Resolution | Product | Unit | Span | Units | Clusters | Records | Median yr | Max yr | >50 yr | >100 yr |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| daily |  | cluster | 1948-2025 | 1,607 | 0 | 2,724,382 | 2.9 | 60.0 | 15 | 0 |
-| monthly |  | cluster | 1938-2021 | 1,875 | 0 | 122,546 | 7.5 | 72.8 | 5 | 0 |
-| annual |  | cluster | 1912-2021 | 58 | 0 | 619 | 5.0 | 109.0 | 3 | 3 |
-| climatology |  | climatology_station | 1884-2017 | 1,322 | 0 | 1,322 | 0.0 | 96.0 | 84 | 0 |
-| satellite_daily | satellite_validation | satellite_station | 1984-2018 | 9,236 | 42,177 | 28,629 | 35.1 | 35.4 | 0 | 0 |
-| satellite_monthly | satellite_validation | satellite_station | 1984-2020 | 5,608 | 5,608 | 1,317,180 | 35.4 | 37.0 | 0 | 0 |
+| Product | Unit | First year | Last year | Units | Records | Median steps | Max steps | >50 steps | >100 steps |
+|---|---|---|---|---|---|---|---|---|---|
+| daily | cluster | 1,948 | 2,025 | 1,596 | 2,746,665 | 638 | 21,909 | 1,262 | 1,189 |
+| monthly | cluster | 1,938 | 2,021 | 2,117 | 126,136 | 34 | 9,557 | 220 | 78 |
+| annual | cluster | 1,912 | 2,021 | 58 | 619 | 5 | 109 | 3 | 1 |
 
 ### Variable Coverage
 
-| Resolution | Variable | Span | Active units | Records | Peak active units | Peak records |
-| --- | --- | --- | --- | --- | --- | --- |
-| daily | Q | 1948-2025 | 1,571 | 2,707,488 | 553 in 1980 | 121,573 in 1980 |
-| daily | SSC | 1948-2025 | 1,607 | 2,713,984 | 556 in 1980 | 121,639 in 1980 |
-| daily | SSL | 1948-2025 | 1,571 | 2,717,886 | 553 in 1980 | 121,573 in 1980 |
-| monthly | Q | 1938-2021 | 1,875 | 122,503 | 1,497 in 2013 | 12,723 in 2013 |
-| monthly | SSC | 1938-2021 | 1,875 | 122,381 | 1,497 in 2013 | 12,708 in 2013 |
-| monthly | SSL | 1938-2021 | 1,875 | 119,410 | 1,497 in 2013 | 12,491 in 2013 |
-| annual | Q | 1912-2021 | 34 | 499 | 23 in 2018 | 39 in 2018 |
-| annual | SSC | 1912-2021 | 58 | 619 | 47 in 2018 | 63 in 2018 |
-| annual | SSL | 1912-2021 | 34 | 499 | 23 in 2018 | 39 in 2018 |
-| climatology | Q | 1966-1995 | 782 | 782 | 738 in 1995 | 738 in 1995 |
-| climatology | SSC | 1966-1995 | 804 | 804 | 736 in 1995 | 736 in 1995 |
-| climatology | SSL | 1912-2010 | 1,298 | 1,298 | 741 in 1995 | 741 in 1995 |
+| resolution | variable | first year | last year | active units | record count |
+|---|---|---|---|---|---|
+| daily | SSL | 1,948 | 2,025 | 1,558 | 2,740,162 |
+| daily | SSC | 1,948 | 2,025 | 1,596 | 2,736,267 |
+| daily | Q | 1,948 | 2,025 | 1,558 | 2,729,764 |
+| monthly | Q | 1,938 | 2,021 | 2,117 | 126,093 |
+| monthly | SSC | 1,938 | 2,021 | 2,117 | 125,972 |
+| monthly | SSL | 1,938 | 2,021 | 2,117 | 123,000 |
+| annual | SSC | 1,912 | 2,021 | 58 | 619 |
+| annual | Q | 1,912 | 2,021 | 34 | 499 |
+| annual | SSL | 1,912 | 2,021 | 34 | 499 |
 
 ### Yearly Peaks
 
-| Resolution | Years | Peak active units | Peak records | Total records |
-| --- | --- | --- | --- | --- |
-| daily | 1948-2025 | 556 in 1980 | 121,639 in 1980 | 2,724,382 |
-| monthly | 1938-2021 | 1,497 in 2013 | 12,723 in 2013 | 122,546 |
-| annual | 1912-2021 | 47 in 2018 | 63 in 2018 | 619 |
-| climatology | 1912-2010 | 741 in 1995 | 741 in 1995 | 1,322 |
-| satellite_daily | 1984-2019 | 1,431 in 2006 | 1,968 in 2006 | 28,629 |
-| satellite_monthly | 1984-2020 | 5,605 in 2001 | 43,568 in 2009 | 1,317,180 |
+| resolution | year | active units | active clusters | record count any |
+|---|---|---|---|---|
+| daily | 1,980 | 566 | 566 | 122,720 |
+| daily | 1,981 | 529 | 529 | 115,890 |
+| daily | 1,982 | 431 | 431 | 90,319 |
+| daily | 1,983 | 436 | 436 | 89,648 |
+| daily | 1,984 | 303 | 303 | 87,664 |
+| daily | 1,985 | 282 | 282 | 80,926 |
+| daily | 1,986 | 283 | 283 | 74,412 |
+| daily | 1,987 | 210 | 210 | 59,922 |
+| daily | 1,988 | 196 | 196 | 57,256 |
+| daily | 1,989 | 200 | 200 | 55,221 |
+| daily | 1,990 | 203 | 203 | 54,513 |
+| daily | 1,991 | 195 | 195 | 53,866 |
+| daily | 1,992 | 181 | 181 | 52,018 |
+| daily | 1,994 | 201 | 201 | 50,458 |
+| daily | 1,993 | 168 | 168 | 50,385 |
+| daily | 1,995 | 172 | 172 | 49,345 |
+| daily | 1,974 | 235 | 235 | 47,563 |
+| daily | 1,996 | 166 | 166 | 45,022 |
+
+_Showing first 18 of 271 rows._
 
 ### Long-Record Diagnostics
 
-| Resolution | Units | Median yr | Max yr | >10 yr | >30 yr | >50 yr | >100 yr |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| daily | 1,607 | 2.9 | 60.0 | 363 (22.6%) | 59 (3.7%) | 15 (0.9%) | 0 (0.0%) |
-| monthly | 1,875 | 7.5 | 72.8 | 55 (2.9%) | 9 (0.5%) | 5 (0.3%) | 0 (0.0%) |
-| annual | 58 | 5.0 | 109.0 | 6 (10.3%) | 5 (8.6%) | 3 (5.2%) | 3 (5.2%) |
-| climatology | 1,322 | 0.0 | 96.0 | 302 (22.8%) | 144 (10.9%) | 84 (6.4%) | 0 (0.0%) |
-| satellite_daily | 42,177 | 35.1 | 35.4 | 34,096 (80.8%) | 31,916 (75.7%) | 0 (0.0%) | 0 (0.0%) |
-| satellite_monthly | 5,608 | 35.4 | 37.0 | 5,608 (100.0%) | 5,209 (92.9%) | 0 (0.0%) | 0 (0.0%) |
+| resolution | unit type | unit id | first date | last date | record count any |
+|---|---|---|---|---|---|
+| daily | cluster | SED000058 | 1965-10-31 | 2025-10-21 | 21,843 |
+| daily | cluster | SED000059 | 2014-09-25 | 2025-10-21 | 3,962 |
+| daily | cluster | SED000060 | 1965-10-31 | 2025-10-21 | 21,904 |
+| daily | cluster | SED000061 | 1965-10-28 | 2025-10-21 | 21,909 |
+| daily | cluster | SED000062 | 2011-12-08 | 2025-10-21 | 4,980 |
+| daily | cluster | SED000063 | 2012-01-26 | 2025-10-21 | 4,891 |
+| daily | cluster | SED000064 | 2011-08-29 | 2025-10-21 | 5,168 |
+| daily | cluster | SED000065 | 2011-04-11 | 2025-10-21 | 5,270 |
+| daily | cluster | SED000066 | 2018-10-16 | 2025-10-21 | 2,563 |
+| daily | cluster | SED000067 | 2007-08-30 | 2025-10-21 | 6,624 |
+| daily | cluster | SED000068 | 1988-10-31 | 2025-09-01 | 13,451 |
+| daily | cluster | SED000069 | 2012-06-19 | 2025-10-21 | 4,873 |
+| daily | cluster | SED000070 | 1965-10-31 | 2024-08-21 | 21,250 |
+| daily | cluster | SED000071 | 2011-08-29 | 2025-10-21 | 5,168 |
+| daily | cluster | SED000072 | 1965-10-31 | 2025-10-21 | 21,899 |
+| daily | cluster | SED000073 | 1982-10-28 | 2025-10-21 | 15,695 |
+| daily | cluster | SED000074 | 2015-06-08 | 2025-10-21 | 3,405 |
+| daily | cluster | SED000075 | 2011-12-14 | 2025-10-21 | 5,056 |
 
-Daily coverage is the strongest long-record component of the release, with 15 clusters longer than 50 years and 0 clusters longer than 100 years. Monthly coverage has many clusters but shorter median spans, while annual coverage contains fewer clusters but includes several very long records.
+_Showing first 18 of 3,771 rows._
 
-Peak active coverage occurs at 556 active units in 1980 for daily, 1,497 active units in 2013 for monthly, and 47 active units in 2018 for annual products.
+### Record-Length Distribution
+
+| resolution | record length bin | unit count |
+|---|---|---|
+| annual | 0 | 0 |
+| annual | 1-10 | 50 |
+| annual | 11-30 | 5 |
+| annual | 31-100 | 2 |
+| annual | 101-365 | 1 |
+| annual | 366-3650 | 0 |
+| annual | >3650 | 0 |
+| daily | 0 | 0 |
+| daily | 1-10 | 245 |
+| daily | 11-30 | 59 |
+| daily | 31-100 | 103 |
+| daily | 101-365 | 226 |
+| daily | 366-3650 | 728 |
+| daily | >3650 | 235 |
+| monthly | 0 | 0 |
+| monthly | 1-10 | 97 |
+| monthly | 11-30 | 696 |
+| monthly | 31-100 | 1,246 |
+
+_Showing first 18 of 21 rows._
 
 ## Source and Regional Temporal Coverage
 
-### Top Source-Resolution Contributions
+### Top Sources
 
-| Source | Resolution | Span | Stations | Clusters | Records | Median yr | Max yr |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| USGS | daily | 1980-2024 | 885 | 873 | 1,651,590 | 2.8 | 44.8 |
-| HYDAT | daily | 1948-1997 | 501 | 480 | 661,138 | 5.3 | 40.5 |
-| Bayern | daily | 1965-2025 | 34 | 32 | 380,719 | 26.0 | 60.0 |
-| EUSEDcollab | monthly | 1987-2021 | 226 | 216 | 63,208 | 6.0 | 26.2 |
-| GFQA_v2 | monthly | 1995-2021 | 1,993 | 1,631 | 56,094 | 6.8 | 9.0 |
-| HYBAM | daily | 1994-2024 | 12 | 12 | 11,826 | 23.5 | 29.6 |
-| Mekong_Delta | daily | 2005-2012 | 4 | 4 | 11,323 | 8.0 | 8.0 |
-| Robotham | daily | 2016-2021 | 3 | 3 | 3,432 | 4.0 | 4.1 |
-| Eurasian_River | monthly | 1938-2000 | 17 | 17 | 3,204 | 26.4 | 59.8 |
-| Fukushima | daily | 2012-2018 | 2 | 2 | 3,069 | 5.0 | 6.0 |
-| NERC | daily | 2013-2014 | 4 | 4 | 624 | 1.0 | 1.0 |
-| Chao_Phraya_River | annual | 1912-2020 | 7 | 7 | 348 | 40.0 | 109.0 |
-| Rhine | daily | 1990-2011 | 12 | 12 | 312 | 19.2 | 21.7 |
-| Shashi_Jianli | daily | 2016-2023 | 2 | 2 | 154 | 7.9 | 7.9 |
-| GFQA_v2 | annual | 2012-2021 | 27 | 27 | 151 | 4.0 | 9.0 |
+| source name | resolutions | first year | last year | active units | record count |
+|---|---|---|---|---|---|
+| USGS | daily | 1,956 | 2,024 | 887 | 1,662,326 |
+| HYDAT | daily | 1,948 | 1,997 | 505 | 671,068 |
+| Bayern | daily | 1,965 | 2,025 | 34 | 388,964 |
+| EUSEDcollab | monthly | 1,987 | 2,021 | 244 | 66,637 |
+| GFQA_v2 | annual\|daily\|monthly | 1,995 | 2,021 | 1,901 | 56,457 |
+| HYBAM | daily | 1,994 | 2,024 | 12 | 11,826 |
+| Mekong_Delta | daily | 2,005 | 2,012 | 4 | 11,323 |
+| Robotham | daily | 2,016 | 2,021 | 3 | 3,432 |
+| Eurasian_River | monthly | 1,938 | 2,000 | 17 | 3,204 |
+| Fukushima | daily | 2,012 | 2,018 | 2 | 3,069 |
+| NERC | daily | 2,013 | 2,014 | 4 | 624 |
+| Chao_Phraya_River | annual | 1,912 | 2,020 | 7 | 348 |
+| Rhine | daily | 1,990 | 2,011 | 12 | 312 |
+| Shashi_Jianli | daily | 2,016 | 2,023 | 2 | 154 |
+| Huanghe | annual | 2,015 | 2,019 | 24 | 120 |
+| GloRiSe | daily\|monthly | 1,979 | 2,012 | 77 | 103 |
+| Yajiang | daily | 2,019 | 2,020 | 23 | 23 |
+| Myanmar | daily | 2,017 | 2,019 | 6 | 6 |
 
-### Top Region-Resolution Contributions
+### Region by Resolution
 
-| Region | Country | Resolution | Span | Clusters | Records | Median yr | Max yr |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| North America | United States | daily | 1980-2024 | 871 | 1,650,788 | 2.9 | 44.8 |
-| North America | Canada | daily | 1948-1997 | 478 | 661,090 | 5.5 | 40.5 |
-| Europe, Central Europe | Germany | daily | 1965-2025 | 32 | 380,719 | 39.9 | 60.0 |
-| North America | Mexico | monthly | 2012-2021 | 1,627 | 56,001 | 7.7 | 9.1 |
-| Europe | Spain | monthly | 1999-2021 | 7 | 21,402 | 10.0 | 15.8 |
-| Europe | Denmark | monthly | 1989-2009 | 188 | 14,193 | 6.0 | 21.0 |
-| Europe | Poland | monthly | 1987-2019 | 2 | 12,114 | 24.6 | 26.2 |
-| Asia, Southeast Asia | Vietnam | daily | 2005-2012 | 3 | 8,766 | 8.0 | 8.0 |
-| Europe | Spain\|France | monthly | 1993-2018 | 1 | 5,545 | 24.7 | 24.7 |
-| South America | Brazil | daily | 1994-2024 | 7 | 5,169 | 27.1 | 29.6 |
-| Europe, Western Europe | United Kingdom | daily | 2013-2021 | 7 | 4,056 | 1.0 | 4.1 |
-| South America | Peru | daily | 2003-2021 | 2 | 3,157 | 13.8 | 17.9 |
-| Asia, East Asia | Japan | daily | 2012-2018 | 2 | 3,069 | 5.0 | 6.0 |
-| Europe, Eastern Europe | Russia | monthly | 1938-2000 | 14 | 2,574 | 25.9 | 59.8 |
-| North America\|Asia, Southeast Asia | Canada\|Vietnam | daily | 2005-2012 | 1 | 2,557 | 8.0 | 8.0 |
+| continent region | country | resolution | cluster count | record count | time start | time end |
+|---|---|---|---|---|---|---|
+| North America | United States | daily | 885 | 1,655,750 | 1980-01-01 00:00:00 | 2024-09-30 00:00:00 |
+| North America | Canada | daily | 503 | 664,492 | 1948-05-25 00:00:00 | 1997-10-31 00:00:00 |
+| Europe, Central Europe | Germany | daily | 34 | 388,964 | 1965-10-26 00:00:00 | 2025-10-21 00:00:00 |
+| North America | Mexico | monthly | 1,841 | 56,251 | 2012-10-16 00:00:00 | 2021-10-27 00:00:00 |
+| Europe | Spain | monthly | 8 | 26,881 | 1993-10-01 00:00:00 | 2021-06-05 00:00:00 |
+| Europe | Denmark | monthly | 211 | 15,561 | 1989-01-01 00:00:00 | 2009-12-01 00:00:00 |
+| Europe | Poland | monthly | 3 | 13,544 | 1987-11-01 00:00:00 | 2019-12-31 00:00:00 |
+| Asia, Southeast Asia | Vietnam | daily | 4 | 11,323 | 2005-01-01 00:00:00 | 2012-12-31 00:00:00 |
+| North America | Canada\|United States | daily | 2 | 6,576 | 1956-08-11 00:00:00 | 1989-05-27 00:00:00 |
+| South America | Brazil | daily | 7 | 5,169 | 1994-06-20 00:00:00 | 2024-03-20 00:00:00 |
+| Europe, Western Europe | United Kingdom | daily | 7 | 4,056 | 2013-06-06 00:00:00 | 2021-01-07 00:00:00 |
+| Europe | Slovenia | monthly | 3 | 3,743 | 2016-01-01 00:00:00 | 2019-12-31 00:00:00 |
+| Europe, Eastern Europe | Russia | monthly | 17 | 3,204 | 1938-01-15 00:00:00 | 2000-10-15 00:00:00 |
+| South America | Peru | daily | 2 | 3,157 | 2003-05-24 00:00:00 | 2021-04-30 00:00:00 |
+| Asia, East Asia | Japan | daily | 2 | 3,069 | 2012-12-31 00:00:00 | 2018-12-31 00:00:00 |
+| Europe | Greece | monthly | 5 | 3,040 | 2000-01-01 00:00:00 | 2001-08-30 00:00:00 |
+| South America | Ecuador | daily | 1 | 2,469 | 2000-12-31 00:00:00 | 2021-10-03 00:00:00 |
+| Europe | Portugal | monthly | 2 | 2,065 | 2001-12-13 00:00:00 | 2014-09-18 00:00:00 |
 
-These source and region tables separate record volume from span length. A source can dominate total records through dense daily sampling even when its spatial footprint is narrower than a source with many short station records.
+_Showing first 18 of 34 rows._
 
 ## Climatology Product
 
-The climatology product contains 1,322 standalone stations spanning 1884-2017. It is not a basin-cluster time-series matrix, so it is summarized separately from the daily/monthly/annual products.
+_No rows._
 
-Variable coverage in the climatology product includes 782 Q stations, 804 SSC stations, and 1,298 SSL stations across 5 sources.
+### Climatology by Source
+
+_No rows._
 
 ## Satellite Validation Product
 
-The satellite-validation product is summarized with satellite-prefixed resolution labels to distinguish it from the main matrices. It contains 14,844 satellite station-resolution rows linked to approximately 47,785 basin clusters, with 1,345,809 records spanning 1984-2020. Resolution-specific rows are: satellite_daily (9,236), satellite_monthly (5,608).
+| resolution | unit type | first date | last date | first year | last year | active units | record count any | product |
+|---|---|---|---|---|---|---|---|---|
+| satellite_validation | satellite_station_uid | 1984-01-15 | 2020-12-15 | 1,984 | 2,020 | 38,550 | 16,478,276 | satellite_validation |
 
-The satellite summary reports 1 sources/source families and uses station-level catalog spans; when NetCDF scanning is enabled, Q/SSC/SSL record counts and annual active units are computed directly from `sed_reference_satellite.nc`.
+### Satellite by Source
 
-### Climatology Source Detail
+| source name | first year | last year | active units | record count any |
+|---|---|---|---|---|
+| RiverSed | 1,984 | 2,019 | 32,941 | 14,199,854 |
+| GSED | 1,985 | 2,020 | 5,237 | 2,144,599 |
+| Dethier | 1,984 | 2,020 | 372 | 133,823 |
 
-| Source | Resolution | Span | Stations | Clusters | Records | Median yr | Max yr |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Milliman |  | 1995-1995 | 737 |  | 737 | 0.0 | 0.0 |
-| Vanmaercke |  | 1884-2011 | 516 |  | 516 | 9.0 | 96.0 |
-| HMA |  | 1956-2017 | 28 |  | 28 | 54.0 | 61.0 |
-| Huanghe |  | 1950-2015 | 24 |  | 24 | 64.0 | 66.0 |
-| ALi_De_Boer |  | 1960-1998 | 17 |  | 17 | 26.0 | 36.0 |
+### Satellite by Year
 
-### Satellite Source Detail
+| resolution | year | active units | record count any |
+|---|---|---|---|
+| daily | 1,984 | 29,760 | 13,773,965 |
+| monthly | 1,984 | 371 | 133,613 |
+| monthly | 1,985 | 3,419 | 1,459,807 |
+| daily | 1,985 | 1,531 | 317,392 |
+| daily | 1,986 | 664 | 68,128 |
+| monthly | 1,986 | 844 | 348,235 |
+| daily | 1,987 | 460 | 19,201 |
+| monthly | 1,987 | 265 | 105,042 |
+| monthly | 1,988 | 174 | 68,117 |
+| daily | 1,988 | 135 | 7,578 |
+| daily | 1,989 | 90 | 5,044 |
+| monthly | 1,989 | 139 | 52,290 |
+| monthly | 1,990 | 22 | 7,727 |
+| daily | 1,990 | 30 | 1,479 |
+| daily | 1,991 | 43 | 789 |
+| monthly | 1,991 | 45 | 15,671 |
+| monthly | 1,992 | 23 | 7,808 |
+| daily | 1,992 | 25 | 1,867 |
 
-| Source | Resolution | Span | Stations | Clusters | Records | Median yr | Max yr |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| RiverSed | daily | 1984-2019 | 42,177 | 42,177 | 14,228,483 | 35.1 | 35.4 |
-| GSED | monthly | 1985-2020 | 5,237 | 5,237 | 2,144,599 | 35.4 | 36.0 |
-| Dethier | monthly | 1984-2020 | 371 | 371 | 133,379 | 37.0 | 37.0 |
+_Showing first 18 of 48 rows._
 
-## Interpretation Notes
+## Diagnostics and Limitations
 
-- Daily, monthly, annual, climatology, and satellite products use different units; compare trends within product groups before comparing across product groups.
-- `active_units` measures whether a unit has at least one valid record in a year, while `records` measures sampling density.
-- Long-record counts are useful evidence for model evaluation, but sparse annual records should be interpreted by record count and calendar span together.
+- Matrix products, climatology, and satellite validation rows use different statistical units.
+- Long calendar span should be interpreted together with record density.
+- Sparse time axes represent observation dates rather than complete regular calendars.
 
-## Recommended ESSD Use
+## Figure Suggestions
 
-- Main text: use `fig_active_units_by_year`, `fig_record_length_distribution`, and `fig_temporal_coverage_heatmap` for daily/monthly/annual coverage.
-- Climatology: use `fig_climatology_variable_coverage` and `fig_climatology_record_length_distribution` in a separate climatology paragraph or supplement.
-- Satellite validation: use `fig_satellite_active_units_by_year`, `fig_satellite_records_by_year_variable`, and `fig_satellite_source_contribution` in the validation/supplement section.
-- Tables: use `table_temporal_coverage_by_resolution.csv` as the compact master table; use the climatology and satellite dedicated tables for supplementary material.
-
-## Output Files
-
-- `tables/table_climatology_temporal_summary.csv`
-- `tables/table_climatology_by_source.csv`
-- `tables/table_climatology_record_lengths_by_station.csv`
-- `tables/table_satellite_temporal_summary.csv`
-- `tables/table_satellite_by_year.csv`
-- `tables/table_satellite_by_source.csv`
-- `tables/table_satellite_record_lengths_by_station.csv`
-- `tables/table_satellite_by_linked_cluster.csv`
+- Main text: active units by year, records by year and variable, and record-length distribution.
+- Supplement: source temporal spans, climatology source contribution, and satellite temporal coverage.

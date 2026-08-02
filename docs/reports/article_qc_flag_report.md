@@ -1,204 +1,292 @@
-# S8 QC Flag Statistics Report
+# Release QC Flag Report
 
-本报告由 `stats/qc_flag_statistics.py` 自动生成，用于总结 S8 发布级产品的 final QC flags 和阶段性 QC flags。
+## Scope
 
-## 数据与方法
+- Release package: `output/sed_reference_release`
+- Output tables: `output_other/stats_release/qc_flags/tables`
+- Flag meanings are read from release NetCDF `flag_values` and `flag_meanings` attributes when present.
 
-- 输入 master NetCDF：`/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release/sed_reference_master.nc`
-- source type 辅助表：`/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/s6_cluster_quality_order.csv`
-- 输出表目录：`/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/qc_flag_statistics/tables`
-- 输出图目录：`/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/qc_flag_statistics/figures`
-- 统计口径：`usable_rate = flag 0 + flag 1`；`problem_rate = flag 2 + flag 3`；`missing_rate = flag 9`；`not_checked_rate = flag 8`。
-- Final flag 含义：0=good，1=derived/estimated，2=suspect，3=bad，8=not checked，9=missing。
+## Headline
 
-## 核心结论
+- Flag observations summarized: 81,046,414
+- Final flag rows: 29
+- Stage flag rows: 26
+- Usable flag count from health KPIs: 30,696,255
+- Problem flag count from health KPIs: 48,215,876
+- Stage-effectiveness rows available: 8
 
-- Q 的 final flag 以 good 为主：good rate 为 97.0%，usable rate 为 97.7%。
-- SSC 和 SSL 的主要限制来自 missing：SSC missing rate 为 3.3%，SSL missing rate 为 0.2%。
-- Final flag 8 的最高比例为 0.0%，说明最终发布层基本没有未检查记录残留。
-- monthly Q 的 usable rate 最高，为 98.4%。
-- annual Q 的 missing rate 最高，为 19.4%，适合在结果讨论中作为覆盖限制说明。
+## Flag Schema
 
-### Final QC by Variable
+| product | flag variable | flag value | flag meaning | long name |
+|---|---|---|---|---|
+| master | Q_flag | 0 | good | quality flag for river discharge |
+| master | Q_flag | 1 | estimated | quality flag for river discharge |
+| master | Q_flag | 2 | suspect | quality flag for river discharge |
+| master | Q_flag | 3 | bad | quality flag for river discharge |
+| master | Q_flag | 9 | missing | quality flag for river discharge |
+| master | Q_qc1 | 0 | pass | qc stage 1 physical screen for river discharge |
+| master | Q_qc1 | 3 | bad | qc stage 1 physical screen for river discharge |
+| master | Q_qc1 | 9 | missing | qc stage 1 physical screen for river discharge |
+| master | Q_qc2 | 0 | pass | qc stage 2 log-iqr screen for river discharge |
+| master | Q_qc2 | 2 | suspect | qc stage 2 log-iqr screen for river discharge |
+| master | Q_qc2 | 8 | not_checked | qc stage 2 log-iqr screen for river discharge |
+| master | Q_qc2 | 9 | missing | qc stage 2 log-iqr screen for river discharge |
+| master | SSC_flag | 0 | good | quality flag for suspended sediment concentration |
+| master | SSC_flag | 1 | estimated | quality flag for suspended sediment concentration |
+| master | SSC_flag | 2 | suspect | quality flag for suspended sediment concentration |
+| master | SSC_flag | 3 | bad | quality flag for suspended sediment concentration |
+| master | SSC_flag | 9 | missing | quality flag for suspended sediment concentration |
+| master | SSC_qc1 | 0 | pass | qc stage 1 physical screen for suspended sediment concentration |
+| master | SSC_qc1 | 3 | bad | qc stage 1 physical screen for suspended sediment concentration |
+| master | SSC_qc1 | 9 | missing | qc stage 1 physical screen for suspended sediment concentration |
+| master | SSC_qc2 | 0 | pass | qc stage 2 log-iqr screen for suspended sediment concentration |
+| master | SSC_qc2 | 2 | suspect | qc stage 2 log-iqr screen for suspended sediment concentration |
+| master | SSC_qc2 | 8 | not_checked | qc stage 2 log-iqr screen for suspended sediment concentration |
+| master | SSC_qc2 | 9 | missing | qc stage 2 log-iqr screen for suspended sediment concentration |
 
-| Variable | N | Good | Derived | Usable | Problem | Missing | Not checked |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Q | 2,935,580 | 97.0% | 0.7% | 97.7% | 1.7% | 0.6% | 0.0% |
-| SSC | 2,935,580 | 92.6% | 0.8% | 93.4% | 3.4% | 3.3% | 0.0% |
-| SSL | 2,935,580 | 2.1% | 93.6% | 95.7% | 4.1% | 0.2% | 0.0% |
+_Showing first 24 of 74 rows._
 
-### Resolution Difference
+## Final Flag Summary
 
-| Resolution | Variable | N | Usable | Problem | Missing |
-| --- | --- | --- | --- | --- | --- |
-| daily | Q | 2,813,598 | 97.7% | 1.8% | 0.6% |
-| daily | SSC | 2,813,598 | 93.3% | 3.3% | 3.4% |
-| daily | SSL | 2,813,598 | 95.6% | 4.2% | 0.2% |
-| monthly | Q | 121,363 | 98.4% | 1.6% | 0.0% |
-| monthly | SSC | 121,363 | 95.3% | 4.6% | 0.1% |
-| monthly | SSL | 121,363 | 97.9% | 2.1% | 0.0% |
-| annual | Q | 619 | 78.8% | 1.8% | 19.4% |
-| annual | SSC | 619 | 96.8% | 3.2% | 0.0% |
-| annual | SSL | 619 | 79.0% | 1.6% | 19.4% |
+| temporal resolution | variable | flag variable | flag | meaning | count | percentage | n total |
+|---|---|---|---|---|---|---|---|
+| satellite | SSL | SSL_flag | 9 | missing | 16,344,453 | 99.19% | 16,478,276 |
+| satellite | Q | Q_flag | 9 | missing | 16,344,453 | 99.19% | 16,478,276 |
+| satellite | SSC | SSC_flag | 0 | good | 15,121,092 | 91.76% | 16,478,276 |
+| master | Q | Q_flag | 0 | good | 2,803,162 | 97.55% | 2,873,420 |
+| master | SSC | SSC_flag | 0 | good | 2,732,153 | 95.08% | 2,873,420 |
+| master | SSL | SSL_flag | 1 | estimated | 2,648,231 | 92.16% | 2,873,420 |
+| satellite | SSC | SSC_flag | 9 | missing | 960,798 | 5.83% | 16,478,276 |
+| satellite | SSC | SSC_flag | 2 | suspect | 396,386 | 2.41% | 16,478,276 |
+| master | SSL | SSL_flag | 2 | suspect | 139,751 | 4.86% | 2,873,420 |
+| satellite | SSL | SSL_flag | 0 | good | 132,693 | 0.81% | 16,478,276 |
+| satellite | Q | Q_flag | 0 | good | 132,614 | 0.80% | 16,478,276 |
+| master | SSC | SSC_flag | 2 | suspect | 102,029 | 3.55% | 2,873,420 |
+| master | SSL | SSL_flag | 0 | good | 75,679 | 2.63% | 2,873,420 |
+| master | Q | Q_flag | 2 | suspect | 53,194 | 1.85% | 2,873,420 |
+| master | SSC | SSC_flag | 1 | estimated | 28,676 | 1.00% | 2,873,420 |
+| master | Q | Q_flag | 9 | missing | 16,509 | 0.57% | 2,873,420 |
+| master | SSC | SSC_flag | 9 | missing | 10,562 | 0.37% | 2,873,420 |
+| master | SSL | SSL_flag | 9 | missing | 9,204 | 0.32% | 2,873,420 |
+| climatology | SSL | SSL_flag | 0 | good | 1,298 | 98.18% | 1,322 |
+| satellite | Q | Q_flag | 2 | suspect | 1,209 | 0.01% | 16,478,276 |
+| satellite | SSL | SSL_flag | 2 | suspect | 1,130 | 0.01% | 16,478,276 |
+| climatology | Q | Q_flag | 0 | good | 782 | 59.15% | 1,322 |
+| climatology | SSC | SSC_flag | 0 | good | 759 | 57.41% | 1,322 |
+| master | SSL | SSL_flag | 3 | bad | 555 | 0.02% | 2,873,420 |
 
-## QC 阶段解释
+_Showing first 24 of 29 rows._
 
-阶段性 QC 用于解释 final flag 的来源：QC1 主要对应物理范围筛查，QC2 对应 log-IQR 异常筛查，QC3 对应 SSC-Q 一致性或 SSL 传播关系。
+## Stage Flag Summary
 
-| Stage | Variable | Flag var | Flag 0 | Suspect | Bad | Not checked | Missing |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| log_iqr | Q | Q_qc2 | 17.9% | 0.3% | 0.0% | 0.2% | 81.7% |
-| log_iqr | SSC | SSC_qc2 | 14.8% | 0.5% | 0.0% | 0.1% | 84.6% |
-| log_iqr | SSL | SSL_qc2 | 0.5% | 0.0% | 0.0% | 18.2% | 81.3% |
-| physical_plausibility | Q | Q_qc1 | 18.3% | 0.0% | 0.0% | 0.0% | 81.7% |
-| physical_plausibility | SSC | SSC_qc1 | 15.4% | 0.0% | 0.0% | 0.0% | 84.6% |
-| physical_plausibility | SSL | SSL_qc1 | 15.8% | 0.0% | 2.9% | 0.0% | 81.3% |
-| ssc_q_consistency | SSC | SSC_qc3 | 1.8% | 0.1% | 0.0% | 0.4% | 97.7% |
-| ssc_q_consistency | SSL | SSL_qc3 | 0.0% | 0.1% | 0.0% | 5.5% | 94.4% |
+| temporal resolution | variable | qc stage | flag variable | flag | meaning | count | percentage | n total |
+|---|---|---|---|---|---|---|---|---|
+| master | SSL | ssc_q_consistency | SSL_qc3 | 9 | missing | 2,061,949 | 71.76% | 2,873,420 |
+| master | Q | log_iqr | Q_qc2 | 9 | missing | 1,677,086 | 58.37% | 2,873,420 |
+| master | Q | physical_plausibility | Q_qc1 | 9 | missing | 1,674,409 | 58.27% | 2,873,420 |
+| master | SSC | ssc_q_consistency | SSC_qc3 | 9 | missing | 1,674,355 | 58.27% | 2,873,420 |
+| master | SSC | log_iqr | SSC_qc2 | 9 | missing | 1,671,162 | 58.16% | 2,873,420 |
+| master | SSL | log_iqr | SSL_qc2 | 9 | missing | 1,670,351 | 58.13% | 2,873,420 |
+| master | SSC | physical_plausibility | SSC_qc1 | 9 | missing | 1,668,485 | 58.07% | 2,873,420 |
+| master | SSL | physical_plausibility | SSL_qc1 | 9 | missing | 1,667,104 | 58.02% | 2,873,420 |
+| master | SSL | physical_plausibility | SSL_qc1 | 0 | pass | 1,206,316 | 41.98% | 2,873,420 |
+| master | SSC | physical_plausibility | SSC_qc1 | 0 | pass | 1,204,935 | 41.93% | 2,873,420 |
+| master | Q | physical_plausibility | Q_qc1 | 0 | pass | 1,199,011 | 41.73% | 2,873,420 |
+| master | Q | log_iqr | Q_qc2 | 0 | pass | 1,151,046 | 40.06% | 2,873,420 |
+| master | SSL | log_iqr | SSL_qc2 | 8 | not_checked | 1,128,925 | 39.29% | 2,873,420 |
+| master | SSC | log_iqr | SSC_qc2 | 0 | pass | 1,123,751 | 39.11% | 2,873,420 |
+| master | SSC | ssc_q_consistency | SSC_qc3 | 0 | pass | 1,060,931 | 36.92% | 2,873,420 |
+| master | SSL | ssc_q_consistency | SSL_qc3 | 8 | not_checked | 800,473 | 27.86% | 2,873,420 |
+| master | SSC | ssc_q_consistency | SSC_qc3 | 8 | not_checked | 123,728 | 4.31% | 2,873,420 |
+| master | SSL | log_iqr | SSL_qc2 | 0 | pass | 72,994 | 2.54% | 2,873,420 |
+| master | SSC | log_iqr | SSC_qc2 | 8 | not_checked | 51,894 | 1.81% | 2,873,420 |
+| master | Q | log_iqr | Q_qc2 | 8 | not_checked | 29,263 | 1.02% | 2,873,420 |
+| master | SSC | log_iqr | SSC_qc2 | 2 | suspect | 26,613 | 0.93% | 2,873,420 |
+| master | Q | log_iqr | Q_qc2 | 2 | suspect | 16,025 | 0.56% | 2,873,420 |
+| master | SSC | ssc_q_consistency | SSC_qc3 | 2 | suspect | 14,406 | 0.50% | 2,873,420 |
+| master | SSL | ssc_q_consistency | SSL_qc3 | 2 | suspect | 10,911 | 0.38% | 2,873,420 |
 
-## 热点诊断
+_Showing first 24 of 26 rows._
 
-下面的热点表按 `issue_rate = problem_rate + missing_rate` 排序；其中 `problem_rate` 只包含 suspect+bad，missing 单独保留，便于区分质量异常和观测缺失。
+## Health KPIs
 
-### Top Sources
+Usable combines good and estimated/derived values when represented by release flags.
 
-| Source | Type | Variable | N | Issue | Problem | Missing |
-| --- | --- | --- | --- | --- | --- | --- |
-| Huanghe | other | Q | 120 | 100.0% | 0.0% | 100.0% |
-| Huanghe | other | SSL | 120 | 100.0% | 0.0% | 100.0% |
-| Mekong_Delta | other | Q | 11,323 | 92.9% | 1.1% | 91.8% |
-| Mekong_Delta | other | SSC | 11,323 | 91.8% | 0.0% | 91.8% |
-| HYBAM | other | SSC | 96,882 | 88.1% | 0.3% | 87.8% |
-| HYBAM | other | SSL | 96,882 | 87.9% | 87.9% | 0.0% |
-| Robotham | other | SSC | 3,432 | 37.1% | 37.1% | 0.0% |
-| Robotham | other | SSL | 3,432 | 27.7% | 27.2% | 0.5% |
-| NERC | other | SSL | 624 | 11.7% | 2.4% | 9.3% |
-| NERC | other | Q | 624 | 9.5% | 0.2% | 9.3% |
+| temporal resolution | variable | flag variable | n total | good count | derived count | usable count | problem count | missing count | good rate | usable rate | problem rate | missing rate |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| satellite | Q | Q_flag | 16,478,276 | 132,614 | 0 | 132,614 | 16,345,662 | 16,344,453 | 0.80% | 0.80% | 99.20% | 99.19% |
+| satellite | SSL | SSL_flag | 16,478,276 | 132,693 | 0 | 132,693 | 16,345,583 | 16,344,453 | 0.81% | 0.81% | 99.19% | 99.19% |
+| master | SSL | SSL_qc3 | 2,873,420 | 87 | 0 | 87 | 2,072,860 | 2,061,949 | 0.00% | 0.00% | 72.14% | 71.76% |
+| master | SSC | SSC_qc2 | 2,873,420 | 1,123,751 | 0 | 1,123,751 | 1,697,775 | 1,671,162 | 39.11% | 39.11% | 59.09% | 58.16% |
+| master | Q | Q_qc2 | 2,873,420 | 1,151,046 | 0 | 1,151,046 | 1,693,111 | 1,677,086 | 40.06% | 40.06% | 58.92% | 58.37% |
+| master | SSC | SSC_qc3 | 2,873,420 | 1,060,931 | 0 | 1,060,931 | 1,688,761 | 1,674,355 | 36.92% | 36.92% | 58.77% | 58.27% |
+| master | Q | Q_qc1 | 2,873,420 | 1,199,011 | 0 | 1,199,011 | 1,674,409 | 1,674,409 | 41.73% | 41.73% | 58.27% | 58.27% |
+| master | SSL | SSL_qc2 | 2,873,420 | 72,994 | 0 | 72,994 | 1,671,501 | 1,670,351 | 2.54% | 2.54% | 58.17% | 58.13% |
+| master | SSC | SSC_qc1 | 2,873,420 | 1,204,935 | 0 | 1,204,935 | 1,668,485 | 1,668,485 | 41.93% | 41.93% | 58.07% | 58.07% |
+| master | SSL | SSL_qc1 | 2,873,420 | 1,206,316 | 0 | 1,206,316 | 1,667,104 | 1,667,104 | 41.98% | 41.98% | 58.02% | 58.02% |
+| satellite | SSC | SSC_flag | 16,478,276 | 15,121,092 | 0 | 15,121,092 | 1,357,184 | 960,798 | 91.76% | 91.76% | 8.24% | 5.83% |
+| master | SSL | SSL_flag | 2,873,420 | 75,679 | 2,648,231 | 2,723,910 | 149,510 | 9,204 | 2.63% | 94.80% | 5.20% | 0.32% |
+| master | SSC | SSC_flag | 2,873,420 | 2,732,153 | 28,676 | 2,760,829 | 112,591 | 10,562 | 95.08% | 96.08% | 3.92% | 0.37% |
+| master | Q | Q_flag | 2,873,420 | 2,803,162 | 0 | 2,803,162 | 70,258 | 16,509 | 97.55% | 97.55% | 2.45% | 0.57% |
+| climatology | Q | Q_flag | 1,322 | 782 | 0 | 782 | 540 | 540 | 59.15% | 59.15% | 40.85% | 40.85% |
+| climatology | SSC | SSC_flag | 1,322 | 759 | 45 | 804 | 518 | 518 | 57.41% | 60.82% | 39.18% | 39.18% |
+| climatology | SSL | SSL_flag | 1,322 | 1,298 | 0 | 1,298 | 24 | 24 | 98.18% | 98.18% | 1.82% | 1.82% |
 
-### Top Clusters
+## Issue Hotspots
 
-| Cluster | Type | Variable | N | Issue | Problem | Missing |
-| --- | --- | --- | --- | --- | --- | --- |
-| SED000644 |  | Q | 401 | 100.0% | 0.0% | 100.0% |
-| SED000644 |  | SSL | 401 | 100.0% | 0.0% | 100.0% |
-| SED000627 |  | Q | 146 | 100.0% | 0.0% | 100.0% |
-| SED000627 |  | SSL | 146 | 100.0% | 0.0% | 100.0% |
-| SED000788 |  | Q | 131 | 100.0% | 0.0% | 100.0% |
-| SED000788 |  | SSL | 131 | 100.0% | 0.0% | 100.0% |
-| SED000341 |  | Q | 560 | 99.6% | 0.0% | 99.6% |
-| SED000341 |  | SSL | 560 | 99.6% | 0.0% | 99.6% |
-| SED000895 |  | Q | 2,557 | 96.8% | 0.1% | 96.7% |
-| SED000895 |  | SSC | 2,557 | 96.7% | 0.0% | 96.7% |
-| SED000108 |  | SSC | 9,340 | 96.6% | 0.4% | 96.2% |
-| SED000108 |  | SSL | 9,340 | 96.3% | 96.3% | 0.0% |
-| SED000893 |  | Q | 2,922 | 96.1% | 0.0% | 96.1% |
-| SED000893 |  | SSC | 2,922 | 96.1% | 0.0% | 96.1% |
-| SED000103 |  | SSC | 6,906 | 94.5% | 0.1% | 94.3% |
-| SED000103 |  | SSL | 6,906 | 94.3% | 94.3% | 0.0% |
-| SED000110 |  | SSC | 6,752 | 94.0% | 0.3% | 93.7% |
-| SED000110 |  | SSL | 6,752 | 93.7% | 93.7% | 0.0% |
-| SED000104 |  | SSC | 9,840 | 93.1% | 0.4% | 92.7% |
-| SED000104 |  | SSL | 9,840 | 92.8% | 92.8% | 0.0% |
-| SED000102 |  | SSC | 10,403 | 91.7% | 0.1% | 91.6% |
-| SED000102 |  | SSL | 10,403 | 91.6% | 91.6% | 0.0% |
-| SED000106 |  | SSC | 9,732 | 91.2% | 0.1% | 91.2% |
-| SED000106 |  | SSL | 9,732 | 91.2% | 91.2% | 0.0% |
-| SED000107 |  | SSC | 10,818 | 91.0% | 0.0% | 90.9% |
-| SED000107 |  | SSL | 10,818 | 90.9% | 90.9% | 0.0% |
-| SED000105 |  | SSC | 10,495 | 90.8% | 0.3% | 90.5% |
-| SED000105 |  | SSL | 10,495 | 90.7% | 90.7% | 0.0% |
-| SED000894 |  | Q | 2,922 | 89.6% | 1.7% | 87.9% |
-| SED000896 |  | Q | 2,922 | 89.5% | 2.3% | 87.3% |
-| SED000894 |  | SSC | 2,922 | 87.9% | 0.0% | 87.9% |
-| SED000109 |  | SSC | 4,928 | 87.8% | 0.1% | 87.8% |
-| SED000109 |  | SSL | 4,928 | 87.8% | 87.8% | 0.0% |
-| SED000896 |  | SSC | 2,922 | 87.3% | 0.0% | 87.3% |
-| SED000510 |  | Q | 533 | 81.2% | 0.2% | 81.1% |
-| SED000510 |  | SSL | 533 | 81.1% | 0.0% | 81.1% |
-| SED000100 |  | SSL | 3,552 | 70.2% | 70.2% | 0.0% |
-| SED000100 |  | SSC | 3,552 | 70.2% | 1.2% | 69.0% |
-| SED000099 |  | SSC | 6,543 | 69.1% | 0.6% | 68.6% |
-| SED000099 |  | SSL | 6,543 | 68.8% | 68.8% | 0.0% |
-| SED000101 |  | SSC | 7,573 | 68.0% | 0.7% | 67.3% |
-| SED000101 |  | SSL | 7,573 | 67.8% | 67.8% | 0.0% |
-| SED000537 |  | Q | 257 | 54.5% | 54.5% | 0.0% |
-| SED043742 |  | SSC | 267 | 52.4% | 52.4% | 0.0% |
-| SED000864 |  | Q | 237 | 46.0% | 0.0% | 46.0% |
-| SED000864 |  | SSL | 237 | 46.0% | 0.0% | 46.0% |
-| SED000791 |  | SSL | 4,597 | 41.3% | 1.6% | 39.7% |
-| SED000791 |  | Q | 4,597 | 39.7% | 0.0% | 39.7% |
-| SED043098 |  | SSC | 1,436 | 39.4% | 39.4% | 0.0% |
-| SED043099 |  | SSC | 565 | 37.9% | 37.9% | 0.0% |
-| SED043364 |  | SSC | 257 | 35.8% | 35.8% | 0.0% |
-| SED043098 |  | SSL | 1,436 | 34.8% | 34.8% | 0.0% |
-| SED043100 |  | SSC | 1,431 | 34.5% | 34.5% | 0.0% |
-| SED043099 |  | SSL | 565 | 32.7% | 32.7% | 0.0% |
-| SED000116 |  | Q | 649 | 32.7% | 0.0% | 32.7% |
-| SED000116 |  | SSL | 649 | 32.7% | 0.0% | 32.7% |
-| SED000906 |  | Q | 159 | 28.9% | 0.6% | 28.3% |
-| SED000906 |  | SSL | 159 | 28.9% | 0.6% | 28.3% |
-| SED043779 |  | SSC | 212 | 26.9% | 26.9% | 0.0% |
-| SED000788 |  | SSC | 131 | 26.7% | 26.7% | 0.0% |
-| SED043703 |  | SSC | 1,003 | 25.0% | 25.0% | 0.0% |
-| SED045874 |  | SSC | 101 | 24.8% | 24.8% | 0.0% |
-| SED043852 |  | SSC | 364 | 23.4% | 23.4% | 0.0% |
-| SED000338 |  | SSL | 1,195 | 23.3% | 0.7% | 22.6% |
-| SED000338 |  | Q | 1,195 | 22.6% | 0.0% | 22.6% |
-| SED000536 |  | Q | 396 | 21.7% | 21.7% | 0.0% |
-| SED043542 |  | SSC | 447 | 21.7% | 21.7% | 0.0% |
-| SED043853 |  | SSC | 364 | 21.2% | 21.2% | 0.0% |
-| SED043814 |  | Q | 212 | 20.8% | 20.8% | 0.0% |
-| SED043703 |  | Q | 1,003 | 20.5% | 20.5% | 0.0% |
-| SED043909 |  | SSC | 729 | 19.9% | 19.9% | 0.0% |
-| SED043615 |  | SSC | 183 | 19.7% | 19.7% | 0.0% |
-| SED000438 |  | Q | 153 | 19.6% | 0.0% | 19.6% |
-| SED000438 |  | SSL | 153 | 19.6% | 0.0% | 19.6% |
-| SED043711 |  | SSC | 128 | 19.5% | 19.5% | 0.0% |
-| SED043378 |  | SSC | 185 | 19.5% | 19.5% | 0.0% |
-| SED000754 |  | SSC | 192 | 19.3% | 19.3% | 0.0% |
-| SED043874 |  | SSC | 122 | 18.9% | 18.9% | 0.0% |
-| SED043712 |  | SSC | 329 | 18.8% | 18.8% | 0.0% |
-| SED043961 |  | SSC | 729 | 18.8% | 18.8% | 0.0% |
-| SED043100 |  | SSL | 1,431 | 18.6% | 17.3% | 1.3% |
-| SED000857 |  | SSC | 135 | 17.8% | 17.8% | 0.0% |
-| SED043911 |  | SSC | 1,459 | 17.7% | 17.7% | 0.0% |
-| SED043559 |  | SSC | 104 | 17.3% | 17.3% | 0.0% |
-| SED043711 |  | SSL | 128 | 17.2% | 17.2% | 0.0% |
-| SED043402 |  | SSC | 261 | 16.5% | 16.5% | 0.0% |
-| SED043716 |  | SSC | 365 | 16.4% | 16.4% | 0.0% |
-| SED043668 |  | Q | 382 | 15.7% | 15.7% | 0.0% |
-| SED043757 |  | Q | 199 | 15.6% | 15.6% | 0.0% |
-| SED043177 |  | SSC | 456 | 15.6% | 15.6% | 0.0% |
-| SED000272 |  | Q | 6,075 | 15.5% | 2.6% | 13.0% |
-| SED043297 |  | SSC | 529 | 15.5% | 15.5% | 0.0% |
-| SED043111 |  | SSC | 273 | 15.4% | 15.4% | 0.0% |
-| SED043870 |  | SSC | 1,929 | 15.3% | 15.3% | 0.0% |
-| SED043432 |  | SSC | 11,689 | 15.1% | 15.1% | 0.0% |
-| SED000469 |  | SSC | 549 | 14.9% | 14.9% | 0.0% |
-| SED000140 |  | Q | 488 | 14.8% | 14.8% | 0.0% |
-| SED043789 |  | SSC | 152 | 14.5% | 14.5% | 0.0% |
-| SED043632 |  | SSC | 112 | 14.3% | 14.3% | 0.0% |
-| SED043977 |  | SSC | 2,556 | 14.1% | 14.1% | 0.0% |
+| grouping level | source dataset | temporal resolution | variable | flag variable | n total | usable count | problem count | issue count | usable rate | problem rate | issue rate |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| product_variable | all_release_sources | satellite | Q | Q_flag | 16,478,276 | 132,614 | 16,345,662 | 32,690,115 | 0.80% | 99.20% | 198.38% |
+| product_variable | all_release_sources | satellite | SSL | SSL_flag | 16,478,276 | 132,693 | 16,345,583 | 32,690,036 | 0.81% | 99.19% | 198.38% |
+| product_variable | all_release_sources | master | SSL | SSL_qc3 | 2,873,420 | 87 | 2,072,860 | 4,935,282 | 0.00% | 72.14% | 171.76% |
+| product_variable | all_release_sources | master | SSL | SSL_qc2 | 2,873,420 | 72,994 | 1,671,501 | 4,470,777 | 2.54% | 58.17% | 155.59% |
+| product_variable | all_release_sources | master | SSC | SSC_qc3 | 2,873,420 | 1,060,931 | 1,688,761 | 3,486,844 | 36.92% | 58.77% | 121.35% |
+| product_variable | all_release_sources | master | SSC | SSC_qc2 | 2,873,420 | 1,123,751 | 1,697,775 | 3,420,831 | 39.11% | 59.09% | 119.05% |
+| product_variable | all_release_sources | master | Q | Q_qc2 | 2,873,420 | 1,151,046 | 1,693,111 | 3,399,460 | 40.06% | 58.92% | 118.31% |
+| product_variable | all_release_sources | master | Q | Q_qc1 | 2,873,420 | 1,199,011 | 1,674,409 | 3,348,818 | 41.73% | 58.27% | 116.54% |
+| product_variable | all_release_sources | master | SSC | SSC_qc1 | 2,873,420 | 1,204,935 | 1,668,485 | 3,336,970 | 41.93% | 58.07% | 116.13% |
+| product_variable | all_release_sources | master | SSL | SSL_qc1 | 2,873,420 | 1,206,316 | 1,667,104 | 3,334,208 | 41.98% | 58.02% | 116.04% |
+| product_variable | all_release_sources | satellite | SSC | SSC_flag | 16,478,276 | 15,121,092 | 1,357,184 | 2,317,982 | 91.76% | 8.24% | 14.07% |
+| product_variable | all_release_sources | master | SSL | SSL_flag | 2,873,420 | 2,723,910 | 149,510 | 158,714 | 94.80% | 5.20% | 5.52% |
+| product_variable | all_release_sources | master | SSC | SSC_flag | 2,873,420 | 2,760,829 | 112,591 | 123,153 | 96.08% | 3.92% | 4.29% |
+| product_variable | all_release_sources | master | Q | Q_flag | 2,873,420 | 2,803,162 | 70,258 | 86,767 | 97.55% | 2.45% | 3.02% |
+| product_variable | all_release_sources | climatology | Q | Q_flag | 1,322 | 782 | 540 | 1,080 | 59.15% | 40.85% | 81.69% |
+| product_variable | all_release_sources | climatology | SSC | SSC_flag | 1,322 | 804 | 518 | 1,036 | 60.82% | 39.18% | 78.37% |
+| product_variable | all_release_sources | climatology | SSL | SSL_flag | 1,322 | 1,298 | 24 | 48 | 98.18% | 1.82% | 3.63% |
 
-## 图表建议
+## Stage Effectiveness
 
-- 正文 QC 概览：[figures/fig_qc_flag_distribution.png](figures/fig_qc_flag_distribution.png)
-- 正文分辨率对比：[figures/fig_qc_health_by_resolution.png](figures/fig_qc_health_by_resolution.png)
-- 时间变化讨论：[figures/fig_qc_yearly_problem_trends.png](figures/fig_qc_yearly_problem_trends.png) 和 [figures/fig_qc_missing_trends.png](figures/fig_qc_missing_trends.png)
-- 方法/补充材料：[figures/fig_qc_stage_summary.png](figures/fig_qc_stage_summary.png)
-- 补充材料热点诊断：[figures/fig_qc_top_problem_sources.png](figures/fig_qc_top_problem_sources.png) 和 [figures/fig_qc_top_problem_clusters.png](figures/fig_qc_top_problem_clusters.png)
+| temporal resolution | variable | qc stage | flag variable | n total | good count | bad count | not checked count | missing count | good rate | problem rate | missing rate |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| master | SSL | ssc_q_consistency | SSL_qc3 | 2,873,420 | 87 | 0 | 800,473 | 2,061,949 | 0.00% | 72.14% | 71.76% |
+| master | SSC | log_iqr | SSC_qc2 | 2,873,420 | 1,123,751 | 0 | 51,894 | 1,671,162 | 39.11% | 59.09% | 58.16% |
+| master | Q | log_iqr | Q_qc2 | 2,873,420 | 1,151,046 | 0 | 29,263 | 1,677,086 | 40.06% | 58.92% | 58.37% |
+| master | SSC | ssc_q_consistency | SSC_qc3 | 2,873,420 | 1,060,931 | 0 | 123,728 | 1,674,355 | 36.92% | 58.77% | 58.27% |
+| master | Q | physical_plausibility | Q_qc1 | 2,873,420 | 1,199,011 | 0 | 0 | 1,674,409 | 41.73% | 58.27% | 58.27% |
+| master | SSL | log_iqr | SSL_qc2 | 2,873,420 | 72,994 | 0 | 1,128,925 | 1,670,351 | 2.54% | 58.17% | 58.13% |
+| master | SSC | physical_plausibility | SSC_qc1 | 2,873,420 | 1,204,935 | 0 | 0 | 1,668,485 | 41.93% | 58.07% | 58.07% |
+| master | SSL | physical_plausibility | SSL_qc1 | 2,873,420 | 1,206,316 | 0 | 0 | 1,667,104 | 41.98% | 58.02% | 58.02% |
 
-## 输出数据索引
+## Flag Counts by Source
 
-- [tables/table_qc_flag_summary.csv](tables/table_qc_flag_summary.csv)
-- [tables/table_qc_health_kpis.csv](tables/table_qc_health_kpis.csv)
-- [tables/table_qc_stage_effectiveness.csv](tables/table_qc_stage_effectiveness.csv)
-- [tables/table_qc_issue_hotspots.csv](tables/table_qc_issue_hotspots.csv)
-- [tables/table_qc_yearly_trends.csv](tables/table_qc_yearly_trends.csv)
-- [tables/table_qc_flag_problem_clusters.csv](tables/table_qc_flag_problem_clusters.csv)
+| source dataset | source type | qc level | qc stage | temporal resolution | variable | flag variable | flag | meaning | count | percentage | n total |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| all_release_sources | all | final | final | master | Q | Q_flag | 0 | good | 2,803,162 | 97.55% | 2,873,420 |
+| all_release_sources | all | final | final | master | Q | Q_flag | 2 | suspect | 53,194 | 1.85% | 2,873,420 |
+| all_release_sources | all | final | final | master | Q | Q_flag | 3 | bad | 555 | 0.02% | 2,873,420 |
+| all_release_sources | all | final | final | master | Q | Q_flag | 9 | missing | 16,509 | 0.57% | 2,873,420 |
+| all_release_sources | all | stage | physical_plausibility | master | Q | Q_qc1 | 0 | pass | 1,199,011 | 41.73% | 2,873,420 |
+| all_release_sources | all | stage | physical_plausibility | master | Q | Q_qc1 | 9 | missing | 1,674,409 | 58.27% | 2,873,420 |
+| all_release_sources | all | stage | log_iqr | master | Q | Q_qc2 | 0 | pass | 1,151,046 | 40.06% | 2,873,420 |
+| all_release_sources | all | stage | log_iqr | master | Q | Q_qc2 | 2 | suspect | 16,025 | 0.56% | 2,873,420 |
+| all_release_sources | all | stage | log_iqr | master | Q | Q_qc2 | 8 | not_checked | 29,263 | 1.02% | 2,873,420 |
+| all_release_sources | all | stage | log_iqr | master | Q | Q_qc2 | 9 | missing | 1,677,086 | 58.37% | 2,873,420 |
+| all_release_sources | all | final | final | master | SSC | SSC_flag | 0 | good | 2,732,153 | 95.08% | 2,873,420 |
+| all_release_sources | all | final | final | master | SSC | SSC_flag | 1 | estimated | 28,676 | 1.00% | 2,873,420 |
+| all_release_sources | all | final | final | master | SSC | SSC_flag | 2 | suspect | 102,029 | 3.55% | 2,873,420 |
+| all_release_sources | all | final | final | master | SSC | SSC_flag | 9 | missing | 10,562 | 0.37% | 2,873,420 |
+| all_release_sources | all | stage | physical_plausibility | master | SSC | SSC_qc1 | 0 | pass | 1,204,935 | 41.93% | 2,873,420 |
+| all_release_sources | all | stage | physical_plausibility | master | SSC | SSC_qc1 | 9 | missing | 1,668,485 | 58.07% | 2,873,420 |
 
-## 可支撑的论文表述
+_Showing first 16 of 55 rows._
 
-- Q 数据整体质量较稳定，final good/usable 比例可作为发布级流量数据可靠性的核心证据。
-- SSC/SSL 的限制主要体现为可用观测覆盖不足，而不是大量 suspect/bad；因此讨论中应把质量异常和观测缺失分开表述。
-- source、cluster 热点表适合放入 supplement，用于说明少数数据源或站点簇对缺失/问题比例的贡献。
+## Flag Counts by Resolution
+
+| qc level | qc stage | temporal resolution | variable | flag variable | flag | meaning | count | percentage | n total |
+|---|---|---|---|---|---|---|---|---|---|
+| final | final | master | Q | Q_flag | 0 | good | 2,803,162 | 97.55% | 2,873,420 |
+| final | final | master | Q | Q_flag | 2 | suspect | 53,194 | 1.85% | 2,873,420 |
+| final | final | master | Q | Q_flag | 3 | bad | 555 | 0.02% | 2,873,420 |
+| final | final | master | Q | Q_flag | 9 | missing | 16,509 | 0.57% | 2,873,420 |
+| stage | physical_plausibility | master | Q | Q_qc1 | 0 | pass | 1,199,011 | 41.73% | 2,873,420 |
+| stage | physical_plausibility | master | Q | Q_qc1 | 9 | missing | 1,674,409 | 58.27% | 2,873,420 |
+| stage | log_iqr | master | Q | Q_qc2 | 0 | pass | 1,151,046 | 40.06% | 2,873,420 |
+| stage | log_iqr | master | Q | Q_qc2 | 2 | suspect | 16,025 | 0.56% | 2,873,420 |
+| stage | log_iqr | master | Q | Q_qc2 | 8 | not_checked | 29,263 | 1.02% | 2,873,420 |
+| stage | log_iqr | master | Q | Q_qc2 | 9 | missing | 1,677,086 | 58.37% | 2,873,420 |
+| final | final | master | SSC | SSC_flag | 0 | good | 2,732,153 | 95.08% | 2,873,420 |
+| final | final | master | SSC | SSC_flag | 1 | estimated | 28,676 | 1.00% | 2,873,420 |
+| final | final | master | SSC | SSC_flag | 2 | suspect | 102,029 | 3.55% | 2,873,420 |
+| final | final | master | SSC | SSC_flag | 9 | missing | 10,562 | 0.37% | 2,873,420 |
+| stage | physical_plausibility | master | SSC | SSC_qc1 | 0 | pass | 1,204,935 | 41.93% | 2,873,420 |
+| stage | physical_plausibility | master | SSC | SSC_qc1 | 9 | missing | 1,668,485 | 58.07% | 2,873,420 |
+
+_Showing first 16 of 55 rows._
+
+## Flag Counts by Variable
+
+| qc level | qc stage | variable | flag variable | flag | meaning | count | n total | percentage |
+|---|---|---|---|---|---|---|---|---|
+| final | final | Q | Q_flag | 0 | good | 2,936,558 | 19,353,018 | 15.17% |
+| final | final | Q | Q_flag | 2 | suspect | 54,403 | 19,351,696 | 0.28% |
+| final | final | Q | Q_flag | 3 | bad | 555 | 2,873,420 | 0.02% |
+| final | final | Q | Q_flag | 9 | missing | 16,361,502 | 19,353,018 | 84.54% |
+| final | final | SSC | SSC_flag | 0 | good | 17,854,004 | 19,353,018 | 92.25% |
+| final | final | SSC | SSC_flag | 1 | estimated | 28,721 | 2,874,742 | 1.00% |
+| final | final | SSC | SSC_flag | 2 | suspect | 498,415 | 19,351,696 | 2.58% |
+| final | final | SSC | SSC_flag | 9 | missing | 971,878 | 19,353,018 | 5.02% |
+| final | final | SSL | SSL_flag | 0 | good | 209,670 | 19,353,018 | 1.08% |
+| final | final | SSL | SSL_flag | 1 | estimated | 2,648,231 | 2,873,420 | 92.16% |
+| final | final | SSL | SSL_flag | 2 | suspect | 140,881 | 19,351,696 | 0.73% |
+| final | final | SSL | SSL_flag | 3 | bad | 555 | 2,873,420 | 0.02% |
+| final | final | SSL | SSL_flag | 9 | missing | 16,353,681 | 19,353,018 | 84.50% |
+| stage | log_iqr | Q | Q_qc2 | 0 | pass | 1,151,046 | 2,873,420 | 40.06% |
+| stage | log_iqr | Q | Q_qc2 | 2 | suspect | 16,025 | 2,873,420 | 0.56% |
+| stage | log_iqr | Q | Q_qc2 | 8 | not_checked | 29,263 | 2,873,420 | 1.02% |
+
+_Showing first 16 of 39 rows._
+
+## Problem Clusters
+
+| cluster uid | cluster id | grouping level | source dataset | temporal resolution | variable | flag variable | n total | good count | derived count | suspect count | bad count | not checked count | missing count | usable count | problem count | issue count | good rate | derived rate | suspect rate | bad rate | not checked rate | missing rate | usable rate | problem rate | issue rate |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+|  |  | product_variable | all_release_sources | satellite | Q | Q_flag | 16,478,276 | 132,614 | 0 | 1,209 | 0 | 0 | 16,344,453 | 132,614 | 16,345,662 | 32,690,115 | 0.80% | 0% | 0.01% | 0% | 0% | 99.19% | 0.80% | 99.20% | 198.38% |
+|  |  | product_variable | all_release_sources | satellite | SSL | SSL_flag | 16,478,276 | 132,693 | 0 | 1,130 | 0 | 0 | 16,344,453 | 132,693 | 16,345,583 | 32,690,036 | 0.81% | 0% | 0.01% | 0% | 0% | 99.19% | 0.81% | 99.19% | 198.38% |
+|  |  | product_variable | all_release_sources | master | SSL | SSL_qc3 | 2,873,420 | 87 | 0 | 10,911 | 0 | 800,473 | 2,061,949 | 87 | 2,072,860 | 4,935,282 | 0.00% | 0% | 0.38% | 0% | 27.86% | 71.76% | 0.00% | 72.14% | 171.76% |
+|  |  | product_variable | all_release_sources | master | SSL | SSL_qc2 | 2,873,420 | 72,994 | 0 | 1,150 | 0 | 1,128,925 | 1,670,351 | 72,994 | 1,671,501 | 4,470,777 | 2.54% | 0% | 0.04% | 0% | 39.29% | 58.13% | 2.54% | 58.17% | 155.59% |
+|  |  | product_variable | all_release_sources | master | SSC | SSC_qc3 | 2,873,420 | 1,060,931 | 0 | 14,406 | 0 | 123,728 | 1,674,355 | 1,060,931 | 1,688,761 | 3,486,844 | 36.92% | 0% | 0.50% | 0% | 4.31% | 58.27% | 36.92% | 58.77% | 121.35% |
+|  |  | product_variable | all_release_sources | master | SSC | SSC_qc2 | 2,873,420 | 1,123,751 | 0 | 26,613 | 0 | 51,894 | 1,671,162 | 1,123,751 | 1,697,775 | 3,420,831 | 39.11% | 0% | 0.93% | 0% | 1.81% | 58.16% | 39.11% | 59.09% | 119.05% |
+|  |  | product_variable | all_release_sources | master | Q | Q_qc2 | 2,873,420 | 1,151,046 | 0 | 16,025 | 0 | 29,263 | 1,677,086 | 1,151,046 | 1,693,111 | 3,399,460 | 40.06% | 0% | 0.56% | 0% | 1.02% | 58.37% | 40.06% | 58.92% | 118.31% |
+|  |  | product_variable | all_release_sources | master | Q | Q_qc1 | 2,873,420 | 1,199,011 | 0 | 0 | 0 | 0 | 1,674,409 | 1,199,011 | 1,674,409 | 3,348,818 | 41.73% | 0% | 0% | 0% | 0% | 58.27% | 41.73% | 58.27% | 116.54% |
+|  |  | product_variable | all_release_sources | master | SSC | SSC_qc1 | 2,873,420 | 1,204,935 | 0 | 0 | 0 | 0 | 1,668,485 | 1,204,935 | 1,668,485 | 3,336,970 | 41.93% | 0% | 0% | 0% | 0% | 58.07% | 41.93% | 58.07% | 116.13% |
+|  |  | product_variable | all_release_sources | master | SSL | SSL_qc1 | 2,873,420 | 1,206,316 | 0 | 0 | 0 | 0 | 1,667,104 | 1,206,316 | 1,667,104 | 3,334,208 | 41.98% | 0% | 0% | 0% | 0% | 58.02% | 41.98% | 58.02% | 116.04% |
+|  |  | product_variable | all_release_sources | climatology | Q | Q_flag | 1,322 | 782 | 0 | 0 | 0 | 0 | 540 | 782 | 540 | 1,080 | 59.15% | 0% | 0% | 0% | 0% | 40.85% | 59.15% | 40.85% | 81.69% |
+|  |  | product_variable | all_release_sources | climatology | SSC | SSC_flag | 1,322 | 759 | 45 | 0 | 0 | 0 | 518 | 804 | 518 | 1,036 | 57.41% | 3.40% | 0% | 0% | 0% | 39.18% | 60.82% | 39.18% | 78.37% |
+|  |  | product_variable | all_release_sources | satellite | SSC | SSC_flag | 16,478,276 | 15,121,092 | 0 | 396,386 | 0 | 0 | 960,798 | 15,121,092 | 1,357,184 | 2,317,982 | 91.76% | 0% | 2.41% | 0% | 0% | 5.83% | 91.76% | 8.24% | 14.07% |
+|  |  | product_variable | all_release_sources | master | SSL | SSL_flag | 2,873,420 | 75,679 | 2,648,231 | 139,751 | 555 | 0 | 9,204 | 2,723,910 | 149,510 | 158,714 | 2.63% | 92.16% | 4.86% | 0.02% | 0% | 0.32% | 94.80% | 5.20% | 5.52% |
+|  |  | product_variable | all_release_sources | master | SSC | SSC_flag | 2,873,420 | 2,732,153 | 28,676 | 102,029 | 0 | 0 | 10,562 | 2,760,829 | 112,591 | 123,153 | 95.08% | 1.00% | 3.55% | 0% | 0% | 0.37% | 96.08% | 3.92% | 4.29% |
+|  |  | product_variable | all_release_sources | climatology | SSL | SSL_flag | 1,322 | 1,298 | 0 | 0 | 0 | 0 | 24 | 1,298 | 24 | 48 | 98.18% | 0% | 0% | 0% | 0% | 1.82% | 98.18% | 1.82% | 3.63% |
+
+_Showing first 16 of 17 rows._
+
+## Yearly Trends
+
+| year | temporal resolution | variable | issue count | n total | issue rate |
+|---|---|---|---|---|---|
+| all | climatology | Q | 1,322 | 2,644 | 50% |
+| all | climatology | SSC | 1,322 | 3,966 | 33.33% |
+| all | climatology | SSL | 1,322 | 2,644 | 50% |
+| all | master | Q | 8,620,260 | 28,734,200 | 30% |
+| all | master | SSC | 11,493,680 | 40,227,880 | 28.57% |
+| all | master | SSL | 11,493,680 | 43,101,300 | 26.67% |
+| all | satellite | Q | 16,478,276 | 49,434,828 | 33.33% |
+| all | satellite | SSC | 16,478,276 | 49,434,828 | 33.33% |
+| all | satellite | SSL | 16,478,276 | 49,434,828 | 33.33% |
+
+## Interpretation Notes
+
+- `good_rate` and `usable_rate` answer different questions; estimated or derived values can be usable even when not strictly good.
+- Stage QC rows are reported only for `_qc*` variables that exist in the release NetCDF products.
+- Satellite QC should be read together with satellite variable coverage because many validation rows are intentionally empty for some variables.
+
+## Figures
+
+- `fig_qc_flag_by_source_type.png`: `output_other/stats_release/qc_flags/figures/fig_qc_flag_by_source_type.png`
+- `fig_qc_flag_distribution.png`: `output_other/stats_release/qc_flags/figures/fig_qc_flag_distribution.png`
+- `fig_qc_health.png`: `output_other/stats_release/qc_flags/figures/fig_qc_health.png`
+- `fig_qc_health_by_resolution.png`: `output_other/stats_release/qc_flags/figures/fig_qc_health_by_resolution.png`
+- `fig_qc_missing_trends.png`: `output_other/stats_release/qc_flags/figures/fig_qc_missing_trends.png`
+- `fig_qc_stage_summary.png`: `output_other/stats_release/qc_flags/figures/fig_qc_stage_summary.png`
+- `fig_qc_top_problem_clusters.png`: `output_other/stats_release/qc_flags/figures/fig_qc_top_problem_clusters.png`
+- `fig_qc_top_problem_sources.png`: `output_other/stats_release/qc_flags/figures/fig_qc_top_problem_sources.png`
+- `fig_qc_yearly_problem_trends.png`: `output_other/stats_release/qc_flags/figures/fig_qc_yearly_problem_trends.png`

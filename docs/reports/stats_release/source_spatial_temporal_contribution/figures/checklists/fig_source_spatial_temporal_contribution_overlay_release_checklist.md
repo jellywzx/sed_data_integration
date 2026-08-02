@@ -1,0 +1,24 @@
+# fig_source_spatial_temporal_contribution_overlay_release ESSD figure checklist
+
+- Final PDF: `fig_source_spatial_temporal_contribution_overlay_release.pdf`
+- Final PNG: `fig_source_spatial_temporal_contribution_overlay_release.png`
+- Formats: PDF vector preferred; PNG bitmap companion
+- PNG dpi: 300
+- Intended size: 27.4 x 17.8 cm (10.8 x 7.0 in)
+- PDF page size: 706.298 x 481.191 pts
+- PDF file size: 0.02 MB
+- PNG file size: 0.24 MB
+- Width >= 8 cm: yes
+- Font family: DejaVu Sans
+- Font consistency: one sans-serif family set in Matplotlib rcParams
+- Font embedding status: all reported fonts embedded
+- Colorblind-safe status: Okabe-Ito palette (blue #0072B2 + orange #E69F00)
+- Coblis/equivalent review: requires manual Coblis/equivalent review after export
+- Legend completeness: colors, bar fills, line styles, and point markers explained
+- Panel labels: N/A (single-panel figure with twin axes)
+- Units and ranges: counts as comma-separated integers; years as four-digit integers
+- Dense point layers: N/A (bar chart / h-line figure)
+- Plotting script: `plot_fig_source_spatial_temporal_contribution_overlay_release.py`
+- Plotting-data availability: 1 CSV files
+- Export date: 2026-06-30
+- Plotting data file: `fig_source_spatial_temporal_contribution_overlay_release_main_source_data.csv`

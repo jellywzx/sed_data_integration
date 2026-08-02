@@ -62,7 +62,7 @@ sed_reference_release_minimal/
 └── Documentation and validation files
     ├── README.md
     ├── release_inventory.csv
-    └── minimal_release_validation_report.csv
+    └── release_validation_report.csv
 ```
 
 The minimal package can be understood as a reduced relational data product:
@@ -105,7 +105,7 @@ Catalog and documentation inventory:
 | `source_station_catalog.csv` | 3,775 data rows | 3,775 unique `source_station_uid` values from 17 source datasets | 0.520 MiB |
 | `source_dataset_catalog.csv` | 17 data rows | 17 source datasets; `n_source_stations` sums to 3,775 | 0.132 MiB |
 | `release_inventory.csv` | 6 data rows | Expected minimal package inputs and copy status | 0.001 MiB |
-| `minimal_release_validation_report.csv` | 22 data rows | Structure and variable-retention validation checks | 0.005 MiB |
+| `release_validation_report.csv` | 22 data rows | Structure and variable-retention validation checks | 0.005 MiB |
 | `README.md` | 1 document | Minimal package quick description | 488 bytes |
 
 Station catalog coverage and record counts by resolution:
@@ -676,9 +676,9 @@ Actual generated-file statistics:
 
 ---
 
-## 7.3 `minimal_release_validation_report.csv`
+## 7.3 `release_validation_report.csv`
 
-`minimal_release_validation_report.csv` records structure-level validation checks for the minimal package.
+`release_validation_report.csv` records structure-level validation checks for the minimal package.
 
 The validation report checks whether:
 
@@ -986,7 +986,7 @@ source_dataset_catalog.csv
 
 README.md
 release_inventory.csv
-minimal_release_validation_report.csv
+release_validation_report.csv
     Documentation, inventory, and validation files for public distribution.
 ```
 

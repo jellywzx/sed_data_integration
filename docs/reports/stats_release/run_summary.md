@@ -1,16 +1,16 @@
 # Release Stats Run Summary
 
 - Release directory: `output/sed_reference_release`
-- Run started UTC: `2026-06-19T11:05:33+00:00`
-- Run finished UTC: `2026-06-19T11:06:44+00:00`
-- Release fingerprint: `7287bc69a8629577e700ac4f9855569abe247c5488e1a9c270981ce89ead9dc9`
-- Stats script fingerprint: `cdd86616435a53cc4b8c95b3dbabd8b7c075adf6f9f3b304695a51024bee8994`
+- Run started UTC: `2026-08-01T17:10:53+00:00`
+- Run finished UTC: `2026-08-01T17:12:14+00:00`
+- Release fingerprint: `a86853e582e3c6ea155a99453a00243ef2f889b4c58b2a4eeda089fa2b9e1107`
+- Stats script fingerprint: `004f9adaf6ed337361fbb3f9ca413dacc9fb7266f22756a659561e62a052ed9b`
 - Clean output before run: `True`
-- Summary CSV: `$WORKSPACE/output_other/stats_release_full/run_summary.csv`
-- Manifest CSV: `$WORKSPACE/output_other/stats_release_full/run_manifest.csv`
-- Manifest JSON: `$WORKSPACE/output_other/stats_release_full/run_manifest.json`
-- Legacy parity manifest: `$WORKSPACE/output_other/stats_release_full/parity_manifest.csv`
-- inventory: FAILED (code 2)
+- Summary CSV: `output_other/stats_release/run_summary.csv`
+- Manifest CSV: `output_other/stats_release/run_manifest.csv`
+- Manifest JSON: `output_other/stats_release/run_manifest.json`
+- Legacy parity manifest: `output_other/stats_release/parity_manifest.csv`
+- inventory: OK
 - spatial: OK
 - temporal: OK
 - source_dataset_layers: OK
