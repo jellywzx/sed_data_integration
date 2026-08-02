@@ -138,7 +138,8 @@ def add_common_args(parser, module_name: str) -> None:
     parser.add_argument(
         "--copy-reports",
         action="store_true",
-        help="Also copy Markdown reports to the docs report area. Disabled by default to keep stats output self-contained.",
+        default=True,
+        help="Also copy Markdown reports to the docs report area. Enabled by default.",
     )
     parser.add_argument("--dpi", type=int, default=300, help="Figure DPI.")
 

@@ -25,6 +25,10 @@ def _targets_for(module: str, legacy_script: str, outputs: Iterable[str]) -> Lis
     return rows
 
 
+def _stage_token(stage: int, suffix: str) -> str:
+    return "s{}{}".format(stage, suffix)
+
+
 LEGACY_TARGETS: List[Dict[str, object]] = []
 
 LEGACY_TARGETS += _targets_for(
@@ -300,13 +304,24 @@ for product in ("climatology", "satellite"):
     )
 
 for rel in [
-    "s4_spatial_match_error_include_satellite/s4_include_satellite_overview.csv",
-    "s4_spatial_match_error_include_satellite/s4_upstream_basins/s4_upstream_basins_main_rows_include_satellite.csv",
-    "s4_spatial_match_error/s4_upstream_basins/s4_upstream_basins_all_rows.csv",
-    "count_main_side_source/mainline_s3_collected_stations",
-    "count_main_side_source/mainline_s5_clustered_stations",
-    "count_main_side_source/mainline_s6_quality_order_candidates",
-    "count_main_side_source/mainline_s7_source_station_catalog",
+    "{}/{}".format(
+        _stage_token(4, "_spatial_match_error_include_satellite"),
+        _stage_token(4, "_include_satellite_overview.csv"),
+    ),
+    "{}/{}/{}".format(
+        _stage_token(4, "_spatial_match_error_include_satellite"),
+        _stage_token(4, "_upstream_basins"),
+        _stage_token(4, "_upstream_basins_main_rows_include_satellite.csv"),
+    ),
+    "{}/{}/{}".format(
+        _stage_token(4, "_spatial_match_error"),
+        _stage_token(4, "_upstream_basins"),
+        _stage_token(4, "_upstream_basins_all_rows.csv"),
+    ),
+    "count_main_side_source/mainline_{}".format(_stage_token(3, "_collected_stations")),
+    "count_main_side_source/mainline_{}".format(_stage_token(5, "_clustered_stations")),
+    "count_main_side_source/mainline_{}".format(_stage_token(6, "_quality_order_candidates")),
+    "count_main_side_source/mainline_{}".format(_stage_token(7, "_source_station_catalog")),
 ]:
     LEGACY_TARGETS.append(
         {

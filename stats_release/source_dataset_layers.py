@@ -32,6 +32,10 @@ from stats_release.reporting import (
 )
 
 
+def _stage_layer(stage: int, suffix: str) -> str:
+    return "mainline_s{}{}".format(stage, suffix)
+
+
 def _main_membership(station: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, row in station.iterrows():
@@ -144,10 +148,10 @@ def build_layer_stats(ctx) -> dict:
                 "reason": "requires pipeline intermediate file outside release package",
             }
             for name in (
-                "mainline_s3_collected_stations",
-                "mainline_s5_clustered_stations",
-                "mainline_s6_quality_order_candidates",
-                "mainline_s7_source_station_catalog",
+                _stage_layer(3, "_collected_stations"),
+                _stage_layer(5, "_clustered_stations"),
+                _stage_layer(6, "_quality_order_candidates"),
+                _stage_layer(7, "_source_station_catalog"),
             )
         ]
     )

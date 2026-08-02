@@ -604,6 +604,10 @@ def build_detailed_qc_report(
     return safe_lines(lines)
 
 
+def build_article_qc_flag_report(ctx, stats: dict, tables_dir: Path, figures_dir: Path, report_dir: Path) -> list[str]:
+    return build_detailed_qc_report(ctx, stats, tables_dir, figures_dir, report_dir)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Build release-only QC flag statistics.")
     add_common_args(parser, "qc_flags")
@@ -650,7 +654,8 @@ def main(argv=None) -> int:
     md_path = ctx.output_path("reports", "qc_flag_stats.md")
     report_lines = build_detailed_qc_report(ctx, stats, tables_dir, ctx.figures_dir(), reports_dir)
     write_markdown(report_lines, md_path)
-    write_markdown(report_lines, ctx.output_path("article_qc_flag_report.md"))
+    article_path = ctx.output_path("article_qc_flag_report.md")
+    write_markdown(build_article_qc_flag_report(ctx, stats, tables_dir, ctx.figures_dir(), reports_dir), article_path)
     for product in ("climatology", "satellite"):
         product_report_dir = ctx.output_path("reports", product, "x").parent
         write_markdown(
@@ -659,6 +664,7 @@ def main(argv=None) -> int:
         )
     try:
         copy_report_to_docs(md_path, bool(args.copy_reports))
+        copy_report_to_docs(article_path, bool(args.copy_reports))
     except Exception:
         pass
     print("Wrote QC flag stats to {}".format(tables_dir))

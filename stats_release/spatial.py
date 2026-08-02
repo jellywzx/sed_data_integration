@@ -47,7 +47,11 @@ from stats_release.reporting import (
     append_figure_index,
     append_table_section,
     display_path,
+    fmt_float,
     fmt_int,
+    fmt_pct,
+    markdown_table,
+    metric_value,
     safe_lines,
     sorted_markdown_table,
 )
@@ -643,6 +647,216 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         plt.close(fig)
 
 
+def build_article_spatial_summary(stats: dict) -> list[str]:
+    summary = stats.get("table_spatial_coverage_summary", pd.DataFrame())
+    by_resolution = stats.get("table_spatial_coverage_by_resolution", pd.DataFrame())
+    by_region = stats.get("table_spatial_coverage_by_region", pd.DataFrame())
+    by_country = stats.get("table_spatial_coverage_by_country", pd.DataFrame())
+    by_source = stats.get("table_spatial_coverage_by_source", pd.DataFrame())
+    region_resolution = stats.get("table_spatial_coverage_by_region_resolution", pd.DataFrame())
+    upstream = stats.get("table_upstream_area_distribution", pd.DataFrame())
+    satellite = stats.get("table_satellite_validation_spatial_coverage", pd.DataFrame())
+    polygon_layers = stats.get("table_basin_polygon_layers", pd.DataFrame())
+    unknown_geo = stats.get("table_unknown_country_region_clusters", pd.DataFrame())
+
+    def metric(name: str, default: object = "") -> object:
+        return metric_value(summary, name, default)
+
+    def resolution_value(resolution: str, column: str) -> object:
+        if by_resolution.empty or "resolution" not in by_resolution.columns or column not in by_resolution.columns:
+            return 0
+        hit = by_resolution[by_resolution["resolution"].astype(str).eq(resolution)]
+        return hit.iloc[0][column] if not hit.empty else 0
+
+    total_records = (
+        pd.to_numeric(by_resolution.get("record_count", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()
+        if not by_resolution.empty
+        else 0
+    )
+    resolution_table = by_resolution.copy()
+    if not resolution_table.empty:
+        resolution_table["record_share_percent"] = pd.to_numeric(
+            resolution_table.get("record_count", 0), errors="coerce"
+        ).fillna(0).map(lambda value: 100.0 * value / total_records if total_records else 0.0)
+
+    bin_rows = upstream[upstream.get("section", pd.Series(dtype=str)).astype(str).eq("bin")].copy() if not upstream.empty else pd.DataFrame()
+    if not bin_rows.empty:
+        bin_rows["share_percent"] = pd.to_numeric(bin_rows.get("fraction_of_valid_area_clusters", 0), errors="coerce").fillna(0) * 100.0
+
+    if not by_source.empty:
+        top_sources = by_source.head(5)
+        source_text = "; ".join(
+            "{}: {} clusters, {} records".format(
+                row.get("source_name", ""),
+                fmt_int(row.get("cluster_count", 0)),
+                fmt_int(row.get("record_count", 0)),
+            )
+            for _, row in top_sources.iterrows()
+        )
+    else:
+        source_text = "NA"
+
+    if not satellite.empty:
+        satellite_text = "The satellite-validation product contains {} station-resolution rows linked to {} clusters.".format(
+            fmt_int(metric("satellite_station_rows")),
+            fmt_int(metric("satellite_linked_cluster_count")),
+        )
+    else:
+        satellite_text = "The satellite-validation catalog was not available for this run."
+
+    total_clusters = pd.to_numeric(pd.Series([metric("final_cluster_count", 0)]), errors="coerce").fillna(0).iloc[0]
+    unknown_country = pd.to_numeric(pd.Series([metric("unknown_country_cluster_count", 0)]), errors="coerce").fillna(0).iloc[0]
+    unknown_note = ""
+    if total_clusters and 100.0 * unknown_country / total_clusters > 20.0:
+        unknown_note = (
+            "\n\nNote for manuscript drafting: country/region fields remain incomplete for a large fraction of "
+            "clusters. Avoid strong regional coverage claims until release geography enrichment is reviewed."
+        )
+
+    lines = [
+        "# S8 spatial coverage statistics for ESSD",
+        "",
+        "## Manuscript-ready summary",
+        "",
+        (
+            "The S8 release contains {total} final main-product clusters. Resolution-specific coverage is "
+            "{daily} daily clusters, {monthly} monthly clusters, and {annual} annual clusters. Basin assignment "
+            "resolved {resolved} clusters ({resolved_pct}), while {unresolved} clusters ({unresolved_pct}) remain "
+            "unresolved and {unknown} clusters ({unknown_pct}) have unknown or other basin status. The published "
+            "basin sidecar contains polygons for {polygons} clusters ({polygon_pct})."
+        ).format(
+            total=fmt_int(metric("final_cluster_count")),
+            daily=fmt_int(resolution_value("daily", "cluster_count")),
+            monthly=fmt_int(resolution_value("monthly", "cluster_count")),
+            annual=fmt_int(resolution_value("annual", "cluster_count")),
+            resolved=fmt_int(metric("resolved_cluster_count")),
+            resolved_pct=fmt_pct(metric("resolved_cluster_percent")),
+            unresolved=fmt_int(metric("unresolved_cluster_count")),
+            unresolved_pct=fmt_pct(metric("unresolved_cluster_percent")),
+            unknown=fmt_int(metric("unknown_status_cluster_count")),
+            unknown_pct=fmt_pct(metric("unknown_status_cluster_percent")),
+            polygons=fmt_int(metric("basin_polygon_cluster_count")),
+            polygon_pct=fmt_pct(metric("basin_polygon_cluster_percent")),
+        ),
+        "",
+        (
+            "The main-product coordinates span {lat_min} to {lat_max} degrees latitude and {lon_min} to {lon_max} "
+            "degrees longitude. Valid upstream basin areas are available for {area_count} clusters; the median area "
+            "is {area_median} km2, with an interquartile range of {area_p25}-{area_p75} km2 and a maximum of "
+            "{area_max} km2."
+        ).format(
+            lat_min=fmt_float(metric("latitude_min")),
+            lat_max=fmt_float(metric("latitude_max")),
+            lon_min=fmt_float(metric("longitude_min")),
+            lon_max=fmt_float(metric("longitude_max")),
+            area_count=fmt_int(metric("upstream_area_valid_cluster_count")),
+            area_median=fmt_float(metric("upstream_area_median")),
+            area_p25=fmt_float(metric("upstream_area_p25")),
+            area_p75=fmt_float(metric("upstream_area_p75")),
+            area_max=fmt_float(metric("upstream_area_max")),
+        ),
+        "",
+        "Main source contributions by cluster count: {}".format(source_text),
+        "",
+        satellite_text + unknown_note,
+        "",
+        "## Key Metrics",
+        "",
+        "- Final clusters: {}".format(fmt_int(metric("final_cluster_count"))),
+        "- Station catalog rows: {}".format(fmt_int(metric("station_catalog_rows"))),
+        "- Main-product record count: {}".format(fmt_int(total_records)),
+        "- Basin-resolved clusters: {} ({})".format(fmt_int(metric("resolved_cluster_count")), fmt_pct(metric("resolved_cluster_percent"))),
+        "- Published basin polygons: {} ({})".format(fmt_int(metric("basin_polygon_cluster_count")), fmt_pct(metric("basin_polygon_cluster_percent"))),
+        "- Unknown country clusters: {}".format(fmt_int(metric("unknown_country_cluster_count"))),
+        "",
+        "## Resolution Coverage",
+        "",
+        markdown_table(
+            resolution_table,
+            columns=["resolution", "source_station_resolution_rows", "cluster_count", "record_count", "record_share_percent", "country_count"],
+            headers={
+                "resolution": "Resolution",
+                "source_station_resolution_rows": "Station rows",
+                "cluster_count": "Clusters",
+                "record_count": "Records",
+                "record_share_percent": "Record share",
+                "country_count": "Countries",
+            },
+            max_rows=8,
+        ),
+        "",
+        "Resolution-specific records are uneven, so spatial coverage should be interpreted together with temporal record volume.",
+        "",
+        "## Upstream Basin Area",
+        "",
+        markdown_table(
+            bin_rows,
+            columns=["label", "cluster_count", "share_percent"],
+            headers={"label": "Area bin", "cluster_count": "Clusters", "share_percent": "Share of valid-area clusters"},
+            max_rows=12,
+        ),
+        "",
+        "## Geographic Hotspots",
+        "",
+        "### Regions by Cluster Count",
+        "",
+        sorted_markdown_table(by_region, columns=["continent_region", "cluster_count", "record_count", "country_count"], sort_by="cluster_count", max_rows=10),
+        "",
+        "### Countries by Cluster Count",
+        "",
+        sorted_markdown_table(by_country, columns=["country", "iso_a3", "continent_region", "cluster_count", "record_count"], sort_by="cluster_count", max_rows=15),
+        "",
+        "### Region-Resolution Record Hotspots",
+        "",
+        sorted_markdown_table(region_resolution, columns=["continent_region", "resolution", "cluster_count", "record_count"], sort_by="record_count", max_rows=15),
+        "",
+        "## Source Spatial Contribution",
+        "",
+        sorted_markdown_table(by_source, columns=["source_name", "cluster_count", "source_station_count", "record_count", "available_resolutions"], sort_by="cluster_count", max_rows=12),
+        "",
+        "The cluster-based and record-based rankings answer different questions: the former describes spatial footprint, while the latter describes record volume.",
+        "",
+        "## Satellite Validation Spatial Coverage",
+        "",
+        sorted_markdown_table(satellite, columns=["source", "resolution", "satellite_station_count", "linked_cluster_count", "record_count"], sort_by="record_count", max_rows=12),
+        "",
+        "## Basin Polygon Layers",
+        "",
+        sorted_markdown_table(polygon_layers, columns=["file_name", "layer_name", "feature_count"], sort_by="feature_count", max_rows=12),
+        "",
+        "## Diagnostics and Limitations",
+        "",
+        "- Unknown country/region rows written for review: {}".format(fmt_int(len(unknown_geo))),
+        "- Regional summaries depend on release catalog geography; unknown geography should be reviewed before strong continent/country claims.",
+        "- Cluster counts by source are not additive across sources because multiple datasets can contribute to the same merged cluster.",
+        "",
+        "## Output Tables",
+        "",
+        "- `tables/table_spatial_coverage_summary.csv`",
+        "- `tables/table_spatial_coverage_by_resolution.csv`",
+        "- `tables/table_spatial_coverage_by_region.csv`",
+        "- `tables/table_spatial_coverage_by_country.csv`",
+        "- `tables/table_spatial_coverage_by_source.csv`",
+        "- `tables/table_spatial_coverage_by_region_source.csv`",
+        "- `tables/table_spatial_coverage_by_region_resolution.csv`",
+        "- `tables/table_upstream_area_distribution.csv`",
+        "- `tables/table_satellite_validation_spatial_coverage.csv`",
+        "- `tables/table_unknown_country_region_clusters.csv`",
+        "",
+        "## Figure Suggestions",
+        "",
+        "- Main text: `fig_spatial_coverage_by_resolution`, `fig_top_countries_by_clusters`, and `fig_upstream_area_distribution`.",
+        "- Supplement: source contribution, basin status, and satellite-validation spatial figures.",
+        "",
+        "## Manuscript-Usable Statements",
+        "",
+        "- The release provides broad river-basin coverage, but regional completeness should be interpreted together with unresolved basin and unknown-geography diagnostics.",
+        "- Polygon availability provides a direct release-side indicator of basin sidecar coverage.",
+        "- Source rankings should separate spatial footprint from record-volume contribution.",
+    ]
+    return safe_lines(lines)
+
+
 def build_detailed_spatial_report(ctx, stats: dict, tables_dir: Path, figures_dir: Path, report_dir: Path) -> list[str]:
     headline = stats.get("headline", pd.DataFrame())
     summary = stats.get("table_spatial_coverage_summary", pd.DataFrame())
@@ -817,9 +1031,11 @@ def main(argv=None) -> int:
     md_path = ctx.output_path("reports", "spatial_coverage_stats.md")
     report_lines = build_detailed_spatial_report(ctx, stats, tables_dir, ctx.figures_dir(), reports_dir)
     write_markdown(report_lines, md_path)
-    write_markdown(report_lines, ctx.output_path("article_spatial_coverage_summary.md"))
+    article_path = ctx.output_path("article_spatial_coverage_summary.md")
+    write_markdown(build_article_spatial_summary(stats), article_path)
     try:
         copy_report_to_docs(md_path, bool(args.copy_reports))
+        copy_report_to_docs(article_path, bool(args.copy_reports))
     except Exception:
         pass
     print("Wrote spatial stats to {}".format(tables_dir))

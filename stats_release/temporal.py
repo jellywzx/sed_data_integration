@@ -49,7 +49,9 @@ from stats_release.reporting import (
     append_figure_index,
     append_table_section,
     display_path,
+    fmt_float,
     fmt_int,
+    markdown_table,
     safe_lines,
     sorted_markdown_table,
 )
@@ -666,6 +668,280 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
         plt.close(fig)
 
 
+def _article_resolution_row(summary: pd.DataFrame, resolution: str) -> dict:
+    if summary.empty or "resolution" not in summary.columns:
+        return {}
+    hit = summary[summary["resolution"].astype(str).eq(resolution)]
+    return hit.iloc[0].to_dict() if not hit.empty else {}
+
+
+def _year_from_value(value: object) -> object:
+    text = clean_text(value)
+    if not text:
+        return ""
+    try:
+        return int(pd.Timestamp(text).year)
+    except Exception:
+        try:
+            return int(float(text))
+        except Exception:
+            return text
+
+
+def _span_years(*frames: pd.DataFrame) -> tuple:
+    years = []
+    for frame in frames:
+        if frame is None or frame.empty:
+            continue
+        for col in ("first_year", "last_year"):
+            if col in frame.columns:
+                years.extend(pd.to_numeric(frame[col], errors="coerce").dropna().astype(int).tolist())
+        for col in ("first_date", "last_date", "time_start", "time_end"):
+            if col in frame.columns:
+                years.extend(_year_from_value(value) for value in frame[col].tolist())
+    years = [int(year) for year in years if isinstance(year, (int, np.integer))]
+    return (min(years), max(years)) if years else ("", "")
+
+
+def _peak_active_text(by_year: pd.DataFrame, resolution: str) -> str:
+    if by_year.empty or "resolution" not in by_year.columns:
+        return "NA"
+    subset = by_year[by_year["resolution"].astype(str).eq(resolution)].copy()
+    if subset.empty or "active_units" not in subset.columns:
+        return "NA"
+    subset["active_units"] = pd.to_numeric(subset["active_units"], errors="coerce").fillna(0)
+    row = subset.sort_values(["active_units", "year"], ascending=[False, True]).iloc[0]
+    return "{} active units in {}".format(fmt_int(row.get("active_units", 0)), row.get("year", ""))
+
+
+def build_article_temporal_summary(stats: dict) -> list[str]:
+    summary = stats.get("temporal_coverage_by_resolution", pd.DataFrame())
+    by_year = stats.get("active_units_by_year", pd.DataFrame())
+    clim_summary = stats.get("climatology_temporal_summary", pd.DataFrame())
+    sat_summary = stats.get("satellite_temporal_summary", pd.DataFrame())
+    first_year, last_year = _span_years(summary, clim_summary, sat_summary)
+
+    daily = _article_resolution_row(summary, "daily")
+    monthly = _article_resolution_row(summary, "monthly")
+    annual = _article_resolution_row(summary, "annual")
+    climatology = clim_summary.iloc[0].to_dict() if not clim_summary.empty else {}
+
+    lines = [
+        "# S8 temporal coverage statistics for ESSD",
+        "",
+        "## Manuscript-ready summary",
+        "",
+        (
+            "The release provides daily, monthly, annual, and climatological sediment-reference products with "
+            "temporal coverage spanning from {} to {} across available products."
+        ).format(first_year, last_year),
+        "",
+    ]
+    if daily and monthly and annual:
+        lines.extend(
+            [
+                "The main time-series products contain {} daily clusters, {} monthly clusters, and {} annual clusters.".format(
+                    fmt_int(daily.get("active_units", 0)),
+                    fmt_int(monthly.get("active_units", 0)),
+                    fmt_int(annual.get("active_units", 0)),
+                ),
+                "",
+            ]
+        )
+    for resolution, row, noun in (
+        ("daily", daily, "daily"),
+        ("monthly", monthly, "monthly"),
+        ("annual", annual, "annual"),
+    ):
+        if not row:
+            continue
+        extra = ""
+        if resolution == "annual":
+            extra = (
+                " Annual coverage is described by observed records and calendar span, rather than by a "
+                "regular-grid coverage ratio, because the annual time axis may be sparse."
+            )
+        lines.extend(
+            [
+                "{} records span {}-{}, with {} valid cluster-time observations across {} clusters and a median record length of {} time steps.{}".format(
+                    noun.capitalize(),
+                    row.get("first_year", ""),
+                    row.get("last_year", ""),
+                    fmt_int(row.get("record_count_any", row.get("records_any", 0))),
+                    fmt_int(row.get("active_units", 0)),
+                    fmt_float(row.get("median_record_length_steps", 0)),
+                    extra,
+                ),
+                "",
+            ]
+        )
+    if daily:
+        lines.extend(
+            [
+                "Long daily records are a major strength of the release: {} daily clusters are longer than 50 time steps and {} daily clusters are longer than 100 time steps.".format(
+                    fmt_int(daily.get("n_gt_50_years", 0)),
+                    fmt_int(daily.get("n_gt_100_years", 0)),
+                ),
+                "",
+            ]
+        )
+    peaks = ["{}: {}".format(resolution, _peak_active_text(by_year, resolution)) for resolution in MATRIX_RESOLUTIONS]
+    lines.extend(["Peak temporal coverage differs by product: {}.".format("; ".join(peaks)), ""])
+    if climatology:
+        lines.extend(
+            [
+                "The climatology product is reported separately as {} standalone climatology stations, because it is not a basin-cluster time-series matrix.".format(
+                    fmt_int(climatology.get("active_units", 0))
+                ),
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Output tables",
+            "",
+            "- `tables/table_temporal_coverage_by_resolution.csv`",
+            "- `tables/table_temporal_coverage_by_variable.csv`",
+            "- `tables/table_active_units_by_year.csv`",
+            "- `tables/table_record_length_distribution.csv`",
+            "- `tables/table_temporal_coverage_record_lengths_by_unit.csv`",
+            "- `tables/table_long_records_by_resolution.csv`",
+            "- `tables/table_temporal_coverage_by_source.csv`",
+            "- `tables/table_temporal_coverage_by_region_resolution.csv`",
+            "",
+            "## Output figures",
+            "",
+            "- `figures/fig_active_units_by_year.png` and `.pdf`",
+            "- `figures/fig_records_by_year_variable.png` and `.pdf`",
+            "- `figures/fig_record_length_distribution.png` and `.pdf`",
+            "- `figures/fig_long_record_counts.png` and `.pdf`",
+            "- `figures/fig_temporal_coverage_heatmap.png` and `.pdf`",
+            "- `figures/fig_source_temporal_span.png` and `.pdf`",
+        ]
+    )
+    return safe_lines(lines)
+
+
+def build_article_temporal_report(stats: dict) -> list[str]:
+    summary = stats.get("temporal_coverage_by_resolution", pd.DataFrame())
+    by_variable = stats.get("temporal_coverage_by_variable", pd.DataFrame())
+    by_year = stats.get("active_units_by_year", pd.DataFrame())
+    unit_lengths = stats.get("temporal_coverage_record_lengths_by_unit", pd.DataFrame())
+    distribution = stats.get("record_length_distribution", pd.DataFrame())
+    by_source = stats.get("temporal_coverage_by_source", pd.DataFrame())
+    by_region = stats.get("temporal_coverage_by_region_resolution", pd.DataFrame())
+    clim_summary = stats.get("climatology_temporal_summary", pd.DataFrame())
+    clim_source = stats.get("climatology_by_source", pd.DataFrame())
+    sat_summary = stats.get("satellite_temporal_summary", pd.DataFrame())
+    sat_source = stats.get("satellite_by_source", pd.DataFrame())
+    sat_year = stats.get("satellite_by_year", pd.DataFrame())
+
+    lines = [
+        "# Temporal coverage results for the S8 ESSD release",
+        "",
+        "## Overview",
+        "",
+        (
+            "The temporal coverage statistics are reported for three product groups: the basin-cluster "
+            "time-series matrices, the standalone climatology stations, and the satellite-validation product. "
+            "These groups use different statistical units and should therefore be described separately."
+        ),
+        "",
+        "## Main Time-Series Products",
+        "",
+        markdown_table(
+            summary,
+            columns=[
+                "resolution",
+                "unit_type",
+                "first_year",
+                "last_year",
+                "active_units",
+                "record_count_any",
+                "median_record_length_steps",
+                "max_record_length_steps",
+                "n_gt_50_years",
+                "n_gt_100_years",
+            ],
+            headers={
+                "resolution": "Product",
+                "unit_type": "Unit",
+                "first_year": "First year",
+                "last_year": "Last year",
+                "active_units": "Units",
+                "record_count_any": "Records",
+                "median_record_length_steps": "Median steps",
+                "max_record_length_steps": "Max steps",
+                "n_gt_50_years": ">50 steps",
+                "n_gt_100_years": ">100 steps",
+            },
+            max_rows=8,
+        ),
+        "",
+        "### Variable Coverage",
+        "",
+        sorted_markdown_table(by_variable, columns=["resolution", "variable", "first_year", "last_year", "active_units", "record_count"], sort_by="record_count", max_rows=18),
+        "",
+        "### Yearly Peaks",
+        "",
+        sorted_markdown_table(by_year, columns=["resolution", "year", "active_units", "active_clusters", "record_count_any"], sort_by="record_count_any", max_rows=18),
+        "",
+        "### Long-Record Diagnostics",
+        "",
+        markdown_table(
+            unit_lengths,
+            columns=["resolution", "unit_type", "unit_id", "first_date", "last_date", "record_count_any"],
+            max_rows=18,
+        ),
+        "",
+        "### Record-Length Distribution",
+        "",
+        markdown_table(distribution, columns=["resolution", "record_length_bin", "unit_count"], max_rows=18),
+        "",
+        "## Source and Regional Temporal Coverage",
+        "",
+        "### Top Sources",
+        "",
+        sorted_markdown_table(by_source, columns=["source_name", "resolutions", "first_year", "last_year", "active_units", "record_count"], sort_by="record_count", max_rows=18),
+        "",
+        "### Region by Resolution",
+        "",
+        sorted_markdown_table(by_region, columns=["continent_region", "country", "resolution", "cluster_count", "record_count", "time_start", "time_end"], sort_by="record_count", max_rows=18),
+        "",
+        "## Climatology Product",
+        "",
+        markdown_table(clim_summary, max_rows=8),
+        "",
+        "### Climatology by Source",
+        "",
+        sorted_markdown_table(clim_source, sort_by="record_count_any", max_rows=12),
+        "",
+        "## Satellite Validation Product",
+        "",
+        markdown_table(sat_summary, max_rows=8),
+        "",
+        "### Satellite by Source",
+        "",
+        sorted_markdown_table(sat_source, sort_by="record_count_any", max_rows=12),
+        "",
+        "### Satellite by Year",
+        "",
+        sorted_markdown_table(sat_year, columns=["resolution", "year", "active_units", "record_count_any"], sort_by="year", ascending=True, max_rows=18),
+        "",
+        "## Diagnostics and Limitations",
+        "",
+        "- Matrix products, climatology, and satellite validation rows use different statistical units.",
+        "- Long calendar span should be interpreted together with record density.",
+        "- Sparse time axes represent observation dates rather than complete regular calendars.",
+        "",
+        "## Figure Suggestions",
+        "",
+        "- Main text: active units by year, records by year and variable, and record-length distribution.",
+        "- Supplement: source temporal spans, climatology source contribution, and satellite temporal coverage.",
+    ]
+    return safe_lines(lines)
+
+
 def build_detailed_temporal_report(ctx, stats: dict, tables_dir: Path, figures_dir: Path, report_dir: Path) -> list[str]:
     summary = stats.get("summary", pd.DataFrame())
     by_resolution = stats.get("temporal_coverage_by_resolution", pd.DataFrame())
@@ -851,10 +1127,14 @@ def main(argv=None) -> int:
     md_path = ctx.output_path("reports", "temporal_coverage_stats.md")
     report_lines = build_detailed_temporal_report(ctx, stats, tables_dir, ctx.figures_dir(), reports_dir)
     write_markdown(report_lines, md_path)
-    write_markdown(report_lines, ctx.output_path("article_temporal_coverage_summary.md"))
-    write_markdown(report_lines, ctx.output_path("article_temporal_coverage_report.md"))
+    article_summary_path = ctx.output_path("article_temporal_coverage_summary.md")
+    article_report_path = ctx.output_path("article_temporal_coverage_report.md")
+    write_markdown(build_article_temporal_summary(stats), article_summary_path)
+    write_markdown(build_article_temporal_report(stats), article_report_path)
     try:
         copy_report_to_docs(md_path, bool(args.copy_reports))
+        copy_report_to_docs(article_summary_path, bool(args.copy_reports))
+        copy_report_to_docs(article_report_path, bool(args.copy_reports))
     except Exception:
         pass
     print("Wrote temporal stats to {}".format(tables_dir))
