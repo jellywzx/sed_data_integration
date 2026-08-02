@@ -4,7 +4,7 @@
 This script is intentionally separate from the NetCDF exporter so it can be run
 once after ``s6_export_satellite_validation_to_nc.py`` and reused by downstream
 validation.  The output mirrors the candidate-level columns used by
-``validate/s11_satellite_insitu_validation.py`` so s11 can read a CSV sidecar
+``validate/satellite_insitu_validation.py`` so s11 can read a CSV sidecar
 instead of scanning the large satellite validation NetCDF on every run.
 """
 

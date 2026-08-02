@@ -37,10 +37,10 @@ SATELLITE_CATALOG = RELEASE_DIR / "satellite_catalog.csv"
 CLUSTER_POINTS_GPKG = RELEASE_DIR / "sed_reference_cluster_points.gpkg"
 CLUSTER_BASINS_GPKG = RELEASE_DIR / "sed_reference_cluster_basins.gpkg"
 
-REQUIRED_HOST = "node113"
+REQUIRED_HOST = "node111"
 PYTHON = "/share/home/dq134/.conda/envs/wzx/bin/python3"
 RUN_HINT = (
-    "ssh node113 'cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
+    "ssh node111 'cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
     "Output_r/scripts_basin_test && {py} stats/spatial_coverage_stats.py && "
     "{py} stats/plot_spatial_coverage_stats.py'"
 ).format(

@@ -20,4 +20,5 @@ figures/data/
 figures/final/
 figures/test/
 tmp/
-
+bak/
+validate/output
