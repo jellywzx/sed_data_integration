@@ -294,11 +294,17 @@ def load_nc_cluster_uids(path: Path) -> set:
 def load_climatology_summary():
     path = CLIMATOLOGY_DIR / "sed_reference_climatology.nc"
     with open_nc(path) as ds:
-        source_names = {decode_value(v) for v in ds["source_name"].values if decode_value(v)}
+        source_names_raw = [decode_value(v) for v in ds["source_name"].values]
+        source_names = {v for v in source_names_raw if v}
+        source_index = [int(float(decode_value(v) or -1)) for v in ds["source_index"].values]
+        # Derive per-station source from source_index -> source_name lookup
+        derived_source = [
+            source_names_raw[si] if 0 <= si < len(source_names_raw) else ""
+            for si in source_index
+        ]
         rows = pd.DataFrame(
             {
-                "source": [decode_value(v) for v in ds["source"].values],
-                "dataset_name": [decode_value(v) for v in ds["dataset_name"].values],
+                "source": derived_source,
                 "country": [decode_value(v) for v in ds["country"].values],
                 "geographic_coverage": [decode_value(v) for v in ds["geographic_coverage"].values],
                 "time_start": [decode_value(v) for v in ds["source_station_time_coverage_start"].values],

@@ -28,6 +28,7 @@ import pandas as pd
 from global_attr_provenance import (
     global_attr_payloads_for_path_groups,
     set_global_attr_policy,
+    write_global_attr_payload_variables,
     write_promoted_global_attr_variables,
 )
 from geo_boundary_enrichment import (
@@ -466,13 +467,11 @@ def main():
     source_arr = np.concatenate(source_parts)
     resolution_arr = np.full(len(time_arr), 3, dtype=np.int8)
 
-    source_long_names = [""] * len(unique_sources)
     institutions = [""] * len(unique_sources)
     references = [""] * len(unique_sources)
     source_urls = [""] * len(unique_sources)
     for source_name, sidx in source_to_idx.items():
         meta = source_meta_lookup[source_name]
-        source_long_names[sidx] = meta["source_long_name"] or source_name
         institutions[sidx] = meta["institution"]
         references[sidx] = meta["reference"]
         source_urls[sidx] = meta["source_url"]
@@ -577,9 +576,6 @@ def main():
 
         sname_v = nc.createVariable("source_name", str, ("n_sources",))
         sname_v[:] = np.array(unique_sources, dtype=object)
-
-        slong_v = nc.createVariable("source_long_name", str, ("n_sources",))
-        slong_v[:] = np.array(source_long_names, dtype=object)
 
         inst_v = nc.createVariable("institution", str, ("n_sources",))
         inst_v[:] = np.array(institutions, dtype=object)

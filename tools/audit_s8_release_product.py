@@ -534,8 +534,8 @@ class Audit:
             "station_uid",
             "source_station_path",
             "station_global_attrs_json",
-            "station_global_attr_names",
-            "station_global_attr_count",
+            None,
+            None,
             self.args.sample_climatology_stations,
         )
         self.audit_simple_station_global_attrs(
@@ -636,16 +636,21 @@ class Audit:
         uid_var: str,
         path_var: str,
         json_var: str,
-        names_var: str,
-        count_var: str,
-        sample_size: int,
+        names_var: str | None = None,
+        count_var: str | None = None,
+        sample_size: int = 0,
         fallback_path_var: str | None = None,
     ) -> None:
         path = self.release_dir / product
         if not path.exists():
             return
+        required = {uid_var, path_var, json_var}
+        if names_var is not None:
+            required.add(names_var)
+        if count_var is not None:
+            required.add(count_var)
         with nc.Dataset(path) as ds:
-            if not {uid_var, path_var, json_var, names_var, count_var}.issubset(ds.variables):
+            if not required.issubset(ds.variables):
                 return
             dim = ds.variables[uid_var].shape[0]
             for idx in sample_indices(dim, sample_size, self.rng):
@@ -659,8 +664,8 @@ class Audit:
                     to_text(value_at(ds, uid_var, idx)),
                     paths,
                     read_json(value_at(ds, json_var, idx)),
-                    value_at(ds, names_var, idx),
-                    value_at(ds, count_var, idx),
+                    value_at(ds, names_var, idx) if names_var else "",
+                    value_at(ds, count_var, idx) if count_var else "",
                 )
 
     def audit_promoted_attrs(self) -> None:

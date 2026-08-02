@@ -51,33 +51,51 @@ STATION_FIELDS = (
     "station_name",
     "river_name",
     "source_station_id",
-    "temporal_span",
     "source_station_time_coverage_start",
     "source_station_time_coverage_end",
-    "source_station_summary",
-    "source_station_comment",
     "source_station_variables_provided",
-    "source_station_data_limitations",
-    "source_station_declared_temporal_resolution",
-    "source_station_path",
+    "geographic_coverage",
 )
 SOURCE_FIELDS = (
     "source_name",
     "source_long_name",
-    "institution",
     "reference",
     "source_url",
 )
 RECORD_FIELDS = (
     "time",
-    "resolution",
     "Q",
     "SSC",
     "SSL",
     "Q_flag",
     "SSC_flag",
     "SSL_flag",
-    "source",
+)
+
+CLIMATOLOGY_QUERY_COLUMNS = (
+    "Q",
+    "SSC",
+    "SSL",
+    "Q_flag",
+    "SSC_flag",
+    "SSL_flag",
+    "time",
+    "time_raw",
+    "resolution",
+    "station_name",
+    "river_name",
+    "lat",
+    "lon",
+    "geographic_coverage",
+    "source_name",
+    "source_station_id",
+    "station_uid",
+    "source_station_time_coverage_start",
+    "source_station_time_coverage_end",
+    "source_station_variables_provided",
+    "source_long_name",
+    "reference",
+    "source_url",
 )
 
 
@@ -193,6 +211,17 @@ def _index(value):
         return None
 
 
+def _global_attr_value(ds, name, default=None):
+    try:
+        if hasattr(ds, "ncattrs"):
+            return getattr(ds, name) if name in ds.ncattrs() else default
+        if hasattr(ds, "attrs"):
+            return ds.attrs[name] if name in ds.attrs else default
+    except Exception:
+        pass
+    return default
+
+
 def _open_climatology(path):
     if HAS_NC:
         return nc4.Dataset(path, "r")
@@ -206,9 +235,9 @@ def export_climatology_observations(input_nc, output_csv):
         raise FileNotFoundError("Input climatology NetCDF not found: {}".format(input_nc))
 
     with _open_climatology(input_nc) as ds:
+        resolution_code = _global_attr_value(ds, "resolution", 3)
         station_index_values = _var_values(ds, "station_index")
         station_source_index_values = _var_values(ds, "source_index")
-        record_source_values = _var_values(ds, "source")
 
         station_values = {name: _var_values(ds, name) for name in STATION_FIELDS}
         source_values = {name: _var_values(ds, name) for name in SOURCE_FIELDS}
@@ -228,21 +257,16 @@ def export_climatology_observations(input_nc, output_csv):
     for record_idx in range(n_records):
         station_idx = _index(_at(station_index_values, record_idx))
         source_idx = _index(_at(station_source_index_values, station_idx)) if station_idx is not None else None
-        record_source = _at(record_source_values, record_idx)
-
         row = {
-            "record_index": record_idx,
-            "station_index": "" if station_idx is None else station_idx,
             "time": _at(decoded_time_values, record_idx),
             "time_raw": _at(time_values, record_idx),
-            "resolution": _at(record_values.get("resolution", []), record_idx),
+            "resolution": resolution_code,
             "Q": _at(record_values.get("Q", []), record_idx),
             "SSC": _at(record_values.get("SSC", []), record_idx),
             "SSL": _at(record_values.get("SSL", []), record_idx),
             "Q_flag": _at(record_values.get("Q_flag", []), record_idx),
             "SSC_flag": _at(record_values.get("SSC_flag", []), record_idx),
             "SSL_flag": _at(record_values.get("SSL_flag", []), record_idx),
-            "record_source": record_source,
         }
 
         for name in STATION_FIELDS:
@@ -251,13 +275,10 @@ def export_climatology_observations(input_nc, output_csv):
         for name in SOURCE_FIELDS:
             row[name] = _at(source_values.get(name, []), source_idx)
 
-        if not row.get("source_name") and record_source:
-            row["source_name"] = record_source
-
         rows.append(row)
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_csv(output_csv, index=False)
+    pd.DataFrame(rows, columns=CLIMATOLOGY_QUERY_COLUMNS).to_csv(output_csv, index=False)
     print("[write] {}".format(output_csv))
     print("[done] exported {} climatology record(s)".format(len(rows)))
 
