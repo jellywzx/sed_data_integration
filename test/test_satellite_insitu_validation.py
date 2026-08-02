@@ -17,7 +17,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from s11_satellite_insitu_validation import (  # noqa: E402
+from satellite_insitu_validation import (  # noqa: E402
     assign_strata,
     classify_source_family,
     compute_satellite_insitu_metrics,
