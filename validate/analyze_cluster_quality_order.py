@@ -185,7 +185,9 @@ def analyze_cluster_inventory(rows: List[Dict]) -> Dict[str, Any]:
     n_total = len(groups)
     n_multi = sum(1 for v in groups.values() if len(v) >= 2)
     n_single = n_total - n_multi
+    n_stations = len(rows)
     return {"n_total": n_total, "n_single": n_single, "n_multi": n_multi,
+            "n_stations": n_stations,
             "size_dist": size_dist, "groups": groups}
 
 
@@ -611,6 +613,7 @@ def write_markdown_report(
     report_lines.append("## 1. Cluster Inventory")
     report_lines.append("")
     report_lines.append(f"- **Total clusters**: {inv['n_total']:,}")
+    report_lines.append(f"- **Total station candidates entering S6**: {inv['n_stations']:,}")
     report_lines.append(f"- **Single-candidate**: {inv['n_single']:,} "
                         f"({_fmt_pct(inv['n_single'], inv['n_total'])})")
     report_lines.append(f"- **Multi-candidate (>=2)**: {inv['n_multi']:,} "
@@ -800,6 +803,7 @@ def write_markdown_report(
     report_lines.append(f"| Metric | Value |")
     report_lines.append(f"| --- | --- |")
     report_lines.append(f"| Total clusters | {inv['n_total']:,} |")
+    report_lines.append(f"| Total station candidates entering S6 | {inv['n_stations']:,} |")
     report_lines.append(f"| Single-candidate clusters | {inv['n_single']:,} |")
     report_lines.append(f"| Multi-candidate clusters | {inv['n_multi']:,} |")
     report_lines.append(f"| Fully-overlapping multi-clusters | {n_fully} |")
@@ -895,6 +899,7 @@ def print_full_report(inv: Dict, overlap: Dict,
     print(f"{'-' * 50}")
     print(f"  Total clusters          : {inv['n_total']}")
     print(f"  Single-candidate        : {inv['n_single']}")
+    print(f"  Total station candidates : {inv['n_stations']}")
     print(f"  Multi-candidate (≥2)    : {inv['n_multi']}")
     print(f"\n  Size distribution:")
     for sz in sorted(inv["size_dist"]):
