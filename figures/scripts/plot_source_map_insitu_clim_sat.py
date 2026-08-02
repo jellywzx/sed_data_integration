@@ -77,7 +77,7 @@ SOURCE_NAME_ALIASES = {
     "HMA": "HMA",
     "Milliman": "Milliman",
     "Vanmaercke": "Vanmaercke",
-    "RiverSed": "RiverSed",
+    "RiverSed": "RivSed",
     "USGS": "USGS NWIS",
     "Eurasian_River": "Eurasian River",
     "GloRiSe": "GloRiSe",
@@ -758,7 +758,7 @@ def draw_satellite_panel(ax, satellite_points: pd.DataFrame, counts: Dict[str, i
                 markeredgecolor="#333333",
                 markeredgewidth=0.3,
                 markersize=6,
-                label="{} ({:,})".format(source, counts[source]),
+                label="{} ({:,})".format(SOURCE_NAME_ALIASES.get(source, source), counts[source]),
             )
         )
     leg_sat = ax.legend(

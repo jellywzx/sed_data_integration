@@ -26,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib import patheffects
 from matplotlib.patches import Patch
 
 
@@ -56,6 +57,15 @@ OKABE_ITO = {
     "blue": "#0072B2",
     "vermillion": "#D55E00",
     "reddish_purple": "#CC79A7",
+}
+
+# --- Source name mapping ---
+# Edit this dict to rename source names as they appear in the plot.
+# Key: original name in the CSV  →  Value: display name in the figure
+SOURCE_NAME_MAP = {
+    # "old_name": "New Display Name",
+    'USGS':'USGS NWIS',
+    'RiverSed':'RivSed'
 }
 
 
@@ -263,7 +273,32 @@ def _read_minimal_catalog(release_dir: Path, name: str) -> pd.DataFrame:
 
 
 def _year_from_column(df: pd.DataFrame, col: str) -> pd.Series:
-    return pd.to_datetime(df[col], errors="coerce").dt.year
+    text = df[col].astype(str).str.strip()
+    extracted = text.str.extract(r"^(\d{4})", expand=False)
+    years = pd.to_numeric(extracted, errors="coerce")
+
+    empty_like = text.eq("") | text.str.lower().isin({"nan", "nat", "none"})
+    needs_fallback = years.isna() & ~empty_like
+    if needs_fallback.any():
+        fallback = df.loc[needs_fallback, col].apply(lambda value: pd.to_datetime(value, errors="coerce"))
+        years.loc[needs_fallback] = fallback.apply(lambda value: value.year if pd.notna(value) else np.nan)
+    return years
+
+
+def _validate_temporal_coverage(df: pd.DataFrame, table_name: str, source_columns: Tuple[str, str]) -> None:
+    if df.empty:
+        return
+    bad = (
+        numeric(df, "contribution_count").fillna(0).gt(0)
+        & (df["first_year"].isna() | df["last_year"].isna())
+    )
+    if not bad.any():
+        return
+    sources = ", ".join(df.loc[bad, "source_name"].astype(str))
+    raise ValueError(
+        "{} produced missing temporal coverage for sources with contribution_count > 0 "
+        "using columns {} and {}: {}".format(table_name, source_columns[0], source_columns[1], sources)
+    )
 
 
 def _nunique_nonempty(values: pd.Series) -> int:
@@ -299,6 +334,7 @@ def load_main_sources_from_minimal(release_dir: Path) -> pd.DataFrame:
         .sort_values(["cluster_count", "source_name"], ascending=[True, False])
         .reset_index(drop=True)
     )
+    grouped["source_name"] = grouped["source_name"].replace(SOURCE_NAME_MAP)
     return grouped
 
 
@@ -330,6 +366,11 @@ def load_other_product_sources_from_minimal(release_dir: Path) -> Tuple[pd.DataF
             .sort_values(["contribution_count", "source_name"], ascending=[True, False])
             .reset_index(drop=True)
         )
+    _validate_temporal_coverage(
+        climatology,
+        "climatology_catalog.csv",
+        ("source_station_time_coverage_start", "source_station_time_coverage_end"),
+    )
 
     satellite_raw = _read_minimal_catalog(release_dir, "satellite_catalog.csv")
     _require_columns(
@@ -357,7 +398,14 @@ def load_other_product_sources_from_minimal(release_dir: Path) -> Tuple[pd.DataF
             .sort_values(["contribution_count", "source_name"], ascending=[True, False])
             .reset_index(drop=True)
         )
+    _validate_temporal_coverage(
+        satellite,
+        "satellite_catalog.csv",
+        ("time_start", "time_end"),
+    )
 
+    climatology["source_name"] = climatology["source_name"].replace(SOURCE_NAME_MAP)
+    satellite["source_name"] = satellite["source_name"].replace(SOURCE_NAME_MAP)
     return climatology, satellite
 
 def _temporal_point_sizes(record_counts: pd.Series) -> pd.Series:
@@ -431,18 +479,18 @@ def annotate_cluster_counts_on_twin(
             t_count = df.iloc[i].get("temporal_record_count")
             if pd.notna(t_count) and float(t_count) > 0:
                 label += " / " + format_compact_count(t_count)
-        display_xy = source_ax.transData.transform((float(value) + pad, ypos))
-        label_x, label_y = label_ax.transData.inverted().transform(display_xy)
-        label_ax.text(
-            label_x,
-            label_y,
+        # Place text on source_ax (count axis, lower zorder) so temporal lines
+        # on the twin year axis (higher zorder) render above the label bbox.
+        source_ax.text(
+            float(value) + pad,
+            ypos,
             label,
             va="center",
             ha="left",
             fontsize=TICK_LABEL_SIZE,
             color="#2f4f6f",
-            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.92, "pad": 0.4},
-            zorder=6,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.4},
+            zorder=5,
         )
 
 
@@ -458,6 +506,7 @@ def plot_other_product_panel(
         ax_count.set_axis_off()
         return
 
+    df = df.reset_index(drop=True).copy()
     y = np.arange(len(df))
     ax_year = ax_count.twiny()
     ax_year.patch.set_alpha(0)
@@ -483,11 +532,13 @@ def plot_other_product_panel(
     if pd.notna(max_count) and max_count > 0:
         ax_count.set_xlim(0, max_count * 1.22)
 
-    time_df = df.dropna(subset=["first_year", "last_year"]).copy()
+    temporal_mask = df[["first_year", "last_year"]].notna().all(axis=1)
+    time_df = df.loc[temporal_mask].copy()
+    time_y = y[temporal_mask.to_numpy()]
     if not time_df.empty:
-        for idx, row in time_df.iterrows():
+        for ypos, (_, row) in zip(time_y, time_df.iterrows()):
             ax_year.hlines(
-                y[idx],
+                ypos,
                 row["first_year"],
                 row["last_year"],
                 color=TEMPORAL_LINE_COLOR,
@@ -497,7 +548,7 @@ def plot_other_product_panel(
             )
         ax_year.scatter(
             time_df["last_year"],
-            y[time_df.index],
+            time_y,
             s=TEMPORAL_POINT_SIZE,
             color=TEMPORAL_POINT_COLOR,
             alpha=0.82,
@@ -521,21 +572,18 @@ def plot_other_product_panel(
         if pd.notna(r_count) and float(r_count) > 0:
             label += " / " + format_compact_count(r_count)
         label_value = float(value) + label_pad
-        ha = "left"
-        color = "#2f4f6f"
-        alpha = 0.92
-        display_xy = ax_count.transData.transform((label_value, ypos))
-        label_x, label_y = ax_year.transData.inverted().transform(display_xy)
-        ax_year.text(
-            label_x,
-            label_y,
+        # Place text on ax_count (count axis, lower zorder) so temporal lines
+        # on the twin year axis (higher zorder) render above the label bbox.
+        ax_count.text(
+            label_value,
+            ypos,
             label,
             va="center",
-            ha=ha,
+            ha="left",
             fontsize=TICK_LABEL_SIZE,
-            color=color,
-            bbox={"facecolor": "white", "edgecolor": "none", "alpha": alpha, "pad": 0.4},
-            zorder=6,
+            color="#2f4f6f",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.4},
+            zorder=5,
         )
 
     ax_count.set_title(title, loc="left", fontsize=AXES_TITLE_SIZE)
@@ -558,6 +606,7 @@ def plot_overlay_source_contribution(
     if df.empty:
         raise ValueError("No source rows available for plotting.")
 
+    df = df.reset_index(drop=True).copy()
     y = np.arange(len(df))
     fig, ax_cluster = plt.subplots(figsize=OVERLAY_FIGSIZE)
     ax_year = ax_cluster.twiny()
@@ -586,11 +635,13 @@ def plot_overlay_source_contribution(
     if pd.notna(max_cluster) and max_cluster > 0:
         ax_cluster.set_xlim(0, max_cluster * 1.24)
 
-    time_df = df.dropna(subset=["first_year", "last_year"]).copy()
+    temporal_mask = df[["first_year", "last_year"]].notna().all(axis=1)
+    time_df = df.loc[temporal_mask].copy()
+    time_y = y[temporal_mask.to_numpy()]
     if not time_df.empty:
-        for idx, row in time_df.iterrows():
+        for ypos, (_, row) in zip(time_y, time_df.iterrows()):
             ax_year.hlines(
-                y[idx],
+                ypos,
                 row["first_year"],
                 row["last_year"],
                 color=TEMPORAL_LINE_COLOR,
@@ -600,7 +651,7 @@ def plot_overlay_source_contribution(
             )
         ax_year.scatter(
             time_df["last_year"],
-            y[time_df.index],
+            time_y,
             s=TEMPORAL_POINT_SIZE,
             color=TEMPORAL_POINT_COLOR,
             alpha=0.82,

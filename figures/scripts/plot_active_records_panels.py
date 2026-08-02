@@ -252,11 +252,11 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
     axes[1].set_yscale("log")
     axes[2].set_xlabel("Year")
     axes[2].set_ylim(0, 105)
-    axes[2].set_xlim(1950, None)
+    axes[2].set_xlim(1910, None)
     for index, ax in enumerate(axes):
         ax.text(
-            0.02,
-            0.95,
+            0.0,
+            1.1,
             f"({chr(97 + index)})",
             transform=ax.transAxes,
             fontsize=STYLE["panel_label_size"],

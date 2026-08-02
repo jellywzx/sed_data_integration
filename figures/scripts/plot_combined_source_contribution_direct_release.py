@@ -12,6 +12,7 @@ import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from typing import Dict, List, Tuple
 
 import matplotlib
@@ -68,9 +69,10 @@ def configure_matplotlib() -> None:
     SOURCE.AXES_TITLE_SIZE = AXES_TITLE_SIZE
     SOURCE.TICK_LABEL_SIZE = TICK_LABEL_SIZE
     SOURCE.LEGEND_FONT_SIZE = LEGEND_FONT_SIZE
-    SOURCE.TEMPORAL_LINE_WIDTH = 3.5
-    SOURCE.TEMPORAL_LINE_ALPHA = 1.0
-    SOURCE.TEMPORAL_POINT_SIZE = 80
+    SOURCE.TEMPORAL_LINE_COLOR = "#222222"
+    SOURCE.TEMPORAL_LINE_WIDTH = 2
+    SOURCE.TEMPORAL_LINE_ALPHA = 0.6
+    SOURCE.TEMPORAL_POINT_SIZE = 100
     SOURCE.configure_matplotlib(plt)
 
 
@@ -112,6 +114,7 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
     if df.empty:
         raise ValueError("No main source rows available for plotting.")
 
+    df = df.reset_index(drop=True).copy()
     y = np.arange(len(df))
     ax_year = ax_cluster.twiny()
     ax_year.patch.set_alpha(0)
@@ -137,11 +140,13 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
     if pd.notna(max_cluster) and max_cluster > 0:
         ax_cluster.set_xlim(0, max_cluster * 1.24)
 
-    time_df = df.dropna(subset=["first_year", "last_year"]).copy()
+    temporal_mask = df[["first_year", "last_year"]].notna().all(axis=1)
+    time_df = df.loc[temporal_mask].copy()
+    time_y = y[temporal_mask.to_numpy()]
     if not time_df.empty:
-        for idx, row in time_df.iterrows():
+        for ypos, (_, row) in zip(time_y, time_df.iterrows()):
             ax_year.hlines(
-                y[idx],
+                ypos,
                 row["first_year"],
                 row["last_year"],
                 color=SOURCE.TEMPORAL_LINE_COLOR,
@@ -151,7 +156,7 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
             )
         ax_year.scatter(
             time_df["last_year"],
-            y[time_df.index],
+            time_y,
             s=SOURCE.TEMPORAL_POINT_SIZE,
             color=SOURCE.TEMPORAL_POINT_COLOR,
             alpha=0.82,
@@ -168,7 +173,7 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
     ax_year.spines["top"].set_color(SOURCE.TEMPORAL_LINE_COLOR)
 
 
-def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.1) -> None:
+def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.25) -> None:
     ax.text(
         x,
         y,
@@ -186,15 +191,15 @@ def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.1) -> None:
 def legend_handles() -> List[object]:
     return [
         Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="main clusters"),
-        Patch(facecolor=SOURCE.OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology records"),
+        Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.72, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
+        Patch(facecolor=SOURCE.OKABE_ITO["bluish_green"], alpha=0.48, edgecolor="none", label="climatology stations"),
+        Line2D([0], [0], color=SOURCE.TEMPORAL_LINE_COLOR, linewidth=SOURCE.TEMPORAL_LINE_WIDTH, label="temporal span"),
         Patch(
             facecolor=SOURCE.OKABE_ITO["reddish_purple"],
             alpha=0.48,
             edgecolor="none",
-            label="satellite linked clusters",
+            label="satellite stations",
         ),
-        Patch(facecolor=SOURCE.SPATIAL_COLOR, alpha=0.72, edgecolor="#2f4f6f", linewidth=0.5, label="counts / records"),
-        Line2D([0], [0], color=SOURCE.TEMPORAL_LINE_COLOR, linewidth=SOURCE.TEMPORAL_LINE_WIDTH, label="temporal span"),
         Line2D(
             [0],
             [0],
@@ -248,20 +253,20 @@ def plot_combined_direct(
         ax_climatology,
         climatology,
         "",
-        "Record count",
+        "Station count",
         SOURCE.OKABE_ITO["bluish_green"],
     )
     SOURCE.plot_other_product_panel(
         ax_satellite,
         satellite,
         "",
-        "Linked cluster count",
+        "Station count",
         SOURCE.OKABE_ITO["reddish_purple"],
     )
 
     add_panel_label(ax_main, "(a) Main station-reference matrices", x=-0.15, y=1.1)
-    add_panel_label(ax_climatology, "(b) Climatology auxiliary layer", x=-0.15, y=1.3)
-    add_panel_label(ax_satellite, "(c) Satellite validation layer", x=-0.15, y=1.3)
+    add_panel_label(ax_climatology, "(b) Climatology auxiliary layer", x=-0.15, y=1.35)
+    add_panel_label(ax_satellite, "(c) Satellite-derived auxiliary layer", x=-0.15, y=1.35)
 
     # fig.legend(
     #     handles=legend_handles(),
@@ -338,6 +343,10 @@ def write_combined_checklist(
 
 ## Reproducibility
 - Figure is drawn directly from release CSV tables; no PNG sub-figure compositing is used.
+- Source helper: `{}`
+- Python executable: `{}`
+- pandas version: {}
+- matplotlib version: {}
 - Plotting-data availability: {} CSV files
 - Export date: {}
 """.format(
@@ -356,6 +365,10 @@ def write_combined_checklist(
         figsize[1],
         MIN_VISIBLE_FONT_SIZE,
         font_status,
+        getattr(SOURCE, "__file__", str(SOURCE_SCRIPT)),
+        sys.executable,
+        pd.__version__,
+        matplotlib.__version__,
         len(data_paths),
         datetime.date.today().isoformat(),
     )
@@ -438,6 +451,8 @@ def main(argv=None) -> int:
 
     print("Wrote {}".format(pdf_path))
     print("Wrote {}".format(png_path))
+    print("Source helper {}".format(getattr(SOURCE, "__file__", str(SOURCE_SCRIPT))))
+    print("Python {} | pandas {} | matplotlib {}".format(sys.executable, pd.__version__, matplotlib.__version__))
     print("Copied script to {}".format(script_copy_path))
     print("Wrote {}".format(checklist_path))
     for data_path in data_paths:

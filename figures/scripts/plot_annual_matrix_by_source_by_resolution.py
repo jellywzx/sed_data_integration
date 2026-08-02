@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import numpy as np
 import pandas as pd
 
@@ -52,7 +53,7 @@ OUTPUT_DIR = Path(
     "scripts_basin_test/figures"
 )
 
-FIGURE_ID = "fig_annual_matrix_records_by_source_by_resolution"
+FIGURE_ID = "fig_annual_matrix_records_by_source_by_resolution_test"
 
 RESOLUTIONS = ("daily", "monthly", "annual")
 
@@ -73,31 +74,29 @@ PANEL_TITLES = {
 TOP_N_PER_RESOLUTION = 5
 OTHER_LABEL = "Other matrix sources"
 
-# Okabe-Ito colorblind-safe palette (extended with Wong 2011 colors)
-# Reference: docs/essd_figure_requirements.md
-OKABE_ITO = {
-    "orange": "#E69F00",
-    "sky_blue": "#56B4E9",
-    "bluish_green": "#009E73",
-    "yellow": "#F0E442",
-    "blue": "#0072B2",
-    "vermillion": "#D55E00",
-    "reddish_purple": "#CC79A7",
-    "black": "#000000",
-}
-OKABE_ITO_EXTENDED = [
-    OKABE_ITO["orange"],
-    OKABE_ITO["sky_blue"],
-    OKABE_ITO["bluish_green"],
-    OKABE_ITO["yellow"],
-    OKABE_ITO["blue"],
-    OKABE_ITO["vermillion"],
-    OKABE_ITO["reddish_purple"],
-    "#882E72",  # dark purple (replaces black)
-    "#A6761D",  # amber/brown (Wong 2011)
-    "#66A61E",  # lime green  (Wong 2011)
+# Paul Tol bright colour palette — optimized for scientific publications.
+# Colourblind-safe (tested with Coblis), high perceptual contrast, designed to
+# be distinguishable in both colour and greyscale reproductions.
+# Reference: Paul Tol (2021) "Colour Schemes", SRON Technical Note.
+PAUL_TOL_BRIGHT = [
+    "#4477AA",  # blue
+    "#EE6677",  # coral red
+    "#228833",  # green
+    "#CCBB44",  # gold
+    "#66CCEE",  # cyan
+    "#AA3377",  # purple
+    "#EE7733",  # orange
+    "#009988",  # teal
+    "#CC3311",  # brick red
+    "#BBBBBB",  # grey
 ]
 OTHER_COLOR = "#B0B0B0"
+
+# Mapping from raw source_name (in source_station_catalog.csv) to display label.
+# Add entries here to rename sources in the legend and plot.
+SOURCE_DISPLAY_NAMES = {
+    "USGS": "USGS NWIS",
+}
 
 
 # Choose "bar" or "area".
@@ -570,8 +569,8 @@ def build_color_map(source_order: Sequence[str]) -> Dict[str, str]:
         if source == OTHER_LABEL:
             color_map[source] = OTHER_COLOR
         else:
-            color_map[source] = OKABE_ITO_EXTENDED[
-                palette_idx % len(OKABE_ITO_EXTENDED)
+            color_map[source] = PAUL_TOL_BRIGHT[
+                palette_idx % len(PAUL_TOL_BRIGHT)
             ]
             palette_idx += 1
     return color_map
@@ -600,7 +599,7 @@ def draw_resolution_panel(
             va="center",
         )
         ax.set_title(PANEL_TITLES[resolution], loc="left", weight="bold")
-        return
+        return None
 
     pivot = (
         sub.pivot_table(
@@ -618,7 +617,7 @@ def draw_resolution_panel(
     colors = [color_map[col] for col in source_order]
 
     if PLOT_KIND == "area":
-        ax.stackplot(years, y_arrays, labels=source_order, colors=colors, alpha=0.92)
+        ax.stackplot(years, y_arrays, labels=[SOURCE_DISPLAY_NAMES.get(s, s) for s in source_order], colors=colors, alpha=0.92)
     elif PLOT_KIND == "bar":
         bottom = np.zeros(len(years), dtype=float)
         for label, values, color in zip(source_order, y_arrays, colors):
@@ -627,7 +626,7 @@ def draw_resolution_panel(
                 values,
                 bottom=bottom,
                 width=0.9,
-                label=label,
+                label=SOURCE_DISPLAY_NAMES.get(label, label),
                 color=color,
                 linewidth=0,
             )
@@ -656,6 +655,8 @@ def draw_resolution_panel(
     if pd.notna(max_total) and max_total > 0:
         ax.set_ylim(0, max_total * 1.12)
 
+    return pivot
+
 
 def draw_three_panel_plot(
     plot_counts: pd.DataFrame,
@@ -679,8 +680,10 @@ def draw_three_panel_plot(
 
     color_map = build_color_map(source_order)
 
+    daily_pivot = None
+    monthly_pivot = None
     for ax, resolution in zip(axes, RESOLUTIONS):
-        draw_resolution_panel(
+        pivot = draw_resolution_panel(
             ax=ax,
             plot_counts=plot_counts,
             resolution=resolution,
@@ -689,16 +692,147 @@ def draw_three_panel_plot(
             year_min=year_min,
             year_max=year_max,
         )
+        if resolution == "daily":
+            daily_pivot = pivot
+        elif resolution == "monthly":
+            monthly_pivot = pivot
+
+    # --- Inset configuration ---
+
+    # Monthly panel inset (axes[1]) — position & size via bbox_to_anchor
+    MONTHLY_INSET_BBOX = (0.04, 0.4, 0.38, 0.42)   # (x0, y0, width, height) in axes fraction
+    MONTHLY_INSET_LOC = "lower left"
+    MONTHLY_ZOOM_START = 1938  # None = use year_min; set to int to override
+    MONTHLY_ZOOM_END = 1985    # end year for monthly inset x-axis
+
+    # Daily panel inset (axes[0]) — position & size via bbox_to_anchor
+    DAILY_INSET_BBOX = (0.04, 0.4, 0.38, 0.42)     # (x0, y0, width, height) in axes fraction
+    DAILY_INSET_LOC = "lower left"
+    DAILY_ZOOM_START = 1948  # start year for daily inset x-axis
+    DAILY_ZOOM_END = 1960    # end year for daily inset x-axis
+
+    # --- Inset for monthly panel: zoom on pre-1985 to reveal early-year detail ---
+    if monthly_pivot is not None:
+        inset_ax = inset_axes(
+            axes[1],
+            width="100%",
+            height="100%",
+            bbox_to_anchor=MONTHLY_INSET_BBOX,
+            bbox_transform=axes[1].transAxes,
+            loc=MONTHLY_INSET_LOC,
+            borderpad=0,
+        )
+
+        m_zoom_start = MONTHLY_ZOOM_START if MONTHLY_ZOOM_START is not None else year_min
+        pre_years = np.arange(m_zoom_start, MONTHLY_ZOOM_END + 1)
+        inset_pivot = monthly_pivot.reindex(index=pre_years, fill_value=0)
+        inset_y_arrays = [inset_pivot[col].to_numpy(dtype=float) for col in source_order]
+        colors = [color_map[col] for col in source_order]
+
+        if PLOT_KIND == "bar":
+            bottom = np.zeros(len(pre_years), dtype=float)
+            for _, values, color in zip(source_order, inset_y_arrays, colors):
+                inset_ax.bar(
+                    pre_years,
+                    values,
+                    bottom=bottom,
+                    width=0.9,
+                    color=color,
+                    linewidth=0,
+                )
+                bottom = bottom + values
+        else:
+            inset_ax.stackplot(pre_years, inset_y_arrays, colors=colors, alpha=0.92)
+
+        # Total line for inset
+        inset_total = inset_pivot.sum(axis=1)
+        inset_ax.plot(
+            inset_total.index,
+            inset_total.values,
+            color="black",
+            linewidth=0.8,
+            linestyle="-",
+        )
+
+        inset_ax.set_xlim(m_zoom_start, MONTHLY_ZOOM_END)
+        inset_max = inset_pivot.sum(axis=1).max()
+        if pd.notna(inset_max) and inset_max > 0:
+            inset_ax.set_ylim(0, inset_max * 1.18)
+
+        inset_ax.tick_params(labelsize=MIN_VISIBLE_FONT_SIZE - 2)
+        inset_ax.yaxis.set_major_formatter(FuncFormatter(compact_count))
+        inset_ax.grid(axis="y", linewidth=0.3, alpha=0.4)
+        inset_ax.set_axisbelow(True)
+        inset_ax.set_title("Pre-{}".format(MONTHLY_ZOOM_END), fontsize=MIN_VISIBLE_FONT_SIZE, loc="left")
+
+        # Highlight the zoomed region on the main axes
+        axes[1].axvspan(m_zoom_start, MONTHLY_ZOOM_END, alpha=0.08, color="red", zorder=0)
+
+    # --- Inset for daily panel: zoom on pre-ZOOM_YEAR to reveal early-year detail ---
+    if daily_pivot is not None:
+        inset_daily_ax = inset_axes(
+            axes[0],
+            width="100%",
+            height="100%",
+            bbox_to_anchor=DAILY_INSET_BBOX,
+            bbox_transform=axes[0].transAxes,
+            loc=DAILY_INSET_LOC,
+            borderpad=0,
+        )
+
+        pre_years = np.arange(DAILY_ZOOM_START, DAILY_ZOOM_END + 1)
+        inset_pivot = daily_pivot.reindex(index=pre_years, fill_value=0)
+        inset_y_arrays = [inset_pivot[col].to_numpy(dtype=float) for col in source_order]
+        colors = [color_map[col] for col in source_order]
+
+        if PLOT_KIND == "bar":
+            bottom = np.zeros(len(pre_years), dtype=float)
+            for _, values, color in zip(source_order, inset_y_arrays, colors):
+                inset_daily_ax.bar(
+                    pre_years,
+                    values,
+                    bottom=bottom,
+                    width=0.9,
+                    color=color,
+                    linewidth=0,
+                )
+                bottom = bottom + values
+        else:
+            inset_daily_ax.stackplot(pre_years, inset_y_arrays, colors=colors, alpha=0.92)
+
+        # Total line for inset
+        inset_total = inset_pivot.sum(axis=1)
+        inset_daily_ax.plot(
+            inset_total.index,
+            inset_total.values,
+            color="black",
+            linewidth=0.8,
+            linestyle="-",
+        )
+
+        inset_daily_ax.set_xlim(DAILY_ZOOM_START, DAILY_ZOOM_END)
+        inset_max = inset_pivot.sum(axis=1).max()
+        if pd.notna(inset_max) and inset_max > 0:
+            inset_daily_ax.set_ylim(0, inset_max * 1.18)
+
+        inset_daily_ax.tick_params(labelsize=MIN_VISIBLE_FONT_SIZE - 2)
+        inset_daily_ax.yaxis.set_major_formatter(FuncFormatter(compact_count))
+        inset_daily_ax.grid(axis="y", linewidth=0.3, alpha=0.4)
+        inset_daily_ax.set_axisbelow(True)
+        inset_daily_ax.set_title("Pre-{}".format(DAILY_ZOOM_END), fontsize=MIN_VISIBLE_FONT_SIZE, loc="left")
+
+        # Highlight the zoomed region on the main daily axes
+        axes[0].axvspan(DAILY_ZOOM_START, DAILY_ZOOM_END, alpha=0.08, color="red", zorder=0)
 
     axes[-1].set_xlabel("Year")
     axes[-1].set_xlim(year_min, year_max)
 
     legend_handles = [
-        Patch(facecolor=color_map[source], edgecolor="none", label=source)
+        Patch(facecolor=color_map[source], edgecolor="none", label=SOURCE_DISPLAY_NAMES.get(source, source))
         for source in source_order
     ]
     legend_handles.append(
-        Line2D([0], [0], color="black", linewidth=0.6, label="Total records")
+        Line2D([0], [0], color="black", linewidth=1.2, label="Total records")
     )
 
     fig.legend(
@@ -794,7 +928,7 @@ def write_checklist(
 - Font embedding check: {}
 
 ## Color
-- Colorblind-safe palette: Okabe-Ito (extended with Wong 2011)
+- Colorblind-safe palette: Paul Tol bright (SRON Technical Note)
 - Coblis check: pending (recommend verification before submission)
 
 ## Legend

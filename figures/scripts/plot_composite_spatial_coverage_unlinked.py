@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Composite spatial coverage plot built only from the S8 release package."""
+"""Composite spatial coverage plot with linked+unlinked satellite histogram (grouped bars, log scale)."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
 S5B_LINKS_CSV = PROJECT_DIR / 'output' / 's5b_satellite_main_cluster_links_v2.csv'
 DPI = 300
 FIGSIZE = (12, 14)
-FIGURE_ID = "composite_spatial_coverage_manu_order"
+FIGURE_ID = "composite_spatial_coverage_unlinked"
 FONT_SIZES = {
     "map_tick": 9,
     "panel_label": 15,
@@ -328,18 +328,81 @@ def build_satellite_linked_area_distribution(satellite: pd.DataFrame, clusters: 
 
 
 
-def build_satellite_uparea_from_s5b(csv_path: Path) -> pd.DataFrame:
-    """Build area distribution from s5b satellite linkage CSV using MERIT upstream area."""
+def build_satellite_uparea_from_s5b(csv_path: Path) -> dict[str, pd.DataFrame]:
+    """Build area distributions for linked and unlinked satellite stations from s5b CSV."""
+    empty_dist = build_area_distribution(pd.DataFrame(columns=["basin_area"]))
+    result = {"linked": empty_dist.copy(), "unlinked": empty_dist.copy()}
     if not csv_path.exists():
-        return build_area_distribution(pd.DataFrame(columns=["basin_area"]))
+        return result
     df = pd.read_csv(csv_path)
-    linked = df[df["link_status"].eq("linked")].copy()
-    if linked.empty:
-        return build_area_distribution(pd.DataFrame(columns=["basin_area"]))
-    linked = linked.drop_duplicates(subset="satellite_station_id")
-    linked["basin_area"] = pd.to_numeric(linked["satellite_uparea_merit"], errors="coerce")
-    linked = linked[linked["basin_area"].notna() & (linked["basin_area"] > 0)]
-    return build_area_distribution(linked, "basin_area")
+
+    for status in ("linked", "unlinked"):
+        subset = df[df["link_status"].eq(status)].copy()
+        if subset.empty:
+            continue
+        subset = subset.drop_duplicates(subset="satellite_station_id")
+        subset["basin_area"] = pd.to_numeric(subset["satellite_uparea_merit"], errors="coerce")
+        subset = subset[subset["basin_area"].notna() & (subset["basin_area"] > 0)]
+        if subset.empty:
+            continue
+        result[status] = build_area_distribution(subset, "basin_area")
+    return result
+
+
+def draw_grouped_area_hist(ax, area_dict: dict[str, pd.DataFrame], color_linked: str, color_unlinked: str) -> None:
+    """Draw grouped bars for linked vs unlinked area distributions with log-scale y-axis."""
+    linked_bins = area_dict.get("linked", pd.DataFrame()).copy()
+    unlinked_bins = area_dict.get("unlinked", pd.DataFrame()).copy()
+    linked_counts = pd.to_numeric(
+        linked_bins[linked_bins.get("section", pd.Series([], dtype=str)).eq("bin")].get("cluster_count", pd.Series([], dtype=float)),
+        errors="coerce",
+    ).fillna(0) if not linked_bins.empty else pd.Series([0]*6)
+    unlinked_counts = pd.to_numeric(
+        unlinked_bins[unlinked_bins.get("section", pd.Series([], dtype=str)).eq("bin")].get("cluster_count", pd.Series([], dtype=float)),
+        errors="coerce",
+    ).fillna(0) if not unlinked_bins.empty else pd.Series([0]*6)
+
+    # Ensure 6 bins
+    if len(linked_counts) < 6:
+        linked_counts = pd.Series([0]*6)
+    if len(unlinked_counts) < 6:
+        unlinked_counts = pd.Series([0]*6)
+
+    if float(linked_counts.sum()) + float(unlinked_counts.sum()) <= 0:
+        ax.text(0.5, 0.5, "No area data", transform=ax.transAxes, ha="center", va="center",
+                fontsize=FONT_SIZES["inset_axis"], color="#777777")
+        ax.set_axis_off()
+        return
+
+    # Use labels from linked distribution (or unlinked if linked is empty)
+    ref = linked_bins if not linked_bins.empty else unlinked_bins
+    labels = ref[ref["section"].eq("bin")]["label"].astype(str).tolist() if not ref.empty else []
+    if len(labels) != 6:
+        labels = ["<10 km²", "10–100 km²", "100–1,000 km²", "1,000–10,000 km²", "10,000–100,000 km²", ">100,000 km²"]
+
+    x_pos = np.arange(6)
+    bar_width = 0.35
+    # Floor small values for log scale visibility
+    linked_vals = linked_counts.values[:6].astype(float)
+    unlinked_vals = unlinked_counts.values[:6].astype(float)
+
+    ax.bar(x_pos - bar_width/2, linked_vals, bar_width, color=color_linked, label="Linked", zorder=2)
+    ax.bar(x_pos + bar_width/2, unlinked_vals, bar_width, color=color_unlinked, label="Unlinked", zorder=2)
+
+    ax.set_yscale("log", nonpositive="clip")
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([format_area_bin_label(lbl) for lbl in labels], rotation=45, ha="center",
+                       fontsize=FONT_SIZES["inset_axis"])
+    y_max = max(float(linked_vals.max() or 1), float(unlinked_vals.max() or 1)) * 3
+    ax.set_ylim(0.5, y_max)
+    ax.tick_params(axis="both", labelsize=FONT_SIZES["inset_axis"], direction="in", pad=1)
+    ax.set_ylabel("Count", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
+    ax.set_xlabel("Basin area (km²)", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
+    ax.grid(axis="y", linewidth=0.3, alpha=0.55)
+    ax.yaxis.set_label_position("right")
+    ax.yaxis.tick_right()
+    ax.legend(fontsize=FONT_SIZES["inset_axis"], loc="upper left", framealpha=0.85,
+              handlelength=1.0, handleheight=0.7)
 
 
 def import_xarray():
@@ -385,7 +448,7 @@ def load_timeseries_points(ctx: ReleaseContext, file_name: str, label: str) -> p
     return frame[valid_latlon(frame)].copy()
 
 
-def load_release_data(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
+def load_release_data(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     station = read_release_csv_columns(ctx, PRODUCT_FILES["station_catalog"], STATION_COLUMNS, REQUIRED_STATION_COLUMNS)
     satellite = read_release_csv_columns(ctx, PRODUCT_FILES["satellite_catalog"], SATELLITE_COLUMNS, REQUIRED_SATELLITE_COLUMNS)
     clusters = build_cluster_table(station)
@@ -538,7 +601,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
     draw_area_hist(hist_ax, area_dist, OKABE_ITO["sky_blue"])
 
 
-def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame) -> None:
+def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: dict[str, pd.DataFrame]) -> None:
     setup_world_map(ax)
     df = satellite[valid_latlon(satellite)].copy()
     if df.empty:
@@ -586,10 +649,8 @@ def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame
         legend_ax.text(0.20, y, "{} ({})".format(source, len(group)), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.18
 
-    legend_ax.text(0.08, y - 0.03, "Total stations: {:,}".format(len(df)),
-                   fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
-    # hist_ax = add_inset_axes(ax, [0.01, 0.17, 0.20, 0.22])
-    # draw_area_hist(hist_ax, satellite_area, OKABE_ITO["reddish_purple"])
+    hist_ax = add_inset_axes(ax, [0.01, 0.17, 0.20, 0.22])
+    draw_grouped_area_hist(hist_ax, satellite_area, OKABE_ITO["reddish_purple"], OKABE_ITO["gray"])
 
 
 def draw_climatology_timeseries_map(ax, climatology: pd.DataFrame, timeseries: dict[str, pd.DataFrame]) -> None:
@@ -689,7 +750,7 @@ def write_plotting_data(
     clusters: pd.DataFrame,
     satellite: pd.DataFrame,
     area_dist: pd.DataFrame,
-    satellite_area: pd.DataFrame,
+    satellite_area: dict[str, pd.DataFrame],
     climatology: pd.DataFrame,
     timeseries: dict[str, pd.DataFrame],
 ) -> list[Path]:
@@ -697,7 +758,8 @@ def write_plotting_data(
         write_csv(clusters, data_dir / "{}_plotting_data_clusters.csv".format(figure_id)),
         write_csv(satellite[valid_latlon(satellite)].copy(), data_dir / "{}_plotting_data_satellite_stations.csv".format(figure_id)),
         write_csv(area_dist, data_dir / "{}_plotting_data_cluster_area_distribution.csv".format(figure_id)),
-        write_csv(satellite_area, data_dir / "{}_plotting_data_satellite_linked_area_distribution.csv".format(figure_id)),
+        write_csv(satellite_area.get("linked", pd.DataFrame()), data_dir / "{}_plotting_data_satellite_linked_area_distribution.csv".format(figure_id)),
+        write_csv(satellite_area.get("unlinked", pd.DataFrame()), data_dir / "{}_plotting_data_satellite_unlinked_area_distribution.csv".format(figure_id)),
         write_csv(climatology, data_dir / "{}_plotting_data_climatology_points.csv".format(figure_id)),
     ]
     for label in ("Daily", "Monthly", "Annual"):

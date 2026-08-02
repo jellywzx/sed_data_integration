@@ -61,7 +61,7 @@ from stats_release.reporting import (
 
 # ── Output directories (absolute) ───────────────────────────────────────────
 DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
-DEFAULT_OUT_DIR          = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/stats_release/output_other/stats_release_minimal/variable_summary")
+DEFAULT_OUT_DIR          = Path(__file__).resolve().parents[2] / "output_other" / "stats_release_minimal" / "variable_summary"
 DEFAULT_FIGURES_DIR      = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
 
 MATRIX_PRODUCTS = {
