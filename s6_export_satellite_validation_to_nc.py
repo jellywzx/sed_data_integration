@@ -553,7 +553,6 @@ def _write_satellite_validation_nc(
             "unlinked_reason", "standard reason when no main reference cluster is linked"
         )
         source_v = _str_station_var("source", "source dataset short name")
-        native_id_v = _str_station_var("source_station_native_id", "native source station id")
         station_name_v = _str_station_var("station_name", "source station name")
         river_name_v = _str_station_var("river_name", "source river name")
         resolution_v = _str_station_var("station_resolution", "time resolution for this source station")
@@ -627,7 +626,6 @@ def _write_satellite_validation_nc(
             [row["unlinked_reason"] for row in station_rows], dtype=object
         )
         source_v[:] = np.asarray([row["source"] for row in station_rows], dtype=object)
-        native_id_v[:] = np.asarray([row["source_station_native_id"] for row in station_rows], dtype=object)
         station_name_v[:] = np.asarray([row["station_name"] for row in station_rows], dtype=object)
         river_name_v[:] = np.asarray([row["river_name"] for row in station_rows], dtype=object)
         resolution_v[:] = np.asarray([row["resolution"] for row in station_rows], dtype=object)
@@ -747,25 +745,24 @@ def _build_satellite_catalog(station_rows, station_record_map):
         time_start, time_end = _time_bounds([item["date"] for item in recs])
         row = {
             "satellite_station_uid": station_row["satellite_station_uid"],
-            "satellite_location_uid": station_row["satellite_location_uid"],
+            "station_name": station_row["station_name"],
+            "river_name": station_row["river_name"],
+            "source": station_row["source"],
+            "resolution": station_row["resolution"],
+            "time_start": time_start,
+            "time_end": time_end,
+            "n_records": int(len(recs)),
+            "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
+            "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
+            "geographic_coverage": station_row.get("global_attr_payload", {}).get("promoted", {}).get("geographic_coverage", ""),
             "cluster_uid": station_row["cluster_uid"],
-            "cluster_id": station_row["cluster_id"],
             "linked_cluster_uid": station_row["linked_cluster_uid"],
             "unlinked_reason": station_row["unlinked_reason"],
             "link_distance_m": station_row["link_distance_m"],
             "link_uparea_log10_error": station_row["link_uparea_log10_error"],
-            "source": station_row["source"],
+            "satellite_location_uid": station_row["satellite_location_uid"],
+            "cluster_id": station_row["cluster_id"],
             "source_station_index": station_row["source_station_index"],
-            "source_station_native_id": station_row["source_station_native_id"],
-            "station_name": station_row["station_name"],
-            "river_name": station_row["river_name"],
-            "resolution": station_row["resolution"],
-            "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
-            "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
-            "geographic_coverage": station_row.get("global_attr_payload", {}).get("promoted", {}).get("geographic_coverage", ""),
-            "n_records": int(len(recs)),
-            "time_start": time_start,
-            "time_end": time_end,
         }
         catalog_rows.append(row)
 

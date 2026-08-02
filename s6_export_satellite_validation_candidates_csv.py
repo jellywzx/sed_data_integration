@@ -49,7 +49,6 @@ SATELLITE_CANDIDATE_COLUMNS = [
     "source_station_uid",
     "satellite_station_uid",
     "source_station_index",
-    "source_station_native_id",
     "source_station_name",
     "source_station_river_name",
     "source_station_paths",
@@ -131,7 +130,6 @@ def _station_metadata(ds) -> List[Dict[str, object]]:
     cluster_uids = text("cluster_uid")
     sources = text("source")
     families = text("source_family")
-    native_ids = text("source_station_native_id")
     station_names = text("station_name")
     river_names = text("river_name")
     resolutions = text("station_resolution")
@@ -172,7 +170,6 @@ def _station_metadata(ds) -> List[Dict[str, object]]:
                 "source_station_uid": satellite_uid,
                 "satellite_station_uid": satellite_uid,
                 "source_station_index": int(source_station_indices[idx]),
-                "source_station_native_id": native_ids[idx],
                 "source_station_name": station_names[idx],
                 "source_station_river_name": river_names[idx],
                 "source_station_paths": resolved_paths[idx] or candidate_paths[idx],
@@ -239,7 +236,6 @@ def _chunk_to_frame(ds, station_meta: Sequence[Dict[str, object]], start: int, s
             "source_station_uid": from_meta("source_station_uid"),
             "satellite_station_uid": from_meta("satellite_station_uid"),
             "source_station_index": from_meta("source_station_index"),
-            "source_station_native_id": from_meta("source_station_native_id"),
             "source_station_name": from_meta("source_station_name"),
             "source_station_river_name": from_meta("source_station_river_name"),
             "source_station_paths": from_meta("source_station_paths"),

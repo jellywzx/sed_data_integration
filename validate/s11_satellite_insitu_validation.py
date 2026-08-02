@@ -959,7 +959,7 @@ def _load_matching_satellite_station_metadata(
     sources = _station_series(ds, "source", station_dim, "").map(_clean_text)
     families = _station_series(ds, "source_family", station_dim, "satellite").map(_clean_text)
     station_uids = _station_series(ds, "satellite_station_uid", station_dim, "").map(_clean_text)
-    native_ids = _station_series(ds, "source_station_native_id", station_dim, "").map(_clean_text)
+    native_ids = _station_series(ds, "station_name", station_dim, "").map(_clean_text)
     candidate_paths = _station_series(ds, "candidate_path", station_dim, "").map(_clean_text)
     resolved_paths = _station_series(ds, "resolved_candidate_path", station_dim, "").map(_clean_text)
 
