@@ -28,7 +28,6 @@ import pandas as pd
 from global_attr_provenance import (
     global_attr_payloads_for_path_groups,
     set_global_attr_policy,
-    write_global_attr_payload_variables,
     write_promoted_global_attr_variables,
 )
 from geo_boundary_enrichment import (
@@ -656,6 +655,8 @@ def main():
         nc.history = "Created {} by s6_export_climatology_to_nc.py".format(datetime.now().isoformat(timespec="seconds"))
         nc.provenance_policy = "Each climatology station is one organized climatology file; source_station_path preserves file-level provenance"
         nc.time_type_policy = "All records in this file are climatology and therefore stored separately from the basin mainline"
+        nc.source_family = "climatology"
+        nc.source_family_definition = "Long-term mean / compilation products (Milliman, HMA, Ali & De Boer, Vanmaercke, and Huanghe climatology)"
         nc.release_filter_policy = (
             "published climatology records require SSC or SSL to be non-missing; "
             "Q-only time steps are not written"

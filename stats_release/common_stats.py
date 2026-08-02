@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Shared helpers for release-only statistics parity outputs."""
 
-from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -119,21 +118,25 @@ def resolution_values(ds, key=slice(None)) -> np.ndarray:
 
 
 def classify_source(source_name: object, source_family: object = "") -> tuple[str, str]:
+    """Classify source into (source_type, source_group) using the shared taxonomy."""
     source = clean_text(source_name)
     family = clean_text(source_family).lower()
-    lower = source.lower()
-    satellite = {"riversed", "gsed", "dethier", "shashi_jianli"}
-    climatology = {"milliman", "vanmaercke", "hma", "ali_de_boer", "ali de boer"}
-    agencies = {"usgs", "hydat", "bayern"}
-    regional = {"hybam"}
-    if "satellite" in family or lower in satellite:
+
+    # Use the shared classifier when possible
+    sf = classify_source_family(source, observation_type=family)
+    if sf == "satellite":
         return "satellite", "satellite products"
-    if lower in climatology or "climatology" in family:
+    if sf == "climatology":
         return "climatology", "global compilations"
-    if lower in agencies:
-        return "in-situ", "national agencies"
-    if lower in regional:
-        return "in-situ", "regional datasets"
+    if sf == "in_situ":
+        # Further subdivide in-situ for reporting
+        lower = source.lower()
+        if lower in {"usgs", "hydat", "bayern"}:
+            return "in-situ", "national agencies"
+        if lower in {"hybam"}:
+            return "in-situ", "regional datasets"
+        if source:
+            return "literature", "global compilations"
     if source:
         return "literature", "global compilations"
     return "unknown", "unknown"

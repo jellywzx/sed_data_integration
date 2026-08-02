@@ -13,6 +13,9 @@ import json
 import shutil
 import itertools
 import math
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from source_family import classify_source_family
 import os
 import sqlite3
 import time as time_module
@@ -100,21 +103,11 @@ def log_progress(message: str) -> None:
     print("[{}] {}".format(stamp, message), flush=True)
 
 
-def classify_source_family(source: str) -> str:
-    """Classify a source name into the lightweight validation taxonomy."""
-    text = "" if source is None else str(source)
-    low = text.lower()
-    if "usgs" in low:
-        return "USGS"
-    if "hydat" in low:
-        return "HYDAT"
-    if any(token in low for token in ("riversed", "gsed", "dethier", "aquasat")):
-        return "satellite"
-    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
-        return "in_situ"
-    if any(token in low for token in ("compiled", "compilation", "secondary")):
-        return "secondary_compilation"
-    return "other"
+def classify_source_family_local(source: str) -> str:
+    """DEPRECATED: thin wrapper around shared source_family.classify_source_family.
+    Kept for backward compatibility with internal callers in this module.
+    """
+    return classify_source_family(source)
 
 
 def _clean_pair_value(value) -> str:

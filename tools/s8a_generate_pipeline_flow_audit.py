@@ -21,11 +21,13 @@ Example:
   python s8a_generate_pipeline_flow_audit.py --root /path/to/Output_r
 """
 
-from __future__ import annotations
 
 import argparse
 import math
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from source_family import classify_source_family as _shared_classify
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -57,20 +59,8 @@ def boolish(value) -> bool:
 
 
 def source_family(source: str) -> str:
-    low = clean_text(source).lower()
-    if not low:
-        return "unknown"
-    if "usgs" in low:
-        return "USGS"
-    if "hydat" in low:
-        return "HYDAT"
-    if any(token in low for token in SATELLITE_TOKENS):
-        return "satellite"
-    if any(token in low for token in ("grdc", "hybam", "in situ", "insitu")):
-        return "in_situ"
-    if any(token in low for token in ("compiled", "compilation", "secondary")):
-        return "secondary_compilation"
-    return "other"
+    """Classify source family using the shared taxonomy."""
+    return _shared_classify(source)
 
 
 def distance_bin(value) -> str:

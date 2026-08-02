@@ -30,9 +30,9 @@ from basin_tracer import UpstreamBasinTracer
 from pipeline_paths import S5_BASIN_CLUSTERED_CSV, get_output_r_root
 
 try:
-    from s6_basin_merge_to_nc import classify_source_family_from_observation_type
+    from source_family import classify_source_family
 except ImportError:  # pragma: no cover - local tests normally import this.
-    classify_source_family_from_observation_type = None
+    classify_source_family = None
 
 try:
     import geopandas as gpd
@@ -206,17 +206,16 @@ def source_key(value):
 
 
 def is_satellite_row(row):
-    observation_type = clean_text(row.get("observation_type", ""))
-    if observation_type:
-        if classify_source_family_from_observation_type is not None:
-            family = classify_source_family_from_observation_type(observation_type)
-            return clean_text(family).lower() == "satellite"
-        normalized = source_key(observation_type)
-        if normalized in {"satellite", "remote_sensing", "remote_sensing_observation"}:
-            return True
-        if normalized in {"in_situ", "insitu", "in_situ_station_data", "station_data"}:
-            return False
-    key = source_key(row.get("source", ""))
+    """Check if *row* represents a satellite dataset.
+
+    Uses the shared source_family classifier.  Falls back to source-name
+    heuristics (SATELLITE_SOURCE_FALLBACKS) when the classifier is unavailable.
+    """
+    source = clean_text(row.get("source", ""))
+    if source and classify_source_family is not None:
+        family = classify_source_family(source)
+        return clean_text(family).lower() == "satellite"
+    key = source_key(source)
     return any(token in key for token in SATELLITE_SOURCE_FALLBACKS)
 
 

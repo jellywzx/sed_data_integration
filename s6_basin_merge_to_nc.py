@@ -66,6 +66,15 @@ from basin_policy import (
     MATCH_QUALITY_CODES,
     MATCH_QUALITY_MEANINGS,
 )
+from source_family import (
+    MERGE_EXCLUDED_SOURCE_FAMILIES,
+    VALIDATION_ONLY_SOURCE_FAMILIES,
+    classify_source_family,
+    classify_source_family_from_observation_type,
+    is_merge_eligible_source,
+    merge_exclusion_reason,
+    merge_policy_for_source,
+)
 from global_attr_provenance import (
     global_attr_payloads_for_path_groups,
     set_global_attr_policy,
@@ -175,109 +184,11 @@ QUALITY_ORDER_COLUMNS = [
     "merge_exclusion_reason",
     "merge_policy",
 ]
-MERGE_EXCLUDED_SOURCE_FAMILIES = {"satellite"}
-VALIDATION_ONLY_SOURCE_FAMILIES = {"satellite"}
+# source_family constants (MERGE_EXCLUDED_SOURCE_FAMILIES, VALIDATION_ONLY_SOURCE_FAMILIES)
+# and helper functions (classify_source_family, classify_source_family_from_observation_type,
+# is_merge_eligible_source, merge_exclusion_reason, merge_policy_for_source)
+# are imported from source_family.py (shared module).
 
-SOURCE_STATION_TEXT_LIMITS = {
-    "source_station_temporal_span": 512,
-    "source_station_time_coverage_start": 128,
-    "source_station_time_coverage_end": 128,
-    "source_station_summary": 2048,
-    "source_station_comment": 2048,
-    "source_station_variables_provided": 1024,
-    "source_station_data_limitations": 2048,
-    "source_station_declared_temporal_resolution": 256,
-}
-
-RESOLUTION_CODES = {
-    "daily": 0,
-    "monthly": 1,
-    "annual": 2,
-    "climatology": 3,
-    "other": 4,
-    # 用户规则：季度并入 monthly，single_point 并入 daily
-    "quarterly": 1,
-    "single_point": 0,
-    # 兼容旧输出目录名
-    "annually_climatology": 3,
-}
-
-# 默认并行进程数，None = 自动取 CPU 核数，命令行 --workers 可覆盖
-_DEFAULT_WORKERS = 24
-_DEFAULT_METADATA_WORKERS = 16
-
-_PROC = psutil.Process(os.getpid())
-
-
-def classify_source_family_from_observation_type(observation_type):
-    """Classify source_family from required s3/s5 observation_type.
-
-    s6 intentionally does not fall back to source-name heuristics. Missing or
-    blank observation_type is treated as an upstream data-contract error and is
-    checked immediately after reading the s5 CSV in main().
-    """
-    obs_text = "" if observation_type is None else str(observation_type).strip()
-    obs_low = obs_text.lower().replace("-", "_").replace(" ", "_")
-
-    if obs_low in {"usgs", "hydat"}:
-        return obs_low.upper()
-    if obs_low in {
-        "satellite",
-        "remote_sensing",
-        "remote_sensing_observation",
-        "satellite_observation",
-    }:
-        return "satellite"
-    if obs_low in {
-        "in_situ",
-        "insitu",
-        "in_situ_observation",
-        "station",
-        "station_observation",
-        "gauge",
-        "gauge_observation",
-    }:
-        return "in_situ"
-    if obs_low in {
-        "secondary_compilation",
-        "compiled",
-        "compilation",
-        "secondary",
-        "secondary_dataset",
-    }:
-        return "secondary_compilation"
-    return "other"
-
-
-def is_merge_eligible_source(observation_type, include_satellite_in_main_merge=False):
-    family = classify_source_family_from_observation_type(observation_type)
-    if include_satellite_in_main_merge and family == "satellite":
-        return True
-    return family not in MERGE_EXCLUDED_SOURCE_FAMILIES
-
-
-def merge_exclusion_reason(observation_type, include_satellite_in_main_merge=False):
-    family = classify_source_family_from_observation_type(observation_type)
-    if family == "satellite" and not include_satellite_in_main_merge:
-        return "source_family=satellite excluded from default main merge"
-    if not is_merge_eligible_source(
-        observation_type,
-        include_satellite_in_main_merge=include_satellite_in_main_merge,
-    ):
-        return "source_family={} excluded from default main merge".format(family)
-    return ""
-
-
-def merge_policy_for_source(observation_type, include_satellite_in_main_merge=False):
-    family = classify_source_family_from_observation_type(observation_type)
-    if family in VALIDATION_ONLY_SOURCE_FAMILIES and not include_satellite_in_main_merge:
-        return "validation_only"
-    if is_merge_eligible_source(
-        observation_type,
-        include_satellite_in_main_merge=include_satellite_in_main_merge,
-    ):
-        return "merge_candidate"
-    return "excluded_from_main_merge"
 
 
 class UnitValidationError(ValueError):
@@ -895,19 +806,29 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
                     "n_nonempty_rows": raw_metrics["n_nonempty_rows"],
                     "n_publish_rows": metrics["n_publish_rows"],
                     "df": merge_df,
-                    "source_family": classify_source_family_from_observation_type(observation_type),
+                    "source_family": classify_source_family(
+                        source,
+                        resolution=resolution,
+                        observation_type=observation_type,
+                    ),
                     "merge_eligible": int(
                         is_merge_eligible_source(
-                            observation_type,
+                            source,
+                            resolution=resolution,
+                            observation_type=observation_type,
                             include_satellite_in_main_merge=include_satellite_in_main_merge,
                         )
                     ),
                     "merge_exclusion_reason": merge_exclusion_reason(
-                        observation_type,
+                        source,
+                        resolution=resolution,
+                        observation_type=observation_type,
                         include_satellite_in_main_merge=include_satellite_in_main_merge,
                     ),
                     "merge_policy": merge_policy_for_source(
-                        observation_type,
+                        source,
+                        resolution=resolution,
+                        observation_type=observation_type,
                         include_satellite_in_main_merge=include_satellite_in_main_merge,
                     ),
                 }
@@ -1245,7 +1166,14 @@ def main():
     # 若确实需要 satellite 进入主 merge，可显式传：
     #   --include-satellite-in-main-merge
     if not args.include_satellite_in_main_merge:
-        source_family = stations["observation_type"].map(classify_source_family_from_observation_type)
+        source_family = stations.apply(
+            lambda r: classify_source_family(
+                r.get("source", ""),
+                resolution=r.get("resolution"),
+                observation_type=r.get("observation_type", ""),
+            ),
+            axis=1,
+        )
         satellite_mask = source_family.eq("satellite")
         n_satellite = int(satellite_mask.sum())
 
@@ -2260,9 +2188,10 @@ def main():
             "published mainline records require SSC or SSL to be non-missing; "
             "Q-only time steps are not written to the master product"
         )
-        nc.validation_only_source_families = "satellite"
-        nc.merge_excluded_source_families = "satellite"
+        nc.validation_only_source_families = " ".join(sorted(VALIDATION_ONLY_SOURCE_FAMILIES))
+        nc.merge_excluded_source_families = " ".join(sorted(MERGE_EXCLUDED_SOURCE_FAMILIES))
         nc.classification_policy = "manual_review_on_conflict"
+        nc.source_family_taxonomy = "in_situ climatology satellite other"
         nc.qc_stage_schema_version = "1"
         set_global_attr_policy(nc)
         nc.basin_csv      = str(inp_path)

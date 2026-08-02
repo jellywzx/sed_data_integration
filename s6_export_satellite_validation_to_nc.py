@@ -45,9 +45,9 @@ from s6_basin_merge_to_nc import (
     HAS_NC,
     _read_source_meta_from_nc,
     _read_station_meta_from_nc,
-    classify_source_family_from_observation_type,
     load_nc_series,
 )
+from source_family import classify_source_family, classify_source_family_from_observation_type
 
 try:
     import netCDF4 as nc4
@@ -135,8 +135,9 @@ def _default_workers_for_host():
     return max(1, configured)
 
 
-def is_satellite_observation(observation_type):
-    return classify_source_family_from_observation_type(observation_type) == "satellite"
+def is_satellite_observation(source):
+    """Check if *source* name maps to satellite family (backward compat wrapper)."""
+    return classify_source_family(source) == "satellite"
 
 
 def _normalize_resolution(value):
@@ -433,7 +434,7 @@ def _worker_load_satellite_candidate(payload):
 
     source = _safe_text(payload.get("source", ""))
     observation_type = _safe_text(payload.get("observation_type", ""))
-    source_family = classify_source_family_from_observation_type(observation_type)
+    source_family = classify_source_family(source)
     if source_family != "satellite":
         return {"status": "skip_non_satellite"}
 
@@ -548,88 +549,20 @@ def _write_satellite_validation_nc(
             "linked_cluster_uid",
             "main reference cluster lookup key; does not merge satellite data into main matrices",
         )
-        linked_resolution_v = _str_station_var(
-            "linked_resolution", "main reference resolution used by the linkage"
-        )
-        link_resolution_relation_v = _str_station_var(
-            "link_resolution_relation",
-            "relationship between satellite native resolution and linked main reference resolution",
-        )
-        link_attempted_resolutions_v = _str_station_var(
-            "link_attempted_resolutions",
-            "ordered main reference resolutions attempted by s5b linkage",
-        )
-        link_status_v = _str_station_var("link_status", "satellite-to-main linkage status")
-        link_reason_v = _str_station_var("link_reason", "satellite-to-main linkage reason")
-        link_method_v = _str_station_var("link_method", "satellite-to-main linkage method")
-        linkage_mode_v = _str_station_var("linkage_mode", "source spatial-support linkage mode")
-        link_quality_v = _str_station_var("link_quality", "satellite-to-main linkage quality")
         unlinked_reason_v = _str_station_var(
             "unlinked_reason", "standard reason when no main reference cluster is linked"
         )
         source_v = _str_station_var("source", "source dataset short name")
-        family_v = _str_station_var("source_family", "source family")
         native_id_v = _str_station_var("source_station_native_id", "native source station id")
         station_name_v = _str_station_var("station_name", "source station name")
         river_name_v = _str_station_var("river_name", "source river name")
         resolution_v = _str_station_var("station_resolution", "time resolution for this source station")
-        candidate_path_v = _str_station_var("candidate_path", "candidate path text from s5")
-        resolved_path_v = _str_station_var("resolved_candidate_path", "resolved absolute candidate path")
-        merge_policy_v = _str_station_var("merge_policy", "merge policy for this station")
 
         station_global_attr_payloads = [
             row.get("global_attr_payload") or merge_global_attrs_for_paths([row.get("resolved_candidate_path", "")])
             for row in station_rows
         ]
 
-        cluster_id_v = nc.createVariable("cluster_id_station", "i4", ("n_satellite_stations",))
-        cluster_id_v.long_name = "satellite singleton cluster id from s5 for this source station"
-        linked_cluster_id_v = nc.createVariable(
-            "linked_cluster_id", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        linked_cluster_id_v.long_name = (
-            "main reference cluster lookup id; does not merge satellite data into main matrices"
-        )
-        satellite_reach_id_v = nc.createVariable(
-            "satellite_reach_id", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        satellite_reach_id_v.long_name = "MERIT reach id for the satellite validation station"
-        main_reach_id_v = nc.createVariable(
-            "main_reach_id", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        main_reach_id_v.long_name = "MERIT reach id for the linked main reference cluster"
-        same_reach_v = nc.createVariable(
-            "same_reach", "i1", ("n_satellite_stations",), fill_value=np.int8(-1)
-        )
-        same_reach_v.long_name = "whether satellite and linked main cluster use the same MERIT reach"
-        same_reach_v.flag_values = np.array([0, 1], dtype=np.int8)
-        same_reach_v.flag_meanings = "false true"
-        reach_hops_v = nc.createVariable(
-            "reach_hops", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        reach_hops_v.long_name = "number of MERIT reach hops used by the linkage"
-        point_distance_v = nc.createVariable(
-            "point_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
-        )
-        point_distance_v.long_name = "point distance between satellite location and linked main representative"
-        point_distance_v.units = "m"
-        network_distance_v = nc.createVariable(
-            "network_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
-        )
-        network_distance_v.long_name = "along-network distance used by point-anchored reach linkage"
-        network_distance_v.units = "m"
-        area_log10_diff_v = nc.createVariable(
-            "area_log10_diff", "f4", ("n_satellite_stations",), fill_value=FILL
-        )
-        area_log10_diff_v.long_name = "relative upstream-area error used for s5b v2 linkage diagnostics"
-        candidate_count_v = nc.createVariable(
-            "candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        candidate_count_v.long_name = "number of raw linkage candidates considered"
-        eligible_candidate_count_v = nc.createVariable(
-            "eligible_candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        eligible_candidate_count_v.long_name = "number of linkage candidates satisfying all constraints"
         link_distance_v = nc.createVariable(
             "link_distance_m", "f4", ("n_satellite_stations",), fill_value=FILL
         )
@@ -639,10 +572,6 @@ def _write_satellite_validation_nc(
             "link_uparea_log10_error", "f4", ("n_satellite_stations",), fill_value=FILL
         )
         link_area_error_v.long_name = "relative upstream-area error used for s5b v2 linkage ranking"
-        link_candidate_count_v = nc.createVariable(
-            "link_candidate_count", "i4", ("n_satellite_stations",), fill_value=-1
-        )
-        link_candidate_count_v.long_name = "number of candidates satisfying all linkage constraints"
         source_station_index_v = nc.createVariable("source_station_index", "i4", ("n_satellite_stations",))
         source_station_index_v.long_name = "0-based source-station index in satellite validation table"
         lat_v = nc.createVariable("lat", "f4", ("n_satellite_stations",), fill_value=FILL)
@@ -651,10 +580,6 @@ def _write_satellite_validation_nc(
         lon_v = nc.createVariable("lon", "f4", ("n_satellite_stations",), fill_value=FILL)
         lon_v.long_name = "station longitude"
         lon_v.units = "degrees_east"
-        validation_only_v = nc.createVariable("validation_only", "i1", ("n_satellite_stations",), fill_value=np.int8(-1))
-        validation_only_v.long_name = "validation-only flag"
-        validation_only_v.flag_values = np.array([0, 1], dtype=np.int8)
-        validation_only_v.flag_meanings = "false true"
         station_source_index_v = nc.createVariable("source_index", "i4", ("n_satellite_stations",), fill_value=-1)
         station_source_index_v.long_name = "0-based index into n_sources"
 
@@ -687,7 +612,6 @@ def _write_satellite_validation_nc(
 
         source_name_v = nc.createVariable("source_name", str, ("n_sources",))
         source_long_name_v = nc.createVariable("source_long_name", str, ("n_sources",))
-        institution_v = nc.createVariable("institution", str, ("n_sources",))
         reference_v = nc.createVariable("reference", str, ("n_sources",))
         source_url_v = nc.createVariable("source_url", str, ("n_sources",))
 
@@ -699,56 +623,16 @@ def _write_satellite_validation_nc(
         linked_cluster_uid_v[:] = np.asarray(
             [row["linked_cluster_uid"] for row in station_rows], dtype=object
         )
-        linked_resolution_v[:] = np.asarray(
-            [row["linked_resolution"] for row in station_rows], dtype=object
-        )
-        link_resolution_relation_v[:] = np.asarray(
-            [row["link_resolution_relation"] for row in station_rows], dtype=object
-        )
-        link_attempted_resolutions_v[:] = np.asarray(
-            [row["link_attempted_resolutions"] for row in station_rows], dtype=object
-        )
-        link_status_v[:] = np.asarray([row["link_status"] for row in station_rows], dtype=object)
-        link_reason_v[:] = np.asarray([row["link_reason"] for row in station_rows], dtype=object)
-        link_method_v[:] = np.asarray([row["link_method"] for row in station_rows], dtype=object)
-        linkage_mode_v[:] = np.asarray([row["linkage_mode"] for row in station_rows], dtype=object)
-        link_quality_v[:] = np.asarray([row["link_quality"] for row in station_rows], dtype=object)
         unlinked_reason_v[:] = np.asarray(
             [row["unlinked_reason"] for row in station_rows], dtype=object
         )
         source_v[:] = np.asarray([row["source"] for row in station_rows], dtype=object)
-        family_v[:] = np.asarray([row["source_family"] for row in station_rows], dtype=object)
         native_id_v[:] = np.asarray([row["source_station_native_id"] for row in station_rows], dtype=object)
         station_name_v[:] = np.asarray([row["station_name"] for row in station_rows], dtype=object)
         river_name_v[:] = np.asarray([row["river_name"] for row in station_rows], dtype=object)
         resolution_v[:] = np.asarray([row["resolution"] for row in station_rows], dtype=object)
-        candidate_path_v[:] = np.asarray([row["candidate_path"] for row in station_rows], dtype=object)
-        resolved_path_v[:] = np.asarray([row["resolved_candidate_path"] for row in station_rows], dtype=object)
-        merge_policy_v[:] = np.asarray([row["merge_policy"] for row in station_rows], dtype=object)
-        cluster_id_v[:] = np.asarray([row["cluster_id"] for row in station_rows], dtype=np.int32)
-        linked_cluster_id_v[:] = np.asarray(
-            [row["linked_cluster_id"] for row in station_rows], dtype=np.int32
-        )
-        satellite_reach_id_v[:] = np.asarray(
-            [row["satellite_reach_id"] for row in station_rows], dtype=np.int32
-        )
-        main_reach_id_v[:] = np.asarray(
-            [row["main_reach_id"] for row in station_rows], dtype=np.int32
-        )
-        same_reach_v[:] = np.asarray([row["same_reach"] for row in station_rows], dtype=np.int8)
-        reach_hops_v[:] = np.asarray([row["reach_hops"] for row in station_rows], dtype=np.int32)
-        candidate_count_v[:] = np.asarray(
-            [row["candidate_count"] for row in station_rows], dtype=np.int32
-        )
-        eligible_candidate_count_v[:] = np.asarray(
-            [row["eligible_candidate_count"] for row in station_rows], dtype=np.int32
-        )
-        link_candidate_count_v[:] = np.asarray(
-            [row["link_candidate_count"] for row in station_rows], dtype=np.int32
-        )
         source_station_index_v[:] = np.asarray([row["source_station_index"] for row in station_rows], dtype=np.int32)
         station_source_index_v[:] = np.asarray([source_to_idx.get(row["source"], -1) for row in station_rows], dtype=np.int32)
-        validation_only_v[:] = np.ones(n_stations, dtype=np.int8)
 
         link_distance_vals = np.asarray(
             [
@@ -766,37 +650,10 @@ def _write_satellite_validation_nc(
             ],
             dtype=np.float32,
         )
-        point_distance_vals = np.asarray(
-            [
-                row["point_distance_m"] if row["point_distance_m"] is not None else np.nan
-                for row in station_rows
-            ],
-            dtype=np.float32,
-        )
-        network_distance_vals = np.asarray(
-            [
-                row["network_distance_m"] if row["network_distance_m"] is not None else np.nan
-                for row in station_rows
-            ],
-            dtype=np.float32,
-        )
-        area_log10_diff_vals = np.asarray(
-            [
-                row["area_log10_diff"] if row["area_log10_diff"] is not None else np.nan
-                for row in station_rows
-            ],
-            dtype=np.float32,
-        )
         link_distance_vals[np.isnan(link_distance_vals)] = FILL
         link_area_error_vals[np.isnan(link_area_error_vals)] = FILL
-        point_distance_vals[np.isnan(point_distance_vals)] = FILL
-        network_distance_vals[np.isnan(network_distance_vals)] = FILL
-        area_log10_diff_vals[np.isnan(area_log10_diff_vals)] = FILL
         link_distance_v[:] = link_distance_vals
         link_area_error_v[:] = link_area_error_vals
-        point_distance_v[:] = point_distance_vals
-        network_distance_v[:] = network_distance_vals
-        area_log10_diff_v[:] = area_log10_diff_vals
 
         write_global_attr_payload_variables(
             nc,
@@ -804,12 +661,14 @@ def _write_satellite_validation_nc(
             "satellite_station",
             station_global_attr_payloads,
             "satellite validation station",
+            include_names=False, include_count=False,
         )
         write_promoted_global_attr_variables(
             nc,
             "n_satellite_stations",
             station_global_attr_payloads,
             subject="satellite validation station",
+            omit_fields=("country", "continent_region", "iso_a3", "geo_attribute_source", "geo_attribute_confidence", "geo_attribute_method", "geo_boundary_dataset", "geo_boundary_version", "station_id", "dataset_name", "data_source_name", "observation_type", "temporal_resolution", "creator_name", "creator_email", "creator_institution", "source_data_link", "processing_level", "featureType", "date_created", "date_modified"),
         )
 
         lat_vals = np.asarray(
@@ -845,10 +704,6 @@ def _write_satellite_validation_nc(
         source_name_v[:] = np.asarray(sources, dtype=object)
         source_long_name_v[:] = np.asarray(
             [_safe_text(source_meta_rows[name].get("source_long_name", "")) for name in sources],
-            dtype=object,
-        )
-        institution_v[:] = np.asarray(
-            [_safe_text(source_meta_rows[name].get("institution", "")) for name in sources],
             dtype=object,
         )
         reference_v[:] = np.asarray(
@@ -895,64 +750,29 @@ def _build_satellite_catalog(station_rows, station_record_map):
             "satellite_location_uid": station_row["satellite_location_uid"],
             "cluster_uid": station_row["cluster_uid"],
             "cluster_id": station_row["cluster_id"],
-            "linked_cluster_id": station_row["linked_cluster_id"]
-            if station_row["linked_cluster_id"] >= 0
-            else np.nan,
             "linked_cluster_uid": station_row["linked_cluster_uid"],
-            "linked_resolution": station_row["linked_resolution"],
-            "link_resolution_relation": station_row["link_resolution_relation"],
-            "link_attempted_resolutions": station_row["link_attempted_resolutions"],
-            "link_status": station_row["link_status"],
-            "link_reason": station_row["link_reason"],
-            "link_method": station_row["link_method"],
-            "linkage_mode": station_row["linkage_mode"],
-            "satellite_reach_id": station_row["satellite_reach_id"]
-            if station_row["satellite_reach_id"] >= 0
-            else np.nan,
-            "main_reach_id": station_row["main_reach_id"]
-            if station_row["main_reach_id"] >= 0
-            else np.nan,
-            "same_reach": station_row["same_reach"]
-            if station_row["same_reach"] >= 0
-            else np.nan,
-            "reach_hops": station_row["reach_hops"]
-            if station_row["reach_hops"] >= 0
-            else np.nan,
-            "point_distance_m": station_row["point_distance_m"],
-            "network_distance_m": station_row["network_distance_m"],
-            "area_log10_diff": station_row["area_log10_diff"],
-            "candidate_count": station_row["candidate_count"],
-            "eligible_candidate_count": station_row["eligible_candidate_count"],
-            "link_quality": station_row["link_quality"],
+            "unlinked_reason": station_row["unlinked_reason"],
             "link_distance_m": station_row["link_distance_m"],
             "link_uparea_log10_error": station_row["link_uparea_log10_error"],
-            "link_candidate_count": station_row["link_candidate_count"],
-            "unlinked_reason": station_row["unlinked_reason"],
             "source": station_row["source"],
-            "source_family": station_row["source_family"],
-            "observation_type": station_row["observation_type"],
+            "source_station_index": station_row["source_station_index"],
+            "source_station_native_id": station_row["source_station_native_id"],
+            "station_name": station_row["station_name"],
+            "river_name": station_row["river_name"],
             "resolution": station_row["resolution"],
             "lat": station_row["lat"] if station_row["lat"] is not None else np.nan,
             "lon": station_row["lon"] if station_row["lon"] is not None else np.nan,
-            "station_name": station_row["station_name"],
-            "river_name": station_row["river_name"],
-            "source_station_native_id": station_row["source_station_native_id"],
-            "candidate_path": station_row["candidate_path"],
-            "resolved_candidate_path": station_row["resolved_candidate_path"],
+            "geographic_coverage": station_row.get("global_attr_payload", {}).get("promoted", {}).get("geographic_coverage", ""),
             "n_records": int(len(recs)),
             "time_start": time_start,
             "time_end": time_end,
-            "validation_only": 1,
-            "merge_policy": "validation_only",
         }
-        row.update(geo_values_from_payload(station_row.get("global_attr_payload", {})))
         catalog_rows.append(row)
 
     return pd.DataFrame(catalog_rows).sort_values(
         ["resolution", "cluster_uid", "source", "satellite_station_uid"],
         kind="mergesort",
     ).reset_index(drop=True)
-
 
 def _parse_runtime_args(argv):
     parser = argparse.ArgumentParser(add_help=False)
@@ -1018,7 +838,14 @@ def main():
         )
         return 1
 
-    stations["source_family"] = stations["observation_type"].map(classify_source_family_from_observation_type)
+    stations["source_family"] = stations.apply(
+        lambda r: classify_source_family(
+            r.get("source", ""),
+            resolution=r.get("resolution"),
+            observation_type=r.get("observation_type", ""),
+        ),
+        axis=1,
+    )
     stations = stations[stations["resolution_norm"].isin(allowed_resolutions)].copy()
     stations = stations[stations["source_family"].eq("satellite")].copy()
     if len(stations) == 0:

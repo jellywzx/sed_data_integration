@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from s6_basin_merge_to_nc import classify_source_family_from_observation_type
+from source_family import classify_source_family, classify_source_family_from_observation_type
 from s6_export_resolution_matrix_ncs import (
     DEFAULT_INPUT,
     DEFAULT_OUT_DIR,
@@ -137,7 +137,14 @@ def _write_non_satellite_input(input_path, out_dir, filtered_input_path):
             )
         )
 
-    source_family = stations["observation_type"].map(classify_source_family_from_observation_type)
+    source_family = stations.apply(
+        lambda r: classify_source_family(
+            r.get("source", ""),
+            resolution=r.get("resolution"),
+            observation_type=r.get("observation_type", ""),
+        ),
+        axis=1,
+    )
     satellite_mask = source_family.eq("satellite")
 
     n_total = int(len(stations))

@@ -66,8 +66,8 @@ from s6_basin_merge_to_nc import (
     _read_station_meta_from_nc,
     append_stage_qc_variables,
     build_cluster_series,
-    classify_source_family_from_observation_type,
 )
+from source_family import classify_source_family, classify_source_family_from_observation_type
 
 try:
     import netCDF4 as nc4

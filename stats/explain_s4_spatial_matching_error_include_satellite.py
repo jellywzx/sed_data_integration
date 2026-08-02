@@ -25,13 +25,15 @@ Main questions answered:
     basin matching when satellite/reach-scale rows are retained?
 """
 
-from __future__ import annotations
 
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from source_family import classify_source_family as _shared_classify
 import pandas as pd
 
 try:
@@ -226,19 +228,9 @@ def _is_remote_reach_scale_row(row: pd.Series) -> bool:
 def classify_source_family_from_text(source: str) -> str:
     """Classify source family from s3 source text.
 
-    This mirrors the release-side convention but is intentionally local so this
-    diagnostic script can run by itself.
+    Delegates to the shared source_family module.
     """
-    low = _clean_text(source).lower()
-    if not low:
-        return ""
-    if any(token in low for token in ("riversed", "river_sed", "gsed", "dethier", "deither", "aquasat")):
-        return "satellite"
-    if any(token in low for token in ("remote_sensing", "remote sensing", "reach-scale", "reach_scale")):
-        return "satellite"
-    if any(token in low for token in ("usgs", "grdc", "hybam", "hydat", "in situ", "insitu")):
-        return "in_situ"
-    return "other"
+    return _shared_classify(source)
 
 
 def load_s3_station_labels(s3_path: Path) -> pd.DataFrame:

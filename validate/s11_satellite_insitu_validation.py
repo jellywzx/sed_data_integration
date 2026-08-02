@@ -313,6 +313,16 @@ def _normalize_family_label(value) -> str:
     ):
         return "satellite"
     if key in (
+        "climatology",
+        "clim",
+        "climatological",
+        "climate",
+        "global_compilation",
+        "compilation",
+        "literature_compilation",
+    ):
+        return "climatology"
+    if key in (
         "in_situ",
         "insitu",
         "in_situ_data",
@@ -365,16 +375,16 @@ SOURCE_FAMILY_BY_DATASET_KEY = {
     "usgs_nwis": "in_situ",
     "hydat": "in_situ",
     "hydat_dataset": "in_situ",
-    "milliman": "in_situ",
-    "milliman_farnsworth_global_river_sediment_database": "in_situ",
-    "vanmaercke": "in_situ",
-    "vanmaercke_et_al_2014_african_sediment_yield_database": "in_situ",
+    "milliman": "climatology",
+    "milliman_farnsworth_global_river_sediment_database": "climatology",
+    "vanmaercke": "climatology",
+    "vanmaercke_et_al_2014_african_sediment_yield_database": "climatology",
     "eusedcollab": "in_situ",
     "eusedcollab_dataset": "in_situ",
-    "ali_de_boer": "in_situ",
-    "ali_de_boer_dataset": "in_situ",
-    "hma": "in_situ",
-    "hma_dataset": "in_situ",
+    "ali_de_boer": "climatology",
+    "ali_de_boer_dataset": "climatology",
+    "hma": "climatology",
+    "hma_dataset": "climatology",
     "robotham": "in_situ",
     "robotham_dataset": "in_situ",
     "myanmar": "in_situ",

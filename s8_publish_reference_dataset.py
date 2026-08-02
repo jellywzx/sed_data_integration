@@ -71,6 +71,12 @@ from pipeline_paths import (
     RELEASE_STATION_CATALOG_CSV,
     RELEASE_VALIDATION_CSV,
     S2_ORGANIZED_DIR,
+)
+from source_family import (
+    classify_source_family,
+    classify_source_family_from_observation_type,
+    MERGE_EXCLUDED_SOURCE_FAMILIES,
+    VALIDATION_ONLY_SOURCE_FAMILIES,
     S6_CLIMATOLOGY_NC,
     S6_SATELLITE_VALIDATION_CATALOG_CSV,
     S6_SATELLITE_VALIDATION_NC,
@@ -468,44 +474,8 @@ def _write_csv(df, path):
     return path
 
 
-def classify_source_family_from_observation_type(observation_type):
-    """Classify source_family from required observation_type.
+# source_family helpers are now imported from source_family.py (shared module)
 
-    s8 intentionally does not fall back to source-name heuristics or catalog
-    source_family/source_type/source_category values. The upstream
-    s6_cluster_quality_order.csv must carry observation_type from s3/s5/s6.
-    """
-    obs_text = "" if observation_type is None else str(observation_type).strip()
-    obs_low = obs_text.lower().replace("-", "_").replace(" ", "_")
-
-    if obs_low in {"usgs", "hydat"}:
-        return obs_low.upper()
-    if obs_low in {
-        "satellite",
-        "remote_sensing",
-        "remote_sensing_observation",
-        "satellite_observation",
-    }:
-        return "satellite"
-    if obs_low in {
-        "in_situ",
-        "insitu",
-        "in_situ_observation",
-        "station",
-        "station_observation",
-        "gauge",
-        "gauge_observation",
-    }:
-        return "in_situ"
-    if obs_low in {
-        "secondary_compilation",
-        "compiled",
-        "compilation",
-        "secondary",
-        "secondary_dataset",
-    }:
-        return "secondary_compilation"
-    return "other"
 
 
 def _first_existing(columns, candidates):
@@ -829,12 +799,17 @@ def _build_overlap_candidate_group_rows(payload):
         for item in present:
             qrow = item["quality"]
             observation_type = _clean_text(qrow.get("observation_type", ""))
-            source_family = classify_source_family_from_observation_type(observation_type)
+            source = _clean_text(qrow.get("source", ""))
+            source_family = classify_source_family(
+                source,
+                resolution=_clean_text(qrow.get("resolution", "")),
+                observation_type=observation_type,
+            )
 
             if "merge_eligible" in qrow.index:
                 merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
             else:
-                merge_eligible = 0 if source_family == "satellite" else 1
+                merge_eligible = 0 if source_family in ("satellite", "climatology") else 1
 
             if merge_eligible == 1:
                 eligible_present.append(item)
@@ -849,12 +824,17 @@ def _build_overlap_candidate_group_rows(payload):
 
             source = _clean_text(qrow.get("source", ""))
             observation_type = _clean_text(qrow.get("observation_type", ""))
-            source_family = classify_source_family_from_observation_type(observation_type)
+            source = _clean_text(qrow.get("source", ""))
+            source_family = classify_source_family(
+                source,
+                resolution=_clean_text(qrow.get("resolution", "")),
+                observation_type=observation_type,
+            )
 
             if "merge_eligible" in qrow.index:
                 merge_eligible = _binary_flag_or_default(qrow.get("merge_eligible", 0), 0)
             else:
-                merge_eligible = 0 if source_family == "satellite" else 1
+                merge_eligible = 0 if source_family in ("satellite", "climatology") else 1
 
             if "validation_only" in qrow.index:
                 validation_only = _binary_flag_or_default(
@@ -862,12 +842,12 @@ def _build_overlap_candidate_group_rows(payload):
                     1 if source_family == "satellite" else 0,
                 )
             else:
-                validation_only = 1 if source_family == "satellite" else 0
+                validation_only = 1 if source_family in VALIDATION_ONLY_SOURCE_FAMILIES else 0
 
             merge_exclusion_reason = _clean_text(qrow.get("merge_exclusion_reason", ""))
             merge_policy = _clean_text(qrow.get("merge_policy", ""))
             if not merge_policy:
-                merge_policy = "validation_only" if source_family == "satellite" else "merge_candidate"
+                merge_policy = "validation_only" if source_family in VALIDATION_ONLY_SOURCE_FAMILIES else "merge_candidate"
 
             selected_flag = int(item is selected_item)
             if validation_only == 1:
@@ -1638,6 +1618,8 @@ def _summarize_climatology_core(climatology_nc):
         if "resolution" in ds.variables and n_records > 0:
             resolution_codes = np.ma.asarray(ds.variables["resolution"][:]).filled(-1)
             summary["resolution_codes"] = sorted(set(int(value) for value in np.asarray(resolution_codes).reshape(-1).tolist()))
+        elif hasattr(ds, "resolution"):
+            summary["resolution_codes"] = [int(ds.resolution)]
         if "time" in ds.variables and n_records > 0:
             time_var = ds.variables["time"]
             time_values = np.asarray(time_var[:], dtype=np.float64).reshape(-1)
@@ -2181,11 +2163,7 @@ def validate_release(
         _global_attr_payload_validation_rows(
             "climatology",
             climatology_nc,
-            (
-                "station_global_attrs_json",
-                "station_global_attr_names",
-                "station_global_attr_count",
-            ),
+            ("station_global_attrs_json",),
         )
     )
     if satellite_validation_nc:
