@@ -1,217 +1,329 @@
 minimal_matrix_files:
-  - sed_reference_timeseries_daily.nc
-  - sed_reference_timeseries_monthly.nc
-  - sed_reference_timeseries_annual.nc
-
+- sed_reference_timeseries_daily.nc
+- sed_reference_timeseries_monthly.nc
+- sed_reference_timeseries_annual.nc
 keep_variables:
+- lat
+- lon
+- cluster_uid
+- time
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+- n_valid_time_steps
+- selected_source_station_uid
+- basin_area
+- station_name
+- river_name
+required_variables:
+- cluster_uid
+- time
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+- n_valid_time_steps
+compressed_variables:
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+satellite_keep_variables:
+- satellite_station_uid
+- cluster_uid
+- linked_cluster_uid
+- unlinked_reason
+- source
+- station_name
+- river_name
+- station_resolution
+- link_distance_m
+- lat
+- lon
+- satellite_station_index
+- time
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+satellite_required_variables:
+- satellite_station_uid
+- cluster_uid
+- source
+- satellite_station_index
+- time
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+satellite_compressed_variables:
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+satellite_global_attributes_to_keep:
+- title
+- summary
+- keywords
+- Conventions
+- featureType
+- id
+- naming_authority
+- institution
+- source
+- history
+- references
+- license
+- creator_name
+- creator_email
+- creator_institution
+- publisher_name
+- date_created
+- time_coverage_start
+- time_coverage_end
+- time_coverage_resolution
+- geospatial_lat_min
+- geospatial_lat_max
+- geospatial_lon_min
+- geospatial_lon_max
+- standard_name_vocabulary
+- n_satellite_stations
+- n_satellite_records
+satellite_forbidden_variables:
+- date
+- resolution
+- cluster_id
+- source_station_index
+- source_index
+- source_name
+- source_long_name
+- satellite_station_global_attrs_json
+- geographic_coverage
+- link_uparea_log10_error
+global_attributes_to_keep:
+- title
+- summary
+- keywords
+- Conventions
+- featureType
+- id
+- naming_authority
+- institution
+- source
+- history
+- references
+- license
+- creator_name
+- creator_email
+- creator_institution
+- publisher_name
+- date_created
+- time_coverage_start
+- time_coverage_end
+- time_coverage_resolution
+- geospatial_lat_min
+- geospatial_lat_max
+- geospatial_lon_min
+- geospatial_lon_max
+- standard_name_vocabulary
+forbidden_files:
+- sed_reference_master.nc
+forbidden_variables:
+- source_name
+- selected_source_index
+- is_overlap
+- cluster_id
+minimal_catalog_columns:
+  station_catalog.csv:
+  - cluster_uid
+  - resolution
   - lat
   - lon
-  - cluster_uid
-  - time
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
+  - country
+  - time_start
+  - time_end
+  - record_count
   - n_valid_time_steps
-  - selected_source_station_uid
   - basin_area
+  - pfaf_code
+  - n_upstream_reaches
   - station_name
   - river_name
-
-required_variables:
+  source_station_catalog.csv:
+  - source_station_uid
+  - source_name
+  - source_station_native_id
+  - source_station_name
+  - source_station_river_name
+  - source_station_lat
+  - source_station_lon
   - cluster_uid
-  - time
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-  - n_valid_time_steps
-
-compressed_variables:
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-
-satellite_keep_variables:
+  - resolution
+  - n_records
+  - time_start
+  - time_end
+  source_dataset_catalog.csv:
+  - source_name
+  - reference
+  - source_url
+  - n_source_stations
+  - n_records
+  satellite_catalog.csv:
   - satellite_station_uid
+  - station_name
+  - river_name
+  - source
+  - resolution
+  - time_start
+  - time_end
+  - n_records
+  - lat
+  - lon
+  - geographic_coverage
   - cluster_uid
   - linked_cluster_uid
   - unlinked_reason
-  - source
-  - station_name
-  - river_name
-  - station_resolution
   - link_distance_m
-  - lat
-  - lon
-  - satellite_station_index
-  - time
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-
-satellite_required_variables:
-  - satellite_station_uid
-  - cluster_uid
-  - source
-  - satellite_station_index
-  - time
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-
-satellite_compressed_variables:
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-
-satellite_global_attributes_to_keep:
-  - title
-  - product_role
-  - Conventions
-  - summary
-  - intended_use
-  - variables_provided
-  - qc_flag_meanings
-  - time_coverage_start
-  - time_coverage_end
-  - geospatial_lat_min
-  - geospatial_lat_max
-  - geospatial_lon_min
-  - geospatial_lon_max
-  - n_satellite_stations
-  - n_satellite_records
-  - date_created
-  - date_modified
-
-satellite_forbidden_variables:
-  - date
-  - resolution
-  - cluster_id
-  - source_station_index
-  - source_index
-  - source_name
-  - source_long_name
-  - satellite_station_global_attrs_json
-  - geographic_coverage
-  - time_coverage_start
-  - time_coverage_end
-  - link_uparea_log10_error
-
-global_attributes_to_keep:
-  - title
-  - product_role
-  - release_version
-  - date_created
-  - date_modified
-  - Conventions
-  - summary
-  - citation
-  - references
-  - license
-  - variables_provided
-  - qc_flag_meanings
-  - time_coverage_start
-  - time_coverage_end
-  - geospatial_lat_min
-  - geospatial_lat_max
-  - geospatial_lon_min
-  - geospatial_lon_max
-
-forbidden_files:
-  - sed_reference_master.nc
-
-forbidden_variables:
-  - source_name
-  - selected_source_index
-  - is_overlap
-  - cluster_id
-
-minimal_catalog_columns:
-  station_catalog.csv:
-    - cluster_uid
-    - resolution
-    - lat
-    - lon
-    - country
-    - time_start
-    - time_end
-    - record_count
-    - n_valid_time_steps
-    - basin_area
-    - pfaf_code
-    - n_upstream_reaches
-    - station_name
-    - river_name
-  source_station_catalog.csv:
-    - source_station_uid
-    - source_name
-    - source_station_native_id
-    - source_station_name
-    - source_station_river_name
-    - source_station_lat
-    - source_station_lon
-    - cluster_uid
-    - resolution
-    - n_records
-    - time_start
-    - time_end
-  source_dataset_catalog.csv:
-    - source_name
-    - reference
-    - source_url
-    - n_source_stations
-    - n_records
-  satellite_catalog.csv:
-    - satellite_station_uid
-    - station_name
-    - river_name
-    - source
-    - resolution
-    - time_start
-    - time_end
-    - n_records
-    - lat
-    - lon
-    - geographic_coverage
-    - cluster_uid
-    - linked_cluster_uid
-    - unlinked_reason
-    - link_distance_m
+climatology_keep_variables:
+- lat
+- lon
+- station_uid
+- station_name
+- river_name
+- geographic_coverage
+- station_index
+- time
+- resolution
+- Q
+- Q_flag
+- SSC
+- SSC_flag
+- SSL
+- SSL_flag
+- source
+climatology_required_variables:
+- station_uid
+- station_index
+- time
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+- source
+climatology_compressed_variables:
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+climatology_forbidden_variables:
+- Q_qc1
+- Q_qc2
+- SSC_qc1
+- SSC_qc2
+- SSC_qc3
+- SSL_qc1
+- SSL_qc2
+- SSL_qc3
+- source_name
+- source_long_name
+- institution
+- reference
+- source_url
+- source_index
+- creator_email
+- creator_institution
+- creator_name
+- data_source_name
+- dataset_name
+- featureType
+- observation_type
+- processing_level
+- source_data_link
+- temporal_resolution
+- time_coverage_end
+- time_coverage_start
+- source_station_id
+- source_station_path
+- source_station_comment
+- source_station_data_limitations
+- source_station_declared_temporal_resolution
+- source_station_summary
+- source_station_time_coverage_end
+- source_station_time_coverage_start
+- source_station_variables_provided
+- temporal_span
+- continent_region
+- country
+- iso_a3
+- geo_attribute_confidence
+- geo_attribute_method
+- geo_attribute_source
+- geo_boundary_dataset
+- geo_boundary_version
+- station_global_attrs_json
+- station_global_attr_names
+- station_global_attr_count
+- date_created
+- date_modified
+climatology_global_attributes_to_keep:
+- title
+- summary
+- keywords
+- Conventions
+- featureType
+- id
+- naming_authority
+- institution
+- source
+- history
+- references
+- license
+- creator_name
+- creator_email
+- creator_institution
+- publisher_name
+- date_created
+- time_coverage_start
+- time_coverage_end
+- time_coverage_resolution
+- geospatial_lat_min
+- geospatial_lat_max
+- geospatial_lon_min
+- geospatial_lon_max
+- standard_name_vocabulary
+- n_climatology_stations
+- n_climatology_records
 climatology_query_columns:
-  - station_uid
-  - time
-  - time_raw
-  - resolution
-  - Q
-  - SSC
-  - SSL
-  - Q_flag
-  - SSC_flag
-  - SSL_flag
-  - station_name
-  - river_name
-  - lat
-  - lon
-  - geographic_coverage
-  - source_name
-  - source_station_id
-  - source_station_time_coverage_start
-  - source_station_time_coverage_end
-  - source_station_variables_provided
+- station_uid
+- time
+- time_raw
+- resolution
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
+- station_name
+- river_name
+- lat
+- lon
+- geographic_coverage
+- source_name

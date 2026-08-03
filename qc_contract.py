@@ -144,6 +144,17 @@ SOURCE_STATION_TEXT_FIELDS = (
     "source_station_declared_temporal_resolution",
 )
 
+SOURCE_STATION_TEXT_LIMITS = {
+    "source_station_temporal_span": 512,
+    "source_station_time_coverage_start": 128,
+    "source_station_time_coverage_end": 128,
+    "source_station_summary": 4096,
+    "source_station_comment": 4096,
+    "source_station_variables_provided": 2048,
+    "source_station_data_limitations": 4096,
+    "source_station_declared_temporal_resolution": 256,
+}
+
 _STAGE1_PARITY_KEYS = {
     "station_id": STATION_ID_ATTR_KEYS,
     "temporal_resolution": TEMPORAL_RESOLUTION_ATTR_KEYS,
