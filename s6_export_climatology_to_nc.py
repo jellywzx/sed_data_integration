@@ -42,6 +42,8 @@ from pipeline_paths import (
     S6_CLIMATOLOGY_SHP,
     get_output_r_root,
 )
+from release_netcdf_conventions import apply_release_conventions
+from release_netcdf_schema import FLAG_MEANINGS, FLAG_VALUES, SCIENCE_LONG_NAMES, SCIENCE_UNITS
 from qc_contract import (
     FINAL_Q_FLAG_NAMES,
     FINAL_SSC_FLAG_NAMES,
@@ -614,10 +616,10 @@ def main():
 
         ssl_v = nc.createVariable("SSL", "f4", ("n_records",), fill_value=FILL, zlib=True, complevel=4)
         ssl_v.long_name = "suspended sediment load"
-        ssl_v.units = "ton day-1"
+        ssl_v.units = SCIENCE_UNITS["SSL"]
         ssl_v[:] = ssl_arr
 
-        flag_kw = dict(flag_values=np.array([0, 1, 2, 3, 9], dtype=np.int8), flag_meanings="good estimated suspect bad missing")
+        flag_kw = dict(flag_values=FLAG_VALUES, flag_meanings=FLAG_MEANINGS)
 
         qf_v = nc.createVariable("Q_flag", "i1", ("n_records",), fill_value=np.int8(9), zlib=True, complevel=4)
         qf_v.long_name = "quality flag for river discharge"
@@ -646,7 +648,7 @@ def main():
         rec_src_v[:] = source_arr
 
         nc.title = "Global river suspended sediment climatology dataset (unclustered)"
-        nc.Conventions = "CF-1.8"
+        # Conventions managed by apply_release_conventions
         nc.source = "Exported directly from organized climatology files without basin tracing or basin merge"
         nc.history = "Created {} by s6_export_climatology_to_nc.py".format(datetime.now().isoformat(timespec="seconds"))
         nc.provenance_policy = "Each climatology station is one organized climatology file; source_station_path preserves file-level provenance"
@@ -663,6 +665,8 @@ def main():
         nc.n_input_files = str(n_stations)
 
         nc.sync()
+
+    apply_release_conventions(output_path, "climatology")
 
     print("Wrote climatology NC: {}".format(output_path))
     print("Stations: {}  Records: {}".format(n_stations, len(time_arr)))

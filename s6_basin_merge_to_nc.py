@@ -94,6 +94,7 @@ from pipeline_paths import (
     S6_QUALITY_ORDER_CSV,
     S2_ORGANIZED_DIR,
 )
+from release_netcdf_conventions import apply_cf18_metadata
 from qc_contract import (
     CREATOR_INSTITUTION_ATTR_KEYS,
     DATA_LIMITATIONS_ATTR_KEYS,
@@ -103,6 +104,7 @@ from qc_contract import (
     Q_VAR_NAMES,
     SOURCE_NAME_ATTR_KEYS,
     SOURCE_STATION_TEXT_FIELDS,
+    SOURCE_STATION_TEXT_LIMITS,
     SOURCE_URL_ATTR_KEYS,
     SSC_VAR_NAMES,
     SSL_VAR_NAMES,
@@ -133,6 +135,8 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 _DEFAULT_INPUT  = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
 _DEFAULT_OUTPUT = PROJECT_ROOT / S6_MERGED_NC
 _DEFAULT_QUALITY_ORDER = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
+_DEFAULT_WORKERS = 0
+_DEFAULT_METADATA_WORKERS = 0
 
 # output_resolution_organized/ 根目录，用于将 s3 CSV 中的相对路径还原为绝对路径
 _ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
@@ -147,12 +151,13 @@ SSC_FLAG_NAMES= FINAL_SSC_FLAG_NAMES
 SSL_FLAG_NAMES= FINAL_SSL_FLAG_NAMES
 FLAG_GOOD     = 0    # flag==0 表示好数据
 FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
+RESOLUTION_CODES = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4}
 STRICT_UNIT_CHECK = False
 UNIT_SUMMARY_MAX_EXAMPLES = 12
 UNIT_WHITELISTS = {
     "Q": frozenset(["m3 s-1", "m^3 s-1", "m3/s", "m^3/s"]),
     "SSC": frozenset(["mg l-1", "mg/l"]),
-    "SSL": frozenset(["ton day-1", "ton/day-1", "ton/day", "ton d-1", "t day-1", "t/day"]),
+    "SSL": frozenset(["ton day-1", "ton/day-1", "ton/day", "ton d-1", "t day-1", "t/day", "t d-1"]),
 }
 UNIT_VAR_SPECS = (
     ("Q", Q_NAMES),
@@ -201,6 +206,7 @@ class UnitValidationError(ValueError):
 
 
 # ── 内存工具 ───────────────────────────────────────────────────────────────
+_PROC = psutil.Process()
 def _mem_mb() -> float:
     """返回当前进程 RSS 内存（MB）。"""
     return _PROC.memory_info().rss / 1024 / 1024
@@ -2211,6 +2217,8 @@ def main():
         # Flush all data to disk before close to avoid HDF5 segfault when
         # freeing VL-string type IDs in nc4_HDF5_close_att.
         nc.sync()
+
+    apply_cf18_metadata(out_path, "master")
 
     elapsed = (datetime.now() - t0).total_seconds()
     _check_memory("写入NC后")

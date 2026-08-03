@@ -40,6 +40,8 @@ from pipeline_paths import (
     S6_SATELLITE_VALIDATION_NC,
     get_output_r_root,
 )
+from release_netcdf_conventions import apply_release_conventions
+from release_netcdf_schema import FLAG_MEANINGS, FLAG_VALUES, SCIENCE_LONG_NAMES, SCIENCE_UNITS
 from s6_basin_merge_to_nc import (
     FILL,
     HAS_NC,
@@ -600,19 +602,28 @@ def _write_satellite_validation_nc(
         ssc_v = nc.createVariable("SSC", "f4", ("n_satellite_records",), fill_value=FILL)
         ssc_v.units = "mg L-1"
         ssl_v = nc.createVariable("SSL", "f4", ("n_satellite_records",), fill_value=FILL)
-        ssl_v.units = "ton day-1"
+        ssl_v.units = SCIENCE_UNITS["SSL"]
 
         qf_v = nc.createVariable("Q_flag", "i1", ("n_satellite_records",), fill_value=np.int8(9))
         sscf_v = nc.createVariable("SSC_flag", "i1", ("n_satellite_records",), fill_value=np.int8(9))
         sslf_v = nc.createVariable("SSL_flag", "i1", ("n_satellite_records",), fill_value=np.int8(9))
         for var in (qf_v, sscf_v, sslf_v):
-            var.flag_values = np.array([0, 1, 2, 3, 9], dtype=np.int8)
-            var.flag_meanings = "good estimated suspect bad missing"
+            var.flag_values = FLAG_VALUES
+            var.flag_meanings = FLAG_MEANINGS
 
         source_name_v = nc.createVariable("source_name", str, ("n_sources",))
         source_long_name_v = nc.createVariable("source_long_name", str, ("n_sources",))
         reference_v = nc.createVariable("reference", str, ("n_sources",))
         source_url_v = nc.createVariable("source_url", str, ("n_sources",))
+
+        cluster_id_station_v = nc.createVariable("cluster_id_station", "i4", ("n_satellite_stations",), fill_value=-1)
+        cluster_id_station_v.long_name = "cluster id for each satellite validation station"
+        source_family_v = nc.createVariable("source_family", str, ("n_satellite_stations",))
+        source_family_v.long_name = "source family classification"
+        validation_only_v = nc.createVariable("validation_only", "i1", ("n_satellite_stations",), fill_value=np.int8(0))
+        validation_only_v.long_name = "1 when this station is validation-only and excluded from the main merge"
+        merge_policy_v = nc.createVariable("merge_policy", str, ("n_satellite_stations",))
+        merge_policy_v.long_name = "merge policy for this station in the context of the main reference merge"
 
         sat_uid_v[:] = np.asarray([row["satellite_station_uid"] for row in station_rows], dtype=object)
         sat_location_uid_v[:] = np.asarray(
@@ -631,6 +642,11 @@ def _write_satellite_validation_nc(
         resolution_v[:] = np.asarray([row["resolution"] for row in station_rows], dtype=object)
         source_station_index_v[:] = np.asarray([row["source_station_index"] for row in station_rows], dtype=np.int32)
         station_source_index_v[:] = np.asarray([source_to_idx.get(row["source"], -1) for row in station_rows], dtype=np.int32)
+
+        cluster_id_station_v[:] = np.asarray([_safe_int(row.get("cluster_id", -1), default=-1) for row in station_rows], dtype=np.int32)
+        source_family_v[:] = np.asarray([classify_source_family(row.get("source", "")) for row in station_rows], dtype=object)
+        validation_only_v[:] = np.asarray([np.int8(1) for _ in station_rows], dtype=np.int8)
+        merge_policy_v[:] = np.asarray(["validation_only" for _ in station_rows], dtype=object)
 
         link_distance_vals = np.asarray(
             [
@@ -659,14 +675,14 @@ def _write_satellite_validation_nc(
             "satellite_station",
             station_global_attr_payloads,
             "satellite validation station",
-            include_names=False, include_count=False,
+            include_names=True, include_count=True,
         )
         write_promoted_global_attr_variables(
             nc,
             "n_satellite_stations",
             station_global_attr_payloads,
             subject="satellite validation station",
-            omit_fields=("country", "continent_region", "iso_a3", "geo_attribute_source", "geo_attribute_confidence", "geo_attribute_method", "geo_boundary_dataset", "geo_boundary_version", "station_id", "dataset_name", "data_source_name", "observation_type", "temporal_resolution", "creator_name", "creator_email", "creator_institution", "source_data_link", "processing_level", "featureType", "date_created", "date_modified"),
+            omit_fields=("station_id", "dataset_name", "data_source_name", "observation_type", "temporal_resolution", "creator_name", "creator_email", "creator_institution", "source_data_link", "processing_level", "featureType", "date_created", "date_modified"),
         )
 
         lat_vals = np.asarray(
@@ -725,7 +741,7 @@ def _write_satellite_validation_nc(
             "to main reference records; they do not indicate that satellite observations were "
             "merged into the main station matrices"
         )
-        nc.Conventions = "CF-1.8"
+        # Conventions managed by apply_release_conventions
         nc.qc_stage_schema_version = "1"
         set_global_attr_policy(nc)
         nc.history = "Created {} by s6_export_satellite_validation_to_nc.py".format(
@@ -736,6 +752,8 @@ def _write_satellite_validation_nc(
         nc.validation_only_source_families = "satellite"
         nc.created = datetime.now().isoformat(timespec="seconds")
         nc.sync()
+
+    apply_release_conventions(out_path, "satellite")
 
 
 def _build_satellite_catalog(station_rows, station_record_map):
@@ -762,6 +780,7 @@ def _build_satellite_catalog(station_rows, station_record_map):
             "link_uparea_log10_error": station_row["link_uparea_log10_error"],
             "satellite_location_uid": station_row["satellite_location_uid"],
             "cluster_id": station_row["cluster_id"],
+"source_family": classify_source_family(station_row["source"]),            "validation_only": 1,            "merge_policy": "validation_only",
             "source_station_index": station_row["source_station_index"],
         }
         catalog_rows.append(row)

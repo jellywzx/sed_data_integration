@@ -31,6 +31,7 @@ import argparse
 import os
 import shutil
 import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -71,23 +72,24 @@ from pipeline_paths import (
     RELEASE_STATION_CATALOG_CSV,
     RELEASE_VALIDATION_CSV,
     S2_ORGANIZED_DIR,
-)
-from source_family import (
-    classify_source_family,
-    classify_source_family_from_observation_type,
-    MERGE_EXCLUDED_SOURCE_FAMILIES,
-    VALIDATION_ONLY_SOURCE_FAMILIES,
     S6_CLIMATOLOGY_NC,
-    S6_SATELLITE_VALIDATION_CATALOG_CSV,
-    S6_SATELLITE_VALIDATION_NC,
-    S6_QUALITY_ORDER_CSV,
     S6_MATRIX_DIR,
     S6_MERGED_NC,
+    S6_QUALITY_ORDER_CSV,
+    S6_SATELLITE_VALIDATION_CATALOG_CSV,
+    S6_SATELLITE_VALIDATION_NC,
     S7_CLUSTER_BASINS_GPKG,
     S7_CLUSTER_RESOLUTION_CATALOG_CSV,
     S7_CLUSTER_STATION_CATALOG_CSV,
     S7_SOURCE_STATION_RESOLUTION_CATALOG_CSV,
     get_output_r_root,
+)
+from release_netcdf_conventions import apply_release_conventions, audit_release_conventions
+from source_family import (
+    classify_source_family,
+    classify_source_family_from_observation_type,
+    MERGE_EXCLUDED_SOURCE_FAMILIES,
+    VALIDATION_ONLY_SOURCE_FAMILIES,
 )
 from qc_contract import (
     FINAL_Q_FLAG_NAMES,
@@ -465,6 +467,105 @@ def _link_or_copy_file(src, dst, mode="hardlink", force=False):
         return dst
     shutil.copy2(str(src), str(dst))
     return dst
+
+
+def _same_existing_file(left, right):
+    try:
+        return os.path.samefile(str(left), str(right))
+    except OSError:
+        return False
+
+
+def _copy_path_atomically(src_path, dst_path):
+    dst_path = Path(dst_path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".{}.cow.".format(dst_path.name),
+        suffix=".tmp",
+        dir=str(dst_path.parent),
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        shutil.copy2(str(src_path), str(tmp_path), follow_symlinks=True)
+        os.replace(str(tmp_path), str(dst_path))
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _ensure_release_netcdf_independent(release_path, source_path=None):
+    """Break symlink/hardlink aliases before appending release metadata."""
+    release_path = Path(release_path)
+    if not release_path.exists() and not release_path.is_symlink():
+        raise FileNotFoundError("Missing release NetCDF: {}".format(release_path))
+
+    source_path = Path(source_path).resolve() if source_path else None
+    if (
+        source_path is not None
+        and not release_path.is_symlink()
+        and release_path.resolve() == source_path
+    ):
+        raise RuntimeError(
+            "Release NetCDF path is the S6 source path; refusing metadata write: {}".format(
+                release_path
+            )
+        )
+
+    stat = release_path.stat()
+    needs_copy = bool(release_path.is_symlink() or stat.st_nlink > 1)
+    if source_path is not None and _same_existing_file(release_path, source_path):
+        needs_copy = True
+    if not needs_copy:
+        return False
+
+    _copy_path_atomically(release_path, release_path)
+    return True
+
+
+def _release_cf_product_kind(kind):
+    return {
+        "master": "master",
+        "daily": "daily_matrix",
+        "monthly": "monthly_matrix",
+        "annual": "annual_matrix",
+        "climatology": "climatology",
+        "satellite": "satellite",
+    }[kind]
+
+
+def _normalize_release_netcdf_metadata(release_paths_by_kind, source_paths_by_kind=None):
+    source_paths_by_kind = source_paths_by_kind or {}
+    all_rows = []
+    for kind, release_path in release_paths_by_kind.items():
+        release_path = Path(release_path)
+        materialized = _ensure_release_netcdf_independent(
+            release_path,
+            source_paths_by_kind.get(kind),
+        )
+        product_kind = _release_cf_product_kind(kind)
+        apply_release_conventions(release_path, product_kind)
+        rows = audit_release_conventions(release_path, product_kind)
+        failures = [row for row in rows if row.get("status") == "fail"]
+        if failures:
+            detail = "; ".join(
+                "{}: {}".format(row.get("check", ""), row.get("details", ""))
+                for row in failures[:5]
+            )
+            raise RuntimeError("release metadata audit failed for {}: {}".format(release_path.name, detail))
+        all_rows.extend(
+            dict(row, product=release_path.name, product_kind=product_kind)
+            for row in rows
+        )
+        print(
+            "Normalized release conventions for {}{}.".format(
+                release_path.name,
+                " (copy-on-write materialized)" if materialized else "",
+            )
+        )
+    return all_rows
 
 
 def _write_csv(df, path):
@@ -2080,6 +2181,7 @@ def validate_release(
     overlap_candidates_csv=None,
     satellite_validation_nc=None,
     satellite_validation_catalog_csv=None,
+    convention_audit_rows=None,
 ):
     if nc4 is None:
         raise RuntimeError("netCDF4 is required to validate release consistency")
@@ -2177,6 +2279,20 @@ def validate_release(
                     "satellite_station_global_attr_count",
                 ),
             )
+        )
+    for item in convention_audit_rows or []:
+        rows.append(
+            {
+                "check": "{}_{}".format(
+                    item.get("product_kind", "netcdf"),
+                    item.get("check", "release_metadata"),
+                ),
+                "status": item.get("status", "fail"),
+                "details": "{}: {}".format(
+                    item.get("product", ""),
+                    item.get("details", ""),
+                ).strip(": "),
+            }
         )
 
     cluster_uid_lookup = cluster_station_catalog.set_index("cluster_uid")["master_station_index"].to_dict()
@@ -2787,6 +2903,12 @@ def main():
         file_records.append(("core_netcdf", dst, description))
         print("Prepared {} -> {}".format(kind, dst.name))
 
+    convention_audit_rows = _normalize_release_netcdf_metadata(core_destinations, core_sources)
+
+    # Climatology global attributes are preserved as-is for parity with the
+    # minimal release package; no attributes are stripped.
+    pass
+
     cluster_station_catalog = normalize_cluster_station_catalog(
         pd.read_csv(cluster_station_catalog_in, keep_default_na=False)
     )
@@ -2796,12 +2918,12 @@ def main():
     source_station_catalog = normalize_source_station_resolution_catalog(
         pd.read_csv(source_station_resolution_catalog_in, keep_default_na=False)
     )
-    master_station_geo_lookup = _geo_lookup_from_nc(master_nc, "cluster_uid")
-    master_source_geo_lookup = _geo_lookup_from_nc(master_nc, "source_station_uid", var_prefix="source_station_")
+    master_station_geo_lookup = _geo_lookup_from_nc(core_destinations["master"], "cluster_uid")
+    master_source_geo_lookup = _geo_lookup_from_nc(core_destinations["master"], "source_station_uid", var_prefix="source_station_")
     matrix_geo_lookups = {
-        "daily": _geo_lookup_from_nc(daily_nc, "cluster_uid"),
-        "monthly": _geo_lookup_from_nc(monthly_nc, "cluster_uid"),
-        "annual": _geo_lookup_from_nc(annual_nc, "cluster_uid"),
+        "daily": _geo_lookup_from_nc(core_destinations["daily"], "cluster_uid"),
+        "monthly": _geo_lookup_from_nc(core_destinations["monthly"], "cluster_uid"),
+        "annual": _geo_lookup_from_nc(core_destinations["annual"], "cluster_uid"),
     }
     source_station_catalog = normalize_source_station_resolution_catalog(
         _fill_geo_from_lookup(source_station_catalog, "source_station_uid", master_source_geo_lookup)
@@ -2855,8 +2977,16 @@ def main():
     )
     print("Prepared satellite release NC: {}".format(sat_nc_dst.name))
 
+    convention_audit_rows.extend(
+        _normalize_release_netcdf_metadata(
+            {"satellite": sat_nc_dst},
+            {"satellite": satellite_validation_nc},
+        )
+    )
+    print("Release metadata convention checks: {} rows".format(len(convention_audit_rows)))
+
     satellite_geo_lookup = _geo_lookup_from_nc(
-        satellite_validation_nc,
+        sat_nc_dst,
         "satellite_station_uid",
     )
     sat_catalog_df = _fill_geo_from_lookup(
@@ -2989,6 +3119,33 @@ def main():
     else:
         print("Warning: example script not found: {}".format(DEFAULT_EXAMPLE_SCRIPT))
 
+    validation_path = out_dir / Path(RELEASE_VALIDATION_CSV).name
+    if args.skip_validation:
+        print("Skip validation by request.")
+    else:
+        ok, report_df = validate_release(
+            master_nc=core_destinations["master"],
+            matrix_paths={
+                "daily": core_destinations["daily"],
+                "monthly": core_destinations["monthly"],
+                "annual": core_destinations["annual"],
+            },
+            climatology_nc=core_destinations["climatology"],
+            cluster_station_catalog=cluster_station_catalog,
+            station_catalog=station_catalog,
+            source_station_catalog=source_station_catalog,
+            out_csv=validation_path,
+            overlap_candidates_csv=overlap_candidates_validation_path,
+            satellite_validation_nc=sat_nc_dst,
+            satellite_validation_catalog_csv=sat_catalog_dst,
+            convention_audit_rows=convention_audit_rows,
+        )
+        file_records.append(("report", validation_path, "Release validation report"))
+        print("Validation checks: {} rows".format(len(report_df)))
+        if not ok:
+            print("Error: release validation reported failures. See {}".format(validation_path))
+            return 1
+
     readme_path = write_release_readme(out_dir / Path(RELEASE_README_MD).name)
     file_records.append(("support", readme_path, "Release usage guide"))
 
@@ -3001,32 +3158,6 @@ def main():
                 "Application-oriented release usage guide",
             )
         )
-
-    validation_path = out_dir / Path(RELEASE_VALIDATION_CSV).name
-    if args.skip_validation:
-        print("Skip validation by request.")
-    else:
-        ok, report_df = validate_release(
-            master_nc=master_nc,
-            matrix_paths={
-                "daily": daily_nc,
-                "monthly": monthly_nc,
-                "annual": annual_nc,
-            },
-            climatology_nc=climatology_nc,
-            cluster_station_catalog=cluster_station_catalog,
-            station_catalog=station_catalog,
-            source_station_catalog=source_station_catalog,
-            out_csv=validation_path,
-            overlap_candidates_csv=overlap_candidates_validation_path,
-            satellite_validation_nc=sat_nc_dst,
-            satellite_validation_catalog_csv=sat_catalog_dst,
-        )
-        file_records.append(("report", validation_path, "Release validation report"))
-        print("Validation checks: {} rows".format(len(report_df)))
-        if not ok:
-            print("Error: release validation reported failures. See {}".format(validation_path))
-            return 1
 
     inventory_path = write_inventory(file_records, out_dir / Path(RELEASE_INVENTORY_CSV).name, out_dir)
     file_records.append(("inventory", inventory_path, "Release inventory CSV"))

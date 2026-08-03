@@ -55,6 +55,8 @@ from pipeline_paths import (
     S6_MATRIX_DIR,
     get_output_r_root,
 )
+from release_netcdf_conventions import apply_release_conventions
+from release_netcdf_schema import FLAG_MEANINGS, FLAG_VALUES, SCIENCE_LONG_NAMES, SCIENCE_UNITS
 from s6_basin_merge_to_nc import (
     FILL,
     HAS_NC,
@@ -666,9 +668,9 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
 
         ssl_v = nc.createVariable("SSL", "f4", ("n_stations", "time"), fill_value=FILL, zlib=True, complevel=4, chunksizes=chunks)
         ssl_v.long_name = "suspended sediment load"
-        ssl_v.units = "ton day-1"
+        ssl_v.units = SCIENCE_UNITS["SSL"]
 
-        flag_kw = dict(flag_values=np.array([0, 1, 2, 3, 9], dtype=np.int8), flag_meanings="good estimated suspect bad missing")
+        flag_kw = dict(flag_values=FLAG_VALUES, flag_meanings=FLAG_MEANINGS)
 
         qf_v = nc.createVariable("Q_flag", "i1", ("n_stations", "time"), fill_value=np.int8(9), zlib=True, complevel=4, chunksizes=chunks)
         qf_v.long_name = "quality flag for river discharge"
@@ -777,7 +779,7 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
         count_v[:] = valid_counts
 
         nc.title = "Global river suspended sediment dataset ({}) station-time matrix".format(resolution)
-        nc.Conventions = "CF-1.8"
+        # Conventions managed by apply_release_conventions
         nc.source = (
             "Exported from s5_basin_clustered_stations.csv using the same per-cluster "
             "quality-ranking merge rule as s6_basin_merge_to_nc.py, but written as a "
@@ -812,6 +814,8 @@ def _write_matrix_nc(out_path, resolution, cluster_ids, metadata, source_lookup,
             nc.pipeline_git_sha = "unknown"
 
         nc.sync()
+
+    apply_release_conventions(out_path, "{}_matrix".format(resolution))
 
 
 def _collect_resolution_series(resolution, resolution_df, workers):
