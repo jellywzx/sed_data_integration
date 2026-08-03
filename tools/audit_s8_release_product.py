@@ -9,6 +9,7 @@ import math
 import os
 import random
 import re
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,15 @@ from typing import Any, Iterable
 import netCDF4 as nc
 import numpy as np
 import pandas as pd
+
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from release_netcdf_conventions import (  # noqa: E402
+    audit_release_attribute_parity,
+    audit_release_conventions,
+)
 
 
 EXPECTED_RELEASE_FILES = [
@@ -48,6 +58,15 @@ MATRIX_FILES = {
     "daily": "sed_reference_timeseries_daily.nc",
     "monthly": "sed_reference_timeseries_monthly.nc",
     "annual": "sed_reference_timeseries_annual.nc",
+}
+
+CF_PRODUCT_FILES = {
+    "master": "sed_reference_master.nc",
+    "daily_matrix": "sed_reference_timeseries_daily.nc",
+    "monthly_matrix": "sed_reference_timeseries_monthly.nc",
+    "annual_matrix": "sed_reference_timeseries_annual.nc",
+    "climatology": "sed_reference_climatology.nc",
+    "satellite": "sed_reference_satellite.nc",
 }
 
 FINAL_FLAG_ALLOWED = {0, 1, 2, 3, 9}
@@ -133,6 +152,7 @@ CAT_STATION_FIELDS = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir", default="scripts_basin_test/output/sed_reference_release")
+    parser.add_argument("--minimal-dir", default="scripts_basin_test/output/sed_reference_release_minimal")
     parser.add_argument("--sample-per-source-resolution", type=int, default=5)
     parser.add_argument("--sample-matrix-cells", type=int, default=100)
     parser.add_argument("--sample-master-records", type=int, default=300)
@@ -344,6 +364,7 @@ class Audit:
     def __init__(self, args: argparse.Namespace) -> None:
         self.repo_dir = Path.cwd()
         self.release_dir = resolve_existing_path(args.release_dir, self.repo_dir)
+        self.minimal_dir = resolve_existing_path(args.minimal_dir, self.repo_dir)
         self.output_dir = resolve_existing_path(args.output_dir, self.repo_dir)
         self.args = args
         self.rng = random.Random(args.seed)
@@ -357,6 +378,8 @@ class Audit:
         self.stage_qc_mismatches: list[dict[str, Any]] = []
         self.selection_mismatches: list[dict[str, Any]] = []
         self.semantic_warnings: list[dict[str, Any]] = []
+        self.release_metadata_rows: list[dict[str, Any]] = []
+        self.release_parity_rows: list[dict[str, Any]] = []
         self.schema_lines: list[str] = []
         self.source_station_catalog = self.read_catalog("source_station_catalog.csv")
         self.station_catalog = self.read_catalog("station_catalog.csv")
@@ -395,6 +418,108 @@ class Audit:
                 )
                 self.schema_lines.append(f"  - variables: {', '.join(variables)}")
                 self.schema_lines.append(f"  - global_attrs: {', '.join(attrs)}")
+
+    def audit_release_metadata(self) -> None:
+        for product_kind, name in CF_PRODUCT_FILES.items():
+            path = self.release_dir / name
+            if not path.exists():
+                add_row(
+                    self.release_metadata_rows,
+                    product=name,
+                    product_kind=product_kind,
+                    check="release_metadata_file_exists",
+                    status="fail",
+                    details="missing {}".format(path),
+                )
+                continue
+            try:
+                rows = audit_release_conventions(path, product_kind)
+            except Exception as exc:
+                add_row(
+                    self.release_metadata_rows,
+                    product=name,
+                    product_kind=product_kind,
+                    check="release_metadata_readable",
+                    status="fail",
+                    details=str(exc),
+                )
+                continue
+            for row in rows:
+                add_row(
+                    self.release_metadata_rows,
+                    product=name,
+                    product_kind=product_kind,
+                    check=row.get("check", ""),
+                    status=row.get("status", ""),
+                    details=row.get("details", ""),
+                )
+        failures = [row for row in self.release_metadata_rows if row.get("status") == "fail"]
+        self.record_summary(
+            "release_conventions_metadata_audit",
+            "pass" if not failures else "fail",
+            "CF/ACDD rows={} failures={}".format(len(self.release_metadata_rows), len(failures)),
+            len(failures),
+        )
+
+    def audit_minimal_release_attr_parity(self) -> None:
+        if not self.minimal_dir.exists():
+            self.record_summary(
+                "minimal_release_attr_parity_audit",
+                "warning",
+                "minimal dir missing; build sed_reference_release_minimal before parity audit: {}".format(
+                    self.minimal_dir
+                ),
+                0,
+            )
+            return
+        names = list(MATRIX_FILES.values()) + [
+            "sed_reference_climatology.nc",
+            "sed_reference_satellite.nc",
+        ]
+        for name in names:
+            full_path = self.release_dir / name
+            minimal_path = self.minimal_dir / name
+            if not full_path.exists() or not minimal_path.exists():
+                add_row(
+                    self.release_parity_rows,
+                    product=name,
+                    check="release_attribute_parity",
+                    status="fail",
+                    details="full_exists={} minimal_exists={}".format(
+                        full_path.exists(),
+                        minimal_path.exists(),
+                    ),
+                )
+                continue
+            try:
+                rows = audit_release_attribute_parity(
+                    full_path,
+                    minimal_path,
+                )
+            except Exception as exc:
+                add_row(
+                    self.release_parity_rows,
+                    product=name,
+                    check="release_attribute_parity",
+                    status="fail",
+                    details=str(exc),
+                )
+                continue
+            for row in rows:
+                add_row(
+                    self.release_parity_rows,
+                    product=name,
+                    check=row.get("check", ""),
+                    status=row.get("status", ""),
+                    details=row.get("details", ""),
+                )
+        failures = [row for row in self.release_parity_rows if row.get("status") == "fail"]
+        self.record_summary(
+            "minimal_release_attr_parity_audit",
+            "pass" if not failures else "fail",
+            "products={} failures={}".format(len(self.release_parity_rows), len(failures)),
+            len(failures),
+        )
 
     def master_source_samples(self) -> pd.DataFrame:
         df = self.source_station_catalog
@@ -1437,6 +1562,8 @@ class Audit:
             "s8_stage_qc_mismatches.csv": self.stage_qc_mismatches,
             "s8_selection_mismatches.csv": self.selection_mismatches,
             "s8_semantic_warnings.csv": self.semantic_warnings,
+            "s8_release_metadata_audit.csv": self.release_metadata_rows,
+            "s8_minimal_release_attr_parity.csv": self.release_parity_rows,
         }
         for name, rows in outputs.items():
             pd.DataFrame(rows).to_csv(self.output_dir / name, index=False)
@@ -1475,12 +1602,16 @@ class Audit:
                 "- `s8_stage_qc_mismatches.csv`",
                 "- `s8_selection_mismatches.csv`",
                 "- `s8_semantic_warnings.csv`",
+                "- `s8_release_metadata_audit.csv`",
+                "- `s8_minimal_release_attr_parity.csv`",
             ]
         )
         (self.output_dir / "s8_audit_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def run(self) -> None:
         self.audit_schema()
+        self.audit_release_metadata()
+        self.audit_minimal_release_attr_parity()
         self.audit_global_attrs()
         self.audit_promoted_attrs()
         self.audit_catalog_parity()

@@ -240,26 +240,32 @@ SOURCE_REGISTRY: List[Dict[str, Any]] = [
         "variable_treatment": "SSC-only or climatological records should not be interpreted as complete co-located Q-SSC-SSL time series unless Q/SSL are present in the release.",
     },
     {
-        "aliases": ["Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth"],
+        "aliases": ["Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth", "Milliman"],
         "source_long_name": "Global river discharge and sediment flux compilation",
         "source_category": "global_climatology",
         "release_role": "climatology_candidate",
-        "preferred_citation": "Milliman and Farnsworth (2013)",
+        "data_doi": "10.1017/CBO9780511781247",
+        "source_url": "https://doi.org/10.1017/CBO9780511781247",
+        "preferred_citation": "Milliman and Farnsworth (2011)",
         "variable_treatment": "Long-term Q and SSL values; SSC may be derived from Q and SSL. Keep separate from time-resolved station matrix products unless explicitly exported as annual or climatology.",
     },
     {
-        "aliases": ["High Mountain Asia", "HMA"],
+        "aliases": ["High Mountain Asia", "HMA", "High Mountain Asia (HMA)"],
         "source_long_name": "High Mountain Asia sediment flux compilation",
         "source_category": "regional_climatology",
         "release_role": "climatology_candidate",
+        "data_doi": "10.1126/science.abi9649",
+        "source_url": "https://doi.org/10.1126/science.abi9649",
         "preferred_citation": "Li et al. (2021)",
         "variable_treatment": "Long-term Q and SSL values; SSC may be derived. Best treated as climatological support.",
     },
     {
-        "aliases": ["Ali & De Boer", "Ali_De_Boer", "Upper Indus"],
+        "aliases": ["Ali & De Boer", "Ali_De_Boer", "Upper Indus", "Ali & De Boer (Upper Indus)"],
         "source_long_name": "Upper Indus sediment yield compilation",
         "source_category": "regional_climatology",
         "release_role": "climatology_candidate",
+        "data_doi": "10.1016/j.jhydrol.2006.10.013",
+        "source_url": "https://doi.org/10.1016/j.jhydrol.2006.10.013",
         "preferred_citation": "Ali and De Boer (2007)",
         "variable_treatment": "Sediment yield is converted to SSL using basin area where needed.",
     },
@@ -268,6 +274,8 @@ SOURCE_REGISTRY: List[Dict[str, Any]] = [
         "source_long_name": "African sediment yield synthesis",
         "source_category": "regional_climatology",
         "release_role": "climatology_candidate",
+        "data_doi": "10.1016/j.earscirev.2014.06.004",
+        "source_url": "https://doi.org/10.1016/j.earscirev.2014.06.004",
         "preferred_citation": "Vanmaercke et al. (2014)",
         "variable_treatment": "Sediment yield is converted to SSL using basin area where needed.",
     },
@@ -276,6 +284,8 @@ SOURCE_REGISTRY: List[Dict[str, Any]] = [
         "source_long_name": "Global Suspended Sediment Dynamics",
         "source_category": "satellite_derived",
         "release_role": "satellite_candidate_or_validation_only",
+        "data_doi": "10.1038/s41893-024-01476-7",
+        "source_url": "https://figshare.com/s/dde3bffd8e12227e2b26",
         "preferred_citation": "Sun et al. (2025)",
         "variable_treatment": "Satellite-derived SSC; not treated as an ordinary gauge-equivalent source station in the minimal matrix package.",
     },
@@ -284,7 +294,9 @@ SOURCE_REGISTRY: List[Dict[str, Any]] = [
         "source_long_name": "Satellite-derived virtual station sediment dataset",
         "source_category": "satellite_derived",
         "release_role": "satellite_candidate_or_validation_only",
-        "preferred_citation": "Dethier et al. (2022, 2023)",
+        "data_doi": "10.1126/science.abn7980",
+        "source_url": "https://doi.org/10.1126/science.abn7980",
+        "preferred_citation": "Dethier et al. (2022)",
         "variable_treatment": "Satellite-derived or calibrated estimates; keep provenance distinct from in-situ gauge observations.",
     },
     {
@@ -292,7 +304,9 @@ SOURCE_REGISTRY: List[Dict[str, Any]] = [
         "source_long_name": "RiverSed USA satellite-derived suspended sediment dataset",
         "source_category": "satellite_derived",
         "release_role": "satellite_candidate_or_validation_only",
-        "preferred_citation": "Gardner et al. (2021/2023)",
+        "data_doi": "10.5281/zenodo.7938267",
+        "source_url": "https://doi.org/10.5281/zenodo.7938267",
+        "preferred_citation": "Gardner et al. (2023)",
         "variable_treatment": "Satellite-derived SSC; not treated as an ordinary gauge-equivalent source station in the minimal matrix package.",
     },
 ]
@@ -527,6 +541,7 @@ def fill_registry_fields(df: pd.DataFrame) -> pd.DataFrame:
         "article_doi",
         "source_url",
         "license_or_terms",
+        "reference",
         "preferred_citation",
         "variable_treatment",
         "provenance_notes",
@@ -540,6 +555,21 @@ def fill_registry_fields(df: pd.DataFrame) -> pd.DataFrame:
         out.at[idx, "included_in_minimal_release"] = included_in_minimal_release(out.loc[idx])
         if not clean_text(out.at[idx, "preferred_citation"]):
             out.at[idx, "preferred_citation"] = first_nonempty(row.get("reference", ""), row.get("source_name", ""))
+        # Build reference from preferred_citation + data_doi if reference is empty
+        if not clean_text(out.at[idx, "reference"]):
+            citation = clean_text(out.at[idx, "preferred_citation"])
+            doi = first_nonempty(
+                entry.get("data_doi", ""),
+                entry.get("article_doi", ""),
+                row.get("data_doi", ""),
+                row.get("article_doi", ""),
+                entry.get("source_url", ""),
+            )
+            if citation:
+                if doi:
+                    out.at[idx, "reference"] = "{} ({})".format(citation, doi)
+                else:
+                    out.at[idx, "reference"] = citation
     return out
 
 
