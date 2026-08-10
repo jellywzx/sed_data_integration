@@ -122,10 +122,10 @@ def _series_from_arrays(times, values, flags, source_station_uids):
     return df[np.isfinite(df["reference_value"])].reset_index(drop=True)
 
 
-def _extract_with_netCDF4(matrix_path, cluster_uid, variable):
+def _extract_with_netCDF4(matrix_path, station_uid, variable):
     with nc4.Dataset(matrix_path, "r") as ds:
-        cluster_uids = _decode_strings(ds.variables["cluster_uid"][:])
-        row_idx = cluster_uids.index(cluster_uid)
+        station_uids = _decode_strings(ds.variables["station_uid"][:])
+        row_idx = station_uids.index(station_uid)
         time_var = ds.variables["time"]
         try:
             times = nc4.num2date(
@@ -149,10 +149,10 @@ def _extract_with_netCDF4(matrix_path, cluster_uid, variable):
         )
 
 
-def _extract_with_h5netcdf(matrix_path, cluster_uid, variable):
+def _extract_with_h5netcdf(matrix_path, station_uid, variable):
     with h5netcdf.File(matrix_path, "r") as ds:
-        cluster_uids = _decode_strings(ds.variables["cluster_uid"][:])
-        row_idx = cluster_uids.index(cluster_uid)
+        station_uids = _decode_strings(ds.variables["station_uid"][:])
+        row_idx = station_uids.index(station_uid)
         time_var = ds.variables["time"]
         times = _decode_time_values(time_var[:], time_var.attrs.get("units", "days since 1970-01-01"))
         source_station_uids = _decode_strings(ds.variables["selected_source_station_uid"][row_idx, :])
@@ -164,14 +164,14 @@ def _extract_with_h5netcdf(matrix_path, cluster_uid, variable):
         )
 
 
-def extract_reference_series(release_dir, resolution, cluster_uid, variable):
+def extract_reference_series(release_dir, resolution, station_uid, variable):
     matrix_path = Path(release_dir) / MATRIX_FILES[resolution]
     if not matrix_path.is_file():
         raise FileNotFoundError("Matrix file not found: {}".format(matrix_path))
     if HAS_NC:
-        return _extract_with_netCDF4(matrix_path, cluster_uid, variable)
+        return _extract_with_netCDF4(matrix_path, station_uid, variable)
     if HAS_H5NETCDF:
-        return _extract_with_h5netcdf(matrix_path, cluster_uid, variable)
+        return _extract_with_h5netcdf(matrix_path, station_uid, variable)
     raise RuntimeError("netCDF4 or h5netcdf is required to read reference NetCDF files")
 
 
@@ -189,7 +189,7 @@ def main():
     station_catalog = load_station_catalog(release_dir)
     nearest = find_nearest_station(station_catalog, args.lat, args.lon, args.resolution)
 
-    print("Nearest cluster_uid: {}".format(nearest["cluster_uid"]))
+    print("Nearest station_uid: {}".format(nearest["station_uid"]))
     print("Resolution: {}".format(nearest["resolution"]))
     print("Distance (km): {:.3f}".format(float(nearest["distance_km"])))
     print("Station name: {}".format(nearest.get("station_name", "")))
@@ -199,11 +199,11 @@ def main():
     ref_df = extract_reference_series(
         release_dir=release_dir,
         resolution=args.resolution,
-        cluster_uid=str(nearest["cluster_uid"]),
+        station_uid=str(nearest["station_uid"]),
         variable=args.variable,
     )
     if len(ref_df) == 0:
-        raise RuntimeError("No non-missing {} series found for {}".format(args.variable, nearest["cluster_uid"]))
+        raise RuntimeError("No non-missing {} series found for {}".format(args.variable, nearest["station_uid"]))
 
     print("Reference points: {}".format(len(ref_df)))
     print("Reference time span: {} -> {}".format(ref_df["time"].min(), ref_df["time"].max()))

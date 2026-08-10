@@ -38,6 +38,10 @@ from geo_boundary_enrichment import (
 )
 from release_netcdf_conventions import audit_release_attribute_parity
 from release_netcdf_schema import ACDD_PARITY_GLOBAL_ATTRS
+from release_public_station_names import (
+    apply_public_station_names_to_dataframe,
+    apply_public_station_names_to_release_dir,
+)
 
 try:
     import netCDF4 as nc4
@@ -272,7 +276,7 @@ SATELLITE_GLOBAL_ATTRS_DEFAULTS = {
         "sediment observations from RiverSed, GSED, and Dethier datasets. "
         "Where spatial and temporal matching criteria were satisfied, "
         "satellite-derived stations were linked to the main station-reference "
-        "clusters. The product supports assessment of broad spatial sediment "
+        "stations. The product supports assessment of broad spatial sediment "
         "patterns, identification of gauge-coverage gaps, and complementary "
         "comparison with station-reference observations."
     ),
@@ -284,7 +288,7 @@ SATELLITE_GLOBAL_ATTRS_DEFAULTS = {
     ),
     "history": (
         "{}: Satellite-derived auxiliary product generated and "
-        "linked to eligible station-reference clusters by the "
+        "linked to eligible station-reference stations by the "
         "sed_data_integration harmonization and publication pipeline."
     ).format(CURRENT_UTC),
 }
@@ -302,6 +306,20 @@ BUILD_FAILURES = []
 BUILD_WARNINGS = []
 
 PACKAGING_SCRIPT = Path(__file__).resolve()
+
+PUBLIC_SOURCE_VAR_ALIASES = {
+    "station_uid": ("cluster_uid",),
+    "station_reference_id": ("cluster_id", "cluster_id_station"),
+    "linked_station_uid": ("linked_cluster_uid",),
+    "linked_station_reference_id": ("linked_cluster_id",),
+    "source_station_reference_index": ("source_station_cluster_index",),
+    "n_source_stations_in_reference_station": ("n_source_stations_in_cluster",),
+    "n_reference_stations": ("n_clusters",),
+    "n_station_resolution_rows": ("n_cluster_resolution_rows",),
+    "n_ranked_candidates_for_station_resolution": (
+        "n_ranked_candidates_for_cluster_resolution",
+    ),
+}
 
 
 class MinimalSchemaError(ValueError):
@@ -919,6 +937,15 @@ def _create_output_variable(dst, name, src_var, compression_level, compressed_va
     return dst.createVariable(name, src_var.dtype, src_var.dimensions, **kwargs)
 
 
+def _source_var_name(variables, public_name):
+    if public_name in variables:
+        return public_name
+    for alias in PUBLIC_SOURCE_VAR_ALIASES.get(public_name, ()):
+        if alias in variables:
+            return alias
+    return None
+
+
 def _copy_variable_data(name, src_var, dst_var, station_chunk_size=128):
     if "n_stations" in src_var.dimensions and len(src_var.dimensions) >= 2:
         if src_var.dtype is str or src_var.dtype == str:
@@ -1060,21 +1087,22 @@ def _copy_minimal_matrix_nc_netCDF4(src_path, dst_path, keep_vars, required_vars
         tmp_path.unlink()
 
     with nc4.Dataset(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required = [name for name in required_vars if _source_var_name(src.variables, name) is None]
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
         vars_to_copy = []
         for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
+            src_name = _source_var_name(src.variables, name)
+            if src_name is not None:
+                vars_to_copy.append((name, src_name))
             else:
                 print("[warn] {} missing optional variable: {}".format(src_path.name, name))
 
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1085,8 +1113,8 @@ def _copy_minimal_matrix_nc_netCDF4(src_path, dst_path, keep_vars, required_vars
                 dim_size = None if dim.isunlimited() else len(dim)
                 dst.createDimension(dim_name, dim_size)
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 dst_var = _create_output_variable(dst, name, src_var, compression_level)
                 _copy_variable_attrs(src_var, dst_var)
                 _copy_variable_data(name, src_var, dst_var)
@@ -1112,21 +1140,22 @@ def _copy_minimal_matrix_nc_h5netcdf(src_path, dst_path, keep_vars, required_var
         tmp_path.unlink()
 
     with h5netcdf.File(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required = [name for name in required_vars if _source_var_name(src.variables, name) is None]
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
         vars_to_copy = []
         for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
+            src_name = _source_var_name(src.variables, name)
+            if src_name is not None:
+                vars_to_copy.append((name, src_name))
             else:
                 print("[warn] {} missing optional variable: {}".format(src_path.name, name))
 
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1136,8 +1165,8 @@ def _copy_minimal_matrix_nc_h5netcdf(src_path, dst_path, keep_vars, required_var
             for dim_name in required_dims:
                 dst.dimensions[dim_name] = len(src.dimensions[dim_name])
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 fill_value = src_var.attrs.get("_FillValue", None)
                 dtype = src_var._h5ds.dtype
                 kwargs = {}
@@ -1292,21 +1321,22 @@ def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_v
         tmp_path.unlink()
 
     with nc4.Dataset(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required = [name for name in required_vars if _source_var_name(src.variables, name) is None]
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
         vars_to_copy = []
         for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
+            src_name = _source_var_name(src.variables, name)
+            if src_name is not None:
+                vars_to_copy.append((name, src_name))
             else:
                 print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
 
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1317,8 +1347,8 @@ def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_v
                 dim_size = None if dim.isunlimited() else len(dim)
                 dst.createDimension(dim_name, dim_size)
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 dst_var = _create_output_variable(
                     dst,
                     name,
@@ -1350,21 +1380,22 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
         tmp_path.unlink()
 
     with h5netcdf.File(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required = [name for name in required_vars if _source_var_name(src.variables, name) is None]
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
         vars_to_copy = []
         for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
+            src_name = _source_var_name(src.variables, name)
+            if src_name is not None:
+                vars_to_copy.append((name, src_name))
             else:
                 print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
 
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1374,8 +1405,8 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
             for dim_name in required_dims:
                 dst.dimensions[dim_name] = len(src.dimensions[dim_name])
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 fill_value = src_var.attrs.get("_FillValue", None)
                 dtype = src_var._h5ds.dtype
                 kwargs = {}
@@ -2324,8 +2355,10 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
                 "reference": reference,
                 "source_url": source_url,
                 "access_date": _access_date_for_source(access_dates, display_name, source),
+                "time_start": "",
+                "time_end": "",
                 "n_source_stations": station_count,
-                "n_clusters": "",
+                "n_reference_stations": "",
                 "n_records": len(indices),
             }
         )
@@ -2345,7 +2378,7 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
 
     for column in [
         "satellite_station_uid",
-        "cluster_uid",
+        "station_uid",
         "resolution",
         "n_records",
         "time_start",
@@ -2383,8 +2416,10 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
                 "reference": reference,
                 "source_url": source_url,
                 "access_date": _access_date_for_source(access_dates, display_name, source),
+                "time_start": time_start,
+                "time_end": time_end,
                 "n_source_stations": len({_clean_ms(v) for v in group["satellite_station_uid"] if _clean_ms(v)}),
-                "n_clusters": len({_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}),
+                "n_reference_stations": len({_clean_ms(v) for v in group["station_uid"] if _clean_ms(v)}),
                 "n_records": int(group["n_records"].sum()),
             }
         )
@@ -2415,6 +2450,8 @@ def _merge_catalog_rows(rows):
         "Observation type": "; ",
     }
     numeric_sum_columns = {"n_source_stations", "n_records"}
+    date_min_columns = {"time_start"}
+    date_max_columns = {"time_end"}
 
     for row in rows:
         name = _clean_ms(row.get("Data Source Name", ""))
@@ -2438,13 +2475,29 @@ def _merge_catalog_rows(rows):
                 elif right is not None:
                     current[column] = left + right
                 continue
-            if column == "n_clusters":
+            if column == "n_reference_stations":
                 left = _numeric_catalog_value(current.get(column, ""))
                 right = _numeric_catalog_value(value)
                 if left is None:
                     current[column] = right if right is not None else current.get(column, "")
                 elif right is not None:
                     current[column] = left + right
+                continue
+            if column in date_min_columns:
+                left_val = _clean_ms(current.get(column, ""))
+                right_val = _clean_ms(value)
+                if left_val and right_val:
+                    current[column] = left_val if left_val <= right_val else right_val
+                elif right_val:
+                    current[column] = right_val
+                continue
+            if column in date_max_columns:
+                left_val = _clean_ms(current.get(column, ""))
+                right_val = _clean_ms(value)
+                if left_val and right_val:
+                    current[column] = left_val if left_val >= right_val else right_val
+                elif right_val:
+                    current[column] = right_val
                 continue
             if column in text_merge_columns:
                 sep = text_merge_columns[column]
@@ -2469,7 +2522,7 @@ def _aggregate_minimal_source_stats_ms(source_station_df):
         return pd.DataFrame(columns=["source_name"])
 
     required = [
-        "source_name", "resolution", "source_station_uid", "cluster_uid",
+        "source_name", "resolution", "source_station_uid", "station_uid",
         "n_records", "time_start", "time_end"
     ]
     for col in required:
@@ -2508,8 +2561,8 @@ def _aggregate_minimal_source_stats_ms(source_station_df):
             "n_source_stations": len(
                 {_clean_ms(v) for v in group["source_station_uid"] if _clean_ms(v)}
             ),
-            "n_clusters": len(
-                {_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}
+            "n_reference_stations": len(
+                {_clean_ms(v) for v in group["station_uid"] if _clean_ms(v)}
             ),
             "n_records": int(group["n_records"].sum()),
             "time_start": time_start,
@@ -2538,7 +2591,7 @@ def build_manuscript_style_source_dataset_catalog(
     Returns a DataFrame with these columns in order:
       Data Source Name, Type, Observation type, Temporal resolution,
       Temporal_span, Variables Provided, Geographic coverage, Citation,
-      reference, source_url, access_date, n_source_stations, n_clusters,
+      reference, source_url, access_date, n_source_stations, n_reference_stations,
       n_records
     """
     access_dates = _load_source_access_dates(warnings)
@@ -2589,7 +2642,7 @@ def build_manuscript_style_source_dataset_catalog(
             stats_df, on="source_name", how="left", suffixes=("", "_st")
         )
         for merge_col in [
-            "n_source_stations", "n_clusters", "n_records",
+            "n_source_stations", "n_reference_stations", "n_records",
             "time_start", "time_end", "temporal_resolution_used", "variables_used",
         ]:
             suffixed = "{}_st".format(merge_col)
@@ -2655,7 +2708,7 @@ def build_manuscript_style_source_dataset_catalog(
         # access_date
         access = _clean_ms(row.get("access_date", "")) or _access_date_for_source(access_dates, dsn, src_name)
 
-        # n_source_stations / n_clusters / n_records
+        # n_source_stations / n_reference_stations / n_records
         def _safe_int(val, default=0):
             if pd.isna(val):
                 return default
@@ -2665,7 +2718,7 @@ def build_manuscript_style_source_dataset_catalog(
                 return default
 
         n_stations = _safe_int(row.get("n_source_stations"))
-        n_clusters = _safe_int(row.get("n_clusters"))
+        n_reference_stations = _safe_int(row.get("n_reference_stations"))
         n_recs = _safe_int(row.get("n_records"))
 
         rows.append({
@@ -2680,8 +2733,10 @@ def build_manuscript_style_source_dataset_catalog(
             "reference": ref,
             "source_url": url,
             "access_date": access,
+            "time_start": ts_date,
+            "time_end": te_date,
             "n_source_stations": n_stations,
-            "n_clusters": n_clusters,
+            "n_reference_stations": n_reference_stations,
             "n_records": n_recs,
         })
 
@@ -2698,7 +2753,9 @@ def build_manuscript_style_source_dataset_catalog(
     return result
 
 def _read_catalog_csv(path):
-    return pd.read_csv(path, keep_default_na=False)
+    return apply_public_station_names_to_dataframe(
+        pd.read_csv(path, keep_default_na=False)
+    )
 
 
 def _filter_minimal_resolutions(df):
@@ -2824,7 +2881,7 @@ def slim_station_catalog(src, dst, warnings):
         "station_catalog.csv",
     )
     df = df.loc[:, MINIMAL_STATION_CATALOG_COLUMNS]
-    df = df.sort_values(["resolution", "cluster_uid"], kind="mergesort").reset_index(drop=True)
+    df = df.sort_values(["resolution", "station_uid"], kind="mergesort").reset_index(drop=True)
     df.to_csv(dst, index=False)
     print("[write] {}".format(dst))
 
@@ -2841,7 +2898,7 @@ def slim_source_station_catalog(src, dst, warnings):
     )
     df = df.loc[:, MINIMAL_SOURCE_STATION_CATALOG_COLUMNS]
     df = df.sort_values(
-        ["resolution", "cluster_uid", "source_name", "source_station_uid"],
+        ["resolution", "station_uid", "source_name", "source_station_uid"],
         kind="mergesort",
     ).reset_index(drop=True)
     df.to_csv(dst, index=False)
@@ -3615,6 +3672,14 @@ def build_minimal_package(args):
         compression_level=args.compression_level,
         dry_run=args.dry_run,
     )
+    if not args.dry_run:
+        renamed_public_files = apply_public_station_names_to_release_dir(args.minimal_dir)
+        if renamed_public_files:
+            print(
+                "[public-names] station-facing names applied to {} artifact(s)".format(
+                    len(renamed_public_files)
+                )
+            )
     validate_minimal_package(args)
 
 

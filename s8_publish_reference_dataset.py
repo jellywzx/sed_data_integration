@@ -85,6 +85,10 @@ from pipeline_paths import (
     get_output_r_root,
 )
 from release_netcdf_conventions import apply_release_conventions, audit_release_conventions
+from release_public_station_names import (
+    apply_public_station_names_to_release_dir,
+    audit_public_station_names_in_release_dir,
+)
 from source_family import (
     classify_source_family,
     classify_source_family_from_observation_type,
@@ -2099,33 +2103,33 @@ This directory is the user-facing release layer of the sediment reference datase
 
 ## Catalogs
 
-- `station_catalog.csv`: one row per `cluster_uid + resolution` with coordinates, basin attributes, geographic metadata, record count, and time coverage.
-- `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to cluster, source dataset, original file path, and source NetCDF geographic metadata.
+- `station_catalog.csv`: one row per `station_uid + resolution` with coordinates, basin attributes, geographic metadata, record count, and time coverage.
+- `source_station_catalog.csv`: one row per `source_station_uid + resolution` with links back to station reference, source dataset, original file path, and source NetCDF geographic metadata.
 - `source_dataset_catalog.csv`: one row per source dataset with metadata, aggregate counts, and aggregated geographic coverage fields.
-- `satellite_catalog.csv`: one row per satellite validation station, keyed by `satellite_station_uid` with s5b v2 `linked_cluster_uid / linked_cluster_id` lookup fields back to the main reference cluster.
+- `satellite_catalog.csv`: one row per satellite validation station, keyed by `satellite_station_uid` with s5b v2 `linked_station_uid / linked_station_reference_id` lookup fields back to the main reference station.
 - `sed_reference_overlap_candidates.csv.gz`: optional candidate-level provenance sidecar for multi-source overlap validation. It preserves selected and non-selected candidate values for overlap keys when the upstream candidate files are available at publish time.
 
 ## Satellite Dataset
 
 - `sed_reference_satellite.nc` contains required validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
-- `satellite_catalog.csv` describes the satellite stations and links them to the main reference clusters through s5b v2 `linked_cluster_uid / linked_cluster_id` fields.
+- `satellite_catalog.csv` describes the satellite stations and links them to the main reference stations through s5b v2 `linked_station_uid / linked_station_reference_id` fields.
 - Satellite records are excluded from the main station-reference merge and do not enter `sed_reference_master.nc` or the daily/monthly/annual matrix NetCDF files.
 - Use this dataset for satellite-vs-station validation, spatial diagnostics, and downstream comparison.
 - Legacy names such as `sed_reference_satellite_validation.nc` and `satellite_validation_catalog.csv` are compatibility aliases only; new workflows should use `sed_reference_satellite.nc` and `satellite_catalog.csv`.
 
 ## GIS sidecars
 
-- `sed_reference_cluster_points.gpkg`: multi-layer cluster point sidecar with `cluster_summary`, `cluster_daily`, `cluster_monthly`, and `cluster_annual`.
+- `sed_reference_cluster_points.gpkg`: multi-layer station point sidecar with `station_summary`, `station_daily`, `station_monthly`, and `station_annual`.
 - `sed_reference_source_stations.gpkg`: multi-layer source-station sidecar with `source_daily`, `source_monthly`, and `source_annual`.
 - `sed_reference_cluster_basins.gpkg`: optional multi-layer basin sidecar with `basin_daily`, `basin_monthly`, and `basin_annual`.
 
 ## Recommended workflow
 
 1. Open the matrix file that matches your model output resolution.
-2. Filter `station_catalog.csv` to that resolution, then use its `lat/lon` or the matching cluster layer in `sed_reference_cluster_points.gpkg` to find the nearest `cluster_uid`.
+2. Filter `station_catalog.csv` to that resolution, then use its `lat/lon` or the matching station layer in `sed_reference_cluster_points.gpkg` to find the nearest `station_uid`.
 3. Extract the observed time series and compare it with the model time series.
 4. If you need quick cell-level provenance, read `selected_source_station_uid` directly from the matrix file.
-5. If you need full record-level provenance, query `sed_reference_master.nc` with `cluster_uid + time + resolution`.
+5. If you need full record-level provenance, query `sed_reference_master.nc` with `station_uid + time + resolution`.
 6. Use `source_station_catalog.csv` to resolve `source_station_uid`, original station metadata, and original file path.
 7. For true source-pair overlap consistency metrics, use `sed_reference_overlap_candidates.csv.gz` if it is present.
 8. Use `sed_reference_satellite.nc` and `satellite_catalog.csv` when comparing satellite observations against station-reference products.
@@ -2153,14 +2157,14 @@ python3 example_reference_workflow.py \\
 
 ## Notes
 
-- `cluster_uid + resolution` is the standard GIS join key for cluster points and basins.
+- `station_uid + resolution` is the standard GIS join key for station points and basins.
 - `source_station_uid + resolution` is the standard GIS join key for source points.
 - Geographic fields (`country`, `continent_region`, `geographic_coverage`, `iso_a3`) are propagated from upstream source NetCDF global attributes when available; `geo_attribute_source` and `geo_attribute_confidence` describe provenance and completeness.
 - `selected_source_station_uid` is the matrix-native provenance key for each station-time cell.
 - `sed_reference_master.nc` and matrix NetCDF files keep the selected / winning record only; they do not store non-selected candidate values.
-- `is_overlap=1` marks that multiple sources competed for a cluster-resolution-time key, but it is not itself a candidate-value table.
+- `is_overlap=1` marks that multiple sources competed for a station-resolution-time key, but it is not itself a candidate-value table.
 - Source-pair validation should use `sed_reference_overlap_candidates.csv.gz`. If that sidecar is absent, true source-pair metrics cannot be computed from the release package alone.
-- `station_uid` is the stable key inside the climatology product only.
+- `station_uid` is the stable station-reference key in the master and matrix products; climatology keeps its own station-level `station_uid` values.
 - The release does not automatically aggregate daily model output to monthly or annual resolution.
 - Release validation blocks mixed-run outputs whose master / matrix / climatology / catalog time coverage or resolution coverage are inconsistent.
 """
@@ -3082,7 +3086,7 @@ def main():
             )
             file_records.extend(
                 [
-                    ("spatial", cluster_points_path, "Cluster point sidecar keyed by cluster_uid + resolution"),
+                    ("spatial", cluster_points_path, "Station point sidecar keyed by station_uid + resolution"),
                     ("spatial", source_stations_path, "Source-station sidecar keyed by source_station_uid + resolution"),
                 ]
             )
@@ -3097,7 +3101,7 @@ def main():
                         force=args.force,
                     )
                     file_records.append(
-                        ("spatial", basin_out, "Cluster basin polygon sidecar keyed by cluster_uid + resolution")
+                        ("spatial", basin_out, "Station basin polygon sidecar keyed by station_uid + resolution")
                     )
                     print("Prepared basin polygon GPKG: {}".format(basin_out.name))
                 elif basin_vector.is_file():
@@ -3163,6 +3167,24 @@ def main():
     file_records.append(("inventory", inventory_path, "Release inventory CSV"))
     inventory_path = write_inventory(file_records, out_dir / Path(RELEASE_INVENTORY_CSV).name, out_dir)
     print("Wrote inventory: {}".format(inventory_path))
+    renamed_public_files = apply_public_station_names_to_release_dir(out_dir)
+    if renamed_public_files:
+        print(
+            "Applied station-facing public names to {} release artifact(s).".format(
+                len(renamed_public_files)
+            )
+        )
+    if not args.skip_validation and validation_path.is_file():
+        public_name_row = audit_public_station_names_in_release_dir(out_dir)
+        validation_df = pd.read_csv(validation_path, keep_default_na=False)
+        validation_df = pd.concat(
+            [validation_df, pd.DataFrame([public_name_row])],
+            ignore_index=True,
+        )
+        validation_df.to_csv(validation_path, index=False)
+        if public_name_row["status"] == "fail":
+            print("Error: public station-name audit failed. See {}".format(validation_path))
+            return 1
     print("Release package is ready.")
     return 0
 

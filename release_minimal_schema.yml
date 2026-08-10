@@ -5,7 +5,7 @@ minimal_matrix_files:
 keep_variables:
 - lat
 - lon
-- cluster_uid
+- station_uid
 - time
 - Q
 - SSC
@@ -19,7 +19,7 @@ keep_variables:
 - station_name
 - river_name
 required_variables:
-- cluster_uid
+- station_uid
 - time
 - Q
 - SSC
@@ -37,8 +37,8 @@ compressed_variables:
 - SSL_flag
 satellite_keep_variables:
 - satellite_station_uid
-- cluster_uid
-- linked_cluster_uid
+- station_uid
+- linked_station_uid
 - unlinked_reason
 - source
 - station_name
@@ -57,7 +57,7 @@ satellite_keep_variables:
 - SSL_flag
 satellite_required_variables:
 - satellite_station_uid
-- cluster_uid
+- station_uid
 - source
 - satellite_station_index
 - time
@@ -106,6 +106,9 @@ satellite_forbidden_variables:
 - date
 - resolution
 - cluster_id
+- cluster_id_station
+- cluster_uid
+- n_clusters
 - source_station_index
 - source_index
 - source_name
@@ -146,9 +149,11 @@ forbidden_variables:
 - selected_source_index
 - is_overlap
 - cluster_id
+- cluster_uid
+- n_clusters
 minimal_catalog_columns:
   station_catalog.csv:
-  - cluster_uid
+  - station_uid
   - resolution
   - lat
   - lon
@@ -170,7 +175,7 @@ minimal_catalog_columns:
   - source_station_river_name
   - source_station_lat
   - source_station_lon
-  - cluster_uid
+  - station_uid
   - resolution
   - n_records
   - time_start
@@ -181,6 +186,8 @@ minimal_catalog_columns:
   - source_url
   - n_source_stations
   - n_records
+  - time_start
+  - time_end
   satellite_catalog.csv:
   - satellite_station_uid
   - station_name
@@ -193,8 +200,8 @@ minimal_catalog_columns:
   - lat
   - lon
   - geographic_coverage
-  - cluster_uid
-  - linked_cluster_uid
+  - station_uid
+  - linked_station_uid
   - unlinked_reason
   - link_distance_m
 climatology_keep_variables:
@@ -243,6 +250,8 @@ climatology_forbidden_variables:
 - SSL_qc3
 - source_name
 - source_long_name
+- linked_cluster_uid
+- linked_cluster_id
 - institution
 - reference
 - source_url

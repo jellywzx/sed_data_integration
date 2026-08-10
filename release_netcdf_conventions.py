@@ -115,7 +115,7 @@ def audit_cf18_metadata(nc_path, product_kind):
             _audit_expected_attrs(
                 ds,
                 rows,
-                _matrix_expected_attrs(),
+                _matrix_expected_attrs(ds),
                 product_kind=kind,
             )
         elif kind == "climatology":
@@ -509,7 +509,8 @@ def _product_source_text(kind):
 
 def _cdm_data_type(ds, kind):
     if kind == "master":
-        return "TimeSeries" if _indexed_timeseries_eligible(ds, "cluster_uid", "station_index", "n_stations", "n_records") else "Other"
+        feature_id_var = _matrix_feature_id_var(ds)
+        return "TimeSeries" if _indexed_timeseries_eligible(ds, feature_id_var, "station_index", "n_stations", "n_records") else "Other"
     return PRODUCT_DESCRIPTIONS[kind]["cdm_data_type"]
 
 
@@ -639,7 +640,7 @@ def _iso_duration_days(days):
 
 def _apply_matrix_metadata(ds):
     _set_attr(ds, "featureType", "timeSeries")
-    _set_variable_attrs(ds, "cluster_uid", {"cf_role": "timeseries_id"})
+    _set_variable_attrs(ds, _matrix_feature_id_var(ds), {"cf_role": "timeseries_id"})
     _set_coordinate_attrs(ds)
     _set_science_attrs(ds)
 
@@ -662,9 +663,10 @@ def _apply_indexed_timeseries_metadata(
 def _apply_master_metadata(ds):
     _set_coordinate_attrs(ds)
     _set_science_attrs(ds)
-    if _indexed_timeseries_eligible(ds, "cluster_uid", "station_index", "n_stations", "n_records"):
+    feature_id_var = _matrix_feature_id_var(ds)
+    if _indexed_timeseries_eligible(ds, feature_id_var, "station_index", "n_stations", "n_records"):
         _set_attr(ds, "featureType", "timeSeries")
-        _set_variable_attrs(ds, "cluster_uid", {"cf_role": "timeseries_id"})
+        _set_variable_attrs(ds, feature_id_var, {"cf_role": "timeseries_id"})
         _set_variable_attrs(ds, "station_index", {"instance_dimension": "n_stations"})
 
 
@@ -685,10 +687,15 @@ def _indexed_timeseries_eligible(ds, feature_id_var, index_var, instance_dim, in
     return True
 
 
-def _matrix_expected_attrs():
+def _matrix_feature_id_var(ds):
+    return "station_uid" if "station_uid" in ds.variables else "cluster_uid"
+
+
+def _matrix_expected_attrs(ds):
+    feature_id_var = _matrix_feature_id_var(ds)
     expected = [
         ("global", None, "featureType", "timeSeries"),
-        ("variable", "cluster_uid", "cf_role", "timeseries_id"),
+        ("variable", feature_id_var, "cf_role", "timeseries_id"),
     ]
     expected.extend(_coordinate_expected_attrs())
     expected.extend(_science_expected_attrs())
@@ -795,7 +802,8 @@ def _audit_expected_attrs(ds, rows, expected, product_kind):
 
 
 def _audit_master_dsg_status(ds, rows):
-    eligible = _indexed_timeseries_eligible(ds, "cluster_uid", "station_index", "n_stations", "n_records")
+    feature_id_var = _matrix_feature_id_var(ds)
+    eligible = _indexed_timeseries_eligible(ds, feature_id_var, "station_index", "n_stations", "n_records")
     if not eligible:
         rows.append(
             {
@@ -807,7 +815,7 @@ def _audit_master_dsg_status(ds, rows):
         return
     declared = (
         str(getattr(ds, "featureType", "") or "") == "timeSeries"
-        and _variable_attr(ds.variables["cluster_uid"], "cf_role") == "timeseries_id"
+        and _variable_attr(ds.variables[feature_id_var], "cf_role") == "timeseries_id"
         and _variable_attr(ds.variables["station_index"], "instance_dimension") == "n_stations"
     )
     rows.append(
