@@ -71,6 +71,7 @@ from pipeline_paths import (
 from qc_contract import ensure_stage1_alias_parity
 from time_resolution import (
     should_treat_irregular_as_daily,
+    should_treat_monthly_as_daily,
     sync_temporal_resolution_attrs,
 )
 
@@ -250,6 +251,8 @@ def _get_s2_copy_reason(row):
 
     if raw_freq == "irregular" and resolution_dir == "daily":
         return "s2 irregular secondary check"
+    if raw_freq == "monthly" and resolution_dir == "daily":
+        return "s2 monthly intra-month multi-record check"
     if raw_freq == "hourly" and resolution_dir == "daily":
         return "s2 mapped hourly to daily"
     if raw_freq == "quarterly" and resolution_dir == "monthly":
@@ -595,6 +598,25 @@ def main():
 
     if n_irregular_to_daily > 0:
         print(f"irregular 二次判定改归 daily: {n_irregular_to_daily} 个文件")
+
+    # ---- Monthly 月内零散观测降级 ----
+    # 对 monthly 文件做二次判定：若同一自然月内有 2+ 个非缺失 SSC/SSL 观测日期，
+    # 则说明它保留的是月内离散采样日期，不是严格月尺度单值，降级为 daily。
+    monthly_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "monthly"
+    monthly_idx = df[monthly_mask].index.tolist()
+    n_monthly_to_daily = 0
+    for idx in tqdm(monthly_idx, desc="判定 monthly -> daily", unit="file"):
+        p = Path(df.at[idx, "path"])
+        if p.is_file() and should_treat_monthly_as_daily(p):
+            df.at[idx, "resolution_dir"] = "daily"
+            n_monthly_to_daily += 1
+
+    if n_monthly_to_daily > 0:
+        print(
+            "monthly 月内零散多点降级为 daily: {} 个文件 "
+            "(同一月内 2+ 个非缺失 SSC/SSL 观测日期)".format(n_monthly_to_daily)
+        )
+    # -----------------------------------------------------------------
 
     out_base = root_dir / args.out_dir
 

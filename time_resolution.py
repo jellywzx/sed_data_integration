@@ -19,6 +19,15 @@ import xarray as xr
 
 TIME_VAR_NAMES = ["time", "Time", "t", "datetime", "date"]
 LEGACY_TEMPORAL_RESOLUTION_KEYS = ("Temporal_Resolution", "time_resolution", "resolution")
+SEDIMENT_VALUE_VAR_NAMES = (
+    "SSC",
+    "ssc",
+    "TSS_mg_L",
+    "TSS",
+    "SSL",
+    "sediment_load",
+    "Sediment_load",
+)
 
 
 def get_preferred_output_root(script_dir):
@@ -122,6 +131,53 @@ def should_treat_irregular_as_daily(nc_path):
                 return False
 
             return True
+    except Exception:
+        return False
+
+
+def should_treat_monthly_as_daily(nc_path):
+    """对 monthly 文件做二次判定：若同一月内有 2+ 个有效沉积物观测日期，则按 daily 处理。"""
+    try:
+        with xr.open_dataset(str(nc_path)) as ds:
+            time_var = next((name for name in TIME_VAR_NAMES if name in ds.variables), None)
+            if time_var is None:
+                return False
+
+            times = pd.to_datetime(ds[time_var].values, errors="coerce")
+            if getattr(times, "size", 0) < 2:
+                return False
+
+            sediment_vars = [name for name in SEDIMENT_VALUE_VAR_NAMES if name in ds.variables]
+            if not sediment_vars:
+                return False
+
+            valid_by_time = None
+            for name in sediment_vars:
+                da = ds[name]
+                if time_var not in da.dims:
+                    continue
+                nonmissing = da.notnull()
+                reduce_dims = [dim for dim in nonmissing.dims if dim != time_var]
+                if reduce_dims:
+                    nonmissing = nonmissing.any(dim=reduce_dims)
+                values = np.asarray(nonmissing.values, dtype=bool)
+                if values.size != times.size:
+                    continue
+                valid_by_time = values if valid_by_time is None else (valid_by_time | values)
+
+            if valid_by_time is None or not bool(valid_by_time.any()):
+                return False
+
+            ts = pd.Series(times[valid_by_time]).dropna()
+            if len(ts) < 2:
+                return False
+
+            dates = ts.dt.normalize().drop_duplicates()
+            if len(dates) < 2:
+                return False
+
+            counts_per_month = dates.dt.to_period("M").value_counts()
+            return int(counts_per_month.max()) >= 2
     except Exception:
         return False
 
