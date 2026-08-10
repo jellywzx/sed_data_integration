@@ -70,6 +70,7 @@ from pipeline_paths import (
 )
 from qc_contract import ensure_stage1_alias_parity
 from time_resolution import (
+    should_treat_annual_as_daily,
     should_treat_irregular_as_daily,
     should_treat_monthly_as_daily,
     sync_temporal_resolution_attrs,
@@ -86,6 +87,7 @@ REVIEW_OVERRIDES_CSV = S1_REVIEW_OVERRIDES_CSV
 OUT_DIR = S2_ORGANIZED_DIR
 CLASSIFICATION_DETAILS_CSV = S2_CLASSIFICATION_DETAILS_CSV
 # 并行执行数：
+#   - 判定阶段：ProcessPoolExecutor 并行重判定（netCDF4 C 库需进程隔离）
 #   - 阶段 1：ThreadPoolExecutor 并行复制
 #   - 阶段 2：ProcessPoolExecutor 并行标准化属性
 DEFAULT_WORKERS = 16
@@ -232,6 +234,33 @@ def _normalize_one(item):
     except Exception as exc:
         return (dest_path_str, str(exc))
 
+def _check_irregular(item):
+    """判定 irregular 是否应转为 daily，供线程池调用。返回 (row_index, should_be_daily)。"""
+    idx, path_str = item
+    p = Path(path_str)
+    if p.is_file() and should_treat_irregular_as_daily(p):
+        return (idx, True)
+    return (idx, False)
+
+
+def _check_monthly(item):
+    """判定 monthly 是否应降级为 daily，供线程池调用。返回 (row_index, should_be_daily)。"""
+    idx, path_str = item
+    p = Path(path_str)
+    if p.is_file() and should_treat_monthly_as_daily(p):
+        return (idx, True)
+    return (idx, False)
+
+
+def _check_annual(item):
+    """判定 annual 是否应降级为 daily，供线程池调用。返回 (row_index, should_be_daily)。"""
+    idx, path_str = item
+    p = Path(path_str)
+    if p.is_file() and should_treat_annual_as_daily(p):
+        return (idx, True)
+    return (idx, False)
+
+
 def _get_s2_copy_resolution(row):
     """返回 s2 副本应回写的时间分辨率。
 
@@ -253,6 +282,8 @@ def _get_s2_copy_reason(row):
         return "s2 irregular secondary check"
     if raw_freq == "monthly" and resolution_dir == "daily":
         return "s2 monthly intra-month multi-record check"
+    if raw_freq == "annual" and resolution_dir == "daily":
+        return "s2 annual intra-year multi-record check"
     if raw_freq == "hourly" and resolution_dir == "daily":
         return "s2 mapped hourly to daily"
     if raw_freq == "quarterly" and resolution_dir == "monthly":
@@ -588,13 +619,26 @@ def main():
     else:
         irregular_mask = df["detected_frequency"].astype(str).str.strip().str.lower() == "irregular"
 
+    workers = max(1, int(args.workers))
+
     irregular_idx = df[irregular_mask].index.tolist()
     n_irregular_to_daily = 0
-    for idx in tqdm(irregular_idx, desc="判定 irregular -> daily", unit="file"):
-        p = Path(df.at[idx, "path"])
-        if p.is_file() and should_treat_irregular_as_daily(p):
-            df.at[idx, "resolution_dir"] = "daily"
-            n_irregular_to_daily += 1
+    if irregular_idx:
+        irregular_items = [(idx, df.at[idx, "path"]) for idx in irregular_idx]
+        if workers == 1:
+            for item in tqdm(irregular_items, desc="判定 irregular -> daily", unit="file"):
+                idx, should_be_daily = _check_irregular(item)
+                if should_be_daily:
+                    df.at[idx, "resolution_dir"] = "daily"
+                    n_irregular_to_daily += 1
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(_check_irregular, item): item for item in irregular_items}
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="判定 irregular -> daily", unit="file"):
+                    idx, should_be_daily = fut.result()
+                    if should_be_daily:
+                        df.at[idx, "resolution_dir"] = "daily"
+                        n_irregular_to_daily += 1
 
     if n_irregular_to_daily > 0:
         print(f"irregular 二次判定改归 daily: {n_irregular_to_daily} 个文件")
@@ -605,16 +649,57 @@ def main():
     monthly_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "monthly"
     monthly_idx = df[monthly_mask].index.tolist()
     n_monthly_to_daily = 0
-    for idx in tqdm(monthly_idx, desc="判定 monthly -> daily", unit="file"):
-        p = Path(df.at[idx, "path"])
-        if p.is_file() and should_treat_monthly_as_daily(p):
-            df.at[idx, "resolution_dir"] = "daily"
-            n_monthly_to_daily += 1
+    if monthly_idx:
+        monthly_items = [(idx, df.at[idx, "path"]) for idx in monthly_idx]
+        if workers == 1:
+            for item in tqdm(monthly_items, desc="判定 monthly -> daily", unit="file"):
+                idx, should_be_daily = _check_monthly(item)
+                if should_be_daily:
+                    df.at[idx, "resolution_dir"] = "daily"
+                    n_monthly_to_daily += 1
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(_check_monthly, item): item for item in monthly_items}
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="判定 monthly -> daily", unit="file"):
+                    idx, should_be_daily = fut.result()
+                    if should_be_daily:
+                        df.at[idx, "resolution_dir"] = "daily"
+                        n_monthly_to_daily += 1
 
     if n_monthly_to_daily > 0:
         print(
             "monthly 月内零散多点降级为 daily: {} 个文件 "
             "(同一月内 2+ 个非缺失 SSC/SSL 观测日期)".format(n_monthly_to_daily)
+        )
+    # -----------------------------------------------------------------
+
+    # ---- Annual 年内零散观测降级 ----
+    # 对 annual 文件做二次判定：若同一自然年内有 2+ 个非缺失 SSC/SSL 观测日期，
+    # 则说明它保留的是年内离散采样日期，不是严格年尺度单值，降级为 daily。
+    annual_mask = df["resolution_dir"].astype(str).str.strip().str.lower() == "annual"
+    annual_idx = df[annual_mask].index.tolist()
+    n_annual_to_daily = 0
+    if annual_idx:
+        annual_items = [(idx, df.at[idx, "path"]) for idx in annual_idx]
+        if workers == 1:
+            for item in tqdm(annual_items, desc="判定 annual -> daily", unit="file"):
+                idx, should_be_daily = _check_annual(item)
+                if should_be_daily:
+                    df.at[idx, "resolution_dir"] = "daily"
+                    n_annual_to_daily += 1
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {executor.submit(_check_annual, item): item for item in annual_items}
+                for fut in tqdm(as_completed(futures), total=len(futures), desc="判定 annual -> daily", unit="file"):
+                    idx, should_be_daily = fut.result()
+                    if should_be_daily:
+                        df.at[idx, "resolution_dir"] = "daily"
+                        n_annual_to_daily += 1
+
+    if n_annual_to_daily > 0:
+        print(
+            "annual 年内零散多点降级为 daily: {} 个文件 "
+            "(同一年内 2+ 个非缺失 SSC/SSL 观测日期)".format(n_annual_to_daily)
         )
     # -----------------------------------------------------------------
 
@@ -719,7 +804,6 @@ def main():
         else:
             print("已跳过预清空输出目录（auto 模式）")
 
-    workers = max(1, int(args.workers))
     copy_errors = []
     attr_errors = []
     normalize_tasks = []
