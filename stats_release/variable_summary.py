@@ -128,9 +128,13 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
             "variable_summary_statistics": empty,
             "colocated_variable_coverage": empty,
             "extreme_value_review_points": empty,
+            "flag01_summary_statistics": empty,
+            "zero_value_flag_distribution": empty,
         }
     totals = {}
     values_by_key = {}
+    flag01_values_by_key = {}
+    zero_flag_counts = {}
     colocated = {}
     extremes = []
     with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
@@ -151,6 +155,11 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                 vals = np.asarray(vals).reshape(-1)
                 vals_by_var[var] = vals
                 masks[var] = np.isfinite(vals)
+            flags_by_var = {}
+            for var in VARIABLES:
+                flag_name = "{}_flag".format(var)
+                if flag_name in ds.variables:
+                    flags_by_var[var] = np.ma.asarray(ds.variables[flag_name][slc]).filled(9).reshape(-1)
             any_present = masks["Q"] | masks["SSC"] | masks["SSL"]
             for resolution in sorted(set(res)):
                 resolution = str(resolution)
@@ -188,6 +197,17 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                                     "unit": units.get(var, ""),
                                 }
                             )
+                    if var in flags_by_var:
+                        flag01_mask = rmask & masks[var] & np.isin(flags_by_var[var], [0, 1])
+                        flag01_vals = vals_by_var[var][flag01_mask]
+                        if flag01_vals.size:
+                            flag01_values_by_key.setdefault((resolution, var), []).append(flag01_vals.astype("float64"))
+                        zero_mask = rmask & masks[var] & (vals_by_var[var] == 0)
+                        zero_flags = flags_by_var[var][zero_mask]
+                        if zero_flags.size:
+                            zitem = zero_flag_counts.setdefault((resolution, var), {})
+                            for fv in np.unique(zero_flags):
+                                zitem[int(fv)] = zitem.get(int(fv), 0) + int(np.count_nonzero(zero_flags == fv))
                 combos = {
                     "Q only": masks["Q"] & ~masks["SSC"] & ~masks["SSL"],
                     "SSC only": masks["SSC"] & ~masks["Q"] & ~masks["SSL"],
@@ -231,6 +251,35 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                 "unit": units.get(var, ""),
             }
         )
+    flag01_summary_rows = []
+    for (resolution, var), pieces in sorted(flag01_values_by_key.items()):
+        vals = np.concatenate(pieces) if pieces else np.asarray([])
+        stats = numeric_stats(vals)
+        flag01_summary_rows.append(
+            {
+                "resolution": resolution,
+                "variable": var,
+                "n_flag01_records": int(vals.size),
+                "mean": stats["mean"],
+                "median": stats["median"],
+                "p05": stats["p05"],
+                "p95": stats["p95"],
+                "p99": stats["p99"],
+                "unit": units.get(var, ""),
+            }
+        )
+    from stats_release.common_stats import FLAG_MEANINGS
+    zero_flag_dist_rows = []
+    for (resolution, var), zcounts in sorted(zero_flag_counts.items()):
+        for fv in sorted(zcounts.keys()):
+            zero_flag_dist_rows.append({
+                "resolution": resolution,
+                "variable": var,
+                "flag_value": fv,
+                "flag_meaning": FLAG_MEANINGS.get(fv, "unknown"),
+                "n_zero": zcounts[fv],
+                "unit": units.get(var, ""),
+            })
     colocated_rows = []
     for (resolution, combo), item in sorted(colocated.items()):
         total_records = totals.get(resolution, {}).get("n_records_total", 0)
@@ -261,6 +310,8 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
         "variable_summary_statistics": pd.DataFrame(summary_rows),
         "colocated_variable_coverage": pd.DataFrame(colocated_rows),
         "extreme_value_review_points": extreme_df,
+        "flag01_summary_statistics": pd.DataFrame(flag01_summary_rows),
+        "zero_value_flag_distribution": pd.DataFrame(zero_flag_dist_rows),
     }
 
 
@@ -466,6 +517,8 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
     colocated_analysis = stats.get("colocated_variable_coverage_analysis_grade", pd.DataFrame())
     satellite = stats.get("satellite_variable_by_source", pd.DataFrame())
     extremes = stats.get("extreme_value_review_points", pd.DataFrame())
+    flag01_summary = stats.get("flag01_summary_statistics", pd.DataFrame())
+    zero_flag_dist = stats.get("zero_value_flag_distribution", pd.DataFrame())
 
     total_products = coverage["product"].nunique() if not coverage.empty and "product" in coverage.columns else 0
     total_records = pd.to_numeric(coverage.get("n_records", 0), errors="coerce").fillna(0).sum() if not coverage.empty else 0
@@ -546,6 +599,24 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         columns=["resolution", "variable", "analysis_grade", "n_nonmissing_records", "mean", "median", "p05", "p95", "p99", "unit"],
         sort_by="n_nonmissing_records",
         max_rows=18,
+    )
+    append_table_section(
+        lines,
+        "Flag 0–1 Summary Statistics (master product)",
+        flag01_summary,
+        columns=["resolution", "variable", "n_flag01_records", "mean", "median", "p05", "p95", "p99", "unit"],
+        sort_by="n_flag01_records",
+        max_rows=18,
+        note="Statistics computed only on values where the variable flag is 0 (good) or 1 (estimated/derived).",
+    )
+    append_table_section(
+        lines,
+        "Zero-Value Flag Distribution (master product)",
+        zero_flag_dist,
+        columns=["resolution", "variable", "flag_value", "flag_meaning", "n_zero", "unit"],
+        sort_by="n_zero",
+        max_rows=24,
+        note="For exact-zero variable values, the distribution of their associated flags.",
     )
     append_table_section(
         lines,

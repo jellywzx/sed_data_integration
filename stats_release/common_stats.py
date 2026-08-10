@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from stats_release.release_io import clean_text, ensure_parent, read_text_var
+from source_family import classify_source_family
 
 
 VARIABLES = ("Q", "SSC", "SSL")
