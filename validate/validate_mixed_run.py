@@ -49,8 +49,8 @@ FILL_VALUES = {-9999.0, -9999, 1.0e20, -1.0e20}
 
 MASTER_REQUIRED_DIMS = {"n_stations", "n_source_stations", "n_records", "n_sources"}
 MASTER_REQUIRED_VARS = {
-    "cluster_uid",
-    "cluster_id",
+    "station_uid",
+    "station_reference_id",
     "lat",
     "lon",
     "basin_status",
@@ -58,7 +58,7 @@ MASTER_REQUIRED_VARS = {
     "point_in_local",
     "point_in_basin",
     "source_station_uid",
-    "source_station_cluster_index",
+    "source_station_reference_index",
     "source_station_index",
     "station_index",
     "resolution",
@@ -76,8 +76,8 @@ MASTER_REQUIRED_VARS = {
 
 MATRIX_REQUIRED_DIMS = {"n_stations", "time", "n_sources"}
 MATRIX_REQUIRED_VARS = {
-    "cluster_uid",
-    "cluster_id",
+    "station_uid",
+    "station_reference_id",
     "lat",
     "lon",
     "basin_status",
@@ -99,8 +99,8 @@ MATRIX_REQUIRED_VARS = {
 }
 
 STATION_REQUIRED_COLUMNS = {
-    "cluster_uid",
-    "cluster_id",
+    "station_uid",
+    "station_reference_id",
     "resolution",
     "record_count",
     "time_start",
@@ -113,8 +113,8 @@ STATION_REQUIRED_COLUMNS = {
 
 SOURCE_REQUIRED_COLUMNS = {
     "source_station_uid",
-    "cluster_uid",
-    "cluster_id",
+    "station_uid",
+    "station_reference_id",
     "resolution",
     "n_records",
     "time_start",
@@ -308,10 +308,10 @@ def normalize_catalogs(results: List[CheckResult], station_catalog: pd.DataFrame
     st = station_catalog.copy()
     src = source_catalog.copy()
 
-    for col in ("cluster_uid", "resolution", "basin_status", "basin_flag"):
+    for col in ("station_uid", "resolution", "basin_status", "basin_flag"):
         if col in st.columns:
             st[col] = st[col].fillna("").astype(str).str.strip()
-    for col in ("cluster_uid", "source_station_uid", "resolution"):
+    for col in ("station_uid", "source_station_uid", "resolution"):
         if col in src.columns:
             src[col] = src[col].fillna("").astype(str).str.strip()
 
@@ -326,13 +326,13 @@ def normalize_catalogs(results: List[CheckResult], station_catalog: pd.DataFrame
         if col in src.columns:
             src[col] = pd.to_numeric(src[col], errors="coerce")
 
-    if {"cluster_uid", "resolution"} <= set(st.columns):
-        dup = st.duplicated(["cluster_uid", "resolution"], keep=False)
+    if {"station_uid", "resolution"} <= set(st.columns):
+        dup = st.duplicated(["station_uid", "resolution"], keep=False)
         if dup.any():
-            sample = st.loc[dup, ["cluster_uid", "resolution"]].head(10).to_dict("records")
-            add(results, "ERROR", "station_catalog_unique_key", "station_catalog.csv", f"Duplicate cluster_uid+resolution rows, sample={sample}")
+            sample = st.loc[dup, ["station_uid", "resolution"]].head(10).to_dict("records")
+            add(results, "ERROR", "station_catalog_unique_key", "station_catalog.csv", f"Duplicate station_uid+resolution rows, sample={sample}")
         else:
-            add(results, "PASS", "station_catalog_unique_key", "station_catalog.csv", f"{len(st)} unique cluster_uid+resolution rows")
+            add(results, "PASS", "station_catalog_unique_key", "station_catalog.csv", f"{len(st)} unique station_uid+resolution rows")
 
         invalid = sorted(set(st["resolution"]) - set(RESOLUTIONS))
         if invalid:
@@ -369,7 +369,7 @@ def normalize_catalogs(results: List[CheckResult], station_catalog: pd.DataFrame
 
 
 def station_key_set(station_catalog: pd.DataFrame) -> Set[Tuple[str, str]]:
-    return set(zip(station_catalog["cluster_uid"].astype(str), station_catalog["resolution"].astype(str)))
+    return set(zip(station_catalog["station_uid"].astype(str), station_catalog["resolution"].astype(str)))
 
 
 def source_key_set(source_catalog: pd.DataFrame) -> Set[Tuple[str, str]]:
@@ -382,7 +382,7 @@ def summarize_master(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, 
         n_source_stations = len(ds.dimensions["n_source_stations"])
         n_records = len(ds.dimensions["n_records"])
 
-        cluster_uids = read_text_var(ds, "cluster_uid", n_stations)
+        station_uids = read_text_var(ds, "station_uid", n_stations)
         source_uids = read_text_var(ds, "source_station_uid", n_source_stations)
         station_idx = read_int_var(ds, "station_index", -1, n_records)
         source_station_idx = read_int_var(ds, "source_station_index", -1, n_records)
@@ -407,17 +407,17 @@ def summarize_master(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, 
             }
         )
         frame["resolution"] = frame["resolution_code"].map(RESOLUTION_CODE_TO_NAME).fillna("")
-        frame["cluster_uid"] = frame["station_index"].map(lambda i: cluster_uids[int(i)] if 0 <= int(i) < len(cluster_uids) else "")
+        frame["station_uid"] = frame["station_index"].map(lambda i: station_uids[int(i)] if 0 <= int(i) < len(station_uids) else "")
         frame["source_station_uid"] = frame["source_station_index"].map(lambda i: source_uids[int(i)] if 0 <= int(i) < len(source_uids) else "")
 
         bad_refs["bad_station_index"] = set(frame.loc[~frame["station_index"].between(0, n_stations - 1), "station_index"].astype(str))
         bad_refs["bad_source_station_index"] = set(frame.loc[(frame["source_station_index"] >= 0) & (~frame["source_station_index"].between(0, n_source_stations - 1)), "source_station_index"].astype(str))
         bad_refs["bad_resolution_code"] = set(frame.loc[~frame["resolution"].isin(RESOLUTIONS + ("climatology", "other")), "resolution_code"].astype(str))
 
-        core = frame[frame["resolution"].isin(RESOLUTIONS) & frame["time"].notna() & (frame["cluster_uid"] != "")].copy()
+        core = frame[frame["resolution"].isin(RESOLUTIONS) & frame["time"].notna() & (frame["station_uid"] != "")].copy()
         if not core.empty:
             summary = (
-                core.groupby(["cluster_uid", "resolution"], as_index=False)
+                core.groupby(["station_uid", "resolution"], as_index=False)
                 .agg(record_count=("time", "size"), time_start=("time", "min"), time_end=("time", "max"))
             )
             rows = summary.to_dict("records")
@@ -437,14 +437,14 @@ def summarize_matrix(path: Path, resolution: str, chunk_rows: int = 64) -> Tuple
     with nc4.Dataset(path, "r") as ds:
         n_stations = len(ds.dimensions["n_stations"])
         n_time = len(ds.dimensions["time"])
-        cluster_uids = read_text_var(ds, "cluster_uid", n_stations)
+        station_uids = read_text_var(ds, "station_uid", n_stations)
         declared_counts = read_int_var(ds, "n_valid_time_steps", 0, n_stations)
         times = read_float_var(ds, "time", n_time)
         decoded_times = decode_num_times(times, ds.variables["time"])
 
         stats = []
         selected_source_pairs: Set[Tuple[str, str]] = set()
-        selected_cluster_source_pairs: Set[Tuple[str, str, str]] = set()
+        selected_station_source_pairs: Set[Tuple[str, str, str]] = set()
         count_mismatch_samples = []
         shape_errors = []
 
@@ -463,12 +463,12 @@ def summarize_matrix(path: Path, resolution: str, chunk_rows: int = 64) -> Tuple
             uid_chunk = np.asarray(ds.variables["selected_source_station_uid"][start:stop, :], dtype=object)
             for local_row in range(stop - start):
                 global_row = start + local_row
-                cluster_uid = cluster_uids[global_row]
+                station_uid = station_uids[global_row]
                 valid_cols = np.flatnonzero(valid[local_row])
                 actual_count = int(len(valid_cols))
                 declared = int(declared_counts[global_row])
                 if actual_count != declared and len(count_mismatch_samples) < 10:
-                    count_mismatch_samples.append((cluster_uid, declared, actual_count))
+                    count_mismatch_samples.append((station_uid, declared, actual_count))
                 if actual_count == 0:
                     continue
 
@@ -476,7 +476,7 @@ def summarize_matrix(path: Path, resolution: str, chunk_rows: int = 64) -> Tuple
                 last_col = int(valid_cols[-1])
                 stats.append(
                     {
-                        "cluster_uid": cluster_uid,
+                        "station_uid": station_uid,
                         "resolution": resolution,
                         "record_count": actual_count,
                         "time_start": decoded_times.iloc[first_col],
@@ -490,11 +490,11 @@ def summarize_matrix(path: Path, resolution: str, chunk_rows: int = 64) -> Tuple
                     uid = clean_text(value)
                     if uid:
                         selected_source_pairs.add((uid, resolution))
-                        selected_cluster_source_pairs.add((cluster_uid, uid, resolution))
+                        selected_station_source_pairs.add((station_uid, uid, resolution))
 
         summary = pd.DataFrame(stats)
         provenance = pd.DataFrame(
-            [{"cluster_uid": c, "source_station_uid": u, "resolution": r} for c, u, r in sorted(selected_cluster_source_pairs)]
+            [{"station_uid": c, "source_station_uid": u, "resolution": r} for c, u, r in sorted(selected_station_source_pairs)]
         )
         aux = {
             "selected_source_pairs": selected_source_pairs,
@@ -606,23 +606,23 @@ def compare_master_matrix(results: List[CheckResult], master_summary: pd.DataFra
         catalog=matrix_summary,
         count_col_observed="record_count",
         count_col_catalog="record_count",
-        key_cols=("cluster_uid", "resolution"),
+        key_cols=("station_uid", "resolution"),
     )
 
 
 def check_source_catalog_links(results: List[CheckResult], source_catalog: pd.DataFrame, station_catalog: pd.DataFrame) -> None:
     st_keys = station_key_set(station_catalog)
     bad = []
-    for row in source_catalog[["cluster_uid", "source_station_uid", "resolution"]].itertuples(index=False):
-        key = (str(row.cluster_uid), str(row.resolution))
+    for row in source_catalog[["station_uid", "source_station_uid", "resolution"]].itertuples(index=False):
+        key = (str(row.station_uid), str(row.resolution))
         if key not in st_keys:
-            bad.append({"source_station_uid": row.source_station_uid, "cluster_uid": row.cluster_uid, "resolution": row.resolution})
+            bad.append({"source_station_uid": row.source_station_uid, "station_uid": row.station_uid, "resolution": row.resolution})
             if len(bad) >= 10:
                 break
     if bad:
-        add(results, "ERROR", "source_catalog_cluster_keys", "source_station_catalog.csv", f"source catalog rows point to missing station_catalog cluster_uid+resolution; sample={bad}")
+        add(results, "ERROR", "source_catalog_station_keys", "source_station_catalog.csv", f"source catalog rows point to missing station_catalog station_uid+resolution; sample={bad}")
     else:
-        add(results, "PASS", "source_catalog_cluster_keys", "source_station_catalog.csv", "All source catalog cluster_uid+resolution keys exist in station_catalog")
+        add(results, "PASS", "source_catalog_station_keys", "source_station_catalog.csv", "All source catalog station_uid+resolution keys exist in station_catalog")
 
 
 def check_provenance_sources(
@@ -657,19 +657,19 @@ def check_provenance_sources(
     else:
         add(results, "PASS", "master_source_station_uid_in_catalog", "master NetCDF", "All master source_station_uid values resolve in source_station_catalog")
 
-    if not matrix_provenance.empty and {"source_station_uid", "cluster_uid", "resolution"} <= set(source_catalog.columns):
-        lookup = source_catalog.set_index(["source_station_uid", "resolution"])["cluster_uid"].to_dict()
+    if not matrix_provenance.empty and {"source_station_uid", "station_uid", "resolution"} <= set(source_catalog.columns):
+        lookup = source_catalog.set_index(["source_station_uid", "resolution"])["station_uid"].to_dict()
         bad = []
         for row in matrix_provenance.itertuples(index=False):
-            cat_cluster = lookup.get((str(row.source_station_uid), str(row.resolution)), "")
-            if cat_cluster and str(cat_cluster) != str(row.cluster_uid):
-                bad.append({"matrix_cluster_uid": row.cluster_uid, "source_station_uid": row.source_station_uid, "catalog_cluster_uid": cat_cluster, "resolution": row.resolution})
+            cat_station = lookup.get((str(row.source_station_uid), str(row.resolution)), "")
+            if cat_station and str(cat_station) != str(row.station_uid):
+                bad.append({"matrix_station_uid": row.station_uid, "source_station_uid": row.source_station_uid, "catalog_station_uid": cat_station, "resolution": row.resolution})
                 if len(bad) >= 10:
                     break
         if bad:
-            add(results, "ERROR", "matrix_source_station_cluster_link", "matrix/source_station_catalog.csv", f"selected source_station_uid resolves to a different cluster; sample={bad}")
+            add(results, "ERROR", "matrix_source_station_link", "matrix/source_station_catalog.csv", f"selected source_station_uid resolves to a different station; sample={bad}")
         else:
-            add(results, "PASS", "matrix_source_station_cluster_link", "matrix/source_station_catalog.csv", "Matrix selected_source_station_uid cluster links match source_station_catalog")
+            add(results, "PASS", "matrix_source_station_link", "matrix/source_station_catalog.csv", "Matrix selected_source_station_uid station links match source_station_catalog")
 
 
 def collect_global_run_attrs(path: Path) -> Dict[str, str]:
@@ -756,55 +756,55 @@ def gpkg_layers(path: Path) -> List[str]:
     return [str(r[0]) for r in rows]
 
 
-def check_gpkg(results: List[CheckResult], cluster_points_gpkg: Path, source_stations_gpkg: Optional[Path], cluster_basins_gpkg: Optional[Path], station_catalog: pd.DataFrame, source_catalog: pd.DataFrame) -> None:
+def check_gpkg(results: List[CheckResult], station_points_gpkg: Path, source_stations_gpkg: Optional[Path], station_basins_gpkg: Optional[Path], station_catalog: pd.DataFrame, source_catalog: pd.DataFrame) -> None:
     try:
         import geopandas as gpd
     except ImportError:
         add(results, "ERROR", "gpkg_dependency", "GeoPackage", "geopandas is required for GPKG checks. Install with: pip install geopandas")
         return
 
-    if cluster_points_gpkg and cluster_points_gpkg.is_file():
-        layers = set(gpkg_layers(cluster_points_gpkg))
-        expected = {"cluster_summary"} | {f"cluster_{r}" for r in RESOLUTIONS}
+    if station_points_gpkg and station_points_gpkg.is_file():
+        layers = set(gpkg_layers(station_points_gpkg))
+        expected = {"station_summary"} | {f"station_{r}" for r in RESOLUTIONS}
         missing = sorted(expected - layers)
         if missing:
-            add(results, "ERROR", "cluster_points_layers", cluster_points_gpkg.name, f"Missing layers: {missing}")
+            add(results, "ERROR", "station_points_layers", station_points_gpkg.name, f"Missing layers: {missing}")
         else:
-            add(results, "PASS", "cluster_points_layers", cluster_points_gpkg.name, f"All expected layers present: {sorted(expected)}")
+            add(results, "PASS", "station_points_layers", station_points_gpkg.name, f"All expected layers present: {sorted(expected)}")
 
-        # Summary layer: one point per unique cluster_uid in station catalog.
-        if "cluster_summary" in layers:
-            gdf = gpd.read_file(cluster_points_gpkg, layer="cluster_summary")
-            expected_count = int(station_catalog["cluster_uid"].nunique())
+        # Summary layer: one point per unique station_uid in station catalog.
+        if "station_summary" in layers:
+            gdf = gpd.read_file(station_points_gpkg, layer="station_summary")
+            expected_count = int(station_catalog["station_uid"].nunique())
             actual_count = int(len(gdf))
             if actual_count != expected_count:
-                add(results, "ERROR", "cluster_summary_point_count", cluster_points_gpkg.name, f"actual={actual_count}, expected_unique_station_catalog_clusters={expected_count}")
+                add(results, "ERROR", "station_summary_point_count", station_points_gpkg.name, f"actual={actual_count}, expected_unique_station_catalog_stations={expected_count}")
             else:
-                add(results, "PASS", "cluster_summary_point_count", cluster_points_gpkg.name, f"{actual_count} points match unique station catalog clusters")
+                add(results, "PASS", "station_summary_point_count", station_points_gpkg.name, f"{actual_count} points match unique station catalog stations")
 
         for res in RESOLUTIONS:
-            layer = f"cluster_{res}"
+            layer = f"station_{res}"
             if layer not in layers:
                 continue
-            gdf = gpd.read_file(cluster_points_gpkg, layer=layer)
+            gdf = gpd.read_file(station_points_gpkg, layer=layer)
             expected_count = int((station_catalog["resolution"] == res).sum())
             actual_count = int(len(gdf))
             if actual_count != expected_count:
-                add(results, "ERROR", f"cluster_{res}_point_count", cluster_points_gpkg.name, f"actual={actual_count}, expected_station_catalog_rows={expected_count}")
+                add(results, "ERROR", f"station_{res}_point_count", station_points_gpkg.name, f"actual={actual_count}, expected_station_catalog_rows={expected_count}")
             else:
-                add(results, "PASS", f"cluster_{res}_point_count", cluster_points_gpkg.name, f"{actual_count} points match station catalog rows")
+                add(results, "PASS", f"station_{res}_point_count", station_points_gpkg.name, f"{actual_count} points match station catalog rows")
 
-            if {"cluster_uid", "resolution"} <= set(gdf.columns):
-                layer_keys = set(zip(gdf["cluster_uid"].astype(str), gdf["resolution"].astype(str)))
-                expected_keys = set(zip(station_catalog.loc[station_catalog["resolution"] == res, "cluster_uid"].astype(str), station_catalog.loc[station_catalog["resolution"] == res, "resolution"].astype(str)))
+            if {"station_uid", "resolution"} <= set(gdf.columns):
+                layer_keys = set(zip(gdf["station_uid"].astype(str), gdf["resolution"].astype(str)))
+                expected_keys = set(zip(station_catalog.loc[station_catalog["resolution"] == res, "station_uid"].astype(str), station_catalog.loc[station_catalog["resolution"] == res, "resolution"].astype(str)))
                 extra = sorted(layer_keys - expected_keys)[:10]
                 missing = sorted(expected_keys - layer_keys)[:10]
                 if extra or missing:
-                    add(results, "ERROR", f"cluster_{res}_keys", cluster_points_gpkg.name, f"extra_sample={extra}; missing_sample={missing}")
+                    add(results, "ERROR", f"station_{res}_keys", station_points_gpkg.name, f"extra_sample={extra}; missing_sample={missing}")
                 else:
-                    add(results, "PASS", f"cluster_{res}_keys", cluster_points_gpkg.name, "Layer keys match station_catalog")
+                    add(results, "PASS", f"station_{res}_keys", station_points_gpkg.name, "Layer keys match station_catalog")
     else:
-        add(results, "WARN", "cluster_points_gpkg", "GeoPackage", f"Cluster points GPKG not found: {cluster_points_gpkg}")
+        add(results, "WARN", "station_points_gpkg", "GeoPackage", f"Station points GPKG not found: {station_points_gpkg}")
 
     if source_stations_gpkg and source_stations_gpkg.is_file():
         layers = set(gpkg_layers(source_stations_gpkg))
@@ -834,18 +834,18 @@ def check_gpkg(results: List[CheckResult], cluster_points_gpkg: Path, source_sta
     elif source_stations_gpkg:
         add(results, "WARN", "source_stations_gpkg", "GeoPackage", f"Source stations GPKG not found: {source_stations_gpkg}")
 
-    if cluster_basins_gpkg and cluster_basins_gpkg.is_file():
-        layers = set(gpkg_layers(cluster_basins_gpkg))
+    if station_basins_gpkg and station_basins_gpkg.is_file():
+        layers = set(gpkg_layers(station_basins_gpkg))
         expected = {f"basin_{r}" for r in RESOLUTIONS}
         missing = sorted(expected - layers)
         if missing:
-            add(results, "ERROR", "cluster_basins_layers", cluster_basins_gpkg.name, f"Missing layers: {missing}")
+            add(results, "ERROR", "station_basins_layers", station_basins_gpkg.name, f"Missing layers: {missing}")
         else:
-            add(results, "PASS", "cluster_basins_layers", cluster_basins_gpkg.name, f"All expected layers present: {sorted(expected)}")
+            add(results, "PASS", "station_basins_layers", station_basins_gpkg.name, f"All expected layers present: {sorted(expected)}")
 
         resolved_keys = set(
             zip(
-                station_catalog.loc[station_catalog["basin_status"].str.lower().eq("resolved"), "cluster_uid"].astype(str),
+                station_catalog.loc[station_catalog["basin_status"].str.lower().eq("resolved"), "station_uid"].astype(str),
                 station_catalog.loc[station_catalog["basin_status"].str.lower().eq("resolved"), "resolution"].astype(str),
             )
         )
@@ -855,33 +855,33 @@ def check_gpkg(results: List[CheckResult], cluster_points_gpkg: Path, source_sta
             layer = f"basin_{res}"
             if layer not in layers:
                 continue
-            gdf = gpd.read_file(cluster_basins_gpkg, layer=layer)
+            gdf = gpd.read_file(station_basins_gpkg, layer=layer)
             if len(gdf) == 0:
-                add(results, "WARN", f"basin_{res}_nonempty", cluster_basins_gpkg.name, "Layer is empty")
+                add(results, "WARN", f"basin_{res}_nonempty", station_basins_gpkg.name, "Layer is empty")
                 continue
             if "basin_status" in gdf.columns:
                 bad_status = gdf[~gdf["basin_status"].fillna("").astype(str).str.lower().eq("resolved")]
                 if len(bad_status):
-                    add(results, "ERROR", f"basin_{res}_only_resolved_status", cluster_basins_gpkg.name, f"{len(bad_status)} polygon rows are not basin_status=resolved")
+                    add(results, "ERROR", f"basin_{res}_only_resolved_status", station_basins_gpkg.name, f"{len(bad_status)} polygon rows are not basin_status=resolved")
                 else:
-                    add(results, "PASS", f"basin_{res}_only_resolved_status", cluster_basins_gpkg.name, "All polygon rows have basin_status=resolved")
+                    add(results, "PASS", f"basin_{res}_only_resolved_status", station_basins_gpkg.name, "All polygon rows have basin_status=resolved")
             else:
-                add(results, "ERROR", f"basin_{res}_basin_status_column", cluster_basins_gpkg.name, "Missing basin_status column")
+                add(results, "ERROR", f"basin_{res}_basin_status_column", station_basins_gpkg.name, "Missing basin_status column")
 
-            if {"cluster_uid", "resolution"} <= set(gdf.columns):
-                keys = set(zip(gdf["cluster_uid"].astype(str), gdf["resolution"].astype(str)))
+            if {"station_uid", "resolution"} <= set(gdf.columns):
+                keys = set(zip(gdf["station_uid"].astype(str), gdf["resolution"].astype(str)))
                 non_catalog = sorted(keys - all_station_keys)[:10]
                 non_resolved = sorted(keys - resolved_keys)[:10]
                 if non_catalog:
-                    add(results, "ERROR", f"basin_{res}_keys_in_station_catalog", cluster_basins_gpkg.name, f"Polygon keys not in station_catalog; sample={non_catalog}")
+                    add(results, "ERROR", f"basin_{res}_keys_in_station_catalog", station_basins_gpkg.name, f"Polygon keys not in station_catalog; sample={non_catalog}")
                 else:
-                    add(results, "PASS", f"basin_{res}_keys_in_station_catalog", cluster_basins_gpkg.name, "All polygon keys exist in station_catalog")
+                    add(results, "PASS", f"basin_{res}_keys_in_station_catalog", station_basins_gpkg.name, "All polygon keys exist in station_catalog")
                 if non_resolved:
-                    add(results, "ERROR", f"basin_{res}_only_resolved_keys", cluster_basins_gpkg.name, f"Polygon keys not resolved in station_catalog; sample={non_resolved}")
+                    add(results, "ERROR", f"basin_{res}_only_resolved_keys", station_basins_gpkg.name, f"Polygon keys not resolved in station_catalog; sample={non_resolved}")
                 else:
-                    add(results, "PASS", f"basin_{res}_only_resolved_keys", cluster_basins_gpkg.name, "All polygon keys correspond to resolved station_catalog rows")
-    elif cluster_basins_gpkg:
-        add(results, "WARN", "cluster_basins_gpkg", "GeoPackage", f"Basin polygon GPKG not found: {cluster_basins_gpkg}")
+                    add(results, "PASS", f"basin_{res}_only_resolved_keys", station_basins_gpkg.name, "All polygon keys correspond to resolved station_catalog rows")
+    elif station_basins_gpkg:
+        add(results, "WARN", "station_basins_gpkg", "GeoPackage", f"Basin polygon GPKG not found: {station_basins_gpkg}")
 
 
 def default_paths(release_dir: Path) -> Dict[str, Path]:
@@ -1069,7 +1069,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         catalog=station_catalog,
         count_col_observed="record_count",
         count_col_catalog="record_count",
-        key_cols=("cluster_uid", "resolution"),
+        key_cols=("station_uid", "resolution"),
     )
 
     compare_summary_to_catalog(
@@ -1080,7 +1080,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         catalog=station_catalog,
         count_col_observed="record_count",
         count_col_catalog="record_count",
-        key_cols=("cluster_uid", "resolution"),
+        key_cols=("station_uid", "resolution"),
     )
 
     compare_master_matrix(results, master_summary, matrix_summary)
@@ -1113,9 +1113,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.skip_gpkg:
         check_gpkg(
             results,
-            cluster_points_gpkg=paths["cluster_points_gpkg"],
+            station_points_gpkg=paths["cluster_points_gpkg"],
             source_stations_gpkg=paths["source_stations_gpkg"],
-            cluster_basins_gpkg=paths["cluster_basins_gpkg"],
+            station_basins_gpkg=paths["cluster_basins_gpkg"],
             station_catalog=station_catalog,
             source_catalog=source_catalog,
         )
