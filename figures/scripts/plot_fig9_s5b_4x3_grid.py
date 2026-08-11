@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Driver: 3×3 grid scatter plot — one row per source pair, one column per window.
+"""Driver: 4×3 grid scatter plot — one row per source pair, one column per window.
 
 Reads the s5b pairs CSV, filters to SSC variable, and produces a single
-3×3 figure: rows = source pairs (RivSed vs USGS / HYDAT / Dethier vs GFQA_v2),
+4×3 figure: rows = source pairs (RiverSed vs USGS / GSED vs GFQA_v2 /
+RiverSed vs HYDAT / Dethier vs GFQA_v2),
 columns = pairing windows (exact / ±1d / ±2d).  Full range only, no zoom row.
 
 ESSD compliance follows ``plot/AGENTS.md`` → ``docs/essd_figure_requirements.md``.
@@ -65,7 +66,7 @@ STYLE = {
     "title_size": 16,
     # Figure geometry — per-panel dimensions in cm (converted to inches)
     "panel_width_cm": 8.5,
-    "panel_height_cm": 7.5,
+    "panel_height_cm": 7.0,
     # Markers
     "scatter_marker_size": 10,
     "scatter_alpha": 0.65,
@@ -75,17 +76,18 @@ STYLE = {
 
 # -- Source pairs to plot (in row order) -------------------------------------
 SOURCE_PAIRS = [
-    "RivSed vs USGS",
-    "RivSed vs HYDAT",
+    "RiverSed vs USGS",
+    "GSED vs GFQA_v2",
+    "RiverSed vs HYDAT",
     "Dethier vs GFQA_v2",
 ]
 
-WINDOWS = ("exact", "pm1d", "pm2d")
+WINDOWS = ("exact", "pm1d", "pm2d")  # cumulative: exact ⊂ pm1d ⊂ pm2d
 
 
-# -- 3×3 grid figure ----------------------------------------------------------
-def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
-    """Build a 3×3 subplot grid: rows = source pairs, cols = pairing windows.
+# -- 4×3 grid figure ----------------------------------------------------------
+def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
+    """Build a 4×3 subplot grid: rows = source pairs, cols = pairing windows.
 
     Each subplot shows the scatter of satellite vs in-situ for one
     source_pair × window combination, with a 1:1 reference line and
@@ -161,17 +163,14 @@ def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 hi = float(finite.max())
                 ax.plot([lo, hi], [lo, hi], color="black", linewidth=1, linestyle="--")
 
-            # column titles: row 0 shows window label above n; rows 1-2 show n only
+            # column titles: row 0 shows window label
             if row_idx == 0:
                 window_label = _plot.WINDOW_LABELS.get(window, window)
-                ax.set_title("{}\nn={}".format(window_label, len(part)),
-                            fontsize=STYLE["title_size"])
-            else:
-                ax.set_title("n={}".format(len(part)),
+                ax.set_title("{}".format(window_label),
                             fontsize=STYLE["title_size"])
 
-            # axis labels: only on second row (x) and second column (y)
-            if row_idx == 2 and col_idx == 1:
+            # axis labels: only on last row (x) and left column (y)
+            if row_idx == n_rows - 1 and col_idx == 1:
                 ax.set_xlabel("Station-reference {} (mg L⁻¹)".format(variable),
                               fontsize=STYLE["axis_label_size"])
             if row_idx == 1 and col_idx == 0:
@@ -189,7 +188,7 @@ def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 ax.xaxis.get_offset_text().set_position((1.11,0))    # 调整 x轴 1e4 的位置
                 
 
-            # panel label (a)-(i)
+            # panel label (a)-(l)
             ax.text(
                 0.0, 1.1,
                 "({})".format(chr(97 + panel_idx)),
@@ -199,19 +198,23 @@ def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 va="top", ha="left",
             )
 
-            # correlation (top-right corner, small)
+            # statistics annotation (top-right corner)
             insitu_num = pd.to_numeric(part["insitu_value"], errors="coerce").to_numpy(dtype=float)
             sat_num = pd.to_numeric(part["satellite_value"], errors="coerce").to_numpy(dtype=float)
             r_pearson = _plot._safe_corr(insitu_num, sat_num, "pearson")
             r_spearman = _plot._safe_corr(insitu_num, sat_num, "spearman")
             r2 = r_pearson ** 2 if np.isfinite(r_pearson) else float("nan")
+            n_pairs = len(part)
+            n_clusters = part["cluster_uid"].nunique() if "cluster_uid" in part.columns else 0
             corr_lines = [
+                "n = {}".format(n_pairs),
+                "n_clusters = {}".format(n_clusters),
                 "r = {:.3f}".format(r_pearson) if np.isfinite(r_pearson) else "r = NaN",
                 "ρ = {:.3f}".format(r_spearman) if np.isfinite(r_spearman) else "ρ = NaN",
                 "R² = {:.3f}".format(r2) if np.isfinite(r2) else "R² = NaN",
             ]
             ax.text(
-                0.98, 0.2, "\n".join(corr_lines),
+                0.98, 0.02, "\n".join(corr_lines),
                 transform=ax.transAxes,
                 fontsize=STYLE["tick_label_size"] - 2,
                 va="bottom", ha="right", linespacing=1.3,
@@ -233,7 +236,7 @@ def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
             color=sp_color,
         )
 
-    fig.subplots_adjust(hspace=0.3, wspace=0.17, top=0.95, bottom=0.06, left=0.08, right=0.95)
+    fig.subplots_adjust(hspace=0.35, wspace=0.17, top=0.96, bottom=0.06, left=0.08, right=0.93)
 
     return fig, available_windows, subset, "generated"
 
@@ -241,7 +244,7 @@ def make_3x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 # -- ESSD checklist writer ----------------------------------------------------
 def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
                     pdf_path, png_path, variable="SSC"):
-    """Write an ESSD-compliant checklist markdown file for the 3×3 figure."""
+    """Write an ESSD-compliant checklist markdown file for the 4×3 figure."""
     figsize_in = fig.get_size_inches()
     width_cm = figsize_in[0] * _plot.CM_PER_INCH
     height_cm = figsize_in[1] * _plot.CM_PER_INCH
@@ -258,7 +261,7 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
         "- Plotting script: `plot_{}.py`".format(figure_id),
         "- Plotting data: `{}_plotting_data.csv`".format(figure_id),
         "- Date exported: {}".format(datetime.date.today().isoformat()),
-        "- Figure type: 3×3 multi-panel scatter grid (satellite vs in-situ)",
+        "- Figure type: 4×3 multi-panel scatter grid (satellite vs in-situ)",
         "- Single-panel or multi-panel: multi-panel ({} panels: {} rows × {} columns)".format(
             n_panels, len(SOURCE_PAIRS), len(windows_used)),
         "- Rows: {}".format(", ".join(SOURCE_PAIRS)),
@@ -333,7 +336,7 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
         "",
         "## Notes",
         "",
-        "- 3×3 grid: all three s5b source pairs × three pairing windows, {} variable".format(
+        "- 4×3 grid: all four s5b source pairs × three pairing windows, {} variable".format(
             variable),
         "- Part of s5b validation figure set",
     ]
@@ -391,7 +394,6 @@ def main(argv: Optional[Sequence[str]] = None):
 
     print("Loading pairs from: {}".format(pairs_path))
     pairs = pd.read_csv(str(pairs_path), keep_default_na=False)
-    pairs["source_pair"] = pairs["source_pair"].str.replace("RiverSed", "RivSed", regex=False)
     print("  {} rows loaded".format(len(pairs)))
 
     if pairs.empty:
@@ -424,9 +426,9 @@ def main(argv: Optional[Sequence[str]] = None):
             print("Warning: metrics CSV not found ({}); continuing without metrics.".format(
                 metrics_path))
 
-    # -- Generate 3×3 grid figure --------------------------------------------
-    print("Generating 3×3 grid scatter plot ...")
-    fig, windows_used, plot_data, status = make_3x3_grid(
+    # -- Generate 4×3 grid figure --------------------------------------------
+    print("Generating 4×3 grid scatter plot ...")
+    fig, windows_used, plot_data, status = make_4x3_grid(
         plt, pairs, variable=variable, figure_id=figure_id,
     )
     print("  -> scatter plot: {}".format(status))

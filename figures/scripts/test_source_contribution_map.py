@@ -321,7 +321,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Order legend entries by the user-provided source label order.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--datasets", type=str, default=None,
+        help="Comma-separated dataset source names for single-panel plot "
+             "(e.g. 'HYBAM,Rhine'). If omitted, all datasets are shown.",
+    )
+    args = parser.parse_args()
+    if args.datasets is not None:
+        args.datasets = [name.strip() for name in args.datasets.split(",") if name.strip()]
+    return args
 
 
 def clean_text(value: object) -> str:
@@ -432,27 +440,33 @@ def read_satellite_catalog(release_dir: Path) -> pd.DataFrame:
 def read_nc_source_points(release_dir: Path, file_name: str, catalog_names: Iterable[str]) -> pd.DataFrame:
     path = require_file(release_dir / file_name)
     with nc4.Dataset(str(path), "r") as ds:
-        for var_name in ["lat", "lon", "source", "station_index"]:
+        for var_name in ["lat", "lon"]:
             if var_name not in ds.variables:
                 raise ValueError("{} is missing variable: {}".format(path, var_name))
 
         lat = np.asarray(ds.variables["lat"][:], dtype="float64")
         lon = np.asarray(ds.variables["lon"][:], dtype="float64")
-        station_index = np.asarray(ds.variables["station_index"][:], dtype="int32")
-        raw_sources = ds.variables["source"][:]
 
-    n_stations = len(lat)
-    if not (len(lon) == n_stations):
-        raise ValueError("{} has inconsistent lat/lon lengths".format(path))
-
-    # Build per-station source labels by mapping records -> stations via station_index.
-    # Each record has a source name string and a station_index pointing to the station
-    # it belongs to. The first record that maps to a given station determines its source.
-    source_labels = np.array([""] * n_stations, dtype=object)
-    for i in range(len(station_index)):
-        sidx = station_index[i]
-        if 0 <= sidx < n_stations and source_labels[sidx] == "":
-            source_labels[sidx] = canonical_source_name(raw_sources[i], catalog_names)
+        # Support two NC layouts:
+        # (A) source_index (int indices) + source_name (string array) — legacy format
+        # (B) source (string per record, same length as lat/lon) — climatology NC format
+        if "source_index" in ds.variables and "source_name" in ds.variables:
+            source_index = np.asarray(ds.variables["source_index"][:], dtype="float64")
+            source_names_raw = [canonical_source_name(value, catalog_names) for value in ds.variables["source_name"][:]]
+            if not (len(lat) == len(lon) == len(source_index)):
+                raise ValueError("{} has inconsistent lat/lon/source_index lengths".format(path))
+            valid_source = np.isfinite(source_index) & (source_index >= 0) & (source_index < len(source_names_raw))
+            source_labels = np.array([""] * len(source_index), dtype=object)
+            source_labels[valid_source] = [source_names_raw[int(idx)] for idx in source_index[valid_source]]
+        elif "source" in ds.variables:
+            src_var = ds.variables["source"]
+            if src_var.shape == lat.shape:
+                source_labels = np.array([canonical_source_name(value, catalog_names) for value in src_var[:]], dtype=object)
+            else:
+                raise ValueError("{} source variable shape {} does not match lat shape {}".format(
+                    path, src_var.shape, lat.shape))
+        else:
+            raise ValueError("{} has neither (source_index+source_name) nor source variable".format(path))
 
     out = pd.DataFrame(
         {
@@ -681,20 +695,9 @@ def draw_top_sources_panel(
         handle_labels.append(label)
     handles, _ = order_legend_entries(handles, handle_labels, legend_user_order)
 
-    # Split legend entries into in situ and climatology groups
-    insitu_handles = []
-    climatology_handles = []
-    for hdl in handles:
-        lbl = hdl.get_label()
-        name_part = lbl.rsplit(" (", 1)[0] if " (" in lbl else lbl
-        if name_part in CLIMATOLOGY_SOURCE_NAMES:
-            climatology_handles.append(hdl)
-        else:
-            insitu_handles.append(hdl)
-
-    # Left legend: in situ sources
-    leg_insitu = ax.legend(
-        handles=insitu_handles,
+    # Unified legend
+    leg = ax.legend(
+        handles=handles,
         loc="lower left",
         bbox_to_anchor=(0.06, -0.01),
         ncol=1,
@@ -702,29 +705,8 @@ def draw_top_sources_panel(
         fontsize=FONT_SIZE_LEGEND,
         columnspacing=1.2,
         handletextpad=0.35,
-        title="In situ",
-        title_fontsize=FONT_SIZE_LEGEND,
     )
-    leg_insitu.get_title().set_fontweight("bold")
-    leg_insitu._legend_box.align = "left"
-    ax.add_artist(leg_insitu)
-
-    # Right legend: climatology sources
-    if climatology_handles:
-        leg_clim = ax.legend(
-            handles=climatology_handles,
-            loc="lower left",
-            bbox_to_anchor=(0.62, -0.01),
-            ncol=1,
-            frameon=False,
-            fontsize=FONT_SIZE_LEGEND,
-            columnspacing=1.2,
-            handletextpad=0.35,
-            title="Climatology",
-            title_fontsize=FONT_SIZE_LEGEND,
-        )
-        leg_clim.get_title().set_fontweight("bold")
-        leg_clim._legend_box.align = "left"
+    leg._legend_box.align = "left"
     
 
 def draw_satellite_panel(ax, satellite_points: pd.DataFrame, counts: Dict[str, int]) -> None:
@@ -796,22 +778,18 @@ def plot_map(
 ) -> List[Path]:
     figure_dirs["final"].mkdir(parents=True, exist_ok=True)
     if HAS_CARTOPY:
-        fig, axes = plt.subplots(
-            2,
+        fig, ax = plt.subplots(
+            1,
             1,
             figsize=FIGSIZE,
             subplot_kw={"projection": ccrs.Robinson()},
         )
     else:
-        fig, axes = plt.subplots(2, 1, figsize=FIGSIZE)
+        fig, ax = plt.subplots(1, 1, figsize=FIGSIZE)
 
-    draw_top_sources_panel(axes[0], points, top_sources, counts, legend_user_order)
-    add_panel_label(axes[0], "(a)")
+    draw_top_sources_panel(ax, points, top_sources, counts, legend_user_order)
 
-    draw_satellite_panel(axes[1], satellite_points, satellite_counts)
-    add_panel_label(axes[1], "(b)")
-
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.97, bottom=0.04, hspace=0.04)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.97, bottom=0.04)
 
     pdf_path = figure_dirs["final"] / "{}.pdf".format(figure_id)
     png_path = figure_dirs["final"] / "{}.png".format(figure_id)
@@ -856,20 +834,37 @@ def print_summary(
 # ---------------------------------------------------------------------------
 
 def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
-                  legend_user_order: bool = False) -> dict[str, object]:
+                  legend_user_order: bool = False, datasets: list = None) -> dict[str, object]:
     configure_matplotlib(plt)
     figure_dirs = ensure_figure_dirs(figures_root)
-    figure_id = OUTPUT_STEM
-    pdf_path = figure_dirs["final"] / "{}.pdf".format(figure_id)
-    png_path = figure_dirs["final"] / "{}.png".format(figure_id)
-    script_copy_path = figure_dirs["scripts"] / "plot_{}.py".format(figure_id)
-    checklist_path = figure_dirs["checklists"] / "{}_checklist.md".format(figure_id)
 
     catalog = read_dataset_catalog(release_dir)
     points, input_counts = load_all_points(release_dir, catalog)
     satellite_points = read_satellite_catalog(release_dir)
     top_sources = select_top_sources(catalog, top_n, exclude_names=SATELLITE_DATASETS)
     points = add_categories(points, top_sources)
+
+    # Filter by --datasets if specified
+    if datasets:
+        points = points[points["source_name"].isin(datasets)].copy()
+        points["category"] = points["source_name"]
+        top_sources = [d for d in datasets if d in points["source_name"].unique()]
+        if not top_sources:
+            print("Warning: none of the requested datasets found in points: {}".format(datasets))
+            print("Available source names: {}".format(
+                sorted(points["source_name"].unique()) if len(points) > 0 else "none"))
+
+    # Determine output filename
+    if datasets:
+        safe_names = "_".join(d.replace(" ", "_").replace("/", "_").replace("&", "and") for d in top_sources)
+        figure_id = "source_map_{}".format(safe_names)
+    else:
+        figure_id = OUTPUT_STEM
+
+    pdf_path = figure_dirs["final"] / "{}.pdf".format(figure_id)
+    png_path = figure_dirs["final"] / "{}.png".format(figure_id)
+    script_copy_path = figure_dirs["scripts"] / "plot_{}.py".format(figure_id)
+    checklist_path = figure_dirs["checklists"] / "{}_checklist.md".format(figure_id)
 
     count_check = validate_counts(points, catalog)
     mismatches = count_check[count_check["diff"].ne(0)]
@@ -898,29 +893,35 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
         legend_user_order,
     )
 
-    data_paths = write_plotting_data(
-        figure_dirs["data"],
-        figure_id,
-        points,
-        catalog,
-        top_sources,
-        category_counts,
-        satellite_points,
-        satellite_counts,
-    )
-    script_src = Path(__file__).resolve()
-    if script_src != script_copy_path:
-        shutil.copy2(script_src, script_copy_path)
-    write_checklist(checklist_path, figure_id, pdf_path, png_path, data_paths, script_copy_path, dpi, FIGSIZE)
+    # In --datasets mode, skip writing CSV data files, script copy, and checklist
+    if not datasets:
+        data_paths = write_plotting_data(
+            figure_dirs["data"],
+            figure_id,
+            points,
+            catalog,
+            top_sources,
+            category_counts,
+            satellite_points,
+            satellite_counts,
+        )
+        script_src = Path(__file__).resolve()
+        if script_src != script_copy_path:
+            shutil.copy2(script_src, script_copy_path)
+        write_checklist(checklist_path, figure_id, pdf_path, png_path, data_paths, script_copy_path, dpi, FIGSIZE)
+    else:
+        data_paths = []
 
-    return {
+    result = {
         "figure_id": figure_id,
         "pdf_path": pdf_path,
         "png_path": png_path,
         "data_paths": data_paths,
-        "script_copy_path": script_copy_path,
-        "checklist_path": checklist_path,
     }
+    if not datasets:
+        result["script_copy_path"] = script_copy_path
+        result["checklist_path"] = checklist_path
+    return result
 
 
 def main() -> int:
@@ -928,15 +929,19 @@ def main() -> int:
     release_dir = args.release_dir.resolve()
     figures_root = args.figures_root.resolve()
 
-    outputs = create_figure(release_dir, figures_root, args.top_n, args.dpi, args.legend_user_order)
+    outputs = create_figure(release_dir, figures_root, args.top_n, args.dpi,
+                            args.legend_user_order, datasets=args.datasets)
 
     print("\nWrote ESSD-compliant figure outputs:")
     print("  {}".format(outputs["pdf_path"]))
     print("  {}".format(outputs["png_path"]))
-    for path in outputs["data_paths"]:
-        print("  {}".format(path))
-    print("  {}".format(outputs["script_copy_path"]))
-    print("  {}".format(outputs["checklist_path"]))
+    if outputs.get("data_paths"):
+        for path in outputs["data_paths"]:
+            print("  {}".format(path))
+    if outputs.get("script_copy_path"):
+        print("  {}".format(outputs["script_copy_path"]))
+    if outputs.get("checklist_path"):
+        print("  {}".format(outputs["checklist_path"]))
 
     # Optional legacy output
     if args.out_dir is not None:

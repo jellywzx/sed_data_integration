@@ -345,12 +345,12 @@ def load_other_product_sources_from_minimal(release_dir: Path) -> Tuple[pd.DataF
     _require_columns(
         climatology_raw,
         "climatology_catalog.csv",
-        {"source_name", "station_uid", "source_station_time_coverage_start", "source_station_time_coverage_end"},
+        {"source_name", "station_uid", "time"},
     )
     climatology_raw = climatology_raw.copy()
     climatology_raw["source_name"] = climatology_raw["source_name"].astype(str).str.strip()
-    climatology_raw["first_year"] = _year_from_column(climatology_raw, "source_station_time_coverage_start")
-    climatology_raw["last_year"] = _year_from_column(climatology_raw, "source_station_time_coverage_end")
+    climatology_raw["first_year"] = _year_from_column(climatology_raw, "time")
+    climatology_raw["last_year"] = _year_from_column(climatology_raw, "time")
     climatology_raw = climatology_raw[climatology_raw["source_name"].ne("")]
     if climatology_raw.empty:
         climatology = empty.copy()
@@ -369,7 +369,7 @@ def load_other_product_sources_from_minimal(release_dir: Path) -> Tuple[pd.DataF
     _validate_temporal_coverage(
         climatology,
         "climatology_catalog.csv",
-        ("source_station_time_coverage_start", "source_station_time_coverage_end"),
+        ("time", "time"),
     )
 
     satellite_raw = _read_minimal_catalog(release_dir, "satellite_catalog.csv")
