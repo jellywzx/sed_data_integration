@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """Generate active-records three-panel figure from release matrix products.
 
-Outputs:
-    figures/final/active_records_panels.png
-    figures/final/active_records_panels.pdf
-    figures/data/active_records_panels_plotting_data.csv
-    figures/checklists/active_records_panels_checklist.md
-
-Usage:
-    python plot_active_records_panels.py
-    python plot_active_records_panels.py --release-dir /path/to/release
-    python plot_active_records_panels.py --out-dir /path/to/figures
+Output artifact names are derived from this script filename after removing
+the leading ``plot_`` prefix.
 """
 # ---- Library path setup: MUST happen before any extension-module imports ----
 import os as _os
@@ -58,6 +50,14 @@ from stats_release.release_paths import MATRIX_PRODUCTS
 
 DEFAULT_FIGURES_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
 DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+FIGURE_ID = script_output_stem()
 VARIABLES = ("Q", "SSC", "SSL")
 YEARLY_COLUMNS = (
     "resolution",
@@ -397,7 +397,7 @@ def main(argv=None) -> int:
         print("ERROR: no temporal data found in matrix products.", file=sys.stderr)
         return 1
 
-    write_figure_and_artifacts(by_year, figure_dirs, "active_records_panels", dpi)
+    write_figure_and_artifacts(by_year, figure_dirs, FIGURE_ID, dpi)
     return 0
 
 

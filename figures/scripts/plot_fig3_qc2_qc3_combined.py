@@ -61,7 +61,14 @@ FIGURE_CHECKLIST_DIR = (FIGURE_ROOT / "checklists").resolve()
 # ============================================================
 
 STATION_ID = "01CE004"
-OUT_NAME = None  # Will become "QC2_QC3_{station_id}"
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+OUT_NAME = script_output_stem()
 
 K = 1.5          # IQR multiplier for QC2 and QC3
 MIN_SAMPLES = 5  # Minimum samples for QC2/QC3 fitting

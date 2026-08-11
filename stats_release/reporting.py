@@ -158,7 +158,10 @@ def sorted_markdown_table(
         return "_No rows._"
     work = frame.copy()
     if sort_by and sort_by in work.columns:
-        work[sort_by] = pd.to_numeric(work[sort_by], errors="ignore")
+        try:
+            work[sort_by] = pd.to_numeric(work[sort_by])
+        except (ValueError, TypeError):
+            pass
         work = work.sort_values(sort_by, ascending=ascending)
     return markdown_table(work, columns=columns, headers=headers, max_rows=max_rows)
 
