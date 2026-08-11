@@ -37,9 +37,12 @@ from pipeline_paths import S6_QUALITY_ORDER_CSV, get_output_r_root  # noqa: E402
 
 
 DEFAULT_INPUT = get_output_r_root(REPO_ROOT) / S6_QUALITY_ORDER_CSV
-DEFAULT_SOURCE_OUTPUT = DEFAULT_INPUT.parent / "s6_sediment_filter_summary_by_source.csv"
+DEFAULT_OUTPUT_DIR = (
+    REPO_ROOT / "output_other" / "summarize_sediment_publish_filter"
+)
+DEFAULT_SOURCE_OUTPUT = DEFAULT_OUTPUT_DIR / "s6_sediment_filter_summary_by_source.csv"
 DEFAULT_SOURCE_RES_OUTPUT = (
-    DEFAULT_INPUT.parent / "s6_sediment_filter_summary_by_source_resolution.csv"
+    DEFAULT_OUTPUT_DIR / "s6_sediment_filter_summary_by_source_resolution.csv"
 )
 
 REQUIRED_COLUMNS = {
