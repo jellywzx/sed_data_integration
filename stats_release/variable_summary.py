@@ -137,8 +137,10 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
     zero_flag_counts = {}
     colocated = {}
     extremes = []
+    zero_source_audit = {}  # key: (resolution, source)
     with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
         n_records = netcdf_record_count(ds)
+        source_values = np.asarray(read_text_var(ds, "source"), dtype=object) if "source" in ds.variables else np.asarray([], dtype=object)
         units = {var: getattr(ds.variables[var], "units", "") if var in ds.variables else "" for var in VARIABLES}
         for start in range(0, n_records, chunk_size):
             stop = min(start + chunk_size, n_records)
@@ -208,6 +210,42 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                             zitem = zero_flag_counts.setdefault((resolution, var), {})
                             for fv in np.unique(zero_flags):
                                 zitem[int(fv)] = zitem.get(int(fv), 0) + int(np.count_nonzero(zero_flags == fv))
+                # ---- Zero-source audit (SSC only) ----
+                ssc_vals = vals_by_var.get("SSC")
+                if ssc_vals is not None and ssc_vals.size:
+                    ssc_zero_mask = masks.get("SSC", np.zeros(0, dtype=bool)) & (ssc_vals == 0)
+                    if ssc_zero_mask.any() and source_values.size:
+                        chunk_source = source_values[start:stop]
+                        q_vals = vals_by_var.get("Q")
+                        q_mask = masks.get("Q", np.zeros(0, dtype=bool))
+                        ssc_flags_arr = flags_by_var.get("SSC")
+                        for resolution_str in sorted(set(res)):
+                            rmask = res == resolution_str
+                            combined = rmask & ssc_zero_mask
+                            if not combined.any():
+                                continue
+                            for src in sorted(set(chunk_source[combined])):
+                                src = str(src).strip()
+                                if not src:
+                                    continue
+                                src_mask = combined & (chunk_source == src)
+                                if not src_mask.any():
+                                    continue
+                                key = (str(resolution_str), src)
+                                item = zero_source_audit.setdefault(key, {
+                                    "ssc_zero_total": 0,
+                                    "q_zero_ssc_zero": 0,
+                                    "q_pos_ssc_zero": 0,
+                                    "direct_ssc_zero": 0,
+                                    "derived_ssc_zero": 0,
+                                })
+                                item["ssc_zero_total"] += int(np.count_nonzero(src_mask))
+                                item["q_zero_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals == 0)))
+                                item["q_pos_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals > 0)))
+                                if ssc_flags_arr is not None:
+                                    item["direct_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 0)))
+                                    item["derived_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 1)))
+                # ---- End zero-source audit ----
                 combos = {
                     "Q only": masks["Q"] & ~masks["SSC"] & ~masks["SSL"],
                     "SSC only": masks["SSC"] & ~masks["Q"] & ~masks["SSL"],
@@ -305,6 +343,17 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
             .groupby(["resolution", "variable"], as_index=False, group_keys=False)
             .head(20)
         )
+    zero_source_audit_rows = []
+    for (resolution, source), counts in sorted(zero_source_audit.items()):
+        zero_source_audit_rows.append({
+            "resolution": resolution,
+            "source": source,
+            "SSC=0 total": counts["ssc_zero_total"],
+            "Q=0 & SSC=0": counts["q_zero_ssc_zero"],
+            "Q>0 & SSC=0": counts["q_pos_ssc_zero"],
+            "direct SSC=0": counts["direct_ssc_zero"],
+            "derived SSC=0": counts["derived_ssc_zero"],
+        })
     return {
         "variable_coverage_by_resolution": pd.DataFrame(coverage_rows),
         "variable_summary_statistics": pd.DataFrame(summary_rows),
@@ -312,6 +361,7 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
         "extreme_value_review_points": extreme_df,
         "flag01_summary_statistics": pd.DataFrame(flag01_summary_rows),
         "zero_value_flag_distribution": pd.DataFrame(zero_flag_dist_rows),
+        "zero_source_audit": pd.DataFrame(zero_source_audit_rows),
     }
 
 
@@ -369,11 +419,12 @@ def build_variable_stats(ctx, chunk_size: int) -> dict:
     legacy["variable_coverage_by_resolution_analysis_grade"] = legacy["variable_coverage_by_resolution"].assign(analysis_grade="release_nonmissing") if not legacy["variable_coverage_by_resolution"].empty else pd.DataFrame()
     legacy["variable_summary_statistics_analysis_grade"] = legacy["variable_summary_statistics"].assign(analysis_grade="release_nonmissing") if not legacy["variable_summary_statistics"].empty else pd.DataFrame()
     legacy["colocated_variable_coverage_analysis_grade"] = legacy["colocated_variable_coverage"].assign(analysis_grade="release_nonmissing") if not legacy["colocated_variable_coverage"].empty else pd.DataFrame()
-    return {
+    result = {
         "variable_coverage": build_variable_summary(ctx, chunk_size),
         "satellite_variable_by_source": _count_satellite_by_source(ctx, chunk_size),
         **legacy,
     }
+    return result
 
 
 def write_figures(ctx, figures_dir: Path, dpi: int, chunk_size: int) -> None:
@@ -519,6 +570,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
     extremes = stats.get("extreme_value_review_points", pd.DataFrame())
     flag01_summary = stats.get("flag01_summary_statistics", pd.DataFrame())
     zero_flag_dist = stats.get("zero_value_flag_distribution", pd.DataFrame())
+    zero_source_audit = stats.get("zero_source_audit", pd.DataFrame())
 
     total_products = coverage["product"].nunique() if not coverage.empty and "product" in coverage.columns else 0
     total_records = pd.to_numeric(coverage.get("n_records", 0), errors="coerce").fillna(0).sum() if not coverage.empty else 0
@@ -617,6 +669,15 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         sort_by="n_zero",
         max_rows=24,
         note="For exact-zero variable values, the distribution of their associated flags.",
+    )
+    append_table_section(
+        lines,
+        "Zero-Source Audit (master product)",
+        zero_source_audit,
+        columns=["resolution", "source", "SSC=0 total", "Q=0 & SSC=0", "Q>0 & SSC=0", "direct SSC=0", "derived SSC=0"],
+        sort_by="SSC=0 total",
+        max_rows=60,
+        note="SSC=0 records broken down by resolution x source, paired Q status, and direct (flag=0) vs derived (flag=1).",
     )
     append_table_section(
         lines,

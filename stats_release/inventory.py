@@ -37,6 +37,12 @@ from stats_release.reporting import (
 
 
 LOCAL_PATH_MARKERS = ("/share/home/", "/home/", "/Users/")
+OPTIONAL_MISSING_RELEASE_FILES = {
+    "application_sed_reference_release.md",
+    "sed_reference_satellite_candidates.csv.gz",
+    "sed_reference_satellite_candidates.parquet",
+    "satellite_validation_catalog.csv",
+}
 
 
 def _csv_rows(path: Path) -> int:
@@ -365,7 +371,7 @@ def build_release_inventory_mismatches(ctx) -> pd.DataFrame:
     rows = []
     for name in sorted(actual - listed):
         rows.append({"file_name": name, "issue": "on_disk_not_in_release_inventory"})
-    for name in sorted(listed - actual):
+    for name in sorted((listed - actual) - OPTIONAL_MISSING_RELEASE_FILES):
         rows.append({"file_name": name, "issue": "release_inventory_entry_missing_on_disk"})
     return pd.DataFrame(rows, columns=["file_name", "issue"])
 
@@ -772,6 +778,7 @@ def main(argv=None) -> int:
     missing = inventory[
         inventory["registration_status"].eq("registered") & inventory["exists"].eq(0)
     ]["file_name"].astype(str).tolist()
+    missing = [name for name in missing if name not in OPTIONAL_MISSING_RELEASE_FILES]
     report = build_detailed_inventory_report(ctx, tables, tables_dir)
     md_path = ctx.output_path("reports", "release_inventory_stats.md")
     write_markdown(report, md_path)

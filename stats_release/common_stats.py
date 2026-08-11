@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared helpers for release-only statistics parity outputs."""
 
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
