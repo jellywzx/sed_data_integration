@@ -14,25 +14,19 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from stats_release.qc_flags import _count_flags_for_product
 from stats_release.release_io import add_common_args, context_from_args, write_csv, write_markdown
 from stats_release.release_paths import MATRIX_PRODUCTS
 from stats_release.reporting import display_path, safe_lines
 
 
 VARIABLES = ("Q", "SSC", "SSL")
-FINAL_FLAGS = {
-    0: "good",
-    1: "derived",
-    2: "suspect",
-    3: "bad",
-    9: "missing",
-}
+FINAL_FLAGS = (0, 1, 2, 3, 9)
 
 
 def _percent(count: int, total: int) -> float:
@@ -43,15 +37,78 @@ def _cell(count: int, total: int) -> str:
     return "{:,} ({:.1f} %)".format(int(count), _percent(int(count), int(total)))
 
 
+def _count_matrix_final_flags(ctx, file_name: str, resolution: str, chunk_size: int) -> pd.DataFrame:
+    """Count final flags for a matrix product without assuming an n_records axis."""
+    path = ctx.require_input(ctx.release_file(file_name), required=False)
+    if path is None:
+        return pd.DataFrame()
+
+    rows = []
+    with ctx.open_dataset(file_name, required=True) as ds:
+        for variable in VARIABLES:
+            flag_name = "{}_flag".format(variable)
+            if flag_name not in ds.variables:
+                continue
+            var = ds.variables[flag_name]
+            shape = tuple(int(v) for v in var.shape)
+            if not shape:
+                continue
+
+            trailing = int(np.prod(shape[1:], dtype=np.int64)) if len(shape) > 1 else 1
+            axis_chunk = max(1, int(chunk_size) // max(1, trailing))
+            counts = {flag: 0 for flag in FINAL_FLAGS}
+            extra_counts = {}
+
+            for start in range(0, shape[0], axis_chunk):
+                stop = min(start + axis_chunk, shape[0])
+                arr = np.ma.asarray(var[start:stop]).filled(9).reshape(-1)
+                numeric = pd.to_numeric(pd.Series(arr), errors="coerce").dropna().astype(int).to_numpy()
+                if numeric.size == 0:
+                    continue
+                values, value_counts = np.unique(numeric, return_counts=True)
+                for flag, count in zip(values, value_counts):
+                    flag = int(flag)
+                    count = int(count)
+                    if flag in counts:
+                        counts[flag] += count
+                    else:
+                        extra_counts[flag] = extra_counts.get(flag, 0) + count
+
+            total = int(sum(counts.values()) + sum(extra_counts.values()))
+            for flag in FINAL_FLAGS:
+                count = int(counts[flag])
+                rows.append(
+                    {
+                        "product": resolution,
+                        "flag_variable": flag_name,
+                        "flag_value": flag,
+                        "count": count,
+                        "percent": round(_percent(count, total), 6),
+                        "n_total": total,
+                    }
+                )
+            for flag, count in sorted(extra_counts.items()):
+                rows.append(
+                    {
+                        "product": resolution,
+                        "flag_variable": flag_name,
+                        "flag_value": int(flag),
+                        "count": int(count),
+                        "percent": round(_percent(int(count), total), 6),
+                        "n_total": total,
+                    }
+                )
+
+    return pd.DataFrame(rows)
+
+
 def build_table7(ctx, chunk_size: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return manuscript Table 7 and the pooled resolution-level flag counts."""
     pieces = []
     for resolution, file_name in MATRIX_PRODUCTS.items():
-        counts, _ = _count_flags_for_product(ctx, file_name, resolution, chunk_size)
-        if counts.empty:
-            continue
-        counts = counts[counts["flag_variable"].isin(["Q_flag", "SSC_flag", "SSL_flag"])].copy()
-        pieces.append(counts)
+        counts = _count_matrix_final_flags(ctx, file_name, resolution, chunk_size)
+        if not counts.empty:
+            pieces.append(counts)
 
     pooled = pd.concat(pieces, ignore_index=True) if pieces else pd.DataFrame()
     if pooled.empty:
@@ -128,8 +185,7 @@ def build_report(ctx, table7: pd.DataFrame, pooled: pd.DataFrame, table_path: Pa
     lines.extend(["", "## Record-count check", ""])
 
     resolution_totals = (
-        pooled[pooled["flag_variable"].isin(["Q_flag", "SSC_flag", "SSL_flag"])]
-        .groupby(["product", "flag_variable"], dropna=False)["count"]
+        pooled.groupby(["product", "flag_variable"], dropna=False)["count"]
         .sum()
         .reset_index()
         .pivot(index="product", columns="flag_variable", values="count")
