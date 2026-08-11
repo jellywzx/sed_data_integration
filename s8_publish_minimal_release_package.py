@@ -109,6 +109,8 @@ DEFAULT_CLIMATOLOGY_QUERY_COLUMNS = (
     "station_uid",
     "time",
     "time_raw",
+    "time_start",
+    "time_end",
     "resolution",
     "Q",
     "SSC",
@@ -2238,6 +2240,11 @@ def build_climatology_observation_csv(args):
         "river_name",
         "geographic_coverage",
     )
+    # Per-station temporal coverage fields (separate from midpoint 'time')
+    station_temporal_fields = (
+        "time_coverage_start",
+        "time_coverage_end",
+    )
     record_fields = (
         "time",
         "Q",
@@ -2253,6 +2260,7 @@ def build_climatology_observation_csv(args):
         resolution_code = _global_attr_value(ds, "resolution", 3)
         station_index_values = _nc_query_variable_values(ds, "station_index")
         station_values = {name: _nc_query_variable_values(ds, name) for name in station_fields}
+        station_temporal_values = {name: _nc_query_variable_values(ds, name) for name in station_temporal_fields}
         record_values = {name: _nc_query_variable_values(ds, name) for name in record_fields}
 
         time_values = record_values.get("time", [])
@@ -2298,6 +2306,8 @@ def build_climatology_observation_csv(args):
                 "SSC_flag": _query_value_at(record_values.get("SSC_flag", []), record_idx),
                 "SSL_flag": _query_value_at(record_values.get("SSL_flag", []), record_idx),
                 "geographic_coverage": _query_value_at(station_values.get("geographic_coverage", []), station_idx),
+                "time_start": _query_value_at(station_temporal_values.get("time_coverage_start", []), station_idx),
+                "time_end": _query_value_at(station_temporal_values.get("time_coverage_end", []), station_idx),
             }
         )
 
