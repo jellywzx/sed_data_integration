@@ -682,8 +682,8 @@ def load_observations_from_master_nc(release_dir: Path, progress=log_progress) -
 
         provenance_fields = (
             "resolution",
-            "cluster_uid",
-            "cluster_id",
+            "station_uid",
+            "station_reference_id",
             "source",
             "source_family",
             "observation_type",
@@ -716,14 +716,14 @@ def load_observations_from_master_nc(release_dir: Path, progress=log_progress) -
                 station_index = candidate
                 records[index_name] = candidate
                 break
-        if "cluster_uid" not in records.columns and station_index is not None:
-            lookup = _indexed_lookup_series(ds, "cluster_uid", station_index)
+        if "station_uid" not in records.columns and station_index is not None:
+            lookup = _indexed_lookup_series(ds, "station_uid", station_index)
             if lookup is not None:
-                records["cluster_uid"] = lookup
-        if "cluster_id" not in records.columns and station_index is not None:
-            lookup = _indexed_lookup_series(ds, "cluster_id", station_index)
+                records["station_uid"] = lookup
+        if "station_reference_id" not in records.columns and station_index is not None:
+            lookup = _indexed_lookup_series(ds, "station_reference_id", station_index)
             if lookup is not None:
-                records["cluster_id"] = lookup
+                records["station_reference_id"] = lookup
 
         source_index = None
         for index_name in ("source_station_index", "selected_source_index", "source_index"):
@@ -843,8 +843,8 @@ def load_observations_from_satellite_validation_nc(release_dir: Path, progress=l
         records = pd.DataFrame({"record_index": np.arange(n_records)})
 
         for name in (
-            "cluster_uid",
-            "cluster_id",
+            "station_uid",
+            "station_reference_id",
             "resolution",
             "source",
             "source_family",
@@ -895,23 +895,23 @@ def _build_satellite_candidate_windows(
     windows: Sequence[str],
     satellite_time_units: str,
 ) -> Tuple[Dict[Tuple[int, str], Dict[str, object]], int]:
-    if raw.empty or "cluster_id" not in raw.columns:
+    if raw.empty or "station_reference_id" not in raw.columns:
         return {}, 0
 
     work = pd.DataFrame(index=raw.index)
-    work["cluster_id"] = pd.to_numeric(raw["cluster_id"], errors="coerce")
-    work["cluster_uid"] = _extract_column(raw, ("cluster_uid", "station_uid", "cluster_uuid"), "").map(_clean_text)
+    work["station_reference_id"] = pd.to_numeric(raw["station_reference_id"], errors="coerce")
+    work["station_uid"] = _extract_column(raw, ("station_uid", "station_uid", "cluster_uuid"), "").map(_clean_text)
     work["resolution"] = _extract_column(raw, ("resolution", "time_resolution", "temporal_resolution"), "").map(_normalize_resolution)
     work["time"] = _coerce_datetime_from_columns(raw)
-    valid = work["cluster_id"].notna() & work["resolution"].astype(str).str.strip().ne("") & work["time"].notna()
+    valid = work["station_reference_id"].notna() & work["resolution"].astype(str).str.strip().ne("") & work["time"].notna()
     work = work[valid].copy()
     if work.empty:
         return {}, 0
 
     max_window = max(WINDOW_DAYS[window] for window in windows) if windows else 0
     ranges: Dict[Tuple[int, str], Dict[str, object]] = {}
-    for (cluster_id, resolution), group in _groupby_compat(work, ["cluster_id", "resolution"]):
-        if pd.isna(cluster_id):
+    for (station_reference_id, resolution), group in _groupby_compat(work, ["station_reference_id", "resolution"]):
+        if pd.isna(station_reference_id):
             continue
         start = group["time"].min() - pd.Timedelta(days=max_window)
         end = group["time"].max() + pd.Timedelta(days=max_window)
@@ -919,17 +919,17 @@ def _build_satellite_candidate_windows(
         end_day = _datetime_to_cf_days(pd.Series([end]), satellite_time_units).iloc[0]
         if pd.isna(start_day) or pd.isna(end_day):
             continue
-        cluster_uid = ""
-        nonempty_uid = group["cluster_uid"][group["cluster_uid"].astype(str).str.strip().ne("")]
+        station_uid = ""
+        nonempty_uid = group["station_uid"][group["station_uid"].astype(str).str.strip().ne("")]
         if len(nonempty_uid):
-            cluster_uid = _clean_text(nonempty_uid.iloc[0])
-        key = (int(cluster_id), _normalize_resolution(resolution))
+            station_uid = _clean_text(nonempty_uid.iloc[0])
+        key = (int(station_reference_id), _normalize_resolution(resolution))
         ranges[key] = {
-            "cluster_uid": cluster_uid,
+            "station_uid": station_uid,
             "start_day": float(start_day),
             "end_day": float(end_day),
         }
-    return ranges, int(work[["cluster_id", "resolution"]].drop_duplicates().shape[0])
+    return ranges, int(work[["station_reference_id", "resolution"]].drop_duplicates().shape[0])
 
 
 def _station_series(ds, name: str, station_dim: str, default="") -> pd.Series:
@@ -949,46 +949,46 @@ def _load_matching_satellite_station_metadata(
     if station_dim is None:
         return {}, 0
     n_stations = int(ds.sizes[station_dim])
-    cluster_name = "cluster_id_station" if "cluster_id_station" in ds.variables else "cluster_id"
+    cluster_name = "station_reference_id_station" if "station_reference_id_station" in ds.variables else "station_reference_id"
     if cluster_name not in ds.variables:
         return {}, 0
 
-    cluster_ids = pd.to_numeric(_station_series(ds, cluster_name, station_dim, np.nan), errors="coerce")
+    station_reference_ids = pd.to_numeric(_station_series(ds, cluster_name, station_dim, np.nan), errors="coerce")
     resolutions = _station_series(ds, "station_resolution", station_dim, "").map(_normalize_resolution)
-    cluster_uids = _station_series(ds, "cluster_uid", station_dim, "").map(_clean_text)
+    linked_station_uids = _station_series(ds, "station_uid", station_dim, "").map(_clean_text)
     sources = _station_series(ds, "source", station_dim, "").map(_clean_text)
     families = _station_series(ds, "source_family", station_dim, "satellite").map(_clean_text)
-    station_uids = _station_series(ds, "satellite_station_uid", station_dim, "").map(_clean_text)
+    satellite_station_uids = _station_series(ds, "satellite_station_uid", station_dim, "").map(_clean_text)
     native_ids = _station_series(ds, "station_name", station_dim, "").map(_clean_text)
     candidate_paths = _station_series(ds, "candidate_path", station_dim, "").map(_clean_text)
     resolved_paths = _station_series(ds, "resolved_candidate_path", station_dim, "").map(_clean_text)
 
     meta_by_station: Dict[int, Dict[str, object]] = {}
     for idx in range(n_stations):
-        cluster_id = cluster_ids.iloc[idx]
-        if pd.isna(cluster_id):
+        station_reference_id = station_reference_ids.iloc[idx]
+        if pd.isna(station_reference_id):
             continue
         resolution = resolutions.iloc[idx]
-        key = (int(cluster_id), resolution)
+        key = (int(station_reference_id), resolution)
         if key not in candidate_windows:
             continue
         family = classify_source_family(sources.iloc[idx], raw_family=families.iloc[idx], observation_type="Satellite")
         if family != "satellite":
             continue
-        cluster_uid = cluster_uids.iloc[idx] or _clean_text(candidate_windows[key].get("cluster_uid", ""))
+        station_uid = linked_station_uids.iloc[idx] or _clean_text(candidate_windows[key].get("station_uid", ""))
         meta_by_station[idx] = {
-            "cluster_id": int(cluster_id),
-            "cluster_uid": cluster_uid,
+            "station_reference_id": int(station_reference_id),
+            "station_uid": station_uid,
             "resolution": resolution,
             "source": sources.iloc[idx],
             "source_family": "satellite",
             "observation_type": "Satellite",
-            "source_station_uid": station_uids.iloc[idx],
+            "source_station_uid": satellite_station_uids.iloc[idx],
             "source_station_native_id": native_ids.iloc[idx],
             "candidate_path": candidate_paths.iloc[idx],
             "source_station_paths": resolved_paths.iloc[idx] or candidate_paths.iloc[idx],
         }
-    return meta_by_station, len(set((int(cid), res) for cid, res in zip(cluster_ids.dropna().astype(int), resolutions[cluster_ids.notna()])))
+    return meta_by_station, len(set((int(cid), res) for cid, res in zip(station_reference_ids.dropna().astype(int), resolutions[station_reference_ids.notna()])))
 
 
 def _satellite_chunk_worker(
@@ -1017,7 +1017,7 @@ def _satellite_chunk_worker(
         for local_pos in np.where(station_mask)[0]:
             station_integer = int(station_idx[local_pos])
             meta = meta_by_station[station_integer]
-            key = (int(meta["cluster_id"]), _normalize_resolution(meta["resolution"]))
+            key = (int(meta["station_reference_id"]), _normalize_resolution(meta["resolution"]))
             window = candidate_windows.get(key)
             if not window:
                 continue
@@ -1057,8 +1057,8 @@ def _satellite_chunk_worker(
             meta = meta_by_station[station_integer]
             row: Dict[str, object] = {
                 "record_index": "satellite:{}".format(global_index),
-                "cluster_uid": meta.get("cluster_uid", ""),
-                "cluster_id": meta.get("cluster_id", ""),
+                "station_uid": meta.get("station_uid", ""),
+                "station_reference_id": meta.get("station_reference_id", ""),
                 "resolution": meta.get("resolution", ""),
                 "source": meta.get("source", ""),
                 "source_family": "satellite",
@@ -1229,8 +1229,8 @@ def normalize_observation_table(
     out = pd.DataFrame(index=raw.index)
     record_id_col = _first_existing(raw.columns, ("record_id", "record_index", "candidate_id", "row_id"))
     out["record_id"] = raw[record_id_col].astype(str) if record_id_col else np.arange(len(raw)).astype(str)
-    out["cluster_uid"] = _extract_column(raw, ("cluster_uid", "station_uid", "cluster_uuid"), "")
-    out["cluster_id"] = _extract_column(raw, ("cluster_id", "station_id", "master_station_index", "station_index"), "")
+    out["station_uid"] = _extract_column(raw, ("station_uid", "station_uid", "cluster_uuid"), "")
+    out["station_reference_id"] = _extract_column(raw, ("station_reference_id", "station_id", "master_station_index", "station_index"), "")
     out["resolution"] = _extract_column(raw, ("resolution", "time_resolution", "temporal_resolution"), "").map(_normalize_resolution)
     out["time"] = _coerce_datetime_from_columns(raw)
     if "date" not in raw.columns and "_time_units" in raw.columns and "time" in raw.columns:
@@ -1274,7 +1274,7 @@ def normalize_observation_table(
             out[canonical] = raw[col]
 
     out["input_mode"] = input_mode
-    has_cluster = out["cluster_uid"].astype(str).str.strip().ne("") | out["cluster_id"].astype(str).str.strip().ne("")
+    has_cluster = out["station_uid"].astype(str).str.strip().ne("") | out["station_reference_id"].astype(str).str.strip().ne("")
     has_core = has_cluster & out["resolution"].astype(str).str.strip().ne("") & out["time"].notna()
     has_source = out["source"].astype(str).str.strip().ne("")
     return out[has_core & has_source].reset_index(drop=True)
@@ -1300,8 +1300,8 @@ def _flag_rank(value) -> float:
 
 
 def _cluster_group_key(df: pd.DataFrame) -> pd.Series:
-    uid = df["cluster_uid"].astype(str).str.strip()
-    cid = df["cluster_id"].astype(str).str.strip()
+    uid = df["station_uid"].astype(str).str.strip()
+    cid = df["station_reference_id"].astype(str).str.strip()
     return uid.where(uid.ne(""), cid)
 
 
@@ -1340,8 +1340,8 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
 
     # --- Hoist constant satellite fields outside variable loop ---
     for _, sat in satellites.iterrows():
-        sat_cluster_uid = sat.get("cluster_uid", "")
-        sat_cluster_id = sat.get("cluster_id", "")
+        sat_station_uid = sat.get("station_uid", "")
+        sat_station_reference_id = sat.get("station_reference_id", "")
         sat_resolution = sat.get("resolution", "")
         sat_time = sat["_time_day"]
         sat_source = sat.get("source", "")
@@ -1401,8 +1401,8 @@ def _pair_group_worker(item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]) -> 
 
                 rows.append(
                     {
-                        "cluster_uid": sat_cluster_uid,
-                        "cluster_id": sat_cluster_id,
+                        "station_uid": sat_station_uid,
+                        "station_reference_id": sat_station_reference_id,
                         "resolution": sat_resolution,
                         "variable": variable,
                         "pairing_window": window,
@@ -1448,8 +1448,8 @@ def pair_satellite_insitu_records(
     progress=log_progress,
 ) -> pd.DataFrame:
     columns = [
-        "cluster_uid",
-        "cluster_id",
+        "station_uid",
+        "station_reference_id",
         "resolution",
         "variable",
         "pairing_window",
@@ -1528,15 +1528,15 @@ def _merge_external_attributes(pairs: pd.DataFrame, attrs: pd.DataFrame) -> pd.D
     work = pairs.copy()
     attr = attrs.copy()
     attr_cols = list(attr.columns)
-    cluster_uid_col = _first_existing(attr_cols, ("cluster_uid", "station_uid"))
-    cluster_id_col = _first_existing(attr_cols, ("cluster_id", "station_id"))
+    station_uid_col = _first_existing(attr_cols, ("station_uid", "station_uid"))
+    station_reference_id_col = _first_existing(attr_cols, ("station_reference_id", "station_id"))
     resolution_col = _first_existing(attr_cols, ("resolution", "time_resolution", "temporal_resolution"))
-    if cluster_uid_col is not None:
-        left_keys = ["cluster_uid"]
-        right_keys = [cluster_uid_col]
-    elif cluster_id_col is not None:
-        left_keys = ["cluster_id"]
-        right_keys = [cluster_id_col]
+    if station_uid_col is not None:
+        left_keys = ["station_uid"]
+        right_keys = [station_uid_col]
+    elif station_reference_id_col is not None:
+        left_keys = ["station_reference_id"]
+        right_keys = [station_reference_id_col]
     else:
         return work
     if resolution_col is not None:

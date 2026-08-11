@@ -34,7 +34,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import h5py
+import netCDF4
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -89,7 +89,7 @@ def _decode_time(units_str: str, time_vals: np.ndarray) -> Optional[List[datetim
 
 
 def _read_nc_vars(path: str) -> Dict[str, Any]:
-    """Read time, coordinates, and variables from an HDF5 NC file.
+    """Read time, coordinates, and variables from a netCDF file.
 
     Parameters
     ----------
@@ -104,20 +104,23 @@ def _read_nc_vars(path: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {"dates": None, "Q": None, "SSC": None,
                                "SSL": None, "lat": None, "lon": None}
     try:
-        f = h5py.File(path, "r")
+        f = netCDF4.Dataset(path, "r")
         # time
         tv = f["time"]
         tvals = tv[:]
-        units = tv.attrs.get("units", b"").decode() if "units" in tv.attrs else ""
+        units = ""
+        if "units" in tv.ncattrs():
+            u = tv.units
+            units = u.decode() if isinstance(u, bytes) else u
         result["dates"] = _decode_time(units, tvals)
 
         for var in ("Q", "SSC", "SSL"):
-            if var in f:
+            if var in f.variables:
                 arr = f[var][:]
                 result[var] = arr.astype(np.float64)
-        if "lat" in f:
+        if "lat" in f.variables:
             result["lat"] = float(f["lat"][()])
-        if "lon" in f:
+        if "lon" in f.variables:
             result["lon"] = float(f["lon"][()])
         f.close()
     except Exception as exc:
@@ -446,7 +449,7 @@ def analyze_crosssource(cluster_id: str,
     # ── 3. Merged output from master NC ──
     print(f"\n  ── Merged output (sed_reference_master.nc) ──")
     try:
-        f = h5py.File(str(master_path), "r")
+        f = netCDF4.Dataset(str(master_path), "r")
         sidx = f["station_index"][:]
         mask = sidx == master_cidx
         n_steps = int(np.sum(mask))
@@ -455,12 +458,16 @@ def analyze_crosssource(cluster_id: str,
             f.close()
             return report
 
-        tvals = f["time"][mask]
-        tunit = f["time"].attrs.get("units", b"days since 1900-01-01").decode()
+        tvals = f["time"][:][mask]
+        if "units" in f["time"].ncattrs():
+            tunit_raw = f["time"].units
+            tunit = tunit_raw.decode() if isinstance(tunit_raw, bytes) else tunit_raw
+        else:
+            tunit = "days since 1900-01-01"
         dates_m = _decode_time(tunit, tvals)
 
         # Count composition (which source contributed each day)
-        src_arr = f["source"][mask]
+        src_arr = f["source"][:][mask]
         src_counter = Counter()
         for s in src_arr:
             src_counter[s.decode() if isinstance(s, bytes) else str(s)] += 1
@@ -476,7 +483,7 @@ def analyze_crosssource(cluster_id: str,
 
         # Variable coexistence
         for var in ("Q", "SSC", "SSL"):
-            arr = f[var][mask]
+            arr = f[var][:][mask]
             valid = int(np.sum(~np.isnan(arr)))
             report[f"merged_{var}_valid"] = valid
             report[f"merged_{var}_pct"] = valid / n_steps * 100
@@ -490,12 +497,12 @@ def analyze_crosssource(cluster_id: str,
         for src, cnt in src_counter.most_common():
             print(f"    {src}: {cnt} days ({cnt/n_steps*100:.1f}%)")
         # Variable coexistence
-        qv = int(np.sum(~np.isnan(f["Q"][mask])))
-        sv = int(np.sum(~np.isnan(f["SSC"][mask])))
-        lv = int(np.sum(~np.isnan(f["SSL"][mask])))
+        qv = int(np.sum(~np.isnan(f["Q"][:][mask])))
+        sv = int(np.sum(~np.isnan(f["SSC"][:][mask])))
+        lv = int(np.sum(~np.isnan(f["SSL"][:][mask])))
         all3 = int(np.sum(
-            ~np.isnan(f["Q"][mask]) & ~np.isnan(f["SSC"][mask])
-            & ~np.isnan(f["SSL"][mask])))
+            ~np.isnan(f["Q"][:][mask]) & ~np.isnan(f["SSC"][:][mask])
+            & ~np.isnan(f["SSL"][:][mask])))
         print(f"  Q+SSC+SSL coexistence: {all3}/{n_steps} "
               f"({all3/n_steps*100:.1f}%)")
         report["merged_coexist"] = all3
@@ -1038,8 +1045,8 @@ def main() -> int:
     master_cidx_map: Dict[str, int] = {}
     if master_path is not None:
         try:
-            master_file = h5py.File(str(master_path), "r")
-            cuids = master_file["cluster_uid"][:]
+            master_file = netCDF4.Dataset(str(master_path), "r")
+            cuids = master_file["station_uid"][:]
             for i in range(len(cuids)):
                 c = cuids[i].decode() if isinstance(cuids[i], bytes) else str(cuids[i])
                 master_cidx_map[c] = i
