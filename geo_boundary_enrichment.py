@@ -7,7 +7,6 @@ merging. Upstream NetCDF global attributes remain the first source of truth; an
 admin0 polygon layer is used only to fill missing promoted geographic fields.
 """
 
-from __future__ import annotations
 
 import os
 from pathlib import Path

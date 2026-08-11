@@ -42,7 +42,7 @@ cli:
   # s2: 按分辨率整理
   s2_workers: 8            # 并行 worker 数，推荐 4-16
   s2_clear: false          # 清空旧输出目录重新组织
-  s2_dataset: [EUSEDcollab, GFQA_v2, USGS, HYBAM]      # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
+  s2_dataset: ""      # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32

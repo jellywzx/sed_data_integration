@@ -14,11 +14,15 @@
 /scratch
 __pycache__/
 *.pyc
+*.bak
+*.bak.*
+*.bak*
 plot/__pycache__/
 figures/checklists/
 figures/data/
 figures/final/
 figures/test/
+docs/reports/
 tmp/
 bak/
 validate/output
