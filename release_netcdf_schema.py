@@ -226,7 +226,7 @@ PRODUCT_DESCRIPTIONS = {
             "sediment observations from RiverSed, GSED, and Dethier datasets. "
             "Where spatial and temporal matching criteria were satisfied, "
             "satellite-derived stations were linked to the main station-reference "
-            "stations. The product supports assessment of broad spatial sediment "
+            "clusters. The product supports assessment of broad spatial sediment "
             "patterns, identification of gauge-coverage gaps, and complementary "
             "comparison with station-reference observations."
         ),

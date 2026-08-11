@@ -5,7 +5,7 @@ minimal_matrix_files:
 keep_variables:
 - lat
 - lon
-- station_uid
+- cluster_uid
 - time
 - Q
 - SSC
@@ -19,7 +19,7 @@ keep_variables:
 - station_name
 - river_name
 required_variables:
-- station_uid
+- cluster_uid
 - time
 - Q
 - SSC
@@ -37,8 +37,8 @@ compressed_variables:
 - SSL_flag
 satellite_keep_variables:
 - satellite_station_uid
-- station_uid
-- linked_station_uid
+- cluster_uid
+- linked_cluster_uid
 - unlinked_reason
 - source
 - station_name
@@ -57,7 +57,7 @@ satellite_keep_variables:
 - SSL_flag
 satellite_required_variables:
 - satellite_station_uid
-- station_uid
+- cluster_uid
 - source
 - satellite_station_index
 - time
@@ -106,9 +106,6 @@ satellite_forbidden_variables:
 - date
 - resolution
 - cluster_id
-- cluster_id_station
-- cluster_uid
-- n_clusters
 - source_station_index
 - source_index
 - source_name
@@ -149,11 +146,9 @@ forbidden_variables:
 - selected_source_index
 - is_overlap
 - cluster_id
-- cluster_uid
-- n_clusters
 minimal_catalog_columns:
   station_catalog.csv:
-  - station_uid
+  - cluster_uid
   - resolution
   - lat
   - lon
@@ -175,7 +170,7 @@ minimal_catalog_columns:
   - source_station_river_name
   - source_station_lat
   - source_station_lon
-  - station_uid
+  - cluster_uid
   - resolution
   - n_records
   - time_start
@@ -186,8 +181,6 @@ minimal_catalog_columns:
   - source_url
   - n_source_stations
   - n_records
-  - time_start
-  - time_end
   satellite_catalog.csv:
   - satellite_station_uid
   - station_name
@@ -200,8 +193,8 @@ minimal_catalog_columns:
   - lat
   - lon
   - geographic_coverage
-  - station_uid
-  - linked_station_uid
+  - cluster_uid
+  - linked_cluster_uid
   - unlinked_reason
   - link_distance_m
 climatology_keep_variables:
@@ -213,8 +206,6 @@ climatology_keep_variables:
 - geographic_coverage
 - station_index
 - time
-- time_coverage_start
-- time_coverage_end
 - resolution
 - Q
 - Q_flag
@@ -252,8 +243,6 @@ climatology_forbidden_variables:
 - SSL_qc3
 - source_name
 - source_long_name
-- linked_cluster_uid
-- linked_cluster_id
 - institution
 - reference
 - source_url
@@ -268,6 +257,8 @@ climatology_forbidden_variables:
 - processing_level
 - source_data_link
 - temporal_resolution
+- time_coverage_end
+- time_coverage_start
 - source_station_id
 - source_station_path
 - source_station_comment
@@ -323,8 +314,6 @@ climatology_query_columns:
 - station_uid
 - time
 - time_raw
-- time_start
-- time_end
 - resolution
 - Q
 - SSC

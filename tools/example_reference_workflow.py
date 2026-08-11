@@ -110,7 +110,7 @@ def find_nearest_station(station_catalog, lat, lon, resolution):
     return row
 
 
-def extract_reference_series(release_dir, resolution, station_uid, variable):
+def extract_reference_series(release_dir, resolution, cluster_uid, variable):
     matrix_path = Path(release_dir) / MATRIX_FILES[resolution]
     if not matrix_path.is_file():
         raise FileNotFoundError("Matrix file not found: {}".format(matrix_path))
@@ -118,12 +118,12 @@ def extract_reference_series(release_dir, resolution, station_uid, variable):
         raise RuntimeError("netCDF4 is required to read reference NetCDF files")
 
     with nc4.Dataset(matrix_path, "r") as ds:
-        station_uids = np.asarray(ds.variables["station_uid"][:], dtype=object).reshape(-1)
-        station_uids = [_clean_text(item) for item in station_uids]
+        cluster_uids = np.asarray(ds.variables["cluster_uid"][:], dtype=object).reshape(-1)
+        cluster_uids = [_clean_text(item) for item in cluster_uids]
         try:
-            row_idx = station_uids.index(station_uid)
+            row_idx = cluster_uids.index(cluster_uid)
         except ValueError:
-            raise KeyError("station_uid {} not found in {}".format(station_uid, matrix_path.name))
+            raise KeyError("cluster_uid {} not found in {}".format(cluster_uid, matrix_path.name))
 
         time_var = ds.variables["time"]
         try:
@@ -191,7 +191,7 @@ def _find_master_record_index(ds, station_idx, resolution_code, target_time_num,
     return None
 
 
-def lookup_provenance(release_dir, station_uid, resolution, time_value):
+def lookup_provenance(release_dir, cluster_uid, resolution, time_value):
     master_path = Path(release_dir) / "sed_reference_master.nc"
     source_station_catalog_path = Path(release_dir) / "source_station_catalog.csv"
     source_station_catalog = pd.read_csv(source_station_catalog_path, keep_default_na=False)
@@ -203,10 +203,10 @@ def lookup_provenance(release_dir, station_uid, resolution, time_value):
         raise RuntimeError("netCDF4 is required to read master NetCDF")
 
     with nc4.Dataset(master_path, "r") as ds:
-        station_uids = np.asarray(ds.variables["station_uid"][:], dtype=object).reshape(-1)
-        station_uids = [_clean_text(item) for item in station_uids]
+        cluster_uids = np.asarray(ds.variables["cluster_uid"][:], dtype=object).reshape(-1)
+        cluster_uids = [_clean_text(item) for item in cluster_uids]
         try:
-            station_idx = station_uids.index(station_uid)
+            station_idx = cluster_uids.index(cluster_uid)
         except ValueError:
             return pd.DataFrame()
 
@@ -233,7 +233,7 @@ def lookup_provenance(release_dir, station_uid, resolution, time_value):
         overlap_val = int(np.ma.asarray(ds.variables["is_overlap"][record_idx]).filled(0))
         rows = [
             {
-                "station_uid": station_uid,
+                "cluster_uid": cluster_uid,
                 "time": str(pd.Timestamp(time_value)),
                 "resolution": resolution,
                 "source_name": _clean_text(ds.variables["source"][record_idx]),
@@ -314,7 +314,7 @@ def summarize_alignment(aligned):
     }
 
 
-def maybe_plot(aligned, out_path, variable, station_uid):
+def maybe_plot(aligned, out_path, variable, cluster_uid):
     if out_path is None:
         return
     if not HAS_MPL:
@@ -323,7 +323,7 @@ def maybe_plot(aligned, out_path, variable, station_uid):
     ax.plot(aligned["time"], aligned["reference_value"], label="reference {}".format(variable), lw=1.8)
     if "model_value" in aligned.columns:
         ax.plot(aligned["time"], aligned["model_value"], label="model", lw=1.2)
-    ax.set_title("station_uid = {}".format(station_uid))
+    ax.set_title("cluster_uid = {}".format(cluster_uid))
     ax.set_xlabel("time")
     ax.set_ylabel(variable)
     ax.legend()
@@ -355,7 +355,7 @@ def main():
     station_catalog = load_station_catalog(release_dir)
     nearest = find_nearest_station(station_catalog, args.lat, args.lon, args.resolution)
 
-    print("Nearest station_uid: {}".format(nearest["station_uid"]))
+    print("Nearest cluster_uid: {}".format(nearest["cluster_uid"]))
     print("Resolution: {}".format(nearest["resolution"]))
     print("Distance (km): {:.3f}".format(float(nearest["distance_km"])))
     print("Station name: {}".format(nearest.get("station_name", "")))
@@ -366,11 +366,11 @@ def main():
     ref_df = extract_reference_series(
         release_dir=release_dir,
         resolution=args.resolution,
-        station_uid=str(nearest["station_uid"]),
+        cluster_uid=str(nearest["cluster_uid"]),
         variable=args.variable,
     )
     if len(ref_df) == 0:
-        raise RuntimeError("No non-missing {} series found for {}".format(args.variable, nearest["station_uid"]))
+        raise RuntimeError("No non-missing {} series found for {}".format(args.variable, nearest["cluster_uid"]))
 
     print("Reference points: {}".format(len(ref_df)))
     print("Reference time span: {} -> {}".format(ref_df["time"].min(), ref_df["time"].max()))
@@ -398,7 +398,7 @@ def main():
 
     provenance = lookup_provenance(
         release_dir=release_dir,
-        station_uid=str(nearest["station_uid"]),
+        cluster_uid=str(nearest["cluster_uid"]),
         resolution=args.resolution,
         time_value=aligned["time"].iloc[0],
     )
@@ -417,7 +417,7 @@ def main():
         print("Wrote series CSV: {}".format(out_path))
 
     if args.out_plot:
-        maybe_plot(aligned, Path(args.out_plot).resolve(), args.variable, str(nearest["station_uid"]))
+        maybe_plot(aligned, Path(args.out_plot).resolve(), args.variable, str(nearest["cluster_uid"]))
         print("Wrote plot: {}".format(Path(args.out_plot).resolve()))
 
 
