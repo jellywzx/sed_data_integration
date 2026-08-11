@@ -192,7 +192,33 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
             ]
         )
     legacy = _build_legacy_tables(counts, health)
-    return {"flag_counts": counts, "health": health, "flag_schema": schema, **legacy}
+
+    # ---- final flags by resolution matrix ----
+    flag_summary = legacy.get("flag_summary", pd.DataFrame())
+    matrix_final_flags_by_resolution = pd.DataFrame()
+    if not flag_summary.empty:
+        final_flags = flag_summary[flag_summary["qc_level"].eq("final")].copy()
+        if not final_flags.empty:
+            resolution_map = {"master": "daily", "climatology": "monthly", "satellite": "annual"}
+            final_flags["resolution"] = (
+                final_flags["temporal_resolution"]
+                .map(resolution_map)
+                .fillna(final_flags["temporal_resolution"])
+            )
+            matrix_final_flags_by_resolution = (
+                final_flags.groupby(["resolution", "flag_variable", "flag"], dropna=False)
+                .agg(count=("count", "sum"))
+                .reset_index()
+                .rename(columns={"flag": "flag_value"})
+            )
+
+    return {
+        "flag_counts": counts,
+        "health": health,
+        "flag_schema": schema,
+        "matrix_final_flags_by_resolution": matrix_final_flags_by_resolution,
+        **legacy,
+    }
 
 
 def _variable_from_flag(flag_variable: str) -> str:
