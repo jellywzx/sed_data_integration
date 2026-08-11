@@ -24,7 +24,12 @@ os.environ.setdefault("PROJ_LIB", "/root/miniconda3/envs/wzx/share/proj")
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import pyogrio
+import fiona
+
+def _pyogrio_read_info(path):
+    """Drop-in replacement for _pyogrio_read_info()."""
+    with fiona.open(path) as src:
+        return {"total_bounds": src.bounds}
 from shapely.geometry import Point
 from shapely.ops import unary_union, transform
 from pyproj import CRS, Transformer
@@ -96,9 +101,9 @@ class UpstreamBasinTracer:
             # 文件名形如 riv_pfaf_XX_...，取第三段为该区 Pfaf 码
             pfaf_code = riv_file.stem.split("_")[2]
             try:
-                # 用 pyogrio.read_info 仅读取元数据中的 total_bounds，
+                # 用 _pyogrio_read_info 仅读取元数据中的 total_bounds，
                 # 避免将整个 shapefile（数百 MB）加载到内存，大幅缩短初始化时间
-                info = pyogrio.read_info(str(riv_file))
+                info = _pyogrio_read_info(str(riv_file))
                 self._region_bounds[pfaf_code] = info["total_bounds"]
             except Exception as e:
                 logger.warning(f"Error reading bounds for {pfaf_code}: {e}")
