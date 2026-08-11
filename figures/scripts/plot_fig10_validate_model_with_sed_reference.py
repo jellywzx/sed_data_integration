@@ -55,10 +55,17 @@ DEFAULT_INPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/s
 DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/"
 DEFAULT_VARIABLE = "SSC"
 DEFAULT_RESOLUTION = "daily"
-DEFAULT_EXAMPLE_CLUSTER_UID = "SED000107"
+DEFAULT_EXAMPLE_STATION_UID = "SED000107"
 DEFAULT_TIMESERIES_RESOLUTION = "daily"
 DEFAULT_DPI = 300
-DEFAULT_FIGURE_NUMBER = "model_validation"
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+DEFAULT_FIGURE_NUMBER = script_output_stem()
 
 # --- Regional map parameters ---
 DEFAULT_REGION_LAT_MIN = -20
@@ -91,7 +98,7 @@ def collect_compare_pairs(input_dir: Path, variable: str, resolution: str) -> pd
 
     Reads compare_<variable>_<resolution>.csv from each station directory,
     merges with station_match.csv metadata, and returns a long-format DataFrame.
-    Columns: cluster_uid, station_name, time, reference, model, variable,
+    Columns: station_uid, station_name, time, reference, model, variable,
              station_dir, model_grid_distance_km.
     """
     input_dir_path = Path(input_dir)
@@ -110,7 +117,7 @@ def collect_compare_pairs(input_dir: Path, variable: str, resolution: str) -> pd
             continue
 
         # Read station_match.csv for metadata
-        cluster_uid = ""
+        station_uid = ""
         station_name = ""
         model_grid_distance_km = np.nan
         match_path = station_dir / "station_match.csv"
@@ -118,17 +125,17 @@ def collect_compare_pairs(input_dir: Path, variable: str, resolution: str) -> pd
             mdf = pd.read_csv(match_path)
             if not mdf.empty:
                 r = mdf.iloc[0]
-                cluster_uid = str(r.get("cluster_uid", ""))
+                station_uid = str(r.get("station_uid", r.get("cluster_uid", "")))
                 station_name = str(r.get("station_name", ""))
                 try:
                     model_grid_distance_km = float(r.get("model_grid_distance_km", np.nan))
                 except (ValueError, TypeError):
                     model_grid_distance_km = np.nan
 
-        # Fallback: extract cluster_uid and station_name from directory name
-        if not cluster_uid and "_" in station_dir.name:
+        # Fallback: extract station_uid and station_name from directory name
+        if not station_uid and "_" in station_dir.name:
             parts = station_dir.name.split("_", 1)
-            cluster_uid = parts[0]
+            station_uid = parts[0]
             station_name = parts[1] if len(parts) > 1 else ""
 
         # Identify reference and model columns dynamically
@@ -145,7 +152,7 @@ def collect_compare_pairs(input_dir: Path, variable: str, resolution: str) -> pd
 
         for _, row in compare_df.iterrows():
             all_rows.append({
-                "cluster_uid": cluster_uid,
+                "station_uid": station_uid,
                 "station_name": station_name,
                 "time": row.get(time_col, np.nan),
                 "reference": row.get(ref_col, np.nan),
@@ -165,10 +172,10 @@ def collect_compare_pairs(input_dir: Path, variable: str, resolution: str) -> pd
 
 
 def select_example_station(metrics_df: pd.DataFrame, variable: str,
-                           preferred_cluster_uid: str = "") -> str:
-    """Select a representative station cluster_uid for the paper figure.
+                           preferred_station_uid: str = "") -> str:
+    """Select a representative station station_uid for the paper figure.
 
-    If preferred_cluster_uid is provided and exists for the selected variable,
+    If preferred_station_uid is provided and exists for the selected variable,
     use it.  Otherwise choose the station whose KGE is closest to the median KGE
     among stations with valid metrics and n >= median n when possible.
     Falls back to the station with the largest n if KGE is unavailable.
@@ -178,8 +185,8 @@ def select_example_station(metrics_df: pd.DataFrame, variable: str,
     if var_df.empty:
         return ""
 
-    if preferred_cluster_uid and preferred_cluster_uid in var_df["cluster_uid"].values:
-        return preferred_cluster_uid
+    if preferred_station_uid and preferred_station_uid in var_df["station_uid"].values:
+        return preferred_station_uid
 
     # Try KGE-based selection
     if "kge" in var_df.columns:
@@ -193,12 +200,12 @@ def select_example_station(metrics_df: pd.DataFrame, variable: str,
             median_kge = float(candidates["kge"].median())
             candidates.loc[:, "kge_dist"] = (candidates["kge"] - median_kge).abs()
             best = candidates.sort_values("kge_dist").iloc[0]
-            return str(best["cluster_uid"])
+            return str(best["station_uid"])
 
     # Fallback: station with most data points
     if "n" in var_df.columns and var_df["n"].notna().any():
         best = var_df.loc[var_df["n"].idxmax()]
-        return str(best["cluster_uid"])
+        return str(best["station_uid"])
 
     return ""
 
@@ -268,22 +275,22 @@ def plot_panel_a_log_scatter(ax, pairs_df: pd.DataFrame, variable: str, unit: st
         "Itaituba":             OKABE_ITO["vermillion"],
     }
 
-    if "cluster_uid" not in df.columns:
+    if "station_uid" not in df.columns:
         ax.scatter(df["reference"], df["model"], s=16, alpha=0.82,
                    color=OKABE_ITO["blue"], edgecolors="none", rasterized=True)
     else:
-        # Build station-name lookup per cluster_uid
+        # Build station-name lookup per station_uid
         station_names = {}
-        for sid in df["cluster_uid"].unique():
-            sdf = df[df["cluster_uid"] == sid]
+        for sid in df["station_uid"].unique():
+            sdf = df[df["station_uid"] == sid]
             if "station_name" in sdf.columns and sdf["station_name"].notna().any():
                 sn = str(sdf["station_name"].iloc[0])
             else:
                 sn = sid
             station_names[sid] = sn
 
-        for sid in df["cluster_uid"].unique():
-            sub = df[df["cluster_uid"] == sid]
+        for sid in df["station_uid"].unique():
+            sub = df[df["station_uid"] == sid]
             sn = station_names.get(sid, sid)
             label = sn.replace("_", " ")
             c = station_color_map.get(sn, "#999999")
@@ -330,7 +337,7 @@ def plot_panel_a_log_scatter(ax, pairs_df: pd.DataFrame, variable: str, unit: st
 
     # Annotate number of pairs and stations — lower left
     n_pairs = len(df)
-    n_stations = int(df["cluster_uid"].nunique()) if "cluster_uid" in df.columns else 1
+    n_stations = int(df["station_uid"].nunique()) if "station_uid" in df.columns else 1
     ax.annotate("%d pairs / %d stations" % (n_pairs, n_stations),
                 xy=(0.02, 0.02), xycoords="axes fraction",
                 fontsize=FONT_ANNOTATION_SMALL, ha="left", va="bottom",
@@ -861,7 +868,7 @@ def write_figure_checklist(
     head = "# Figure checklist: " + fname + "\n"
     head += "\n## Basic information\n"
     head += "\n- Figure file: " + fname + ".pdf / " + fname + ".png"
-    head += "\n- Plotting script: plot_validate_model_with_sed_reference.py"
+    head += "\n- Plotting script: " + Path(__file__).resolve().name
     head += "\n- Plotting data: " + fname + "_paired_samples.csv"
     head += "\n- Date exported: " + datetime.date.today().isoformat()
     head += "\n- Figure type: Multi-panel (scatter + map + time series)"
@@ -930,7 +937,7 @@ def make_paper_figure(
     input_dir: Path,
     variable: str,
     resolution: str,
-    example_cluster_uid: str = "",
+    example_station_uid: str = "",
     target_timeseries_resolution: str = "daily",
     dpi: int = 300,
     extract_dir: str = "",
@@ -976,16 +983,18 @@ def make_paper_figure(
               "Skipping paper figure." % (variable, resolution))
         return
     print("[INFO] Collected %d paired samples (%d stations) for %s"
-          % (len(pairs_df), pairs_df["cluster_uid"].nunique(), variable))
+          % (len(pairs_df), pairs_df["station_uid"].nunique(), variable))
 
     # --- Select representative station ---
     metrics_path = input_dir_path / "metrics_summary.csv"
     if metrics_path.exists():
         metrics_df = pd.read_csv(metrics_path)
+        if "cluster_uid" in metrics_df.columns and "station_uid" not in metrics_df.columns:
+            metrics_df = metrics_df.rename(columns={"cluster_uid": "station_uid"})
         print("[INFO] Loaded %d metric rows from %s" % (len(metrics_df), metrics_path))
-        selected_uid = select_example_station(metrics_df, variable, example_cluster_uid)
+        selected_uid = select_example_station(metrics_df, variable, example_station_uid)
     else:
-        selected_uid = example_cluster_uid if example_cluster_uid else ""
+        selected_uid = example_station_uid if example_station_uid else ""
 
     # --- Build figure layout ---
     # 2 rows x 2 columns
@@ -1041,7 +1050,7 @@ def main() -> None:
         output_dir=DEFAULT_OUTPUT_DIR,
         variable=DEFAULT_VARIABLE,
         resolution=DEFAULT_RESOLUTION,
-        example_cluster_uid=DEFAULT_EXAMPLE_CLUSTER_UID,
+        example_station_uid=DEFAULT_EXAMPLE_STATION_UID,
         target_timeseries_resolution="daily",
         dpi=DEFAULT_DPI,
         extract_dir=DEFAULT_EXTRACT_DIR,

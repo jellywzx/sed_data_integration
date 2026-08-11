@@ -46,7 +46,14 @@ DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
 S5B_LINKS_CSV = PROJECT_DIR / 'output' / 's5b_satellite_main_cluster_links_v2.csv'
 DPI = 300
 FIGSIZE = (12, 14)
-FIGURE_ID = "composite_spatial_coverage_manu_order"
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+FIGURE_ID = script_output_stem()
 FONT_SIZES = {
     "map_tick": 9,
     "panel_label": 15,
@@ -75,7 +82,7 @@ OKABE_ITO = {
 }
 
 STATION_COLUMNS = {
-    "cluster_uid",
+    "station_uid",
     "resolution",
     "record_count",
     "lat",
@@ -85,14 +92,14 @@ STATION_COLUMNS = {
 }
 SATELLITE_COLUMNS = {
     "satellite_station_uid",
-    "cluster_uid",
+    "station_uid",
     "source",
     "lat",
     "lon",
 }
 
-REQUIRED_STATION_COLUMNS = {"cluster_uid", "resolution", "lat", "lon"}
-REQUIRED_SATELLITE_COLUMNS = {"cluster_uid", "source", "lat", "lon"}
+REQUIRED_STATION_COLUMNS = {"station_uid", "resolution", "lat", "lon"}
+REQUIRED_SATELLITE_COLUMNS = {"station_uid", "source", "lat", "lon"}
 
 RESOLUTION_FLAG_MEANINGS = {
     0: "daily",
@@ -220,16 +227,16 @@ def valid_latlon(frame: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon"
     return lat.between(-90, 90) & lon.between(-180, 180)
 
 
-def build_cluster_table(station: pd.DataFrame) -> pd.DataFrame:
-    """Build one release cluster row per cluster_uid from station_catalog.csv."""
+def build_station_table(station: pd.DataFrame) -> pd.DataFrame:
+    """Build one release station row per station_uid from station_catalog.csv."""
     work = station.copy()
     _require_columns(work, REQUIRED_STATION_COLUMNS, PRODUCT_FILES["station_catalog"])
-    work["cluster_uid"] = work["cluster_uid"].map(clean_text)
-    work = work[work["cluster_uid"].ne("")].copy()
+    work["station_uid"] = work["station_uid"].map(clean_text)
+    work = work[work["station_uid"].ne("")].copy()
     if work.empty:
         return pd.DataFrame(
             columns=[
-                "cluster_uid",
+                "station_uid",
                 "lat",
                 "lon",
                 "basin_status",
@@ -247,7 +254,7 @@ def build_cluster_table(station: pd.DataFrame) -> pd.DataFrame:
         work["basin_status"] = "unknown"
 
     rows = []
-    for uid, group in work.groupby("cluster_uid", sort=False):
+    for uid, group in work.groupby("station_uid", sort=False):
         lat = first_number(group["lat"])
         lon = first_number(group["lon"])
         status = first_text(group["basin_status"], "unknown").lower()
@@ -255,7 +262,7 @@ def build_cluster_table(station: pd.DataFrame) -> pd.DataFrame:
             status = "unknown"
         rows.append(
             {
-                "cluster_uid": uid,
+                "station_uid": uid,
                 "lat": lat,
                 "lon": lon,
                 "basin_status": status,
@@ -269,16 +276,16 @@ def build_cluster_table(station: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_area_distribution(clusters: pd.DataFrame, area_col: str = "basin_area") -> pd.DataFrame:
-    area = pd.to_numeric(clusters.get(area_col, pd.Series([], dtype=float)), errors="coerce")
+def build_area_distribution(stations: pd.DataFrame, area_col: str = "basin_area") -> pd.DataFrame:
+    area = pd.to_numeric(stations.get(area_col, pd.Series([], dtype=float)), errors="coerce")
     valid = area[np.isfinite(area) & (area > 0)]
     rows = [
-        {"section": "summary", "label": "valid_cluster_count", "value_km2": "", "cluster_count": int(valid.size)},
+        {"section": "summary", "label": "valid_station_count", "value_km2": "", "station_count": int(valid.size)},
         {
             "section": "summary",
-            "label": "missing_or_invalid_cluster_count",
+            "label": "missing_or_invalid_station_count",
             "value_km2": "",
-            "cluster_count": int(len(area) - valid.size),
+            "station_count": int(len(area) - valid.size),
         },
     ]
     bins = [0, 10, 100, 1000, 10000, 100000, np.inf]
@@ -290,39 +297,39 @@ def build_area_distribution(clusters: pd.DataFrame, area_col: str = "basin_area"
                 "section": "bin",
                 "label": label,
                 "value_km2": "",
-                "cluster_count": int(count),
+                "station_count": int(count),
             }
         )
     return pd.DataFrame(rows)
 
 
-def build_satellite_linked_area_distribution(satellite: pd.DataFrame, clusters: pd.DataFrame) -> pd.DataFrame:
-    """Build area distribution by matching each satellite station to the nearest reference cluster via lat/lon."""
-    if satellite.empty or "cluster_uid" not in satellite.columns:
+def build_satellite_linked_area_distribution(satellite: pd.DataFrame, stations: pd.DataFrame) -> pd.DataFrame:
+    """Build area distribution by matching each satellite station to the nearest reference station via lat/lon."""
+    if satellite.empty or "station_uid" not in satellite.columns:
         return build_area_distribution(pd.DataFrame(columns=["basin_area"]))
 
-    # Deduplicate satellite stations by cluster_uid, keeping lat/lon
-    linked = satellite[["cluster_uid", "lat", "lon"]].copy()
-    linked["cluster_uid"] = linked["cluster_uid"].map(clean_text)
-    linked = linked[linked["cluster_uid"].ne("")].drop_duplicates(subset="cluster_uid")
+    # Deduplicate satellite stations by station_uid, keeping lat/lon
+    linked = satellite[["station_uid", "lat", "lon"]].copy()
+    linked["station_uid"] = linked["station_uid"].map(clean_text)
+    linked = linked[linked["station_uid"].ne("")].drop_duplicates(subset="station_uid")
 
     linked_valid = linked[valid_latlon(linked)].copy()
     if linked_valid.empty:
         return build_area_distribution(pd.DataFrame(columns=["basin_area"]))
 
-    # Build spatial index from reference clusters with valid basin_area
-    cluster_refs = clusters[clusters["valid_latlon"].astype(bool)].copy()
-    cluster_refs["_basin_area_num"] = pd.to_numeric(cluster_refs["basin_area"], errors="coerce")
-    cluster_refs = cluster_refs[cluster_refs["_basin_area_num"].notna() & (cluster_refs["_basin_area_num"] > 0)]
-    if cluster_refs.empty:
+    # Build spatial index from reference stations with valid basin_area
+    station_refs = stations[stations["valid_latlon"].astype(bool)].copy()
+    station_refs["_basin_area_num"] = pd.to_numeric(station_refs["basin_area"], errors="coerce")
+    station_refs = station_refs[station_refs["_basin_area_num"].notna() & (station_refs["_basin_area_num"] > 0)]
+    if station_refs.empty:
         return build_area_distribution(pd.DataFrame(columns=["basin_area"]))
 
     # Nearest-neighbor spatial matching in lat/lon (Euclidean approx; fine for histograms)
     from scipy.spatial import KDTree
 
-    tree = KDTree(cluster_refs[["lat", "lon"]].values)
+    tree = KDTree(station_refs[["lat", "lon"]].values)
     distances, indices = tree.query(linked_valid[["lat", "lon"]].values, k=1)
-    linked_valid["basin_area"] = cluster_refs["_basin_area_num"].iloc[indices].values
+    linked_valid["basin_area"] = station_refs["_basin_area_num"].iloc[indices].values
 
     return build_area_distribution(linked_valid, "basin_area")
 
@@ -388,8 +395,8 @@ def load_timeseries_points(ctx: ReleaseContext, file_name: str, label: str) -> p
 def load_release_data(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
     station = read_release_csv_columns(ctx, PRODUCT_FILES["station_catalog"], STATION_COLUMNS, REQUIRED_STATION_COLUMNS)
     satellite = read_release_csv_columns(ctx, PRODUCT_FILES["satellite_catalog"], SATELLITE_COLUMNS, REQUIRED_SATELLITE_COLUMNS)
-    clusters = build_cluster_table(station)
-    area_dist = build_area_distribution(clusters)
+    stations = build_station_table(station)
+    area_dist = build_area_distribution(stations)
     satellite_area = build_satellite_uparea_from_s5b(S5B_LINKS_CSV)
     climatology = load_climatology_points(ctx)
     timeseries = {
@@ -397,7 +404,7 @@ def load_release_data(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame, 
         "Monthly": load_timeseries_points(ctx, PRODUCT_FILES["monthly_nc"], "Monthly"),
         "Annual": load_timeseries_points(ctx, PRODUCT_FILES["annual_nc"], "Annual"),
     }
-    return clusters, satellite, area_dist, satellite_area, {"climatology": climatology, **timeseries}
+    return stations, satellite, area_dist, satellite_area, {"climatology": climatology, **timeseries}
 
 
 def add_inset_axes(ax, rect):
@@ -452,7 +459,7 @@ def draw_area_hist(ax, area_dist: pd.DataFrame, color: str) -> None:
         ax.text(0.5, 0.5, "No area data", transform=ax.transAxes, ha="center", va="center", fontsize=FONT_SIZES["inset_axis"], color="#777777")
         ax.set_axis_off()
         return
-    counts = pd.to_numeric(bins["cluster_count"], errors="coerce").fillna(0)
+    counts = pd.to_numeric(bins["station_count"], errors="coerce").fillna(0)
     if float(counts.sum()) <= 0:
         ax.text(0.5, 0.5, "No area data", transform=ax.transAxes, ha="center", va="center", fontsize=FONT_SIZES["inset_axis"], color="#777777")
         ax.set_axis_off()
@@ -472,9 +479,9 @@ def draw_area_hist(ax, area_dist: pd.DataFrame, color: str) -> None:
     ax.yaxis.tick_right()
 
 
-def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> None:
+def draw_station_map(ax, stations: pd.DataFrame, area_dist: pd.DataFrame) -> None:
     setup_world_map(ax)
-    df = clusters[clusters["valid_latlon"].astype(bool)].copy()
+    df = stations[stations["valid_latlon"].astype(bool)].copy()
     area = pd.to_numeric(df.get("basin_area"), errors="coerce")
     sizes = np.where(np.isfinite(area) & (area > 0), np.sqrt(np.clip(area, 10, None)) * 0.18, 4.0)
     for status in ("resolved", "unresolved", "unknown"):
@@ -515,9 +522,10 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
             transform=legend_ax.transAxes,
             clip_on=False,
         )
-        legend_ax.text(0.20, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
+        # X可以调整resolved/unresolved文本与legend图形标志之间的距离
+        legend_ax.text(0.17, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.13
-    legend_ax.text(0.08, y - 0.03, "Total clusters: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, y - 0.03, "Total stations: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     legend_ax.text(0.08, y - 0.15, "Point size: basin area (km²)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     sample_y = y - 0.29
     for area_value, x_dot in ((100, 0.14), (10000, 0.39), (100000, 0.67)):
@@ -686,7 +694,7 @@ def write_plotting_data(
     ctx: ReleaseContext,
     data_dir: Path,
     figure_id: str,
-    clusters: pd.DataFrame,
+    stations: pd.DataFrame,
     satellite: pd.DataFrame,
     area_dist: pd.DataFrame,
     satellite_area: pd.DataFrame,
@@ -694,9 +702,9 @@ def write_plotting_data(
     timeseries: dict[str, pd.DataFrame],
 ) -> list[Path]:
     outputs = [
-        write_csv(clusters, data_dir / "{}_plotting_data_clusters.csv".format(figure_id)),
+        write_csv(stations, data_dir / "{}_plotting_data_reference_stations.csv".format(figure_id)),
         write_csv(satellite[valid_latlon(satellite)].copy(), data_dir / "{}_plotting_data_satellite_stations.csv".format(figure_id)),
-        write_csv(area_dist, data_dir / "{}_plotting_data_cluster_area_distribution.csv".format(figure_id)),
+        write_csv(area_dist, data_dir / "{}_plotting_data_station_area_distribution.csv".format(figure_id)),
         write_csv(satellite_area, data_dir / "{}_plotting_data_satellite_linked_area_distribution.csv".format(figure_id)),
         write_csv(climatology, data_dir / "{}_plotting_data_climatology_points.csv".format(figure_id)),
     ]
@@ -706,7 +714,7 @@ def write_plotting_data(
         write_input_manifest(
             ctx,
             {
-                "station_catalog": len(clusters),
+                "station_catalog": len(stations),
                 "satellite_catalog": len(satellite),
                 "climatology_netcdf": len(climatology),
                 "daily_timeseries_netcdf": len(timeseries["Daily"]),
@@ -809,11 +817,11 @@ def create_figure(ctx: ReleaseContext, figures_root: Path, dpi: int, plot_only: 
     png_path = figure_dirs["final"] / "{}.png".format(figure_id)
     script_copy_path = figure_dirs["scripts"] / "plot_{}.py".format(figure_id)
     checklist_path = figure_dirs["checklists"] / "{}_checklist.md".format(figure_id)
-    clusters, satellite, area_dist, satellite_area, point_data = load_release_data(ctx)
+    stations, satellite, area_dist, satellite_area, point_data = load_release_data(ctx)
     climatology = point_data["climatology"]
     timeseries = {key: point_data[key] for key in ("Daily", "Monthly", "Annual")}
 
-    # === Three panels: (a) climatology+timeseries, (b) cluster map, (c) satellite map ===
+    # === Three panels: (a) climatology+timeseries, (b) station map, (c) satellite map ===
     fig = plt.figure(figsize=FIGSIZE)
     gs = gridspec.GridSpec(3, 1, height_ratios=[1, 1, 1], hspace=0.05)
 
@@ -822,7 +830,7 @@ def create_figure(ctx: ReleaseContext, figures_root: Path, dpi: int, plot_only: 
     add_panel_label(ax_a, "(a)")
 
     ax_b = fig.add_subplot(gs[1, 0], projection=ccrs.PlateCarree())
-    draw_cluster_map(ax_b, clusters, area_dist)
+    draw_station_map(ax_b, stations, area_dist)
     add_panel_label(ax_b, "(b)")
 
     ax_c = fig.add_subplot(gs[2, 0], projection=ccrs.PlateCarree())
@@ -837,7 +845,7 @@ def create_figure(ctx: ReleaseContext, figures_root: Path, dpi: int, plot_only: 
     script_copy_written = False
     checklist_written = False
     if not plot_only:
-        data_paths = write_plotting_data(ctx, figure_dirs["data"], figure_id, clusters, satellite, area_dist, satellite_area, climatology, timeseries)
+        data_paths = write_plotting_data(ctx, figure_dirs["data"], figure_id, stations, satellite, area_dist, satellite_area, climatology, timeseries)
         if Path(__file__).resolve() != script_copy_path.resolve():
             shutil.copy2(Path(__file__), script_copy_path)
             script_copy_written = True
