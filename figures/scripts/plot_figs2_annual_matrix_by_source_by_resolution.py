@@ -53,7 +53,13 @@ OUTPUT_DIR = Path(
     "scripts_basin_test/figures"
 )
 
-FIGURE_ID = "fig_annual_matrix_records_by_source_by_resolution_test"
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+FIGURE_ID = script_output_stem()
 
 RESOLUTIONS = ("daily", "monthly", "annual")
 

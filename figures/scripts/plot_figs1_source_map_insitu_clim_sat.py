@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """Plot in-situ/climatology and satellite source-dataset station locations.
 
-Command-line usage examples:
-
-    python plot_source_map_insitu_clim_sat.py
-    python plot_source_map_insitu_clim_sat.py --legend-user-order
-    python plot_source_map_insitu_clim_sat.py --release-dir output/sed_reference_release_minimal --figures-root figures
-    python plot_source_map_insitu_clim_sat.py --top-n 10 --dpi 300 --legend-user-order
-    python plot_source_map_insitu_clim_sat.py --help
+Output artifact names are derived from this script filename after removing
+the leading ``plot_`` prefix.
 
 Use --legend-user-order to draw legend text in the user-provided source order;
 omitting it preserves the default legend ordering.
@@ -54,7 +49,14 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent.parent
 DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
 DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
-OUTPUT_STEM = "source_map_insitu_clim_sat"
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+OUTPUT_STEM = script_output_stem()
 FIGSIZE = (12.5, 12.8)
 
 FONT_SIZE_TITLE = 15

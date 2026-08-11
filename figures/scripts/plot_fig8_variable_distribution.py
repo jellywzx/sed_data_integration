@@ -2,12 +2,8 @@
 """Q/SSC/SSL coverage statistics from sed_reference_release_minimal.
 Multi-panel figure with ESSD-compliant output artifacts.
 
-Outputs (AGENTS.md-compliant):
-    figures/final/variable_distribution.png
-    figures/final/variable_distribution.pdf
-    figures/data/variable_distribution_plotting_data.csv
-    figures/scripts/plot_variable_distribution.py
-    figures/checklists/variable_distribution_checklist.md
+Output artifact names are derived from this script filename after removing
+the leading ``plot_`` prefix.
 """
 # ---- Library path setup: MUST happen before any extension-module imports ----
 import os as _os
@@ -63,6 +59,14 @@ from stats_release.reporting import (
 DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
 DEFAULT_OUT_DIR          = Path(__file__).resolve().parents[2] / "output_other" / "stats_release_minimal" / "variable_summary"
 DEFAULT_FIGURES_DIR      = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+FIGURE_ID = script_output_stem()
 
 MATRIX_PRODUCTS = {
     "daily": "sed_reference_timeseries_daily.nc",
@@ -1128,7 +1132,7 @@ def main(argv=None) -> int:
         figure_dirs = ensure_figure_dirs(figures_dir)
         try:
             write_figure_and_artifacts(
-                ctx, figure_dirs, "variable_distribution",
+                ctx, figure_dirs, FIGURE_ID,
                 max(300, int(args.dpi)),
                 args.matrix_row_chunk_size, args.record_chunk_size,
             )
