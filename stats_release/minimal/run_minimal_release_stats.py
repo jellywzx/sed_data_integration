@@ -231,6 +231,15 @@ def _catalog_date_range(frame: pd.DataFrame) -> tuple[str, str]:
     return start, end
 
 
+def _reference_station_uid_col(frame: pd.DataFrame, *, linked: bool = False) -> str | None:
+    candidates = (
+        ("linked_station_uid", "linked_cluster_uid", "station_uid", "cluster_uid")
+        if linked
+        else ("station_uid", "cluster_uid")
+    )
+    return next((col for col in candidates if col in frame.columns), None)
+
+
 def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
     station = ctx.read_csv(CATALOG_FILES["station_catalog"], required=False)
     source_station = ctx.read_csv(CATALOG_FILES["source_station_catalog"], required=False)
@@ -239,6 +248,7 @@ def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     rows = []
     if not station.empty:
+        station_uid_col = _reference_station_uid_col(station)
         for resolution, sub in station.groupby("resolution", dropna=False):
             start, end = _catalog_date_range(sub)
             rows.append(
@@ -246,7 +256,7 @@ def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "table": "station_catalog",
                     "resolution": clean_text(resolution),
                     "rows": int(len(sub)),
-                    "unique_cluster_uid": int(sub["cluster_uid"].nunique()) if "cluster_uid" in sub.columns else 0,
+                    "unique_station_uid": int(sub[station_uid_col].nunique()) if station_uid_col else 0,
                     "record_count_sum": int(pd.to_numeric(sub.get("record_count", 0), errors="coerce").fillna(0).sum()),
                     "n_valid_time_steps_sum": int(
                         pd.to_numeric(sub.get("n_valid_time_steps", 0), errors="coerce").fillna(0).sum()
@@ -256,6 +266,7 @@ def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
                 }
             )
     if not source_station.empty:
+        source_station_uid_col = _reference_station_uid_col(source_station)
         for resolution, sub in source_station.groupby("resolution", dropna=False):
             start, end = _catalog_date_range(sub)
             rows.append(
@@ -263,7 +274,7 @@ def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "table": "source_station_catalog",
                     "resolution": clean_text(resolution),
                     "rows": int(len(sub)),
-                    "unique_cluster_uid": int(sub["cluster_uid"].nunique()) if "cluster_uid" in sub.columns else 0,
+                    "unique_station_uid": int(sub[source_station_uid_col].nunique()) if source_station_uid_col else 0,
                     "record_count_sum": int(pd.to_numeric(sub.get("n_records", 0), errors="coerce").fillna(0).sum()),
                     "n_valid_time_steps_sum": "",
                     "time_start": start,
@@ -271,13 +282,14 @@ def catalog_summary(ctx: ReleaseContext) -> tuple[pd.DataFrame, pd.DataFrame]:
                 }
             )
     if not satellite.empty:
+        satellite_uid_col = _reference_station_uid_col(satellite, linked=True)
         start, end = _catalog_date_range(satellite)
         rows.append(
             {
                 "table": "satellite_catalog",
                 "resolution": "daily",
                 "rows": int(len(satellite)),
-                "unique_cluster_uid": int(satellite["cluster_uid"].nunique()) if "cluster_uid" in satellite.columns else 0,
+                "unique_station_uid": int(satellite[satellite_uid_col].nunique()) if satellite_uid_col else 0,
                 "record_count_sum": int(pd.to_numeric(satellite.get("n_records", 0), errors="coerce").fillna(0).sum()),
                 "n_valid_time_steps_sum": "",
                 "time_start": start,
@@ -732,7 +744,7 @@ def build_report(
         "",
         sorted_markdown_table(
             catalog,
-            columns=["table", "resolution", "rows", "unique_cluster_uid", "record_count_sum", "time_start", "time_end"],
+            columns=["table", "resolution", "rows", "unique_station_uid", "record_count_sum", "time_start", "time_end"],
             sort_by="record_count_sum",
             max_rows=18,
         ),

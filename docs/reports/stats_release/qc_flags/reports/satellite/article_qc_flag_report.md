@@ -20,17 +20,17 @@
 | product | flag variable | flag value | flag meaning | long name |
 |---|---|---|---|---|
 | satellite | Q_flag | 0 | good |  |
-| satellite | Q_flag | 1 | estimated |  |
+| satellite | Q_flag | 1 | derived |  |
 | satellite | Q_flag | 2 | suspect |  |
 | satellite | Q_flag | 3 | bad |  |
 | satellite | Q_flag | 9 | missing |  |
 | satellite | SSC_flag | 0 | good |  |
-| satellite | SSC_flag | 1 | estimated |  |
+| satellite | SSC_flag | 1 | derived |  |
 | satellite | SSC_flag | 2 | suspect |  |
 | satellite | SSC_flag | 3 | bad |  |
 | satellite | SSC_flag | 9 | missing |  |
 | satellite | SSL_flag | 0 | good |  |
-| satellite | SSL_flag | 1 | estimated |  |
+| satellite | SSL_flag | 1 | derived |  |
 | satellite | SSL_flag | 2 | suspect |  |
 | satellite | SSL_flag | 3 | bad |  |
 | satellite | SSL_flag | 9 | missing |  |
@@ -107,9 +107,9 @@ _No rows._
 
 _No rows._
 
-## Problem Clusters
+## Problem Stations
 
-| cluster uid | cluster id | grouping level | source dataset | temporal resolution | variable | flag variable | n total | good count | derived count | suspect count | bad count | not checked count | missing count | usable count | problem count | issue count | good rate | derived rate | suspect rate | bad rate | not checked rate | missing rate | usable rate | problem rate | issue rate |
+| station uid | station reference id | grouping level | source dataset | temporal resolution | variable | flag variable | n total | good count | derived count | suspect count | bad count | not checked count | missing count | usable count | problem count | issue count | good rate | derived rate | suspect rate | bad rate | not checked rate | missing rate | usable rate | problem rate | issue rate |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 |  |  | product_variable | all_release_sources | satellite | Q | Q_flag | 16,478,276 | 132,614 | 0 | 1,209 | 0 | 0 | 16,344,453 | 132,614 | 16,345,662 | 32,690,115 | 0.80% | 0% | 0.01% | 0% | 0% | 99.19% | 0.80% | 99.20% | 198.38% |
 |  |  | product_variable | all_release_sources | satellite | SSL | SSL_flag | 16,478,276 | 132,693 | 0 | 1,130 | 0 | 0 | 16,344,453 | 132,693 | 16,345,583 | 32,690,036 | 0.81% | 0% | 0.01% | 0% | 0% | 99.19% | 0.81% | 99.19% | 198.38% |
@@ -136,6 +136,6 @@ _No rows._
 - `fig_qc_health_by_resolution.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_health_by_resolution.png`
 - `fig_qc_missing_trends.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_missing_trends.png`
 - `fig_qc_stage_summary.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_stage_summary.png`
-- `fig_qc_top_problem_clusters.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_top_problem_clusters.png`
+- `fig_qc_top_problem_reference_stations.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_top_problem_reference_stations.png`
 - `fig_qc_top_problem_sources.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_top_problem_sources.png`
 - `fig_qc_yearly_problem_trends.png`: `output_other/stats_release/qc_flags/figures/satellite/fig_qc_yearly_problem_trends.png`

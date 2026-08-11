@@ -71,6 +71,14 @@ def _date_text(value) -> str:
         return text[:10]
 
 
+def _reference_station_uid_col(frame: pd.DataFrame, *, linked: bool = False) -> str:
+    preferred = ("linked_station_uid", "linked_cluster_uid", "station_uid", "cluster_uid") if linked else ("station_uid", "cluster_uid")
+    for col in preferred:
+        if col in frame.columns:
+            return col
+    return "cluster_uid"
+
+
 def _nc_time_range(ctx, file_name: str) -> tuple:
     path = ctx.require_input(ctx.release_file(file_name), required=False)
     if path is None:
@@ -197,7 +205,7 @@ def _scan_matrix_temporal(ctx, resolution: str, file_name: str, row_chunk_size: 
                         "resolution": resolution,
                         "year": year,
                         "active_units": 0,
-                        "active_clusters": 0,
+                        "active_reference_stations": 0,
                         "record_count_any": 0,
                         "record_count_Q": 0,
                         "record_count_SSC": 0,
@@ -206,7 +214,7 @@ def _scan_matrix_temporal(ctx, resolution: str, file_name: str, row_chunk_size: 
                 )
                 active = np.any(ymask, axis=1)
                 item["active_units"] += int(np.count_nonzero(active))
-                item["active_clusters"] += int(np.count_nonzero(active))
+                item["active_reference_stations"] += int(np.count_nonzero(active))
                 item["record_count_any"] += int(np.count_nonzero(ymask))
                 for var in VARIABLES:
                     item["record_count_{}".format(var)] += int(np.count_nonzero(var_masks[var][:, cols]))
@@ -265,7 +273,7 @@ def _scan_matrix_temporal(ctx, resolution: str, file_name: str, row_chunk_size: 
             "median_record_length_steps": float(np.median(active_lengths)) if active_lengths.size else 0.0,
             "max_record_length_steps": float(np.max(active_lengths)) if active_lengths.size else 0.0,
             "product": "",
-            "active_clusters": int(np.count_nonzero(np.asarray(record_counts_any) > 0)),
+            "active_reference_stations": int(np.count_nonzero(np.asarray(record_counts_any) > 0)),
         }
         for threshold in (10, 20, 30, 50, 100):
             summary["n_gt_{}_years".format(threshold)] = int(np.count_nonzero(active_lengths > threshold))
@@ -382,6 +390,7 @@ def _catalog_temporal_summary(catalog: pd.DataFrame, product: str, station_col: 
 def build_temporal_stats(ctx) -> dict:
     station = ctx.read_csv(PRODUCT_FILES["station_catalog"])
     satellite = ctx.read_csv(PRODUCT_FILES["satellite_catalog"], required=False)
+    satellite_linked_col = _reference_station_uid_col(satellite, linked=True) if not satellite.empty else "cluster_uid"
     rows = []
     for resolution, file_name in MATRIX_PRODUCTS.items():
         subset = station[station["resolution"].astype(str).str.strip().eq(resolution)].copy()
@@ -417,7 +426,7 @@ def build_temporal_stats(ctx) -> dict:
             "product": "satellite",
             "resolution": "all",
             "station_rows": int(satellite["satellite_station_uid"].nunique()) if not satellite.empty and "satellite_station_uid" in satellite.columns else 0,
-            "cluster_count": int(satellite["cluster_uid"].nunique()) if not satellite.empty and "cluster_uid" in satellite.columns else 0,
+            "cluster_count": int(satellite[satellite_linked_col].nunique()) if not satellite.empty and satellite_linked_col in satellite.columns else 0,
             "record_count_catalog": int(numeric_series(satellite, "n_records").fillna(0).sum()) if not satellite.empty else 0,
             "record_count_nc": int(sat_records),
             "time_start": sat_start,
@@ -487,10 +496,11 @@ def build_temporal_stats(ctx) -> dict:
             .rename(columns={"active_units": "active_units", "record_count_any": "record_count_any"})
         )
     sat_linked = (
-        satellite.groupby("cluster_uid", dropna=False)
+        satellite.groupby(satellite_linked_col, dropna=False)
         .agg(satellite_station_count=("satellite_station_uid", "nunique"), record_count_any=("n_records", lambda s: pd.to_numeric(s, errors="coerce").fillna(0).sum()))
         .reset_index()
-        if not satellite.empty and "cluster_uid" in satellite.columns
+        .rename(columns={satellite_linked_col: "linked_station_uid"})
+        if not satellite.empty and satellite_linked_col in satellite.columns
         else pd.DataFrame()
     )
     return {
@@ -500,7 +510,7 @@ def build_temporal_stats(ctx) -> dict:
         "temporal_coverage_by_resolution": summary,
         "temporal_coverage_by_variable": by_variable,
         "active_units_by_year": by_year,
-        "active_clusters_by_year": by_year,
+        "active_reference_stations_by_year": by_year,
         "record_length_distribution": distribution,
         "temporal_coverage_record_lengths_by_unit": unit_df,
         "long_records_by_resolution": _long_record_counts(summary),
@@ -513,7 +523,7 @@ def build_temporal_stats(ctx) -> dict:
         "satellite_by_year": sat_by_year,
         "satellite_by_source": sat_by_source,
         "satellite_record_lengths_by_station": sat_station,
-        "satellite_by_linked_cluster": sat_linked,
+        "satellite_by_linked_station": sat_linked,
     }
 
 
@@ -575,7 +585,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
         ax.grid(alpha=0.3)
         fig.tight_layout()
         save_figure(fig, figures_dir / "fig_active_units_by_year.png", dpi=dpi)
-        save_figure(fig, figures_dir / "fig_active_clusters_by_year.png", dpi=dpi)
+        save_figure(fig, figures_dir / "fig_active_reference_stations_by_year.png", dpi=dpi)
         plt.close(fig)
         fig, ax = plt.subplots(figsize=(9, 4.5))
         for resolution, group in by_year.groupby("resolution"):
@@ -740,7 +750,7 @@ def build_article_temporal_summary(stats: dict) -> list[str]:
     if daily and monthly and annual:
         lines.extend(
             [
-                "The main time-series products contain {} daily clusters, {} monthly clusters, and {} annual clusters.".format(
+                "The main time-series products contain {} daily stations, {} monthly stations, and {} annual stations.".format(
                     fmt_int(daily.get("active_units", 0)),
                     fmt_int(monthly.get("active_units", 0)),
                     fmt_int(annual.get("active_units", 0)),
@@ -763,7 +773,7 @@ def build_article_temporal_summary(stats: dict) -> list[str]:
             )
         lines.extend(
             [
-                "{} records span {}-{}, with {} valid cluster-time observations across {} clusters and a median record length of {} time steps.{}".format(
+                "{} records span {}-{}, with {} valid station-time observations across {} stations and a median record length of {} time steps.{}".format(
                     noun.capitalize(),
                     row.get("first_year", ""),
                     row.get("last_year", ""),
@@ -778,7 +788,7 @@ def build_article_temporal_summary(stats: dict) -> list[str]:
     if daily:
         lines.extend(
             [
-                "Long daily records are a major strength of the release: {} daily clusters are longer than 50 time steps and {} daily clusters are longer than 100 time steps.".format(
+                "Long daily records are a major strength of the release: {} daily stations are longer than 50 time steps and {} daily stations are longer than 100 time steps.".format(
                     fmt_int(daily.get("n_gt_50_years", 0)),
                     fmt_int(daily.get("n_gt_100_years", 0)),
                 ),
@@ -790,7 +800,7 @@ def build_article_temporal_summary(stats: dict) -> list[str]:
     if climatology:
         lines.extend(
             [
-                "The climatology product is reported separately as {} standalone climatology stations, because it is not a basin-cluster time-series matrix.".format(
+                "The climatology product is reported separately as {} standalone climatology stations, because it is not a basin-station time-series matrix.".format(
                     fmt_int(climatology.get("active_units", 0))
                 ),
                 "",
@@ -842,7 +852,7 @@ def build_article_temporal_report(stats: dict) -> list[str]:
         "## Overview",
         "",
         (
-            "The temporal coverage statistics are reported for three product groups: the basin-cluster "
+            "The temporal coverage statistics are reported for three product groups: the basin-station "
             "time-series matrices, the standalone climatology stations, and the satellite-validation product. "
             "These groups use different statistical units and should therefore be described separately."
         ),
@@ -884,7 +894,7 @@ def build_article_temporal_report(stats: dict) -> list[str]:
         "",
         "### Yearly Peaks",
         "",
-        sorted_markdown_table(by_year, columns=["resolution", "year", "active_units", "active_clusters", "record_count_any"], sort_by="record_count_any", max_rows=18),
+        sorted_markdown_table(by_year, columns=["resolution", "year", "active_units", "active_reference_stations", "record_count_any"], sort_by="record_count_any", max_rows=18),
         "",
         "### Long-Record Diagnostics",
         "",
@@ -999,7 +1009,7 @@ def build_detailed_temporal_report(ctx, stats: dict, tables_dir: Path, figures_d
             "last_date",
             "time_steps",
             "active_units",
-            "active_clusters",
+            "active_reference_stations",
             "record_count_any",
             "record_count_Q",
             "record_count_SSC",
@@ -1060,7 +1070,7 @@ def build_detailed_temporal_report(ctx, stats: dict, tables_dir: Path, figures_d
         "Climatology Temporal Summary",
         clim_summary,
         max_rows=10,
-        note="Climatology is reported as a standalone product rather than a basin-cluster matrix.",
+        note="Climatology is reported as a standalone product rather than a basin-station matrix.",
     )
     append_table_section(
         lines,

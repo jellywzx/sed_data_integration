@@ -2,102 +2,102 @@
 
 ## Overview
 
-The temporal coverage statistics are reported for three product groups: the basin-cluster time-series matrices, the standalone climatology stations, and the satellite-validation product. These groups use different statistical units and should therefore be described separately.
+The temporal coverage statistics are reported for three product groups: the basin-station time-series matrices, the standalone climatology stations, and the satellite-validation product. These groups use different statistical units and should therefore be described separately.
 
 ## Main Time-Series Products
 
 | Product | Unit | First year | Last year | Units | Records | Median steps | Max steps | >50 steps | >100 steps |
 |---|---|---|---|---|---|---|---|---|---|
-| daily | cluster | 1,948 | 2,025 | 1,596 | 2,746,665 | 638 | 21,909 | 1,262 | 1,189 |
-| monthly | cluster | 1,938 | 2,021 | 2,117 | 126,136 | 34 | 9,557 | 220 | 78 |
-| annual | cluster | 1,912 | 2,021 | 58 | 619 | 5 | 109 | 3 | 1 |
+| daily | station | 1,948 | 2,025 | 4,717 | 2,963,235 | 39 | 21,909 | 1,725 | 1,390 |
+| monthly | station | 1,938 | 2,023 | 2,697 | 100,901 | 35 | 528 | 417 | 100 |
+| annual | station | 1,912 | 2,022 | 49 | 535 | 5 | 109 | 3 | 1 |
 
 ### Variable Coverage
 
 | resolution | variable | first year | last year | active units | record count |
 |---|---|---|---|---|---|
-| daily | SSL | 1,948 | 2,025 | 1,558 | 2,740,162 |
-| daily | SSC | 1,948 | 2,025 | 1,596 | 2,736,267 |
-| daily | Q | 1,948 | 2,025 | 1,558 | 2,729,764 |
-| monthly | Q | 1,938 | 2,021 | 2,117 | 126,093 |
-| monthly | SSC | 1,938 | 2,021 | 2,117 | 125,972 |
-| monthly | SSL | 1,938 | 2,021 | 2,117 | 123,000 |
-| annual | SSC | 1,912 | 2,021 | 58 | 619 |
-| annual | Q | 1,912 | 2,021 | 34 | 499 |
-| annual | SSL | 1,912 | 2,021 | 34 | 499 |
+| daily | SSC | 1,948 | 2,025 | 4,717 | 2,952,708 |
+| daily | SSL | 1,948 | 2,025 | 2,481 | 2,814,621 |
+| daily | Q | 1,948 | 2,025 | 2,481 | 2,804,180 |
+| monthly | SSC | 1,938 | 2,023 | 2,697 | 100,807 |
+| monthly | SSL | 1,938 | 2,023 | 1,240 | 47,637 |
+| monthly | Q | 1,938 | 2,023 | 1,240 | 47,578 |
+| annual | SSC | 1,912 | 2,022 | 49 | 535 |
+| annual | Q | 1,912 | 2,022 | 7 | 348 |
+| annual | SSL | 1,912 | 2,022 | 7 | 348 |
 
 ### Yearly Peaks
 
-| resolution | year | active units | active clusters | record count any |
+| resolution | year | active units | active reference stations | record count any |
 |---|---|---|---|---|
-| daily | 1,980 | 566 | 566 | 122,720 |
-| daily | 1,981 | 529 | 529 | 115,890 |
-| daily | 1,982 | 431 | 431 | 90,319 |
-| daily | 1,983 | 436 | 436 | 89,648 |
-| daily | 1,984 | 303 | 303 | 87,664 |
-| daily | 1,985 | 282 | 282 | 80,926 |
-| daily | 1,986 | 283 | 283 | 74,412 |
-| daily | 1,987 | 210 | 210 | 59,922 |
-| daily | 1,988 | 196 | 196 | 57,256 |
-| daily | 1,989 | 200 | 200 | 55,221 |
-| daily | 1,990 | 203 | 203 | 54,513 |
-| daily | 1,991 | 195 | 195 | 53,866 |
-| daily | 1,992 | 181 | 181 | 52,018 |
-| daily | 1,994 | 201 | 201 | 50,458 |
-| daily | 1,993 | 168 | 168 | 50,385 |
-| daily | 1,995 | 172 | 172 | 49,345 |
-| daily | 1,974 | 235 | 235 | 47,563 |
-| daily | 1,996 | 166 | 166 | 45,022 |
+| daily | 1,980 | 579 | 579 | 124,482 |
+| daily | 1,981 | 541 | 541 | 117,215 |
+| daily | 1,982 | 435 | 435 | 91,515 |
+| daily | 1,983 | 440 | 440 | 91,169 |
+| daily | 1,984 | 309 | 309 | 88,890 |
+| daily | 1,985 | 288 | 288 | 82,189 |
+| daily | 1,986 | 292 | 292 | 76,063 |
+| daily | 1,987 | 220 | 220 | 61,683 |
+| daily | 1,988 | 205 | 205 | 59,157 |
+| daily | 2,017 | 2,214 | 2,214 | 57,504 |
+| daily | 2,018 | 2,241 | 2,241 | 57,458 |
+| daily | 2,016 | 2,213 | 2,213 | 56,843 |
+| daily | 1,989 | 211 | 211 | 56,773 |
+| daily | 2,015 | 2,256 | 2,256 | 56,556 |
+| daily | 1,991 | 202 | 202 | 55,370 |
+| daily | 1,990 | 210 | 210 | 55,291 |
+| daily | 2,014 | 2,124 | 2,124 | 54,342 |
+| daily | 2,013 | 2,154 | 2,154 | 54,164 |
 
-_Showing first 18 of 271 rows._
+_Showing first 18 of 274 rows._
 
 ### Long-Record Diagnostics
 
 | resolution | unit type | unit id | first date | last date | record count any |
 |---|---|---|---|---|---|
-| daily | cluster | SED000058 | 1965-10-31 | 2025-10-21 | 21,843 |
-| daily | cluster | SED000059 | 2014-09-25 | 2025-10-21 | 3,962 |
-| daily | cluster | SED000060 | 1965-10-31 | 2025-10-21 | 21,904 |
-| daily | cluster | SED000061 | 1965-10-28 | 2025-10-21 | 21,909 |
-| daily | cluster | SED000062 | 2011-12-08 | 2025-10-21 | 4,980 |
-| daily | cluster | SED000063 | 2012-01-26 | 2025-10-21 | 4,891 |
-| daily | cluster | SED000064 | 2011-08-29 | 2025-10-21 | 5,168 |
-| daily | cluster | SED000065 | 2011-04-11 | 2025-10-21 | 5,270 |
-| daily | cluster | SED000066 | 2018-10-16 | 2025-10-21 | 2,563 |
-| daily | cluster | SED000067 | 2007-08-30 | 2025-10-21 | 6,624 |
-| daily | cluster | SED000068 | 1988-10-31 | 2025-09-01 | 13,451 |
-| daily | cluster | SED000069 | 2012-06-19 | 2025-10-21 | 4,873 |
-| daily | cluster | SED000070 | 1965-10-31 | 2024-08-21 | 21,250 |
-| daily | cluster | SED000071 | 2011-08-29 | 2025-10-21 | 5,168 |
-| daily | cluster | SED000072 | 1965-10-31 | 2025-10-21 | 21,899 |
-| daily | cluster | SED000073 | 1982-10-28 | 2025-10-21 | 15,695 |
-| daily | cluster | SED000074 | 2015-06-08 | 2025-10-21 | 3,405 |
-| daily | cluster | SED000075 | 2011-12-14 | 2025-10-21 | 5,056 |
+| daily | station | SED000016 | 2014-02-21 | 2020-08-06 | 33 |
+| daily | station | SED000049 | 1965-10-31 | 2025-10-21 | 21,843 |
+| daily | station | SED000050 | 2014-09-25 | 2025-10-21 | 3,963 |
+| daily | station | SED000051 | 1965-10-31 | 2025-10-21 | 21,906 |
+| daily | station | SED000052 | 1965-10-28 | 2025-10-21 | 21,909 |
+| daily | station | SED000053 | 1965-10-31 | 2025-10-21 | 21,902 |
+| daily | station | SED000054 | 2011-12-08 | 2025-10-21 | 4,981 |
+| daily | station | SED000055 | 2012-01-26 | 2025-10-21 | 4,891 |
+| daily | station | SED000056 | 2011-08-29 | 2025-10-21 | 5,168 |
+| daily | station | SED000057 | 2011-04-11 | 2025-10-21 | 5,270 |
+| daily | station | SED000058 | 2018-10-16 | 2025-10-21 | 2,563 |
+| daily | station | SED000059 | 2007-08-30 | 2025-10-21 | 6,628 |
+| daily | station | SED000060 | 1988-10-31 | 2025-09-01 | 13,455 |
+| daily | station | SED000061 | 2012-06-19 | 2025-10-21 | 4,873 |
+| daily | station | SED000062 | 2012-10-01 | 2025-10-21 | 4,769 |
+| daily | station | SED000063 | 1965-10-31 | 2024-08-21 | 21,250 |
+| daily | station | SED000064 | 2011-08-29 | 2025-10-21 | 5,168 |
+| daily | station | SED000065 | 1965-10-31 | 2025-10-21 | 21,899 |
 
-_Showing first 18 of 3,771 rows._
+_Showing first 18 of 7,463 rows._
 
 ### Record-Length Distribution
 
 | resolution | record length bin | unit count |
 |---|---|---|
 | annual | 0 | 0 |
-| annual | 1-10 | 50 |
-| annual | 11-30 | 5 |
+| annual | 1-10 | 42 |
+| annual | 11-30 | 4 |
 | annual | 31-100 | 2 |
 | annual | 101-365 | 1 |
 | annual | 366-3650 | 0 |
 | annual | >3650 | 0 |
 | daily | 0 | 0 |
-| daily | 1-10 | 245 |
-| daily | 11-30 | 59 |
-| daily | 31-100 | 103 |
-| daily | 101-365 | 226 |
-| daily | 366-3650 | 728 |
-| daily | >3650 | 235 |
+| daily | 1-10 | 1,049 |
+| daily | 11-30 | 993 |
+| daily | 31-100 | 1,285 |
+| daily | 101-365 | 388 |
+| daily | 366-3650 | 756 |
+| daily | >3650 | 246 |
 | monthly | 0 | 0 |
-| monthly | 1-10 | 97 |
-| monthly | 11-30 | 696 |
-| monthly | 31-100 | 1,246 |
+| monthly | 1-10 | 294 |
+| monthly | 11-30 | 926 |
+| monthly | 31-100 | 1,377 |
 
 _Showing first 18 of 21 rows._
 
@@ -107,49 +107,49 @@ _Showing first 18 of 21 rows._
 
 | source name | resolutions | first year | last year | active units | record count |
 |---|---|---|---|---|---|
-| USGS | daily | 1,956 | 2,024 | 887 | 1,662,326 |
-| HYDAT | daily | 1,948 | 1,997 | 505 | 671,068 |
-| Bayern | daily | 1,965 | 2,025 | 34 | 388,964 |
-| EUSEDcollab | monthly | 1,987 | 2,021 | 244 | 66,637 |
-| GFQA_v2 | annual\|daily\|monthly | 1,995 | 2,021 | 1,901 | 56,457 |
-| HYBAM | daily | 1,994 | 2,024 | 12 | 11,826 |
-| Mekong_Delta | daily | 2,005 | 2,012 | 4 | 11,323 |
+| USGS | daily | 1,956 | 2,024 | 889 | 1,690,433 |
+| HYDAT | daily\|monthly | 1,948 | 2,019 | 543 | 676,024 |
+| Bayern | daily | 1,965 | 2,025 | 37 | 421,052 |
+| GFQA_v2 | annual\|daily\|monthly | 1,965 | 2,023 | 5,499 | 236,513 |
+| EUSEDcollab | daily\|monthly | 1,987 | 2,021 | 244 | 66,637 |
+| Mekong_Delta | daily | 2,005 | 2,017 | 4 | 11,921 |
+| HYBAM | daily | 1,994 | 2,024 | 12 | 9,404 |
 | Robotham | daily | 2,016 | 2,021 | 3 | 3,432 |
-| Eurasian_River | monthly | 1,938 | 2,000 | 17 | 3,204 |
+| Eurasian_River | monthly | 1,938 | 2,000 | 17 | 3,263 |
 | Fukushima | daily | 2,012 | 2,018 | 2 | 3,069 |
+| GloRiSe | daily\|monthly | 1,979 | 2,015 | 77 | 649 |
 | NERC | daily | 2,013 | 2,014 | 4 | 624 |
 | Chao_Phraya_River | annual | 1,912 | 2,020 | 7 | 348 |
 | Rhine | daily | 1,990 | 2,011 | 12 | 312 |
 | Shashi_Jianli | daily | 2,016 | 2,023 | 2 | 154 |
 | Huanghe | annual | 2,015 | 2,019 | 24 | 120 |
-| GloRiSe | daily\|monthly | 1,979 | 2,012 | 77 | 103 |
 | Yajiang | daily | 2,019 | 2,020 | 23 | 23 |
-| Myanmar | daily | 2,017 | 2,019 | 6 | 6 |
+| Myanmar | daily | 2,017 | 2,019 | 5 | 6 |
 
 ### Region by Resolution
 
-| continent region | country | resolution | cluster count | record count | time start | time end |
+| continent region | country | resolution | reference stations | record count | time start | time end |
 |---|---|---|---|---|---|---|
-| North America | United States | daily | 885 | 1,655,750 | 1980-01-01 00:00:00 | 2024-09-30 00:00:00 |
-| North America | Canada | daily | 503 | 664,492 | 1948-05-25 00:00:00 | 1997-10-31 00:00:00 |
-| Europe, Central Europe | Germany | daily | 34 | 388,964 | 1965-10-26 00:00:00 | 2025-10-21 00:00:00 |
-| North America | Mexico | monthly | 1,841 | 56,251 | 2012-10-16 00:00:00 | 2021-10-27 00:00:00 |
-| Europe | Spain | monthly | 8 | 26,881 | 1993-10-01 00:00:00 | 2021-06-05 00:00:00 |
+| North America | United States | daily | 886 | 1,676,280 | 1980-01-01 00:00:00 | 2024-09-30 00:00:00 |
+| North America | Canada | daily | 625 | 678,260 | 1948-05-25 00:00:00 | 2019-10-02 00:00:00 |
+| Europe, Central Europe | Germany | daily | 37 | 421,052 | 1965-10-26 00:00:00 | 2025-10-21 00:00:00 |
+| North America | Mexico | daily | 2,309 | 48,264 | 2012-10-15 00:00:00 | 2021-11-29 00:00:00 |
+| North America | Mexico | monthly | 1,378 | 44,281 | 2012-03-12 00:00:00 | 2021-11-07 00:00:00 |
+| Europe | Spain | daily | 8 | 26,881 | 1993-10-01 00:00:00 | 2021-06-05 00:00:00 |
 | Europe | Denmark | monthly | 211 | 15,561 | 1989-01-01 00:00:00 | 2009-12-01 00:00:00 |
-| Europe | Poland | monthly | 3 | 13,544 | 1987-11-01 00:00:00 | 2019-12-31 00:00:00 |
-| Asia, Southeast Asia | Vietnam | daily | 4 | 11,323 | 2005-01-01 00:00:00 | 2012-12-31 00:00:00 |
+| Europe | Poland | daily | 8 | 13,714 | 1987-11-01 00:00:00 | 2019-12-31 00:00:00 |
+| Asia, Southeast Asia | Vietnam | daily | 4 | 11,921 | 2005-01-01 00:00:00 | 2017-09-28 00:00:00 |
+| Europe | Italy | monthly | 287 | 9,478 | 2001-03-19 00:00:00 | 2021-12-28 00:00:00 |
+| Europe | France | daily | 75 | 8,131 | 2007-09-27 00:00:00 | 2018-05-31 00:00:00 |
+| North America | United States of America (the)\|United States | daily | 1 | 7,577 | 1980-01-01 00:00:00 | 2003-09-29 00:00:00 |
 | North America | Canada\|United States | daily | 2 | 6,576 | 1956-08-11 00:00:00 | 1989-05-27 00:00:00 |
-| South America | Brazil | daily | 7 | 5,169 | 1994-06-20 00:00:00 | 2024-03-20 00:00:00 |
-| Europe, Western Europe | United Kingdom | daily | 7 | 4,056 | 2013-06-06 00:00:00 | 2021-01-07 00:00:00 |
-| Europe | Slovenia | monthly | 3 | 3,743 | 2016-01-01 00:00:00 | 2019-12-31 00:00:00 |
-| Europe, Eastern Europe | Russia | monthly | 17 | 3,204 | 1938-01-15 00:00:00 | 2000-10-15 00:00:00 |
-| South America | Peru | daily | 2 | 3,157 | 2003-05-24 00:00:00 | 2021-04-30 00:00:00 |
-| Asia, East Asia | Japan | daily | 2 | 3,069 | 2012-12-31 00:00:00 | 2018-12-31 00:00:00 |
-| Europe | Greece | monthly | 5 | 3,040 | 2000-01-01 00:00:00 | 2001-08-30 00:00:00 |
-| South America | Ecuador | daily | 1 | 2,469 | 2000-12-31 00:00:00 | 2021-10-03 00:00:00 |
-| Europe | Portugal | monthly | 2 | 2,065 | 2001-12-13 00:00:00 | 2014-09-18 00:00:00 |
+|  | Netherlands (the) | monthly | 206 | 6,553 | 2015-01-06 00:00:00 | 2019-12-20 00:00:00 |
+| Europe | Italy | daily | 121 | 6,162 | 1996-10-08 00:00:00 | 2021-12-29 00:00:00 |
+|  | Netherlands (the) | daily | 100 | 6,144 | 2015-01-05 00:00:00 | 2019-12-30 00:00:00 |
+| South America | Brazil | daily | 7 | 5,086 | 1994-06-20 00:00:00 | 2024-04-08 00:00:00 |
+| Asia, South Asia | India | daily | 165 | 4,840 | 1978-03-01 00:00:00 | 2021-12-07 00:00:00 |
 
-_Showing first 18 of 34 rows._
+_Showing first 18 of 81 rows._
 
 ## Climatology Product
 

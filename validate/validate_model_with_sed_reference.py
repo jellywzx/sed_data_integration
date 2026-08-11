@@ -611,7 +611,7 @@ def _validate_one_station(args_tuple):
     # Module-level names (VARIABLES, UNITCAT_GRAIN_VARS, etc.) are accessible
     # because multiprocessing fork re-imports this module in each child
 
-    cluster_uid = clean_text(row_dict.get("cluster_uid", ""))
+    station_uid = clean_text(row_dict.get("station_uid", ""))
     station_name = clean_text(row_dict.get("station_name", ""))
     metrics_list = []
     var_status_list = []
@@ -624,23 +624,23 @@ def _validate_one_station(args_tuple):
     # Open reference matrix (read-only, OS-cached)
     matrix_ds = nc4.Dataset(str(matrix_path_str), "r")
     try:
-        # Build cluster_uid lookup for this file
-        cluster_uids = [
+        # Build station_uid lookup for this file
+        station_uids = [
             clean_text(x)
-            for x in np.asarray(matrix_ds.variables["cluster_uid"][:], dtype=object).reshape(-1)
+            for x in np.asarray(matrix_ds.variables["station_uid"][:], dtype=object).reshape(-1)
         ]
-        if cluster_uid not in cluster_uids:
+        if station_uid not in station_uids:
             for var_name in active_vars_names:
                 var_status_list.append({
-                    "cluster_uid": cluster_uid,
+                    "station_uid": station_uid,
                     "station_name": station_name,
                     "variable": VARIABLES[var_name]["metric_name"],
                     "status": "skipped",
-                    "reason": "cluster_uid_not_in_matrix",
+                    "reason": "station_uid_not_in_matrix",
                 })
             return metrics_list, var_status_list
 
-        row_idx = cluster_uids.index(cluster_uid)
+        row_idx = station_uids.index(station_uid)
         ref_times = nc_time_to_datetime(matrix_ds.variables["time"])
         ref_time_mask = (ref_times >= valid_start) & (ref_times <= valid_end)
 
@@ -659,7 +659,7 @@ def _validate_one_station(args_tuple):
             model_frames.append(cached_station[var_name].copy())
         else:
             var_status_list.append({
-                "cluster_uid": cluster_uid,
+                "station_uid": station_uid,
                 "station_name": station_name,
                 "variable": vcfg["metric_name"],
                 "status": "skipped",
@@ -668,11 +668,11 @@ def _validate_one_station(args_tuple):
 
     # Write outputs
     output_dir = Path(output_dir_str)
-    station_dir = output_dir / ("%s_%s" % (safe_name(cluster_uid), safe_name(station_name)))
+    station_dir = output_dir / ("%s_%s" % (safe_name(station_uid), safe_name(station_name)))
     station_dir.mkdir(parents=True, exist_ok=True)
 
     pd.DataFrame([{
-        "cluster_uid": cluster_uid,
+        "station_uid": station_uid,
         "station_name": station_name,
         "station_lat": row_dict.get("lat", np.nan),
         "station_lon": row_dict.get("lon", np.nan),
@@ -704,7 +704,7 @@ def _validate_one_station(args_tuple):
 
         if reference_points < cfg_min_reference_points:
             var_status_list.append({
-                "cluster_uid": cluster_uid,
+                "station_uid": station_uid,
                 "station_name": station_name,
                 "variable": vcfg["metric_name"],
                 "status": "skipped",
@@ -723,7 +723,7 @@ def _validate_one_station(args_tuple):
 
         if paired_points < cfg_min_paired_points:
             var_status_list.append({
-                "cluster_uid": cluster_uid,
+                "station_uid": station_uid,
                 "station_name": station_name,
                 "variable": vcfg["metric_name"],
                 "status": "skipped",
@@ -738,7 +738,7 @@ def _validate_one_station(args_tuple):
             compare_df["model"].to_numpy(dtype=float),
         )
         metrics_list.append({
-            "cluster_uid": cluster_uid,
+            "station_uid": station_uid,
             "station_name": station_name,
             "variable": vcfg["metric_name"],
             "unit": vcfg["unit"],
@@ -751,7 +751,7 @@ def _validate_one_station(args_tuple):
             "reference_points": reference_points,
         })
         var_status_list.append({
-            "cluster_uid": cluster_uid,
+            "station_uid": station_uid,
             "station_name": station_name,
             "variable": vcfg["metric_name"],
             "status": "validated",
@@ -1299,7 +1299,7 @@ def main() -> None:
     station_tasks: List[Tuple[pd.Series, Dict[str, object]]] = []
     for _, row in catalog.iterrows():
         base = {
-            "cluster_uid": clean_text(row.get("cluster_uid", "")),
+            "station_uid": clean_text(row.get("station_uid", "")),
             "source_station_id": clean_text(row.get("source_station_id", "")),
             "station_name": clean_text(row.get("station_name", "")),
             "river_name": clean_text(row.get("river_name", "")),
@@ -1368,10 +1368,10 @@ def main() -> None:
         candidate_rows.append(base)
 
     if cfg["max_stations"] and cfg["max_stations"] > 0:
-        allowed_clusters = {clean_text(row.get("cluster_uid", "")) for row, _ in station_tasks[: cfg["max_stations"]]}
+        allowed_clusters = {clean_text(row.get("station_uid", "")) for row, _ in station_tasks[: cfg["max_stations"]]}
         station_tasks = station_tasks[: cfg["max_stations"]]
         for item in candidate_rows:
-            if item["candidate_status"] == "candidate" and item["cluster_uid"] not in allowed_clusters:
+            if item["candidate_status"] == "candidate" and item["station_uid"] not in allowed_clusters:
                 item["candidate_status"] = "skipped"
                 item["filter_reason"] = "not_processed_max_stations"
 
@@ -1436,7 +1436,7 @@ def main() -> None:
 
     matrix_ds = nc4.Dataset(str(matrix_path), "r")
     print("[INFO] Matrix loaded (%d stations, %d time steps)." % (
-        len(matrix_ds.variables["cluster_uid"]),
+        len(matrix_ds.variables["station_uid"]),
         len(matrix_ds.variables["time"]),
     ))
 
@@ -1489,7 +1489,7 @@ def main() -> None:
     station_args_list = []
     for row, nearest in station_tasks:
         row_dict = {
-            "cluster_uid": clean_text(row.get("cluster_uid", "")),
+            "station_uid": clean_text(row.get("station_uid", "")),
             "station_name": clean_text(row.get("station_name", "")),
             "lat": float(row["lat"]),
             "lon": float(row["lon"]),
@@ -1537,14 +1537,14 @@ def main() -> None:
     status_df = pd.DataFrame(variable_status_rows)
     if not status_df.empty:
         status_pivot = status_df.pivot_table(
-            index="cluster_uid",
+            index="station_uid",
             columns="variable",
             values="status",
             aggfunc="first",
         )
         status_pivot.columns = ["%s_status" % c for c in status_pivot.columns]
         status_pivot = status_pivot.reset_index()
-        candidate_df = pd.merge(candidate_df, status_pivot, on="cluster_uid", how="left")
+        candidate_df = pd.merge(candidate_df, status_pivot, on="station_uid", how="left")
 
     candidate_df.to_csv(output_dir / "candidate_station_catalog.csv", index=False)
     status_df.to_csv(output_dir / "variable_status_summary.csv", index=False)

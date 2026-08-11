@@ -8,41 +8,41 @@
 
 ## Headline
 
-- Matrix records with any Q/SSC/SSL value: 2,873,420
+- Matrix records with any Q/SSC/SSL value: 3,064,671
 - Matrix resolutions: daily, monthly, annual
 - Sparse time axes detected: annual, daily, monthly
 
 ## Product Summary
 
-| product | resolution | station rows | cluster count | record count catalog | record count nc | time start | time end |
+| product | resolution | station rows | reference stations | record count catalog | record count nc | time start | time end |
 |---|---|---|---|---|---|---|---|
-| matrix | daily | 1,596 | 1,596 | 2,746,665 | 2,746,665 | 1948-05-25 | 2025-10-21 |
-| matrix | monthly | 2,117 | 2,117 | 126,136 | 126,136 | 1938-01-15 | 2021-12-24 |
-| matrix | annual | 58 | 58 | 619 | 619 | 1912-01-01 | 2021-09-28 |
-| climatology | climatology | 1,322 | 0 | 1,322 | 1,322 | 1912-07-01 | 2010-07-01 |
-| satellite | all | 38,550 | 38,550 | 16,478,276 | 16,478,276 | 1984-01-15 | 2020-12-15 |
+| matrix | daily | 4,717 | 4,717 | 2,963,235 | 2,963,235 | 1948-05-25 | 2025-10-21 |
+| matrix | monthly | 2,697 | 2,697 | 100,901 | 100,901 | 1938-01-15 | 2023-05-08 |
+| matrix | annual | 49 | 49 | 535 | 535 | 1912-01-01 | 2022-02-10 |
+| climatology | climatology | 1,361 | 0 | 1,361 | 1,361 | 1912-07-01 | 2010-07-01 |
+| satellite | all | 38,550 | 181 | 16,478,276 | 16,478,276 | 1984-01-15 | 2020-12-15 |
 
 ## Matrix Coverage by Resolution
 
-| resolution | first date | last date | time steps | active units | active clusters | record count any | record count Q | record count SSC | record count SSL | median record length steps | max record length steps |
+| resolution | first date | last date | time steps | active units | active reference stations | record count any | record count Q | record count SSC | record count SSL | median record length steps | max record length steps |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| daily | 1948-05-25 | 2025-10-21 | 25,775 | 1,596 | 1,596 | 2,746,665 | 2,729,764 | 2,736,267 | 2,740,162 | 638 | 21,909 |
-| monthly | 1938-01-15 | 2021-12-24 | 11,533 | 2,117 | 2,117 | 126,136 | 126,093 | 125,972 | 123,000 | 34 | 9,557 |
-| annual | 1912-01-01 | 2021-09-28 | 239 | 58 | 58 | 619 | 499 | 619 | 499 | 5 | 109 |
+| daily | 1948-05-25 | 2025-10-21 | 25,775 | 4,717 | 4,717 | 2,963,235 | 2,804,180 | 2,952,708 | 2,814,621 | 39 | 21,909 |
+| monthly | 1938-01-15 | 2023-05-08 | 5,602 | 2,697 | 2,697 | 100,901 | 47,578 | 100,807 | 47,637 | 35 | 528 |
+| annual | 1912-01-01 | 2022-02-10 | 157 | 49 | 49 | 535 | 348 | 535 | 348 | 5 | 109 |
 
 ## Variable Coverage by Resolution
 
 | resolution | variable | active units | record count | first year | last year |
 |---|---|---|---|---|---|
-| daily | SSL | 1,558 | 2,740,162 | 1,948 | 2,025 |
-| daily | SSC | 1,596 | 2,736,267 | 1,948 | 2,025 |
-| daily | Q | 1,558 | 2,729,764 | 1,948 | 2,025 |
-| monthly | Q | 2,117 | 126,093 | 1,938 | 2,021 |
-| monthly | SSC | 2,117 | 125,972 | 1,938 | 2,021 |
-| monthly | SSL | 2,117 | 123,000 | 1,938 | 2,021 |
-| annual | SSC | 58 | 619 | 1,912 | 2,021 |
-| annual | Q | 34 | 499 | 1,912 | 2,021 |
-| annual | SSL | 34 | 499 | 1,912 | 2,021 |
+| daily | SSC | 4,717 | 2,952,708 | 1,948 | 2,025 |
+| daily | SSL | 2,481 | 2,814,621 | 1,948 | 2,025 |
+| daily | Q | 2,481 | 2,804,180 | 1,948 | 2,025 |
+| monthly | SSC | 2,697 | 100,807 | 1,938 | 2,023 |
+| monthly | SSL | 1,240 | 47,637 | 1,938 | 2,023 |
+| monthly | Q | 1,240 | 47,578 | 1,938 | 2,023 |
+| annual | SSC | 49 | 535 | 1,912 | 2,022 |
+| annual | Q | 7 | 348 | 1,912 | 2,022 |
+| annual | SSL | 7 | 348 | 1,912 | 2,022 |
 
 ## Time-Axis Diagnostics
 
@@ -51,29 +51,29 @@ Sparse axes mean the release matrix stores observation dates, not a dense regula
 | resolution | file name | n time | time start | time end | unique years | unique year months | expected regular periods | duplicate periods | axis interpretation |
 |---|---|---|---|---|---|---|---|---|---|
 | daily | sed_reference_timeseries_daily.nc | 25,775 | 1948-05-25 | 2025-10-21 | 77 | 857 | 28,274 | 0 | sparse_observation_date_axis |
-| monthly | sed_reference_timeseries_monthly.nc | 11,533 | 1938-01-15 | 2021-12-24 | 84 | 992 | 1,008 | 10,541 | sparse_observation_date_axis |
-| annual | sed_reference_timeseries_annual.nc | 239 | 1912-01-01 | 2021-09-28 | 110 | 164 | 110 | 129 | sparse_observation_date_axis |
+| monthly | sed_reference_timeseries_monthly.nc | 5,602 | 1938-01-15 | 2023-05-08 | 86 | 1,010 | 1,025 | 4,592 | sparse_observation_date_axis |
+| annual | sed_reference_timeseries_annual.nc | 157 | 1912-01-01 | 2022-02-10 | 111 | 148 | 111 | 46 | sparse_observation_date_axis |
 
 ## Record-Length Distribution
 
 | resolution | record length bin | unit count |
 |---|---|---|
 | annual | 0 | 0 |
-| annual | 1-10 | 50 |
-| annual | 11-30 | 5 |
+| annual | 1-10 | 42 |
+| annual | 11-30 | 4 |
 | annual | 31-100 | 2 |
 | annual | 101-365 | 1 |
 | annual | 366-3650 | 0 |
 | annual | >3650 | 0 |
 | daily | 0 | 0 |
-| daily | 1-10 | 245 |
-| daily | 11-30 | 59 |
-| daily | 31-100 | 103 |
-| daily | 101-365 | 226 |
-| daily | 366-3650 | 728 |
-| daily | >3650 | 235 |
+| daily | 1-10 | 1,049 |
+| daily | 11-30 | 993 |
+| daily | 31-100 | 1,285 |
+| daily | 101-365 | 388 |
+| daily | 366-3650 | 756 |
+| daily | >3650 | 246 |
 | monthly | 0 | 0 |
-| monthly | 1-10 | 97 |
+| monthly | 1-10 | 294 |
 
 _Showing first 16 of 21 rows._
 
@@ -81,32 +81,32 @@ _Showing first 16 of 21 rows._
 
 | resolution | n gt 10 years | n gt 20 years | n gt 30 years | n gt 50 years | n gt 100 years |
 |---|---|---|---|---|---|
-| daily | 1,351 | 1,309 | 1,292 | 1,262 | 1,189 |
-| monthly | 2,020 | 1,730 | 1,324 | 220 | 78 |
-| annual | 8 | 4 | 3 | 3 | 1 |
+| daily | 3,668 | 2,854 | 2,675 | 1,725 | 1,390 |
+| monthly | 2,403 | 2,072 | 1,477 | 417 | 100 |
+| annual | 7 | 4 | 3 | 3 | 1 |
 
 ## Top Source Temporal Coverage
 
 | source name | active units | first year | last year |
 |---|---|---|---|
-| USGS | 887 | 1,956 | 2,024 |
-| HYDAT | 505 | 1,948 | 1,997 |
-| Bayern | 34 | 1,965 | 2,025 |
+| USGS | 889 | 1,956 | 2,024 |
+| HYDAT | 543 | 1,948 | 2,019 |
+| Bayern | 37 | 1,965 | 2,025 |
+| GFQA_v2 | 5,499 | 1,965 | 2,023 |
 | EUSEDcollab | 244 | 1,987 | 2,021 |
-| GFQA_v2 | 1,901 | 1,995 | 2,021 |
+| Mekong_Delta | 4 | 2,005 | 2,017 |
 | HYBAM | 12 | 1,994 | 2,024 |
-| Mekong_Delta | 4 | 2,005 | 2,012 |
 | Robotham | 3 | 2,016 | 2,021 |
 | Eurasian_River | 17 | 1,938 | 2,000 |
 | Fukushima | 2 | 2,012 | 2,018 |
+| GloRiSe | 77 | 1,979 | 2,015 |
 | NERC | 4 | 2,013 | 2,014 |
 | Chao_Phraya_River | 7 | 1,912 | 2,020 |
 | Rhine | 12 | 1,990 | 2,011 |
 | Shashi_Jianli | 2 | 2,016 | 2,023 |
 | Huanghe | 24 | 2,015 | 2,019 |
-| GloRiSe | 77 | 1,979 | 2,012 |
 | Yajiang | 23 | 2,019 | 2,020 |
-| Myanmar | 6 | 2,017 | 2,019 |
+| Myanmar | 5 | 2,017 | 2,019 |
 
 ## Region by Resolution
 
@@ -115,27 +115,27 @@ _Showing first 16 of 21 rows._
 | North America | daily |
 | North America | daily |
 | Europe, Central Europe | daily |
-| North America | monthly |
-| Europe | monthly |
-| Europe | monthly |
-| Europe | monthly |
-| Asia, Southeast Asia | daily |
 | North America | daily |
-| South America | daily |
-| Europe, Western Europe | daily |
+| North America | monthly |
+| Europe | daily |
 | Europe | monthly |
-| Europe, Eastern Europe | monthly |
-| South America | daily |
-| Asia, East Asia | daily |
+| Europe | daily |
+| Asia, Southeast Asia | daily |
 | Europe | monthly |
+| Europe | daily |
+| North America | daily |
+| North America | daily |
+|  | monthly |
+| Europe | daily |
+|  | daily |
 | South America | daily |
-| Europe | monthly |
+| Asia, South Asia | daily |
 
-_Showing first 18 of 34 rows._
+_Showing first 18 of 81 rows._
 
 ## Climatology Temporal Summary
 
-Climatology is reported as a standalone product rather than a basin-cluster matrix.
+Climatology is reported as a standalone product rather than a basin-station matrix.
 
 _No rows._
 
@@ -192,7 +192,7 @@ _Showing first 18 of 48 rows._
 
 ## Figures
 
-- `fig_active_clusters_by_year.png`: `output_other/stats_release/temporal/figures/fig_active_clusters_by_year.png`
+- `fig_active_reference_stations_by_year.png`: `output_other/stats_release/temporal/figures/fig_active_reference_stations_by_year.png`
 - `fig_active_units_by_year.png`: `output_other/stats_release/temporal/figures/fig_active_units_by_year.png`
 - `fig_climatology_record_length_distribution.png`: `output_other/stats_release/temporal/figures/fig_climatology_record_length_distribution.png`
 - `fig_climatology_source_contribution.png`: `output_other/stats_release/temporal/figures/fig_climatology_source_contribution.png`

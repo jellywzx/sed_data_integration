@@ -38,7 +38,7 @@ YEARLY_COLUMNS = (
     "resolution",
     "year",
     "active_units",
-    "active_clusters",
+    "active_reference_stations",
     "active_units_Q",
     "active_units_SSC",
     "active_units_SSL",
@@ -124,7 +124,7 @@ def scan_matrix_by_year(ctx: ReleaseContext, resolution: str, file_name: str, ro
                         "resolution": resolution,
                         "year": year,
                         "active_units": 0,
-                        "active_clusters": 0,
+                        "active_reference_stations": 0,
                         "active_units_Q": 0,
                         "active_units_SSC": 0,
                         "active_units_SSL": 0,
@@ -136,7 +136,7 @@ def scan_matrix_by_year(ctx: ReleaseContext, resolution: str, file_name: str, ro
                 )
                 active = np.any(ymask, axis=1)
                 item["active_units"] += int(np.count_nonzero(active))
-                item["active_clusters"] += int(np.count_nonzero(active))
+                item["active_reference_stations"] += int(np.count_nonzero(active))
                 item["record_count_any"] += int(np.count_nonzero(ymask))
                 for variable in VARIABLES:
                     item[f"active_units_{variable}"] += int(np.count_nonzero(np.any(var_masks[variable][:, cols], axis=1)))

@@ -106,6 +106,14 @@ def _mode_text(series: pd.Series, default: str = "Unknown") -> str:
     return str(cleaned.value_counts().index[0])
 
 
+def _reference_station_uid_col(frame: pd.DataFrame, *, linked: bool = False) -> str:
+    preferred = ("linked_station_uid", "linked_cluster_uid", "station_uid", "cluster_uid") if linked else ("station_uid", "cluster_uid")
+    for col in preferred:
+        if col in frame.columns:
+            return col
+    return "cluster_uid"
+
+
 def _gpkg_layer_counts(ctx, file_name: str) -> pd.DataFrame:
     path = ctx.require_input(ctx.release_file(file_name), required=False)
     if path is None:
@@ -245,6 +253,7 @@ def _area_distribution(clusters: pd.DataFrame) -> pd.DataFrame:
 
 def _spatial_summary(clusters: pd.DataFrame, station: pd.DataFrame, satellite: pd.DataFrame, gpkg_layers: pd.DataFrame) -> pd.DataFrame:
     total = int(clusters["cluster_uid"].nunique()) if "cluster_uid" in clusters.columns else 0
+    satellite_linked_col = _reference_station_uid_col(satellite, linked=True) if not satellite.empty else "cluster_uid"
     resolved = int(clusters["basin_status"].eq("resolved").sum()) if "basin_status" in clusters.columns else 0
     unresolved = int(clusters["basin_status"].eq("unresolved").sum()) if "basin_status" in clusters.columns else 0
     unknown_status = max(0, total - resolved - unresolved)
@@ -279,7 +288,7 @@ def _spatial_summary(clusters: pd.DataFrame, station: pd.DataFrame, satellite: p
         ("area", "upstream_area_missing_or_invalid_cluster_count", int(total - valid_area.size), "clusters", "station_catalog.csv", ""),
         ("geography", "unknown_country_cluster_count", int(clusters["country_canonical"].eq("Unknown").sum()) if "country_canonical" in clusters.columns else 0, "clusters", "station_catalog.csv", ""),
         ("satellite_validation", "satellite_station_rows", len(satellite), "rows", "satellite_catalog.csv", ""),
-        ("satellite_validation", "satellite_linked_cluster_count", int(satellite["cluster_uid"].nunique()) if not satellite.empty and "cluster_uid" in satellite.columns else 0, "clusters", "satellite_catalog.csv", ""),
+        ("satellite_validation", "satellite_linked_cluster_count", int(satellite[satellite_linked_col].nunique()) if not satellite.empty and satellite_linked_col in satellite.columns else 0, "clusters", "satellite_catalog.csv", ""),
         ("satellite_validation", "satellite_record_count", int(numeric_series(satellite, "n_records").fillna(0).sum()) if not satellite.empty else 0, "records", "satellite_catalog.csv", ""),
     ]
     for label in ("min", "p05", "p25", "mean", "median", "p75", "p95", "max"):
@@ -370,12 +379,13 @@ def build_spatial_stats(ctx) -> dict:
     )
     satellite_summary = pd.DataFrame()
     if not satellite.empty:
+        satellite_linked_col = _reference_station_uid_col(satellite, linked=True)
         satellite_summary = (
             satellite.assign(n_records=numeric_series(satellite, "n_records").fillna(0))
             .groupby(["source", "resolution"], dropna=False)
             .agg(
                 satellite_station_count=("satellite_station_uid", "nunique"),
-                linked_cluster_count=("cluster_uid", "nunique"),
+                linked_cluster_count=(satellite_linked_col, "nunique"),
                 record_count=("n_records", "sum"),
             )
             .reset_index()
@@ -484,9 +494,9 @@ def build_spatial_stats(ctx) -> dict:
         "table_spatial_coverage_by_source_type": source_type,
         "table_satellite_validation_spatial_coverage": satellite_summary,
         "table_satellite_upstream_area_distribution_s4": satellite_upstream,
-        "table_unknown_country_region_clusters": unknown_geo,
+        "table_unknown_country_region_reference_stations": unknown_geo,
         "table_basin_polygon_layers": gpkg_layers.rename(columns={"layer": "layer_name"}),
-        "table_cluster_spatial_attributes": cluster_attrs,
+        "table_reference_station_spatial_attributes": cluster_attrs,
     }
 
 
@@ -507,14 +517,14 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         colors = ["#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2"]
         ax.bar(plot_data.index, plot_data["cluster_count"], color=colors[:len(plot_data)])
         ax.set_xlabel("Resolution")
-        ax.set_ylabel("Cluster count")
-        ax.set_title("Clusters by temporal resolution")
+        ax.set_ylabel("Station count")
+        ax.set_title("Stations by temporal resolution")
         for i, (_, row) in enumerate(plot_data.iterrows()):
             ax.text(i, row["cluster_count"], "{:,.0f}".format(row["cluster_count"]),
                     ha="center", va="bottom", fontsize=9)
         ax.grid(axis="y", alpha=0.3)
         fig.tight_layout()
-        save_figure(fig, figures_dir / "fig_clusters_by_resolution.png", dpi=dpi, also_pdf=False)
+        save_figure(fig, figures_dir / "fig_reference_stations_by_resolution.png", dpi=dpi, also_pdf=False)
         save_figure(fig, figures_dir / "fig_spatial_coverage_by_resolution.png", dpi=dpi)
         plt.close(fig)
 
@@ -525,21 +535,21 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         fig, ax = plt.subplots(figsize=(7.2, max(4.0, 0.3 * len(plot_data) + 1.5)))
         labels = plot_data["country"].astype(str).str.replace("_", " ").str.title()
         ax.barh(labels, plot_data["cluster_count"], color="#4c78a8")
-        ax.set_xlabel("Cluster count")
-        ax.set_title("Top {} countries by cluster count".format(top_n))
+        ax.set_xlabel("Station count")
+        ax.set_title("Top {} countries by station count".format(top_n))
         ax.grid(axis="x", alpha=0.3)
         fig.tight_layout()
         save_figure(fig, figures_dir / "fig_top_countries.png", dpi=dpi, also_pdf=False)
         save_figure(fig, figures_dir / "fig_spatial_coverage_by_region_country.png", dpi=dpi)
         plt.close(fig)
 
-    clusters = stats.get("table_cluster_spatial_attributes", pd.DataFrame())
-    if not clusters.empty:
-        valid = clusters[
-            pd.to_numeric(clusters.get("lat"), errors="coerce").between(-90, 90)
-            & pd.to_numeric(clusters.get("lon"), errors="coerce").between(-180, 180)
+    reference_stations = stats.get("table_reference_station_spatial_attributes", pd.DataFrame())
+    if not reference_stations.empty:
+        valid = reference_stations[
+            pd.to_numeric(reference_stations.get("lat"), errors="coerce").between(-90, 90)
+            & pd.to_numeric(reference_stations.get("lon"), errors="coerce").between(-180, 180)
         ].copy()
-        write_geojson_points(valid, figures_dir / "global_cluster_distribution_points.geojson")
+        write_geojson_points(valid, figures_dir / "global_station_distribution_points.geojson")
         if not valid.empty:
             fig, ax = plt.subplots(figsize=(10, 4.8))
             area = pd.to_numeric(valid.get("basin_area"), errors="coerce").fillna(0)
@@ -547,10 +557,10 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
             ax.scatter(pd.to_numeric(valid["lon"], errors="coerce"), pd.to_numeric(valid["lat"], errors="coerce"), s=sizes, alpha=0.45, color="#4c78a8", edgecolors="none")
             ax.set_xlabel("Longitude")
             ax.set_ylabel("Latitude")
-            ax.set_title("Global cluster distribution")
+            ax.set_title("Global station distribution")
             ax.grid(alpha=0.25)
             fig.tight_layout()
-            save_figure(fig, figures_dir / "fig_global_cluster_distribution.png", dpi=dpi)
+            save_figure(fig, figures_dir / "fig_global_station_distribution.png", dpi=dpi)
             save_figure(fig, figures_dir / "fig_global_bubble_map.png", dpi=dpi, also_pdf=False)
             save_figure(fig, figures_dir / "fig_timeseries_spatial_coverage.png", dpi=dpi)
             plt.close(fig)
@@ -560,7 +570,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         plot = by_region.head(top_n).sort_values("cluster_count")
         fig, ax = plt.subplots(figsize=(8, max(3.5, 0.35 * len(plot) + 1.3)))
         ax.barh(plot["continent_region"].astype(str), plot["cluster_count"], color="#72b7b2")
-        ax.set_xlabel("Clusters")
+        ax.set_xlabel("Stations")
         ax.set_title("Spatial coverage by region")
         ax.grid(axis="x", alpha=0.3)
         fig.tight_layout()
@@ -573,7 +583,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         if not bins.empty:
             fig, ax = plt.subplots(figsize=(8, 4.2))
             ax.bar(bins["label"].astype(str), pd.to_numeric(bins["cluster_count"], errors="coerce").fillna(0), color="#f58518")
-            ax.set_ylabel("Clusters")
+            ax.set_ylabel("Stations")
             ax.set_title("Upstream area distribution")
             ax.tick_params(axis="x", rotation=35)
             ax.grid(axis="y", alpha=0.3)
@@ -588,12 +598,12 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         plot = source_by.head(top_n).sort_values("cluster_count")
         fig, ax = plt.subplots(figsize=(9, max(4, 0.32 * len(plot) + 1.5)))
         ax.barh(plot["source_name"].astype(str), plot["cluster_count"], color="#54a24b")
-        ax.set_xlabel("Clusters")
+        ax.set_xlabel("Stations")
         ax.set_title("Source spatial contribution")
         ax.grid(axis="x", alpha=0.3)
         fig.tight_layout()
         save_figure(fig, figures_dir / "fig_source_spatial_contribution.png", dpi=dpi)
-        save_figure(fig, figures_dir / "fig_spatial_coverage_by_region_source_clusters.png", dpi=dpi)
+        save_figure(fig, figures_dir / "fig_spatial_coverage_by_region_source_reference_stations.png", dpi=dpi)
         plt.close(fig)
 
         plot = source_by.head(top_n).sort_values("record_count")
@@ -611,7 +621,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
         pivot = region_res.pivot_table(index="continent_region", columns="resolution", values="cluster_count", aggfunc="sum", fill_value=0)
         fig, ax = plt.subplots(figsize=(9, max(4, 0.35 * len(pivot) + 1.5)))
         pivot.plot(kind="barh", stacked=True, ax=ax)
-        ax.set_xlabel("Clusters")
+        ax.set_xlabel("Stations")
         ax.set_title("Region by resolution")
         ax.grid(axis="x", alpha=0.3)
         fig.tight_layout()
@@ -639,11 +649,11 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 15) -> 
     if not basin.empty:
         fig, ax = plt.subplots(figsize=(7.2, 4.0))
         basin.groupby("basin_status")["cluster_count"].sum().plot(kind="bar", ax=ax, color="#4c78a8")
-        ax.set_ylabel("Clusters")
-        ax.set_title("Cluster status and basins")
+        ax.set_ylabel("Stations")
+        ax.set_title("Station status and basins")
         ax.grid(axis="y", alpha=0.3)
         fig.tight_layout()
-        save_figure(fig, figures_dir / "fig_global_cluster_status_and_basins.png", dpi=dpi)
+        save_figure(fig, figures_dir / "fig_global_station_status_and_basins.png", dpi=dpi)
         plt.close(fig)
 
 
@@ -657,7 +667,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
     upstream = stats.get("table_upstream_area_distribution", pd.DataFrame())
     satellite = stats.get("table_satellite_validation_spatial_coverage", pd.DataFrame())
     polygon_layers = stats.get("table_basin_polygon_layers", pd.DataFrame())
-    unknown_geo = stats.get("table_unknown_country_region_clusters", pd.DataFrame())
+    unknown_geo = stats.get("table_unknown_country_region_reference_stations", pd.DataFrame())
 
     def metric(name: str, default: object = "") -> object:
         return metric_value(summary, name, default)
@@ -686,7 +696,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
     if not by_source.empty:
         top_sources = by_source.head(5)
         source_text = "; ".join(
-            "{}: {} clusters, {} records".format(
+            "{}: {} stations, {} records".format(
                 row.get("source_name", ""),
                 fmt_int(row.get("cluster_count", 0)),
                 fmt_int(row.get("record_count", 0)),
@@ -697,7 +707,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         source_text = "NA"
 
     if not satellite.empty:
-        satellite_text = "The satellite-validation product contains {} station-resolution rows linked to {} clusters.".format(
+        satellite_text = "The satellite-validation product contains {} station-resolution rows linked to {} stations.".format(
             fmt_int(metric("satellite_station_rows")),
             fmt_int(metric("satellite_linked_cluster_count")),
         )
@@ -710,7 +720,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
     if total_clusters and 100.0 * unknown_country / total_clusters > 20.0:
         unknown_note = (
             "\n\nNote for manuscript drafting: country/region fields remain incomplete for a large fraction of "
-            "clusters. Avoid strong regional coverage claims until release geography enrichment is reviewed."
+            "stations. Avoid strong regional coverage claims until release geography enrichment is reviewed."
         )
 
     lines = [
@@ -719,11 +729,11 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         "## Manuscript-ready summary",
         "",
         (
-            "The S8 release contains {total} final main-product clusters. Resolution-specific coverage is "
-            "{daily} daily clusters, {monthly} monthly clusters, and {annual} annual clusters. Basin assignment "
-            "resolved {resolved} clusters ({resolved_pct}), while {unresolved} clusters ({unresolved_pct}) remain "
-            "unresolved and {unknown} clusters ({unknown_pct}) have unknown or other basin status. The published "
-            "basin sidecar contains polygons for {polygons} clusters ({polygon_pct})."
+            "The S8 release contains {total} final main-product stations. Resolution-specific coverage is "
+            "{daily} daily stations, {monthly} monthly stations, and {annual} annual stations. Basin assignment "
+            "resolved {resolved} stations ({resolved_pct}), while {unresolved} stations ({unresolved_pct}) remain "
+            "unresolved and {unknown} stations ({unknown_pct}) have unknown or other basin status. The published "
+            "basin sidecar contains polygons for {polygons} stations ({polygon_pct})."
         ).format(
             total=fmt_int(metric("final_cluster_count")),
             daily=fmt_int(resolution_value("daily", "cluster_count")),
@@ -741,7 +751,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         "",
         (
             "The main-product coordinates span {lat_min} to {lat_max} degrees latitude and {lon_min} to {lon_max} "
-            "degrees longitude. Valid upstream basin areas are available for {area_count} clusters; the median area "
+            "degrees longitude. Valid upstream basin areas are available for {area_count} stations; the median area "
             "is {area_median} km2, with an interquartile range of {area_p25}-{area_p75} km2 and a maximum of "
             "{area_max} km2."
         ).format(
@@ -756,18 +766,18 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
             area_max=fmt_float(metric("upstream_area_max")),
         ),
         "",
-        "Main source contributions by cluster count: {}".format(source_text),
+        "Main source contributions by station count: {}".format(source_text),
         "",
         satellite_text + unknown_note,
         "",
         "## Key Metrics",
         "",
-        "- Final clusters: {}".format(fmt_int(metric("final_cluster_count"))),
+        "- Final stations: {}".format(fmt_int(metric("final_cluster_count"))),
         "- Station catalog rows: {}".format(fmt_int(metric("station_catalog_rows"))),
         "- Main-product record count: {}".format(fmt_int(total_records)),
-        "- Basin-resolved clusters: {} ({})".format(fmt_int(metric("resolved_cluster_count")), fmt_pct(metric("resolved_cluster_percent"))),
+        "- Basin-resolved stations: {} ({})".format(fmt_int(metric("resolved_cluster_count")), fmt_pct(metric("resolved_cluster_percent"))),
         "- Published basin polygons: {} ({})".format(fmt_int(metric("basin_polygon_cluster_count")), fmt_pct(metric("basin_polygon_cluster_percent"))),
-        "- Unknown country clusters: {}".format(fmt_int(metric("unknown_country_cluster_count"))),
+        "- Unknown country stations: {}".format(fmt_int(metric("unknown_country_cluster_count"))),
         "",
         "## Resolution Coverage",
         "",
@@ -777,7 +787,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
             headers={
                 "resolution": "Resolution",
                 "source_station_resolution_rows": "Station rows",
-                "cluster_count": "Clusters",
+                "cluster_count": "Stations",
                 "record_count": "Records",
                 "record_share_percent": "Record share",
                 "country_count": "Countries",
@@ -792,17 +802,17 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         markdown_table(
             bin_rows,
             columns=["label", "cluster_count", "share_percent"],
-            headers={"label": "Area bin", "cluster_count": "Clusters", "share_percent": "Share of valid-area clusters"},
+            headers={"label": "Area bin", "cluster_count": "Stations", "share_percent": "Share of valid-area stations"},
             max_rows=12,
         ),
         "",
         "## Geographic Hotspots",
         "",
-        "### Regions by Cluster Count",
+        "### Regions by Station Count",
         "",
         sorted_markdown_table(by_region, columns=["continent_region", "cluster_count", "record_count", "country_count"], sort_by="cluster_count", max_rows=10),
         "",
-        "### Countries by Cluster Count",
+        "### Countries by Station Count",
         "",
         sorted_markdown_table(by_country, columns=["country", "iso_a3", "continent_region", "cluster_count", "record_count"], sort_by="cluster_count", max_rows=15),
         "",
@@ -814,7 +824,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         "",
         sorted_markdown_table(by_source, columns=["source_name", "cluster_count", "source_station_count", "record_count", "available_resolutions"], sort_by="cluster_count", max_rows=12),
         "",
-        "The cluster-based and record-based rankings answer different questions: the former describes spatial footprint, while the latter describes record volume.",
+        "The station-based and record-based rankings answer different questions: the former describes spatial footprint, while the latter describes record volume.",
         "",
         "## Satellite Validation Spatial Coverage",
         "",
@@ -828,7 +838,7 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         "",
         "- Unknown country/region rows written for review: {}".format(fmt_int(len(unknown_geo))),
         "- Regional summaries depend on release catalog geography; unknown geography should be reviewed before strong continent/country claims.",
-        "- Cluster counts by source are not additive across sources because multiple datasets can contribute to the same merged cluster.",
+        "- Station counts by source are not additive across sources because multiple datasets can contribute to the same merged station.",
         "",
         "## Output Tables",
         "",
@@ -841,11 +851,11 @@ def build_article_spatial_summary(stats: dict) -> list[str]:
         "- `tables/table_spatial_coverage_by_region_resolution.csv`",
         "- `tables/table_upstream_area_distribution.csv`",
         "- `tables/table_satellite_validation_spatial_coverage.csv`",
-        "- `tables/table_unknown_country_region_clusters.csv`",
+        "- `tables/table_unknown_country_region_reference_stations.csv`",
         "",
         "## Figure Suggestions",
         "",
-        "- Main text: `fig_spatial_coverage_by_resolution`, `fig_top_countries_by_clusters`, and `fig_upstream_area_distribution`.",
+        "- Main text: `fig_spatial_coverage_by_resolution`, `fig_top_countries_by_reference_stations`, and `fig_upstream_area_distribution`.",
         "- Supplement: source contribution, basin status, and satellite-validation spatial figures.",
         "",
         "## Manuscript-Usable Statements",
@@ -870,7 +880,7 @@ def build_detailed_spatial_report(ctx, stats: dict, tables_dir: Path, figures_di
     basin_status = stats.get("basin_status", pd.DataFrame())
     satellite = stats.get("table_satellite_validation_spatial_coverage", pd.DataFrame())
     aliases = stats.get("country_aliases", pd.DataFrame())
-    unknown = stats.get("table_unknown_country_region_clusters", pd.DataFrame())
+    unknown = stats.get("table_unknown_country_region_reference_stations", pd.DataFrame())
     gpkg = stats.get("table_basin_polygon_layers", pd.DataFrame())
 
     cluster_total = ""
@@ -894,10 +904,10 @@ def build_detailed_spatial_report(ctx, stats: dict, tables_dir: Path, figures_di
         "",
         "## Headline",
         "",
-        "- Reference clusters: {}".format(fmt_int(cluster_total)),
+        "- Reference stations: {}".format(fmt_int(cluster_total)),
         "- Release records represented by station catalog: {}".format(fmt_int(record_total)),
         "- Country/region rows needing canonicalization review: {}".format(fmt_int(alias_conflicts)),
-        "- Clusters with unknown country or region: {}".format(fmt_int(unknown_count)),
+        "- Stations with unknown country or region: {}".format(fmt_int(unknown_count)),
         "",
         "## Article-Ready Metrics",
         "",

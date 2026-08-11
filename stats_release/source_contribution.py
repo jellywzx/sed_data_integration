@@ -79,6 +79,14 @@ def _explode_station_sources(station: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _reference_station_uid_col(frame: pd.DataFrame, *, linked: bool = False) -> str:
+    preferred = ("linked_station_uid", "linked_cluster_uid", "station_uid", "cluster_uid") if linked else ("station_uid", "cluster_uid")
+    for col in preferred:
+        if col in frame.columns:
+            return col
+    return "cluster_uid"
+
+
 def _scan_record_product(ctx, file_name: str, product: str, chunk_size: int) -> pd.DataFrame:
     path = ctx.require_input(ctx.release_file(file_name), required=False)
     if path is None:
@@ -170,7 +178,7 @@ def _scan_satellite_product(ctx, chunk_size: int) -> pd.DataFrame:
         if n_records <= 0 or "satellite_station_index" not in ds.variables:
             return pd.DataFrame()
         station_sources = np.asarray(read_text_var(ds, "source"), dtype=object)
-        station_clusters = np.asarray(read_text_var(ds, "cluster_uid"), dtype=object)
+        station_clusters = np.asarray(read_text_var(ds, "linked_cluster_uid"), dtype=object)
         all_resolutions = (
             np.asarray(read_text_var(ds, "resolution"), dtype=object)
             if "resolution" in ds.variables
@@ -277,6 +285,7 @@ def _satellite_catalog_detail(ctx, chunk_size: int, scan_variables: bool = False
     work["first_year"] = pd.to_datetime(work.get("time_start", ""), errors="coerce").dt.year
     work["last_year"] = pd.to_datetime(work.get("time_end", ""), errors="coerce").dt.year
     variable_counts = _satellite_variable_counts_by_source(ctx, chunk_size) if scan_variables else {}
+    linked_col = _reference_station_uid_col(work, linked=True)
     rows = []
     for (source, resolution), group in work.groupby(["source", "resolution"], dropna=False):
         source = clean_text(source) or "unknown"
@@ -302,7 +311,7 @@ def _satellite_catalog_detail(ctx, chunk_size: int, scan_variables: bool = False
                 "n_SSC_records": int(vc.get("SSC", 0)),
                 "n_SSL_records": int(vc.get("SSL", 0)),
                 "n_source_stations": int(group["satellite_station_uid"].nunique()) if "satellite_station_uid" in group.columns else int(len(group)),
-                "n_clusters": int(group["cluster_uid"].nunique()) if "cluster_uid" in group.columns else 0,
+                "n_clusters": int(group[linked_col].nunique()) if linked_col in group.columns else 0,
                 "first_year": int(group["first_year"].min()) if group["first_year"].notna().any() else np.nan,
                 "last_year": int(group["last_year"].max()) if group["last_year"].notna().any() else np.nan,
             }
@@ -321,6 +330,7 @@ def _source_station_catalog_detail(ctx) -> pd.DataFrame:
     vars_text = work.get("source_station_variables_provided", pd.Series([""] * len(work), index=work.index)).astype(str)
     for var in VARIABLES:
         work["n_{}_records".format(var)] = np.where(vars_text.str.contains(var, case=False, regex=False), work["n_records"], 0)
+    reference_col = _reference_station_uid_col(work)
     rows = []
     for (source, resolution), group in work.groupby(["source_name", "resolution"], dropna=False):
         resolution = clean_text(resolution) or "unknown"
@@ -334,7 +344,7 @@ def _source_station_catalog_detail(ctx) -> pd.DataFrame:
                 "n_SSC_records": int(group["n_SSC_records"].sum()),
                 "n_SSL_records": int(group["n_SSL_records"].sum()),
                 "n_source_stations": int(group["source_station_uid"].nunique()) if "source_station_uid" in group.columns else int(len(group)),
-                "n_clusters": int(group["cluster_uid"].nunique()) if "cluster_uid" in group.columns else 0,
+                "n_clusters": int(group[reference_col].nunique()) if reference_col in group.columns else 0,
                 "first_year": int(group["first_year"].min()) if group["first_year"].notna().any() else np.nan,
                 "last_year": int(group["last_year"].max()) if group["last_year"].notna().any() else np.nan,
             }
@@ -508,6 +518,8 @@ def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
     source_rows = _explode_station_sources(station) if not station.empty else pd.DataFrame()
     if not source_rows.empty:
         source_rows["record_count"] = pd.to_numeric(source_rows["record_count"], errors="coerce").fillna(0)
+    source_station_reference_col = _reference_station_uid_col(source_station) if not source_station.empty else "cluster_uid"
+    satellite_linked_col = _reference_station_uid_col(satellite, linked=True) if not satellite.empty else "cluster_uid"
     main_by_source = (
         source_rows.groupby("source_name", dropna=False)
         .agg(
@@ -525,7 +537,7 @@ def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
         .agg(
             source_station_rows=("source_station_uid", "size"),
             source_station_count=("source_station_uid", "nunique"),
-            linked_cluster_count=("cluster_uid", "nunique"),
+            linked_cluster_count=(source_station_reference_col, "nunique"),
             source_station_record_count=("n_records", "sum"),
         )
         .reset_index()
@@ -538,7 +550,7 @@ def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
         .agg(
             record_attributed_station_rows=("source_station_uid", "size"),
             record_attributed_station_count=("source_station_uid", "nunique"),
-            record_attributed_cluster_count=("cluster_uid", "nunique"),
+            record_attributed_cluster_count=(source_station_reference_col, "nunique"),
             record_attributed_record_count=("n_records", "sum"),
         )
         .reset_index()
@@ -558,7 +570,7 @@ def build_source_contribution(ctx, chunk_size: int = 500000) -> dict:
         .groupby(["source", "resolution"], dropna=False)
         .agg(
             satellite_station_count=("satellite_station_uid", "nunique"),
-            satellite_cluster_count=("cluster_uid", "nunique"),
+            satellite_cluster_count=(satellite_linked_col, "nunique"),
             satellite_record_count=("n_records", "sum"),
         )
         .reset_index()
@@ -643,18 +655,18 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 20) -> 
     save_figure(fig, figures_dir / "fig_source_contribution_records.png", dpi=dpi, also_pdf=False)
     plt.close(fig)
 
-    # Horizontal bar: clusters
+    # Horizontal bar: reference stations
     if "n_clusters" in source_summary.columns:
         plot_df2 = source_summary.sort_values("n_clusters", ascending=False).head(top_n).sort_values("n_clusters", ascending=True)
         height2 = max(4.0, 0.35 * len(plot_df2) + 1.5)
         fig2, ax2 = plt.subplots(figsize=(10, height2))
         ax2.barh(plot_df2["source_name"].astype(str), plot_df2["n_clusters"].astype(float), color="#54a24b")
-        ax2.set_xlabel("Clusters")
+        ax2.set_xlabel("Stations")
         ax2.set_ylabel("Source dataset")
-        ax2.set_title("Source contribution by clusters")
+        ax2.set_title("Source contribution by stations")
         ax2.grid(axis="x", alpha=0.3)
         fig2.tight_layout()
-        save_figure(fig2, figures_dir / "fig_source_contribution_clusters.png", dpi=dpi, also_pdf=False)
+        save_figure(fig2, figures_dir / "fig_source_contribution_reference_stations.png", dpi=dpi, also_pdf=False)
         plt.close(fig2)
     if "n_source_stations" in source_summary.columns:
         plot_df2 = source_summary.sort_values("n_source_stations", ascending=False).head(top_n).sort_values("n_source_stations", ascending=True)
@@ -722,7 +734,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 20) -> 
                 ax.grid(axis="x", alpha=0.3)
                 fig.tight_layout()
                 save_figure(fig, figures_dir / "fig_{}_contribution_records.png".format(prefix), dpi=dpi, also_pdf=False)
-                save_figure(fig, figures_dir / "fig_{}_contribution_clusters.png".format(prefix), dpi=dpi, also_pdf=False)
+                save_figure(fig, figures_dir / "fig_{}_contribution_reference_stations.png".format(prefix), dpi=dpi, also_pdf=False)
                 save_figure(fig, figures_dir / "fig_{}_contribution_stations.png".format(prefix), dpi=dpi, also_pdf=False)
                 save_figure(fig, figures_dir / "fig_{}_resolution_stacked.png".format(prefix), dpi=dpi, also_pdf=False)
                 plt.close(fig)
@@ -761,13 +773,13 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int, top_n: int = 20) -> 
         plt.close(fig)
 
     required = [
-        "fig_climatology_contribution_clusters.png",
+        "fig_climatology_contribution_reference_stations.png",
         "fig_climatology_contribution_records.png",
         "fig_climatology_contribution_stations.png",
         "fig_climatology_resolution_stacked.png",
         "fig_climatology_temporal_coverage.png",
         "fig_climatology_variable_stacked.png",
-        "fig_satellite_contribution_clusters.png",
+        "fig_satellite_contribution_reference_stations.png",
         "fig_satellite_contribution_records.png",
         "fig_satellite_contribution_stations.png",
         "fig_satellite_resolution_stacked.png",
@@ -841,16 +853,16 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         "",
         "## Counting Policy",
         "",
-        "- `record_attributed_record_count` is source-station based and avoids multi-source cluster over-counting.",
-        "- `cluster_attributed_record_count` preserves the historical exploded cluster attribution for parity with older reports.",
-        "- Cluster counts can sum above unique release clusters because multiple sources can contribute to the same reference cluster.",
+        "- `record_attributed_record_count` is source-station based and avoids multi-source station over-counting.",
+        "- `reference_station_attributed_record_count` preserves the historical exploded station attribution for parity with older reports.",
+        "- Station counts can sum above unique release stations because multiple sources can contribute to the same reference station.",
         "- Satellite percentages throughout this report are computed against satellite-only totals, not merged totals.",
         "",
         "## Key Metrics (Main Track — In-Situ / Reference / Climatology)",
         "",
         "- Source datasets: {}".format(fmt_int(total_sources)),
         "- Source stations: {}".format(fmt_int(total_stations)),
-        "- Source-summed clusters: {}".format(fmt_int(total_clusters)),
+        "- Source-summed stations: {}".format(fmt_int(total_clusters)),
         "- Total attributed records: {}".format(fmt_int(total_records)),
         "- Top source by records: `{}`".format(top_source),
         "- Over-attribution records in source summary: {}".format(fmt_int(over_attribution)),
@@ -891,7 +903,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         columns=["source_name", "n_source_stations", "n_clusters", "available_resolutions", "main_record_count", "record_attributed_record_count", "cluster_attributed_record_count", "over_attribution_record_count"],
         sort_by="record_attributed_record_count",
         max_rows=15,
-        note="This table separates unique source-station attribution from cluster-exploded attribution.",
+        note="This table separates unique source-station attribution from station-exploded attribution.",
     )
     # Satellite track section
     lines.extend([

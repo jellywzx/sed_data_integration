@@ -4,17 +4,17 @@
 
 The release provides daily, monthly, annual, and climatological sediment-reference products with temporal coverage spanning from 1912 to 2025 across available products.
 
-The main time-series products contain 1,596 daily clusters, 2,117 monthly clusters, and 58 annual clusters.
+The main time-series products contain 4,717 daily stations, 2,697 monthly stations, and 49 annual stations.
 
-Daily records span 1948-2025, with 2,746,665 valid cluster-time observations across 1,596 clusters and a median record length of 638 time steps.
+Daily records span 1948-2025, with 2,963,235 valid station-time observations across 4,717 stations and a median record length of 39 time steps.
 
-Monthly records span 1938-2021, with 126,136 valid cluster-time observations across 2,117 clusters and a median record length of 34 time steps.
+Monthly records span 1938-2023, with 100,901 valid station-time observations across 2,697 stations and a median record length of 35 time steps.
 
-Annual records span 1912-2021, with 619 valid cluster-time observations across 58 clusters and a median record length of 5 time steps. Annual coverage is described by observed records and calendar span, rather than by a regular-grid coverage ratio, because the annual time axis may be sparse.
+Annual records span 1912-2022, with 535 valid station-time observations across 49 stations and a median record length of 5 time steps. Annual coverage is described by observed records and calendar span, rather than by a regular-grid coverage ratio, because the annual time axis may be sparse.
 
-Long daily records are a major strength of the release: 1,262 daily clusters are longer than 50 time steps and 1,189 daily clusters are longer than 100 time steps.
+Long daily records are a major strength of the release: 1,725 daily stations are longer than 50 time steps and 1,390 daily stations are longer than 100 time steps.
 
-Peak temporal coverage differs by product: daily: 566 active units in 1980; monthly: 1,695 active units in 2013; annual: 47 active units in 2018.
+Peak temporal coverage differs by product: daily: 2,256 active units in 2015; monthly: 1,907 active units in 2018; annual: 35 active units in 2019.
 
 ## Output tables
 

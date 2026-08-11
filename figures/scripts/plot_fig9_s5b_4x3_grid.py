@@ -12,21 +12,11 @@ ESSD compliance follows ``plot/AGENTS.md`` → ``docs/essd_figure_requirements.m
 import argparse
 import datetime
 import shutil
-import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-
-# -- Add the existing plot-script directory to sys.path -----------------------
-_PLOT_SCRIPTS_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-    "Output_r/scripts_basin_test/figures/scripts"
-)
-sys.path.insert(0, str(_PLOT_SCRIPTS_DIR))
-
-import plot_satellite_insitu_validation_scatter as _plot  # noqa: E402
 
 # ============================================================================
 #  HARDCODED CONFIGURATION  (edit these to change paths / parameters)
@@ -45,8 +35,14 @@ PATHS = {
     ),
 }
 
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
 PARAMS = {
-    "figure_id": "s5b_3x3_grid",
+    "figure_id": script_output_stem(),
     "variable": "SSC",
     "high_turbidity_ssc": 1000.0,
     "ssc_bin_edges": "100,500,1000,5000",
@@ -73,6 +69,333 @@ STYLE = {
     # Grid
     "grid_alpha": 0.25,
 }
+
+CM_PER_INCH = 2.54
+WINDOW_EXCLUSIVE = False
+RESOLUTION_CODE = {0: "daily", 1: "monthly", 2: "annual", 3: "climatology"}
+METHOD_NOTES_BASE = (
+    "satellite/reach-scale vs in-situ validation; satellite records are anchors; "
+    "pairing windows are cumulative"
+)
+ASSUMPTIONS_BASE = (
+    "compiled sources are secondary_compilation unless source text or taxonomy override "
+    "identifies them as in_situ; missing river width is 'missing'; missing climate zone is 'unknown'"
+)
+OKABE_ITO = [
+    "#0072B2",
+    "#D55E00",
+    "#009E73",
+    "#E69F00",
+    "#56B4E9",
+    "#CC79A7",
+    "#F0E442",
+    "#000000",
+]
+MARKER_SHAPES = ["o", "s", "^", "D", "v", "<", ">", "p"]
+WINDOW_LABELS = {
+    "exact": "Exact",
+    "pm1d": "±1 day",
+    "pm2d": "±2 days",
+}
+
+
+def _clean_text(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if np.ma.is_masked(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    text = str(value).strip()
+    return "" if text.lower() in ("nan", "none", "nat") else text
+
+
+def _normalize_resolution(value) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    numeric = pd.to_numeric(pd.Series([text]), errors="coerce").iloc[0]
+    if pd.notna(numeric) and float(numeric).is_integer():
+        return RESOLUTION_CODE.get(int(numeric), text)
+    return text.lower()
+
+
+def _format_edge(value: float) -> str:
+    if value == int(value):
+        return str(int(value))
+    return "{:g}".format(value)
+
+
+def _parse_ssc_bin_edges(text: str) -> Tuple[float, ...]:
+    return tuple(float(v.strip()) for v in text.split(",") if v.strip())
+
+
+def _bin_label(value: float, edges: Sequence[float]) -> str:
+    if not np.isfinite(value):
+        return "missing"
+    for edge in edges:
+        if value < edge:
+            return "<{}".format(_format_edge(edge))
+    return ">={}".format(_format_edge(edges[-1]))
+
+
+def _first_nonempty(row: pd.Series, names: Sequence[str], default: str = "") -> str:
+    for name in names:
+        if name in row.index:
+            text = _clean_text(row.get(name, ""))
+            if text:
+                return text
+    return default
+
+
+def _first_numeric(row: pd.Series, names: Sequence[str]) -> float:
+    for name in names:
+        if name in row.index:
+            value = pd.to_numeric(pd.Series([row.get(name, np.nan)]), errors="coerce").iloc[0]
+            if pd.notna(value) and np.isfinite(float(value)):
+                return float(value)
+    return float("nan")
+
+
+def _width_class_from_numeric(width: float) -> str:
+    if not np.isfinite(width):
+        return "missing"
+    if width < 30:
+        return "<30m"
+    if width < 100:
+        return "30-99m"
+    if width < 300:
+        return "100-299m"
+    return ">=300m"
+
+
+def assign_strata(
+    pair_records: pd.DataFrame,
+    high_turbidity_ssc: float = 1000.0,
+    ssc_bin_edges: Sequence[float] = (100.0, 500.0, 1000.0, 5000.0),
+) -> pd.DataFrame:
+    if pair_records.empty:
+        out = pair_records.copy()
+        for col in ("ssc_bin", "river_width_class", "climate_zone", "high_turbidity"):
+            if col not in out.columns:
+                out[col] = []
+        return out
+
+    work = pair_records.copy()
+    ssc_bins: List[str] = []
+    width_classes: List[str] = []
+    climate_zones: List[str] = []
+    high_turbidity_values: List[bool] = []
+
+    for _, row in work.iterrows():
+        ssc = _first_numeric(row, ("insitu_ssc", "satellite_ssc", "SSC"))
+        ssc_bins.append(_bin_label(ssc, ssc_bin_edges))
+        high_turbidity_values.append(bool(np.isfinite(ssc) and ssc >= float(high_turbidity_ssc)))
+
+        width_class = _first_nonempty(
+            row,
+            (
+                "river_width_class",
+                "insitu_river_width_class",
+                "satellite_river_width_class",
+                "width_class",
+            ),
+        )
+        if not width_class:
+            width = _first_numeric(
+                row,
+                (
+                    "river_width_m",
+                    "insitu_river_width_m",
+                    "satellite_river_width_m",
+                    "width_m",
+                    "river_width",
+                ),
+            )
+            width_class = _width_class_from_numeric(width)
+        width_classes.append(width_class or "missing")
+
+        climate = _first_nonempty(
+            row,
+            (
+                "climate_zone",
+                "insitu_climate_zone",
+                "satellite_climate_zone",
+                "hydroatlas_climate_zone",
+                "koppen_zone",
+                "koppen",
+                "climate_class",
+            ),
+            default="unknown",
+        )
+        climate_zones.append(climate or "unknown")
+
+    work["ssc_bin"] = ssc_bins
+    work["high_turbidity"] = high_turbidity_values
+    work["river_width_class"] = width_classes
+    work["climate_zone"] = climate_zones
+    return work
+
+
+def _cluster_group_key(df: pd.DataFrame) -> pd.Series:
+    uid = df["cluster_uid"].astype(str).str.strip() if "cluster_uid" in df else pd.Series([""] * len(df))
+    cid = df["cluster_id"].astype(str).str.strip() if "cluster_id" in df else pd.Series([""] * len(df))
+    return uid.where(uid.ne(""), cid)
+
+
+def _safe_corr(a: np.ndarray, b: np.ndarray, method: str) -> float:
+    if len(a) < 2:
+        return float("nan")
+    if np.nanstd(a) == 0 or np.nanstd(b) == 0:
+        return float("nan")
+    if method == "spearman":
+        left = pd.Series(a).rank(method="average")
+        right = pd.Series(b).rank(method="average")
+        return float(left.corr(right, method="pearson"))
+    return float(pd.Series(a).corr(pd.Series(b), method="pearson"))
+
+
+def _metric_values(group: pd.DataFrame) -> Dict[str, float]:
+    sat = pd.to_numeric(group["satellite_value"], errors="coerce").to_numpy(dtype=float)
+    insitu = pd.to_numeric(group["insitu_value"], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(sat) & np.isfinite(insitu)
+    sat = sat[valid]
+    insitu = insitu[valid]
+    if len(sat) == 0:
+        return {
+            "bias": float("nan"),
+            "RMSE": float("nan"),
+            "MAE": float("nan"),
+            "MAPE": float("nan"),
+            "median_absolute_error": float("nan"),
+            "Pearson": float("nan"),
+            "Spearman": float("nan"),
+            "R2": float("nan"),
+            "n_pairs": 0,
+        }
+    diff = sat - insitu
+    mape_mask = insitu != 0
+    pearson = _safe_corr(insitu, sat, "pearson")
+    return {
+        "bias": float(np.nanmean(diff)),
+        "RMSE": float(np.sqrt(np.nanmean(diff ** 2))),
+        "MAE": float(np.nanmean(np.abs(diff))),
+        "MAPE": float(np.nanmean(np.abs(diff[mape_mask] / insitu[mape_mask]) * 100.0)) if np.any(mape_mask) else float("nan"),
+        "median_absolute_error": float(np.nanmedian(np.abs(diff))),
+        "Pearson": pearson,
+        "Spearman": _safe_corr(insitu, sat, "spearman"),
+        "R2": float(pearson ** 2) if np.isfinite(pearson) else float("nan"),
+        "n_pairs": int(len(sat)),
+    }
+
+
+def compute_satellite_insitu_metrics(pair_records: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "group_type",
+        "pairing_window",
+        "window_exclusive",
+        "variable",
+        "source_pair",
+        "ssc_bin",
+        "river_width_class",
+        "climate_zone",
+        "high_turbidity",
+        "bias",
+        "RMSE",
+        "MAE",
+        "MAPE",
+        "median_absolute_error",
+        "Pearson",
+        "Spearman",
+        "R2",
+        "n_pairs",
+        "n_clusters",
+        "method_notes",
+        "assumptions",
+    ]
+    if pair_records.empty:
+        return pd.DataFrame(columns=columns)
+
+    group_specs = {
+        "overall": [],
+        "source_pair": ["source_pair"],
+        "source_pair_ssc_bin": ["source_pair", "ssc_bin"],
+        "source_pair_width": ["source_pair", "river_width_class"],
+        "source_pair_climate": ["source_pair", "climate_zone"],
+        "source_pair_high_turbidity": ["source_pair", "high_turbidity"],
+        "full_strata": ["source_pair", "ssc_bin", "river_width_class", "climate_zone", "high_turbidity"],
+    }
+    rows: List[Dict[str, object]] = []
+    base_cols = ["pairing_window", "variable"]
+
+    for group_type, strata_cols in group_specs.items():
+        cols = base_cols + strata_cols
+        for keys, group in pair_records.groupby(cols, dropna=False):
+            if not isinstance(keys, tuple):
+                keys = (keys,)
+            values = dict(zip(cols, keys))
+            metrics = _metric_values(group)
+            cluster_key = _cluster_group_key(group)
+            row: Dict[str, object] = {
+                "group_type": group_type,
+                "pairing_window": values.get("pairing_window", ""),
+                "window_exclusive": WINDOW_EXCLUSIVE,
+                "variable": values.get("variable", ""),
+                "source_pair": values.get("source_pair", "ALL"),
+                "ssc_bin": values.get("ssc_bin", "ALL"),
+                "river_width_class": values.get("river_width_class", "ALL"),
+                "climate_zone": values.get("climate_zone", "ALL"),
+                "high_turbidity": values.get("high_turbidity", "ALL"),
+                "n_clusters": int(cluster_key.nunique()),
+                "method_notes": str(group["method_notes"].iloc[0])
+                if "method_notes" in group
+                else METHOD_NOTES_BASE,
+                "assumptions": str(group["assumptions"].iloc[0])
+                if "assumptions" in group
+                else ASSUMPTIONS_BASE,
+            }
+            row.update(metrics)
+            rows.append(row)
+
+    return pd.DataFrame(rows, columns=columns)
+
+
+def ensure_figure_dirs(figures_root: Path) -> dict:
+    root = Path(figures_root).resolve()
+    dirs = {
+        "root": root,
+        "final": root / "final",
+        "data": root / "data",
+        "scripts": root / "scripts",
+        "checklists": root / "checklists",
+    }
+    for path in dirs.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
+def _setup_matplotlib():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt
+
+
+def configure_matplotlib(plt) -> None:
+    plt.rcParams.update({
+        "font.family": STYLE["font_family"],
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.labelsize": STYLE["axis_label_size"],
+        "axes.titlesize": STYLE["title_size"],
+        "xtick.labelsize": STYLE["tick_label_size"],
+        "ytick.labelsize": STYLE["tick_label_size"],
+        "legend.fontsize": STYLE["legend_text_size"],
+        "axes.unicode_minus": False,
+    })
 
 # -- Source pairs to plot (in row order) -------------------------------------
 SOURCE_PAIRS = [
@@ -103,18 +426,18 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
     # source_pair → colour + marker (one row = one source_pair = one colour)
     pair_colors = {
-        sp: _plot.OKABE_ITO[i % len(_plot.OKABE_ITO)]
+        sp: OKABE_ITO[i % len(OKABE_ITO)]
         for i, sp in enumerate(SOURCE_PAIRS)
     }
     pair_markers = {
-        sp: _plot.MARKER_SHAPES[i % len(_plot.MARKER_SHAPES)]
+        sp: MARKER_SHAPES[i % len(MARKER_SHAPES)]
         for i, sp in enumerate(SOURCE_PAIRS)
     }
 
     n_rows = len(SOURCE_PAIRS)
     n_cols = len(WINDOWS)
-    panel_w_in = STYLE["panel_width_cm"] / _plot.CM_PER_INCH
-    panel_h_in = STYLE["panel_height_cm"] / _plot.CM_PER_INCH
+    panel_w_in = STYLE["panel_width_cm"] / CM_PER_INCH
+    panel_h_in = STYLE["panel_height_cm"] / CM_PER_INCH
 
     fig, axes = plt.subplots(
         n_rows, n_cols,
@@ -138,7 +461,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 ax.text(0.5, 0.5, "no data", transform=ax.transAxes,
                         ha="center", va="center", fontsize=STYLE["tick_label_size"],
                         color="grey")
-                ax.set_title("{}".format(_plot.WINDOW_LABELS.get(window, window)),
+                ax.set_title("{}".format(WINDOW_LABELS.get(window, window)),
                              fontsize=STYLE["title_size"])
                 continue
 
@@ -165,7 +488,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
             # column titles: row 0 shows window label
             if row_idx == 0:
-                window_label = _plot.WINDOW_LABELS.get(window, window)
+                window_label = WINDOW_LABELS.get(window, window)
                 ax.set_title("{}".format(window_label),
                             fontsize=STYLE["title_size"])
 
@@ -201,14 +524,14 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
             # statistics annotation (top-right corner)
             insitu_num = pd.to_numeric(part["insitu_value"], errors="coerce").to_numpy(dtype=float)
             sat_num = pd.to_numeric(part["satellite_value"], errors="coerce").to_numpy(dtype=float)
-            r_pearson = _plot._safe_corr(insitu_num, sat_num, "pearson")
-            r_spearman = _plot._safe_corr(insitu_num, sat_num, "spearman")
+            r_pearson = _safe_corr(insitu_num, sat_num, "pearson")
+            r_spearman = _safe_corr(insitu_num, sat_num, "spearman")
             r2 = r_pearson ** 2 if np.isfinite(r_pearson) else float("nan")
             n_pairs = len(part)
-            n_clusters = part["cluster_uid"].nunique() if "cluster_uid" in part.columns else 0
+            n_reference_stations = part["station_uid"].nunique() if "station_uid" in part.columns else 0
             corr_lines = [
                 "n = {}".format(n_pairs),
-                "n_clusters = {}".format(n_clusters),
+                "n_stations = {}".format(n_reference_stations),
                 "r = {:.3f}".format(r_pearson) if np.isfinite(r_pearson) else "r = NaN",
                 "ρ = {:.3f}".format(r_spearman) if np.isfinite(r_spearman) else "ρ = NaN",
                 "R² = {:.3f}".format(r2) if np.isfinite(r2) else "R² = NaN",
@@ -246,8 +569,8 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
                     pdf_path, png_path, variable="SSC"):
     """Write an ESSD-compliant checklist markdown file for the 4×3 figure."""
     figsize_in = fig.get_size_inches()
-    width_cm = figsize_in[0] * _plot.CM_PER_INCH
-    height_cm = figsize_in[1] * _plot.CM_PER_INCH
+    width_cm = figsize_in[0] * CM_PER_INCH
+    height_cm = figsize_in[1] * CM_PER_INCH
     pdf_size_bytes = pdf_path.stat().st_size if pdf_path.exists() else 0
     png_size_bytes = png_path.stat().st_size if png_path.exists() else 0
     n_panels = len(SOURCE_PAIRS) * len(windows_used)
@@ -265,7 +588,7 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
         "- Single-panel or multi-panel: multi-panel ({} panels: {} rows × {} columns)".format(
             n_panels, len(SOURCE_PAIRS), len(windows_used)),
         "- Rows: {}".format(", ".join(SOURCE_PAIRS)),
-        "- Columns: {}".format(", ".join(_plot.WINDOW_LABELS.get(w, w) for w in windows_used)),
+        "- Columns: {}".format(", ".join(WINDOW_LABELS.get(w, w) for w in windows_used)),
         "",
         "## File format and size",
         "",
@@ -366,8 +689,8 @@ def main(argv: Optional[Sequence[str]] = None):
     plot_only = args.plot_only
 
     # -- Matplotlib setup ----------------------------------------------------
-    plt = _plot._setup_matplotlib()
-    _plot.configure_matplotlib(plt)
+    plt = _setup_matplotlib()
+    configure_matplotlib(plt)
     plt.rcParams.update({
         "font.family": STYLE["font_family"],
         "axes.labelsize": STYLE["axis_label_size"],
@@ -378,7 +701,7 @@ def main(argv: Optional[Sequence[str]] = None):
     })
 
     # -- Resolve paths from hardcoded configuration --------------------------
-    figure_dirs = _plot.ensure_figure_dirs(Path(PATHS["figures_root"]))
+    figure_dirs = ensure_figure_dirs(Path(PATHS["figures_root"]))
     figure_id = PARAMS["figure_id"]
     pairs_path = Path(PATHS["pairs_csv"])
     metrics_path = figure_dirs["data"] / "{}_metrics.csv".format(figure_id)
@@ -386,7 +709,7 @@ def main(argv: Optional[Sequence[str]] = None):
 
     variable = PARAMS["variable"]
     high_turbidity_ssc = float(PARAMS["high_turbidity_ssc"])
-    ssc_bin_edges = _plot._parse_ssc_bin_edges(PARAMS["ssc_bin_edges"])
+    ssc_bin_edges = _parse_ssc_bin_edges(PARAMS["ssc_bin_edges"])
     dpi = int(PARAMS["dpi"])
 
     if not pairs_path.exists():
@@ -394,6 +717,9 @@ def main(argv: Optional[Sequence[str]] = None):
 
     print("Loading pairs from: {}".format(pairs_path))
     pairs = pd.read_csv(str(pairs_path), keep_default_na=False)
+    # Normalize legacy cluster_* column names from s5b/validate pipeline
+    _legacy_rename = {"cluster_uid": "station_uid", "cluster_id": "station_reference_id"}
+    pairs = pairs.rename(columns={k: v for k, v in _legacy_rename.items() if k in pairs.columns and v not in pairs.columns})
     print("  {} rows loaded".format(len(pairs)))
 
     if pairs.empty:
@@ -404,7 +730,7 @@ def main(argv: Optional[Sequence[str]] = None):
         pairs.columns
     ):
         print("Assigning missing strata columns ...")
-        pairs = _plot.assign_strata(
+        pairs = assign_strata(
             pairs,
             high_turbidity_ssc=high_turbidity_ssc,
             ssc_bin_edges=ssc_bin_edges,
@@ -413,7 +739,7 @@ def main(argv: Optional[Sequence[str]] = None):
     # -- Metrics -------------------------------------------------------------
     if not plot_only:
         print("Computing validation metrics ...")
-        metrics = _plot.compute_satellite_insitu_metrics(pairs)
+        metrics = compute_satellite_insitu_metrics(pairs)
         print("  -> {} metric rows computed".format(len(metrics)))
         metrics.to_csv(str(metrics_path), index=False)
         print("Saved metrics to: {}".format(metrics_path))

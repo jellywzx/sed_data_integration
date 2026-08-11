@@ -76,13 +76,14 @@ def build_layer_stats(ctx) -> dict:
             )
         )
     if not satellite.empty:
+        satellite_reference_uid = satellite.get("linked_station_uid", satellite.get("linked_cluster_uid", satellite.get("station_uid", satellite.get("cluster_uid", ""))))
         frames.append(
             pd.DataFrame(
                 {
                     "source_name": satellite.get("source", ""),
                     "layer": "satellite_catalog",
                     "resolution": satellite.get("resolution", ""),
-                    "cluster_uid": satellite.get("cluster_uid", ""),
+                    "cluster_uid": satellite_reference_uid,
                     "row_count": 1,
                     "record_count": numeric_series(satellite, "n_records").fillna(0),
                 }
@@ -205,7 +206,7 @@ def build_detailed_layer_report(ctx, stats: dict, tables_dir: Path) -> list[str]
         columns=["source_name", "layer", "resolution", "cluster_uid", "row_count", "record_count"],
         sort_by="record_count",
         max_rows=18,
-        note="Membership rows are catalog-derived. Multiple source layers can refer to the same cluster, so totals are diagnostic rather than unique release totals.",
+        note="Membership rows are catalog-derived. Multiple source layers can refer to the same reference station, so totals are diagnostic rather than unique release totals.",
     )
     append_table_section(
         lines,

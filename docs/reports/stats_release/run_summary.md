@@ -1,10 +1,10 @@
 # Release Stats Run Summary
 
 - Release directory: `output/sed_reference_release`
-- Run started UTC: `2026-08-01T17:10:53+00:00`
-- Run finished UTC: `2026-08-01T17:12:14+00:00`
-- Release fingerprint: `a86853e582e3c6ea155a99453a00243ef2f889b4c58b2a4eeda089fa2b9e1107`
-- Stats script fingerprint: `004f9adaf6ed337361fbb3f9ca413dacc9fb7266f22756a659561e62a052ed9b`
+- Run started UTC: `2026-08-11T05:11:37+00:00`
+- Run finished UTC: `2026-08-11T05:12:58+00:00`
+- Release fingerprint: `72831f8bed7a978d19126b454714f4c2611d8a1f4217069ccb24c4b819175c17`
+- Stats script fingerprint: `255922d041f8cb96a00c132d168c9fe62dd973913279bf6388bcc66428778c03`
 - Clean output before run: `True`
 - Summary CSV: `output_other/stats_release/run_summary.csv`
 - Manifest CSV: `output_other/stats_release/run_manifest.csv`

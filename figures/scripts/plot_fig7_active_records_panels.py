@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """Generate active-records three-panel figure from release matrix products.
 
-Outputs:
-    figures/final/active_records_panels.png
-    figures/final/active_records_panels.pdf
-    figures/data/active_records_panels_plotting_data.csv
-    figures/checklists/active_records_panels_checklist.md
-
-Usage:
-    python plot_active_records_panels.py
-    python plot_active_records_panels.py --release-dir /path/to/release
-    python plot_active_records_panels.py --out-dir /path/to/figures
+Output artifact names are derived from this script filename after removing
+the leading ``plot_`` prefix.
 """
 # ---- Library path setup: MUST happen before any extension-module imports ----
 import os as _os
@@ -58,11 +50,19 @@ from stats_release.release_paths import MATRIX_PRODUCTS
 
 DEFAULT_FIGURES_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
 DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
+
+
+def script_output_stem() -> str:
+    stem = Path(__file__).resolve().stem
+    return stem[5:] if stem.startswith("plot_") else stem
+
+
+FIGURE_ID = script_output_stem()
 VARIABLES = ("Q", "SSC", "SSL")
 YEARLY_COLUMNS = (
     "resolution",
     "year",
-    "active_clusters",
+    "active_reference_stations",
     "record_count_any",
     "record_count_Q",
     "record_count_SSC",
@@ -126,7 +126,7 @@ def _empty_year_item(resolution: str, year: int) -> dict:
     return {
         "resolution": resolution,
         "year": int(year),
-        "active_clusters": 0,
+        "active_reference_stations": 0,
         "record_count_any": 0,
         "record_count_Q": 0,
         "record_count_SSC": 0,
@@ -179,7 +179,7 @@ def scan_by_year(ctx, resolution: str, file_name: str, row_chunk_size: int = 128
             for year, cols in year_cols.items():
                 item = by_year.setdefault(year, _empty_year_item(resolution, year))
                 y_any = any_mask[:, cols]
-                item["active_clusters"] += int(np.count_nonzero(np.any(y_any, axis=1)))
+                item["active_reference_stations"] += int(np.count_nonzero(np.any(y_any, axis=1)))
                 item["record_count_any"] += int(np.count_nonzero(y_any))
                 item["record_count_Q"] += int(np.count_nonzero(q_record[:, cols]))
                 item["record_count_SSC"] += int(np.count_nonzero(ssc_record[:, cols]))
@@ -199,7 +199,7 @@ def scan_by_year(ctx, resolution: str, file_name: str, row_chunk_size: int = 128
 
 
 def build_active_records_by_year(ctx) -> pd.DataFrame:
-    """Compute yearly active clusters, records, and triplet completeness."""
+    """Compute yearly active reference stations, records, and triplet completeness."""
     frames = []
     for resolution, file_name in MATRIX_PRODUCTS.items():
         frame = scan_by_year(ctx, resolution, file_name)
@@ -225,7 +225,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
 
     fig, axes = plt.subplots(3, 1, figsize=STYLE["figsize"], sharex=True)
     panels = [
-        ("active_clusters", "Active clusters", "Active clusters by year"),
+        ("active_reference_stations", "Active stations", "Active reference stations by year"),
         ("record_count_any", "Record count", "Record count by year"),
         ("complete_triplet_ratio", "Complete Q\u2013SSC\u2013SSL cells (%)", "Complete Q\u2013SSC\u2013SSL triplets / any records"),
     ]
@@ -312,7 +312,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
         f"- Plotting data: `{figure_id}_plotting_data.csv`",
         f"- Date exported: {datetime.date.today().isoformat()}",
         "- Figure type: line plot (time series)",
-        "- Single-panel or multi-panel: multi-panel (3 panels: active clusters, record count, triplet %)",
+        "- Single-panel or multi-panel: multi-panel (3 panels: active reference stations, record count, triplet %)",
         "",
         "## File format and size",
         "",
@@ -366,7 +366,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
         f"- Plotting data saved: yes (`{figure_id}_plotting_data.csv`)",
         f"- Plotting script saved: yes (`plot_{figure_id}.py`)",
         "- Input paths documented: yes (DEFAULT_MINIMAL_RELEASE_DIR, MATRIX_PRODUCTS)",
-        "- Filtering rules documented: yes (active_clusters = cluster rows with >=1 record; record_count = selected_source_index >= 0 cells or cells with any finite Q/SSC/SSL; triplet = complete Q+SSC+SSL)",
+        "- Filtering rules documented: yes (active_reference_stations = station rows with >=1 record; record_count = selected_source_index >= 0 cells or cells with any finite Q/SSC/SSL; triplet = complete Q+SSC+SSL)",
         "- Color and marker mappings defined in code: yes (RESOLUTION_COLORS, LINE_STYLES at module level)",
         "- Figure can be regenerated from saved files: yes",
         "",
@@ -397,7 +397,7 @@ def main(argv=None) -> int:
         print("ERROR: no temporal data found in matrix products.", file=sys.stderr)
         return 1
 
-    write_figure_and_artifacts(by_year, figure_dirs, "active_records_panels", dpi)
+    write_figure_and_artifacts(by_year, figure_dirs, FIGURE_ID, dpi)
     return 0
 
 
