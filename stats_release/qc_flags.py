@@ -164,7 +164,8 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
                         "not_checked_count": int(g.loc[g["is_not_checked"], "count"].sum()),
                         "problem_count": int(g.loc[g["is_problem"], "count"].sum()),
                     }
-                )
+                ),
+                include_groups=False,
             )
             .reset_index()
         )
@@ -393,7 +394,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
         save_figure(fig, figures_dir / "fig_qc_missing_trends.png", dpi=dpi, also_pdf=False)
         save_figure(fig, figures_dir / "fig_qc_stage_summary.png", dpi=dpi, also_pdf=False)
         save_figure(fig, figures_dir / "fig_qc_top_problem_sources.png", dpi=dpi, also_pdf=False)
-        save_figure(fig, figures_dir / "fig_qc_top_problem_clusters.png", dpi=dpi, also_pdf=False)
+        save_figure(fig, figures_dir / "fig_qc_top_problem_reference_stations.png", dpi=dpi, also_pdf=False)
         plt.close(fig)
 
     for product in ("climatology", "satellite"):
@@ -412,7 +413,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
                 "fig_qc_health_by_resolution.png",
                 "fig_qc_missing_trends.png",
                 "fig_qc_stage_summary.png",
-                "fig_qc_top_problem_clusters.png",
+                "fig_qc_top_problem_reference_stations.png",
                 "fig_qc_top_problem_sources.png",
                 "fig_qc_yearly_problem_trends.png",
             ):
@@ -433,7 +434,7 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
                 "fig_qc_health_by_resolution.png",
                 "fig_qc_missing_trends.png",
                 "fig_qc_stage_summary.png",
-                "fig_qc_top_problem_clusters.png",
+                "fig_qc_top_problem_reference_stations.png",
                 "fig_qc_top_problem_sources.png",
                 "fig_qc_yearly_problem_trends.png",
             ):
@@ -579,7 +580,7 @@ def build_detailed_qc_report(
     )
     append_table_section(
         lines,
-        "Problem Clusters",
+        "Problem Stations",
         problem_clusters,
         max_rows=16,
     )

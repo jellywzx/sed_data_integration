@@ -105,7 +105,7 @@ class ReleaseContext:
         if checked is None:
             return pd.DataFrame()
         kwargs.setdefault("keep_default_na", False)
-        return pd.read_csv(checked, **kwargs)
+        return normalize_station_aliases(pd.read_csv(checked, **kwargs), checked.name)
 
     def open_dataset(self, name_or_path, required=True):
         if nc4 is None:
@@ -148,9 +148,139 @@ def context_from_args(args) -> ReleaseContext:
     return ReleaseContext(release_dir=Path(args.release_dir), out_dir=Path(args.out_dir), strict_release_only=bool(args.strict_release_only))
 
 
+PUBLIC_OUTPUT_RENAMES = {
+    "cluster_uid": "station_uid",
+    "cluster_id": "station_reference_id",
+    "linked_cluster_uid": "linked_station_uid",
+    "linked_cluster_id": "linked_station_reference_id",
+    "source_station_cluster_index": "source_station_reference_index",
+    "unique_cluster_uid": "unique_station_uid",
+    "n_clusters": "n_reference_stations",
+    "n_clusters_total": "n_reference_stations_total",
+    "n_nonmissing_clusters": "n_nonmissing_reference_stations",
+    "cluster_count": "reference_station_count",
+    "clusters": "reference_stations",
+    "active_clusters": "active_reference_stations",
+    "linked_cluster_count": "linked_reference_station_count",
+    "satellite_cluster_count": "satellite_reference_station_count",
+    "satellite_linked_cluster_count": "satellite_linked_reference_station_count",
+    "main_cluster_count": "main_reference_station_count",
+    "record_attributed_cluster_count": "record_attributed_reference_station_count",
+    "cluster_attributed_record_count": "reference_station_attributed_record_count",
+    "final_cluster_count": "final_reference_station_count",
+    "daily_cluster_count": "daily_reference_station_count",
+    "monthly_cluster_count": "monthly_reference_station_count",
+    "annual_cluster_count": "annual_reference_station_count",
+    "resolved_cluster_count": "resolved_reference_station_count",
+    "unresolved_cluster_count": "unresolved_reference_station_count",
+    "unknown_status_cluster_count": "unknown_status_reference_station_count",
+    "basin_polygon_cluster_count": "basin_polygon_reference_station_count",
+    "upstream_area_valid_cluster_count": "upstream_area_valid_reference_station_count",
+    "upstream_area_missing_or_invalid_cluster_count": "upstream_area_missing_or_invalid_reference_station_count",
+    "unknown_country_cluster_count": "unknown_country_reference_station_count",
+    "valid_latlon_clusters": "valid_latlon_reference_stations",
+    "percent_clusters": "percent_reference_stations",
+    "fraction_of_valid_area_clusters": "fraction_of_valid_area_reference_stations",
+    "pct_of_clusters": "pct_of_reference_stations",
+    "cluster_percent_of_source_rows": "reference_station_percent_of_source_rows",
+    "total_clusters_sum": "total_reference_stations_sum",
+    "total_clusters_source_sum": "total_reference_stations_source_sum",
+}
+for _var in ("Q", "SSC", "SSL"):
+    PUBLIC_OUTPUT_RENAMES["{}_clusters".format(_var)] = "{}_reference_stations".format(_var)
+    PUBLIC_OUTPUT_RENAMES["{}_cluster_coverage_pct".format(_var)] = "{}_reference_station_coverage_pct".format(_var)
+del _var
+
+PUBLIC_OUTPUT_TEXT_REPLACEMENTS = (
+    ("source_station_cluster_index", "source_station_reference_index"),
+    ("linked_cluster_uid", "linked_station_uid"),
+    ("linked_cluster_id", "linked_station_reference_id"),
+    ("cluster_uid", "station_uid"),
+    ("cluster_id", "station_reference_id"),
+    ("unique_cluster_uid", "unique_station_uid"),
+    ("active_clusters", "active_reference_stations"),
+    ("n_nonmissing_clusters", "n_nonmissing_reference_stations"),
+    ("n_clusters_total", "n_reference_stations_total"),
+    ("n_clusters", "n_reference_stations"),
+    ("cluster_count", "reference_station_count"),
+    ("linked_cluster_count", "linked_reference_station_count"),
+    ("satellite_linked_cluster_count", "satellite_linked_reference_station_count"),
+    ("satellite_cluster_count", "satellite_reference_station_count"),
+    ("record_attributed_cluster_count", "record_attributed_reference_station_count"),
+    ("cluster_attributed_record_count", "reference_station_attributed_record_count"),
+    ("total_clusters_source_sum", "total_reference_stations_source_sum"),
+    ("valid_latlon_clusters", "valid_latlon_reference_stations"),
+    ("unknown_country_clusters", "unknown_country_reference_stations"),
+    ("clusters_with_valid_lat_lon", "reference_stations_with_valid_lat_lon"),
+    ("satellite_by_linked_cluster", "satellite_by_linked_station"),
+    ("table_active_clusters_by_year", "table_active_reference_stations_by_year"),
+    ("table_satellite_by_linked_cluster", "table_satellite_by_linked_station"),
+    ("table_cluster_spatial_attributes", "table_reference_station_spatial_attributes"),
+    ("table_unknown_country_region_clusters", "table_unknown_country_region_reference_stations"),
+    ("fig_active_clusters_by_year", "fig_active_reference_stations_by_year"),
+    ("fig_global_cluster_distribution", "fig_global_station_distribution"),
+    ("fig_global_cluster_status_and_basins", "fig_global_station_status_and_basins"),
+    ("fig_spatial_coverage_by_region_source_clusters", "fig_spatial_coverage_by_region_source_reference_stations"),
+    ("fig_source_contribution_clusters", "fig_source_contribution_reference_stations"),
+    ("fig_satellite_contribution_clusters", "fig_satellite_contribution_reference_stations"),
+    ("fig_climatology_contribution_clusters", "fig_climatology_contribution_reference_stations"),
+    ("fig_qc_top_problem_clusters", "fig_qc_top_problem_reference_stations"),
+    ("table_qc_flag_by_cluster", "table_qc_flag_by_reference_station"),
+    ("table_qc_flag_problem_clusters", "table_qc_flag_problem_reference_stations"),
+    ("clusters_by_resolution", "reference_stations_by_resolution"),
+    ("contribution_clusters", "contribution_reference_stations"),
+    ("problem_clusters", "problem_reference_stations"),
+    ("source_clusters", "source_reference_stations"),
+    ("cluster_spatial_attributes", "reference_station_spatial_attributes"),
+    ("unknown_country_region_clusters", "unknown_country_region_reference_stations"),
+    ("by_linked_cluster", "by_linked_station"),
+    ("active_clusters", "active_reference_stations"),
+    ("reference clusters", "reference stations"),
+    ("Reference clusters", "Reference stations"),
+    ("clusters", "reference_stations"),
+    ("Clusters", "Reference stations"),
+    ("cluster", "station"),
+    ("Cluster", "Station"),
+)
+
+
+def public_station_output_name(name: object) -> str:
+    text = str(name)
+    for old, new in PUBLIC_OUTPUT_TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
+def public_station_output_frame(frame: pd.DataFrame, *, rename_values: bool = True) -> pd.DataFrame:
+    if frame is None:
+        return frame
+    out = frame.copy()
+    for old, new in PUBLIC_OUTPUT_RENAMES.items():
+        if old in out.columns and new in out.columns:
+            old_values = out[old]
+            new_blank = out[new].astype(str).str.strip().eq("")
+            out.loc[new_blank, new] = old_values.loc[new_blank]
+            out = out.drop(columns=[old])
+        elif old in out.columns:
+            out = out.rename(columns={old: new})
+    if rename_values:
+        for col in ("metric", "unit", "unit_type", "entity", "rank_metric", "label", "summary_level", "category", "uid_var", "catalog_col"):
+            if col in out.columns:
+                out[col] = out[col].map(lambda value: public_station_output_name(value) if isinstance(value, str) else value)
+    return out
+
+
+def public_station_output_path(path: Path) -> Path:
+    path = Path(path)
+    new_name = public_station_output_name(path.name)
+    return path.with_name(new_name)
+
+
 def write_csv(df: pd.DataFrame, path: Path) -> Path:
+    path = public_station_output_path(Path(path))
     ensure_parent(path)
-    df.to_csv(path, index=False)
+    rename_values = "parity" not in path.name
+    public_station_output_frame(df, rename_values=rename_values).to_csv(path, index=False)
     return path
 
 
@@ -225,6 +355,33 @@ def text_series(frame: pd.DataFrame, col: str) -> pd.Series:
     return frame[col].map(clean_text)
 
 
+def normalize_station_aliases(frame: pd.DataFrame, file_name: str = "") -> pd.DataFrame:
+    """Add public/legacy station aliases when reading either naming style."""
+    if frame.empty:
+        return frame
+    out = frame.copy()
+    if "station_uid" not in out.columns and "cluster_uid" in out.columns:
+        out["station_uid"] = out["cluster_uid"]
+    if "station_reference_id" not in out.columns and "cluster_id" in out.columns:
+        out["station_reference_id"] = out["cluster_id"]
+    if "linked_station_uid" not in out.columns and "linked_cluster_uid" in out.columns:
+        out["linked_station_uid"] = out["linked_cluster_uid"]
+    if "linked_station_reference_id" not in out.columns and "linked_cluster_id" in out.columns:
+        out["linked_station_reference_id"] = out["linked_cluster_id"]
+    if "cluster_uid" not in out.columns:
+        for col in ("station_uid", "linked_station_uid"):
+            if col in out.columns:
+                out["cluster_uid"] = out[col]
+                break
+    if "cluster_id" not in out.columns and "station_reference_id" in out.columns:
+        out["cluster_id"] = out["station_reference_id"]
+    if "linked_cluster_uid" not in out.columns and "linked_station_uid" in out.columns:
+        out["linked_cluster_uid"] = out["linked_station_uid"]
+    if "linked_cluster_id" not in out.columns and "linked_station_reference_id" in out.columns:
+        out["linked_cluster_id"] = out["linked_station_reference_id"]
+    return out
+
+
 def split_pipe(value: object) -> list:
     out = []
     for part in clean_text(value).replace(",", "|").split("|"):
@@ -235,6 +392,20 @@ def split_pipe(value: object) -> list:
 
 
 def read_text_var(ds, name: str, size=None) -> list:
+    if name not in ds.variables:
+        for alias in {
+            "cluster_uid": ("station_uid", "linked_station_uid"),
+            "cluster_id": ("station_reference_id", "linked_station_reference_id"),
+            "linked_cluster_uid": ("linked_station_uid",),
+            "linked_cluster_id": ("linked_station_reference_id",),
+            "station_uid": ("cluster_uid",),
+            "station_reference_id": ("cluster_id",),
+            "linked_station_uid": ("linked_cluster_uid",),
+            "linked_station_reference_id": ("linked_cluster_id",),
+        }.get(name, ()):
+            if alias in ds.variables:
+                name = alias
+                break
     if name not in ds.variables:
         return [""] * int(size or 0)
     arr = np.asarray(ds.variables[name][:], dtype=object).reshape(-1)

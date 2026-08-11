@@ -10,6 +10,8 @@ from typing import Iterable, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from stats_release.release_io import public_station_output_frame, public_station_output_name
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_PATH_MARKERS = ("/share/home/dq134", "/share/home/", "/home/", "/Users/")
@@ -112,6 +114,26 @@ def fmt_cell(value: object, column: str = "") -> str:
     return md_escape(value)
 
 
+def display_column_label(label: object) -> str:
+    text = sanitize_text(public_station_output_name(label))
+    replacements = (
+        ("linked reference station count", "linked reference stations"),
+        ("satellite reference station count", "satellite reference stations"),
+        ("accepted reference stations", "accepted reference stations"),
+        ("unique cluster uid", "unique station uid"),
+        ("percent reference stations", "percent reference stations"),
+        ("fraction of valid area reference stations", "fraction of valid area reference stations"),
+        ("reference station count", "reference stations"),
+        ("n reference stations", "reference stations"),
+        ("reference_stations", "reference stations"),
+        ("station uid", "station uid"),
+        ("station reference id", "station reference id"),
+    )
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text
+
+
 def markdown_table(
     frame: pd.DataFrame,
     columns: Optional[Sequence[str]] = None,
@@ -122,17 +144,18 @@ def markdown_table(
     """Render a compact Markdown table from a DataFrame."""
     if frame is None or frame.empty:
         return "_No rows._"
-    cols = list(columns or frame.columns)
-    cols = [col for col in cols if col in frame.columns]
+    work_frame = public_station_output_frame(frame, rename_values=True)
+    cols = [public_station_output_name(col) for col in list(columns or frame.columns)]
+    cols = [col for col in cols if col in work_frame.columns]
     if not cols:
         return "_No matching columns._"
-    work = frame.loc[:, cols].head(max_rows).copy()
+    work = work_frame.loc[:, cols].head(max_rows).copy()
     if isinstance(headers, Mapping):
-        labels = [headers.get(col, col) for col in cols]
+        labels = [display_column_label(headers.get(col, col)) for col in cols]
     elif headers is not None:
-        labels = list(headers)[: len(cols)]
+        labels = [display_column_label(label) for label in list(headers)[: len(cols)]]
     else:
-        labels = [col.replace("_", " ") for col in cols]
+        labels = [display_column_label(col.replace("_", " ")) for col in cols]
     lines = [
         "| {} |".format(" | ".join(md_escape(label) for label in labels)),
         "|{}|".format("|".join("---" for _ in labels)),
@@ -157,9 +180,14 @@ def sorted_markdown_table(
     if frame is None or frame.empty:
         return "_No rows._"
     work = frame.copy()
-    if sort_by and sort_by in work.columns:
-        work[sort_by] = pd.to_numeric(work[sort_by], errors="ignore")
-        work = work.sort_values(sort_by, ascending=ascending)
+    public_sort_by = public_station_output_name(sort_by) if sort_by else sort_by
+    work = public_station_output_frame(work, rename_values=True)
+    if public_sort_by and public_sort_by in work.columns:
+        try:
+            work[public_sort_by] = pd.to_numeric(work[public_sort_by])
+        except (ValueError, TypeError):
+            pass
+        work = work.sort_values(public_sort_by, ascending=ascending)
     return markdown_table(work, columns=columns, headers=headers, max_rows=max_rows)
 
 

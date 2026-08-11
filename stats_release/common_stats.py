@@ -120,28 +120,11 @@ def resolution_values(ds, key=slice(None)) -> np.ndarray:
 
 
 def classify_source(source_name: object, source_family: object = "") -> tuple[str, str]:
-    """Classify source into (source_type, source_group) using the shared taxonomy."""
+    """Classify source using the shared source_family taxonomy only."""
     source = clean_text(source_name)
     family = clean_text(source_family).lower()
-
-    # Use the shared classifier when possible
     sf = classify_source_family(source, observation_type=family)
-    if sf == "satellite":
-        return "satellite", "satellite products"
-    if sf == "climatology":
-        return "climatology", "global compilations"
-    if sf == "in_situ":
-        # Further subdivide in-situ for reporting
-        lower = source.lower()
-        if lower in {"usgs", "hydat", "bayern"}:
-            return "in-situ", "national agencies"
-        if lower in {"hybam"}:
-            return "in-situ", "regional datasets"
-        if source:
-            return "literature", "global compilations"
-    if source:
-        return "literature", "global compilations"
-    return "unknown", "unknown"
+    return sf, sf
 
 
 def attach_source_classification(frame: pd.DataFrame, source_col: str = "source_name") -> pd.DataFrame:
@@ -193,6 +176,9 @@ def numeric_stats(values: np.ndarray) -> dict:
 
 
 def save_figure(fig, png_path: Path, dpi: int = 300, also_pdf: bool = True) -> None:
+    from stats_release.release_io import public_station_output_path
+
+    png_path = public_station_output_path(Path(png_path))
     png_path = ensure_parent(Path(png_path))
     fig.savefig(png_path, dpi=dpi)
     if also_pdf:
@@ -200,12 +186,16 @@ def save_figure(fig, png_path: Path, dpi: int = 300, also_pdf: bool = True) -> N
 
 
 def write_geojson_points(frame: pd.DataFrame, path: Path, lat_col: str = "lat", lon_col: str = "lon") -> None:
+    from stats_release.release_io import public_station_output_frame, public_station_output_path
+
+    frame = public_station_output_frame(frame, rename_values=True)
+    path = public_station_output_path(Path(path))
     rows = []
     lat = pd.to_numeric(frame.get(lat_col, pd.Series([], dtype=float)), errors="coerce")
     lon = pd.to_numeric(frame.get(lon_col, pd.Series([], dtype=float)), errors="coerce")
     for idx, row in frame.loc[lat.between(-90, 90) & lon.between(-180, 180)].iterrows():
         props = {}
-        for col in ("cluster_uid", "country", "continent_region", "resolution", "record_count"):
+        for col in ("station_uid", "country", "continent_region", "resolution", "record_count"):
             if col in frame.columns:
                 props[col] = clean_text(row.get(col, ""))
         rows.append(

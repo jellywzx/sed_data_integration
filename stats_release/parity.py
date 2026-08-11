@@ -8,6 +8,8 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
+from stats_release.release_io import public_station_output_name
+
 
 def _targets_for(module: str, legacy_script: str, outputs: Iterable[str]) -> List[Dict[str, object]]:
     rows = []
@@ -17,7 +19,7 @@ def _targets_for(module: str, legacy_script: str, outputs: Iterable[str]) -> Lis
                 "module": module,
                 "legacy_script": legacy_script,
                 "legacy_output": rel,
-                "new_output": "{}/{}".format(module, rel),
+                "new_output": "{}/{}".format(module, public_station_output_name(rel)),
                 "release_only_capable": 1,
                 "unsupported_reason": "",
             }
