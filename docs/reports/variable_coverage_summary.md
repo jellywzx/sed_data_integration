@@ -9,7 +9,7 @@
 ## Headline
 
 - Product groups summarized: 3
-- Product-variable denominator rows: 58,059,054
+- Product-variable denominator rows: 58,632,924
 - Satellite source-variable rows with less than 1% present values: 4
 - Extreme review points emitted: 180
 
@@ -17,23 +17,23 @@
 
 | product | variable | n records | n present | n good | n estimated | n usable | present percent | good percent | estimated percent | usable percent |
 |---|---|---|---|---|---|---|---|---|---|---|
-| master | Q | 2,873,420 | 2,856,356 | 2,803,162 | 0 | 2,803,162 | 99.41% | 97.55% | 0% | 97.55% |
-| master | SSC | 2,873,420 | 2,862,858 | 2,732,153 | 28,676 | 2,760,829 | 99.63% | 95.08% | 1.00% | 96.08% |
-| master | SSL | 2,873,420 | 2,863,661 | 75,679 | 2,648,231 | 2,723,910 | 99.66% | 2.63% | 92.16% | 94.80% |
-| climatology | Q | 1,322 | 782 | 782 | 0 | 782 | 59.15% | 59.15% | 0% | 59.15% |
-| climatology | SSC | 1,322 | 804 | 759 | 45 | 804 | 60.82% | 57.41% | 3.40% | 60.82% |
-| climatology | SSL | 1,322 | 1,298 | 1,298 | 0 | 1,298 | 98.18% | 98.18% | 0% | 98.18% |
+| master | Q | 3,064,671 | 2,852,106 | 2,791,428 | 0 | 2,791,428 | 93.06% | 91.08% | 0% | 91.08% |
+| master | SSC | 3,064,671 | 3,054,050 | 2,915,287 | 28,123 | 2,943,410 | 99.65% | 95.13% | 0.92% | 96.04% |
+| master | SSL | 3,064,671 | 2,862,606 | 15,100 | 2,700,499 | 2,715,599 | 93.41% | 0.49% | 88.12% | 88.61% |
+| climatology | Q | 1,361 | 782 | 782 | 0 | 782 | 57.46% | 57.46% | 0% | 57.46% |
+| climatology | SSC | 1,361 | 806 | 759 | 47 | 806 | 59.22% | 55.77% | 3.45% | 59.22% |
+| climatology | SSL | 1,361 | 1,337 | 1,337 | 0 | 1,337 | 98.24% | 98.24% | 0% | 98.24% |
 | satellite | Q | 16,478,276 | 133,823 | 132,614 | 0 | 132,614 | 0.81% | 0.80% | 0% | 0.80% |
 | satellite | SSC | 16,478,276 | 15,517,478 | 15,121,092 | 0 | 15,121,092 | 94.17% | 91.76% | 0% | 91.76% |
 | satellite | SSL | 16,478,276 | 133,823 | 132,693 | 0 | 132,693 | 0.81% | 0.81% | 0% | 0.81% |
 
 ## Matrix Coverage by Resolution
 
-| resolution | n records total | n clusters total | Q records | Q record coverage pct | SSC records | SSC record coverage pct | SSL records | SSL record coverage pct |
+| resolution | n records total | reference stations total | Q records | Q record coverage pct | SSC records | SSC record coverage pct | SSL records | SSL record coverage pct |
 |---|---|---|---|---|---|---|---|---|
-| daily | 2,746,665 | 1,596 | 2,729,764 | 99.38% | 2,736,267 | 99.62% | 2,740,162 | 99.76% |
-| monthly | 126,136 | 2,117 | 126,093 | 99.97% | 125,972 | 99.87% | 123,000 | 97.51% |
-| annual | 619 | 58 | 499 | 80.61% | 619 | 100% | 499 | 80.61% |
+| daily | 2,963,235 | 4,717 | 2,804,180 | 94.63% | 2,952,708 | 99.64% | 2,814,621 | 94.98% |
+| monthly | 100,901 | 2,697 | 47,578 | 47.15% | 100,807 | 99.91% | 47,637 | 47.21% |
+| annual | 535 | 49 | 348 | 65.05% | 535 | 100% | 348 | 65.05% |
 
 ## Analysis-Grade Coverage by Resolution
 
@@ -41,85 +41,141 @@ Analysis-grade rows use the release filter emitted by this module; no non-releas
 
 | resolution | analysis grade | n records total | Q record coverage pct | SSC record coverage pct | SSL record coverage pct |
 |---|---|---|---|---|---|
-| daily | release_nonmissing | 2,746,665 | 99.38% | 99.62% | 99.76% |
-| monthly | release_nonmissing | 126,136 | 99.97% | 99.87% | 97.51% |
-| annual | release_nonmissing | 619 | 80.61% | 100% | 80.61% |
+| daily | release_nonmissing | 2,963,235 | 94.63% | 99.64% | 94.98% |
+| monthly | release_nonmissing | 100,901 | 47.15% | 99.91% | 47.21% |
+| annual | release_nonmissing | 535 | 65.05% | 100% | 65.05% |
 
 ## Variable Summary Statistics
 
-| resolution | variable | n nonmissing records | n nonmissing clusters | mean | median | min | max | p05 | p95 | p99 | unit |
+| resolution | variable | n nonmissing records | n nonmissing reference stations | mean | median | min | max | p05 | p95 | p99 | unit |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| daily | SSL | 2,740,162 | 1,558 | 6,876 | 7.97 | 0 | 46,974,252 | 0 | 9,920 | 145,000 | ton day-1 |
-| daily | SSC | 2,736,267 | 1,596 | 456.08 | 23 | 0 | 4,300,000 | 1 | 705 | 7,200 | mg L-1 |
-| daily | Q | 2,729,764 | 1,558 | 329.89 | 3.37 | 0 | 260,100 | 0.00 | 614.48 | 6,258 | m3 s-1 |
-| monthly | Q | 126,093 | 2,117 | 263.96 | 0.11 | 0 | 4,972,518 | 0 | 186.44 | 4,225 | m3 s-1 |
-| monthly | SSC | 125,972 | 2,117 | 10,051 | 26.95 | 0 | 1,043,519,680 | 0 | 10,491 | 28,674 | mg L-1 |
-| monthly | SSL | 123,000 | 2,117 | 946.13 | 0.76 | 0 | 4,296,256 | 0 | 608.08 | 13,824 | ton day-1 |
-| annual | SSC | 619 | 58 | 2,151 | 207.52 | 0 | 141,000 | 10 | 8,544 | 55,136 | mg L-1 |
-| annual | Q | 499 | 34 | 169.65 | 59.20 | 0 | 1,144 | 0.40 | 622.71 | 845.94 | m3 s-1 |
-| annual | SSL | 499 | 34 | 2,706 | 985.63 | 0 | 55,688 | 0.48 | 10,160 | 16,744 | ton day-1 |
+| daily | SSC | 2,952,708 | 4,717 | 793.94 | 22 | 0 | 1,043,519,680 | 1 | 707 | 6,700 | mg L-1 |
+| daily | SSL | 2,814,621 | 2,481 | 6,430 | 7.19 | 0 | 46,974,252 | 0 | 9,219 | 134,305 | t d-1 |
+| daily | Q | 2,804,180 | 2,481 | 309.44 | 3.06 | 0 | 260,100 | 0.00 | 572.00 | 5,975 | m3 s-1 |
+| monthly | SSC | 100,807 | 2,697 | 1,951 | 21 | 0 | 285,436 | 2.10 | 12,353 | 31,000 | mg L-1 |
+| monthly | SSL | 47,637 | 1,240 | 2,224 | 1.75 | 0 | 4,296,256 | 0 | 2,352 | 57,888 | t d-1 |
+| monthly | Q | 47,578 | 1,240 | 643.35 | 0.40 | 0 | 4,972,518 | 0 | 924 | 14,769 | m3 s-1 |
+| annual | SSC | 535 | 49 | 2,527 | 207.85 | 0 | 141,000 | 5.40 | 8,968 | 67,874 | mg L-1 |
+| annual | Q | 348 | 7 | 222.97 | 157.81 | 1.27 | 1,144 | 4.86 | 631.50 | 891.03 | m3 s-1 |
+| annual | SSL | 348 | 7 | 3,755 | 1,766 | 0 | 55,688 | 119.10 | 10,987 | 17,149 | t d-1 |
 
 ## Analysis-Grade Summary Statistics
 
 | resolution | variable | analysis grade | n nonmissing records | mean | median | p05 | p95 | p99 | unit |
 |---|---|---|---|---|---|---|---|---|---|
-| daily | SSL | release_nonmissing | 2,740,162 | 6,876 | 7.97 | 0 | 9,920 | 145,000 | ton day-1 |
-| daily | SSC | release_nonmissing | 2,736,267 | 456.08 | 23 | 1 | 705 | 7,200 | mg L-1 |
-| daily | Q | release_nonmissing | 2,729,764 | 329.89 | 3.37 | 0.00 | 614.48 | 6,258 | m3 s-1 |
-| monthly | Q | release_nonmissing | 126,093 | 263.96 | 0.11 | 0 | 186.44 | 4,225 | m3 s-1 |
-| monthly | SSC | release_nonmissing | 125,972 | 10,051 | 26.95 | 0 | 10,491 | 28,674 | mg L-1 |
-| monthly | SSL | release_nonmissing | 123,000 | 946.13 | 0.76 | 0 | 608.08 | 13,824 | ton day-1 |
-| annual | SSC | release_nonmissing | 619 | 2,151 | 207.52 | 10 | 8,544 | 55,136 | mg L-1 |
-| annual | Q | release_nonmissing | 499 | 169.65 | 59.20 | 0.40 | 622.71 | 845.94 | m3 s-1 |
-| annual | SSL | release_nonmissing | 499 | 2,706 | 985.63 | 0.48 | 10,160 | 16,744 | ton day-1 |
+| daily | SSC | release_nonmissing | 2,952,708 | 793.94 | 22 | 1 | 707 | 6,700 | mg L-1 |
+| daily | SSL | release_nonmissing | 2,814,621 | 6,430 | 7.19 | 0 | 9,219 | 134,305 | t d-1 |
+| daily | Q | release_nonmissing | 2,804,180 | 309.44 | 3.06 | 0.00 | 572.00 | 5,975 | m3 s-1 |
+| monthly | SSC | release_nonmissing | 100,807 | 1,951 | 21 | 2.10 | 12,353 | 31,000 | mg L-1 |
+| monthly | SSL | release_nonmissing | 47,637 | 2,224 | 1.75 | 0 | 2,352 | 57,888 | t d-1 |
+| monthly | Q | release_nonmissing | 47,578 | 643.35 | 0.40 | 0 | 924 | 14,769 | m3 s-1 |
+| annual | SSC | release_nonmissing | 535 | 2,527 | 207.85 | 5.40 | 8,968 | 67,874 | mg L-1 |
+| annual | Q | release_nonmissing | 348 | 222.97 | 157.81 | 4.86 | 631.50 | 891.03 | m3 s-1 |
+| annual | SSL | release_nonmissing | 348 | 3,755 | 1,766 | 119.10 | 10,987 | 17,149 | t d-1 |
+
+## Flag 0–1 Summary Statistics (master product)
+
+Statistics computed only on values where the variable flag is 0 (good) or 1 (estimated/derived).
+
+| resolution | variable | n flag01 records | mean | median | p05 | p95 | p99 | unit |
+|---|---|---|---|---|---|---|---|---|
+| daily | SSC | 2,847,805 | 393.90 | 21.41 | 1 | 588 | 5,880 | mg L-1 |
+| daily | Q | 2,744,728 | 312.43 | 3 | 0.00 | 566.34 | 6,050 | m3 s-1 |
+| daily | SSL | 2,671,478 | 6,149 | 6.53 | 0 | 8,040 | 129,000 | t d-1 |
+| monthly | SSC | 95,093 | 2,016 | 20.40 | 2.10 | 12,721 | 31,389 | mg L-1 |
+| monthly | Q | 46,358 | 532.79 | 0.30 | 0 | 950.30 | 14,943 | m3 s-1 |
+| monthly | SSL | 43,781 | 2,139 | 1.56 | 0 | 2,246 | 60,480 | t d-1 |
+| annual | SSC | 512 | 2,138 | 207.84 | 8.20 | 8,774 | 38,647 | mg L-1 |
+| annual | Q | 342 | 224.69 | 158.12 | 5.07 | 632.35 | 896.33 | m3 s-1 |
+| annual | SSL | 340 | 3,654 | 1,793 | 109.51 | 10,954 | 16,013 | t d-1 |
+
+## Zero-Value Flag Distribution (master product)
+
+For exact-zero variable values, the distribution of their associated flags.
+
+| resolution | variable | flag value | flag meaning | n zero | unit |
+|---|---|---|---|---|---|
+| daily | SSL | 1 | derived/estimated | 158,569 | t d-1 |
+| daily | SSC | 0 | good | 133,112 | mg L-1 |
+| daily | Q | 0 | good | 102,567 | m3 s-1 |
+| monthly | Q | 0 | good | 2,893 | m3 s-1 |
+| monthly | SSL | 1 | derived/estimated | 2,723 | t d-1 |
+| daily | SSL | 2 | suspect | 2,443 | t d-1 |
+| monthly | SSC | 0 | good | 389 | mg L-1 |
+| monthly | SSL | 2 | suspect | 135 | t d-1 |
+| daily | SSL | 0 | good | 89 | t d-1 |
+| monthly | SSL | 0 | good | 53 | t d-1 |
+| monthly | SSC | 1 | derived/estimated | 28 | mg L-1 |
+| annual | SSC | 0 | good | 16 | mg L-1 |
+| annual | SSL | 0 | good | 2 | t d-1 |
+| annual | SSC | 1 | derived/estimated | 1 | mg L-1 |
+| annual | SSC | 2 | suspect | 1 | mg L-1 |
+
+## Zero-Source Audit (master product)
+
+SSC=0 records broken down by resolution x source, paired Q status, and direct (flag=0) vs derived (flag=1).
+
+| resolution | source | SSC=0 total | Q=0 & SSC=0 | Q>0 & SSC=0 | direct SSC=0 | derived SSC=0 |
+|---|---|---|---|---|---|---|
+| daily | USGS | 115,976 | 90,518 | 23,114 | 115,976 | 0 |
+| daily | HYDAT | 40,495 | 18,439 | 22,034 | 40,495 | 0 |
+| daily | EUSEDcollab | 13,444 | 6,868 | 6,572 | 13,444 | 0 |
+| daily | GFQA_v2 | 1,009 | 0 | 0 | 1,009 | 0 |
+| monthly | GFQA_v2 | 777 | 0 | 0 | 777 | 0 |
+| monthly | Eurasian_River | 56 | 0 | 56 | 0 | 56 |
+| daily | HYBAM | 27 | 0 | 27 | 27 | 0 |
+| annual | Huanghe | 20 | 0 | 0 | 20 | 0 |
+| annual | GFQA_v2 | 12 | 0 | 0 | 12 | 0 |
+| daily | Bayern | 6 | 0 | 0 | 6 | 0 |
+| annual | Chao_Phraya_River | 4 | 0 | 4 | 0 | 2 |
 
 ## Co-Located Variable Coverage
 
-| resolution | combination | combination type | n records | n clusters | pct of all records | pct of nonempty records | pct of clusters |
+| resolution | combination | combination type | n records | reference stations | pct of all records | pct of nonempty records | pct of reference stations |
 |---|---|---|---|---|---|---|---|
-| daily | Any | any | 2,746,665 | 1,596 | 100% | 100% | 100% |
-| daily | Q+SSC+SSL | exact | 2,729,764 | 1,558 | 99.38% | 99.38% | 97.62% |
-| monthly | Any | any | 126,136 | 2,117 | 100% | 100% | 100% |
-| monthly | Q+SSC+SSL | exact | 122,834 | 2,117 | 97.38% | 97.38% | 100% |
-| daily | SSL only | exact | 10,398 | 4 | 0.38% | 0.38% | 0.25% |
-| daily | SSC only | exact | 6,503 | 115 | 0.24% | 0.24% | 7.21% |
-| monthly | Q+SSC | exact | 3,136 | 8 | 2.49% | 2.49% | 0.38% |
-| annual | Any | any | 619 | 58 | 100% | 100% | 100% |
-| annual | Q+SSC+SSL | exact | 499 | 34 | 80.61% | 80.61% | 58.62% |
-| monthly | Q+SSL | exact | 123 | 12 | 0.10% | 0.10% | 0.57% |
-| annual | SSC only | exact | 120 | 24 | 19.39% | 19.39% | 41.38% |
-| monthly | SSL only | exact | 41 | 2 | 0.03% | 0.03% | 0.09% |
-| monthly | SSC+SSL | exact | 2 | 1 | 0.00% | 0.00% | 0.05% |
-| annual | Q only | exact | 0 | 0 | 0% | 0% | 0% |
-| annual | Q+SSL | exact | 0 | 0 | 0% | 0% | 0% |
+| daily | Any | any | 2,535,695 | 5,180 | 85.57% | 100% | 109.82% |
+| daily | Q+SSC+SSL | exact | 2,364,623 | 2,506 | 79.80% | 93.25% | 53.13% |
+| annual | Any | any | 499,465 | 213 | 93,357.94% | 100% | 434.69% |
+| annual | Q+SSC+SSL | exact | 452,619 | 74 | 84,601.68% | 90.62% | 151.02% |
+| daily | SSC only | exact | 160,449 | 3,564 | 5.41% | 6.33% | 75.56% |
+| monthly | Any | any | 100,901 | 2,697 | 100% | 100% | 100% |
+| monthly | SSC only | exact | 53,264 | 2,178 | 52.79% | 52.79% | 80.76% |
+| monthly | Q+SSC+SSL | exact | 47,543 | 1,240 | 47.12% | 47.12% | 45.98% |
+| annual | SSC only | exact | 46,715 | 152 | 8,731.78% | 9.35% | 310.20% |
+| daily | SSL only | exact | 10,498 | 14 | 0.35% | 0.41% | 0.30% |
+| daily | Q+SSL | exact | 123 | 12 | 0.00% | 0.00% | 0.25% |
+| annual | Q+SSL | exact | 88 | 2 | 16.45% | 0.02% | 4.08% |
+| monthly | SSL only | exact | 59 | 8 | 0.06% | 0.06% | 0.30% |
+| annual | SSL only | exact | 41 | 2 | 7.66% | 0.01% | 4.08% |
+| monthly | Q+SSL | exact | 35 | 10 | 0.03% | 0.03% | 0.37% |
+| annual | SSC+SSL | exact | 2 | 1 | 0.37% | 0.00% | 2.04% |
+| daily | SSC+SSL | exact | 2 | 1 | 0.00% | 0.00% | 0.02% |
 | annual | Q+SSC | exact | 0 | 0 | 0% | 0% | 0% |
-| annual | SSL only | exact | 0 | 0 | 0% | 0% | 0% |
-| annual | SSC+SSL | exact | 0 | 0 | 0% | 0% | 0% |
 
 _Showing first 18 of 24 rows._
 
 ## Analysis-Grade Co-Located Coverage
 
-| resolution | analysis grade | combination | n records | n clusters | pct of nonempty records | pct of clusters |
+| resolution | analysis grade | combination | n records | reference stations | pct of nonempty records | pct of reference stations |
 |---|---|---|---|---|---|---|
-| daily | release_nonmissing | Any | 2,746,665 | 1,596 | 100% | 100% |
-| daily | release_nonmissing | Q+SSC+SSL | 2,729,764 | 1,558 | 99.38% | 97.62% |
-| monthly | release_nonmissing | Any | 126,136 | 2,117 | 100% | 100% |
-| monthly | release_nonmissing | Q+SSC+SSL | 122,834 | 2,117 | 97.38% | 100% |
-| daily | release_nonmissing | SSL only | 10,398 | 4 | 0.38% | 0.25% |
-| daily | release_nonmissing | SSC only | 6,503 | 115 | 0.24% | 7.21% |
-| monthly | release_nonmissing | Q+SSC | 3,136 | 8 | 2.49% | 0.38% |
-| annual | release_nonmissing | Any | 619 | 58 | 100% | 100% |
-| annual | release_nonmissing | Q+SSC+SSL | 499 | 34 | 80.61% | 58.62% |
-| monthly | release_nonmissing | Q+SSL | 123 | 12 | 0.10% | 0.57% |
-| annual | release_nonmissing | SSC only | 120 | 24 | 19.39% | 41.38% |
-| monthly | release_nonmissing | SSL only | 41 | 2 | 0.03% | 0.09% |
-| monthly | release_nonmissing | SSC+SSL | 2 | 1 | 0.00% | 0.05% |
-| annual | release_nonmissing | Q only | 0 | 0 | 0% | 0% |
-| annual | release_nonmissing | Q+SSL | 0 | 0 | 0% | 0% |
+| daily | release_nonmissing | Any | 2,535,695 | 5,180 | 100% | 109.82% |
+| daily | release_nonmissing | Q+SSC+SSL | 2,364,623 | 2,506 | 93.25% | 53.13% |
+| annual | release_nonmissing | Any | 499,465 | 213 | 100% | 434.69% |
+| annual | release_nonmissing | Q+SSC+SSL | 452,619 | 74 | 90.62% | 151.02% |
+| daily | release_nonmissing | SSC only | 160,449 | 3,564 | 6.33% | 75.56% |
+| monthly | release_nonmissing | Any | 100,901 | 2,697 | 100% | 100% |
+| monthly | release_nonmissing | SSC only | 53,264 | 2,178 | 52.79% | 80.76% |
+| monthly | release_nonmissing | Q+SSC+SSL | 47,543 | 1,240 | 47.12% | 45.98% |
+| annual | release_nonmissing | SSC only | 46,715 | 152 | 9.35% | 310.20% |
+| daily | release_nonmissing | SSL only | 10,498 | 14 | 0.41% | 0.30% |
+| daily | release_nonmissing | Q+SSL | 123 | 12 | 0.00% | 0.25% |
+| annual | release_nonmissing | Q+SSL | 88 | 2 | 0.02% | 4.08% |
+| monthly | release_nonmissing | SSL only | 59 | 8 | 0.06% | 0.30% |
+| annual | release_nonmissing | SSL only | 41 | 2 | 0.01% | 4.08% |
+| monthly | release_nonmissing | Q+SSL | 35 | 10 | 0.03% | 0.37% |
+| annual | release_nonmissing | SSC+SSL | 2 | 1 | 0.00% | 2.04% |
+| daily | release_nonmissing | SSC+SSL | 2 | 1 | 0.00% | 0.02% |
 | annual | release_nonmissing | Q+SSC | 0 | 0 | 0% | 0% |
-| annual | release_nonmissing | SSL only | 0 | 0 | 0% | 0% |
-| annual | release_nonmissing | SSC+SSL | 0 | 0 | 0% | 0% |
 
 _Showing first 18 of 24 rows._
 
@@ -202,26 +258,26 @@ gsed_ssc  = df[df['source'] == 'GSED'][['SSC']].dropna()
 
 | resolution | variable | value | station index | record index | review reason | unit |
 |---|---|---|---|---|---|---|
-| monthly | SSC | 1,043,519,680 | 1,674 | 2,738,785 | top_high_value | mg L-1 |
-| daily | SSL | 46,974,252 | 1,520 | 2,371,194 | top_high_value | ton day-1 |
-| daily | SSL | 12,110,549 | 1,520 | 2,371,193 | top_high_value | ton day-1 |
-| daily | SSL | 8,911,015 | 1,209 | 1,923,367 | top_high_value | ton day-1 |
-| daily | SSL | 8,505,740 | 1,209 | 1,923,368 | top_high_value | ton day-1 |
-| daily | SSL | 7,999,617 | 199 | 394,754 | top_high_value | ton day-1 |
-| daily | SSL | 7,977,997 | 719 | 1,072,497 | top_high_value | ton day-1 |
-| daily | SSL | 6,933,246 | 201 | 405,320 | top_high_value | ton day-1 |
-| daily | SSL | 6,009,596 | 199 | 394,872 | top_high_value | ton day-1 |
-| daily | SSL | 5,870,118 | 1,209 | 1,923,366 | top_high_value | ton day-1 |
-| daily | SSL | 5,823,018 | 199 | 394,871 | top_high_value | ton day-1 |
-| daily | SSL | 5,392,687 | 199 | 394,868 | top_high_value | ton day-1 |
-| daily | SSL | 5,369,010 | 1,209 | 1,926,702 | top_high_value | ton day-1 |
-| daily | SSL | 5,173,767 | 199 | 394,870 | top_high_value | ton day-1 |
-| daily | SSL | 5,120,672 | 199 | 394,869 | top_high_value | ton day-1 |
-| daily | SSL | 5,078,504 | 1,209 | 1,926,701 | top_high_value | ton day-1 |
-| daily | SSL | 5,069,019 | 201 | 405,327 | top_high_value | ton day-1 |
-| daily | SSL | 4,982,668 | 199 | 394,740 | top_high_value | ton day-1 |
-| daily | SSL | 4,974,426 | 1,209 | 1,923,369 | top_high_value | ton day-1 |
-| monthly | Q | 4,972,518 | 2,028 | 2,820,758 | top_high_value | m3 s-1 |
+| daily | SSC | 1,043,519,680 | 89 | 151,101 | top_high_value | mg L-1 |
+| daily | SSL | 46,974,252 | 4,633 | 2,651,841 | top_high_value | t d-1 |
+| daily | SSL | 12,110,549 | 4,633 | 2,651,840 | top_high_value | t d-1 |
+| daily | SSL | 8,911,015 | 4,318 | 2,077,185 | top_high_value | t d-1 |
+| daily | SSL | 8,505,740 | 4,318 | 2,077,186 | top_high_value | t d-1 |
+| daily | SSL | 7,977,997 | 3,831 | 1,276,711 | top_high_value | t d-1 |
+| daily | SSL | 6,933,246 | 3,289 | 631,179 | top_high_value | t d-1 |
+| daily | SSL | 6,009,596 | 3,287 | 617,820 | top_high_value | t d-1 |
+| daily | SSL | 5,870,118 | 4,318 | 2,077,184 | top_high_value | t d-1 |
+| daily | SSL | 5,392,687 | 3,287 | 617,818 | top_high_value | t d-1 |
+| daily | SSL | 5,369,010 | 4,318 | 2,080,520 | top_high_value | t d-1 |
+| daily | SSL | 5,173,767 | 3,287 | 617,819 | top_high_value | t d-1 |
+| daily | SSL | 5,078,504 | 4,318 | 2,080,519 | top_high_value | t d-1 |
+| daily | SSL | 5,069,019 | 3,289 | 631,185 | top_high_value | t d-1 |
+| daily | SSL | 4,982,668 | 3,287 | 617,754 | top_high_value | t d-1 |
+| daily | SSL | 4,974,426 | 4,318 | 2,077,187 | top_high_value | t d-1 |
+| monthly | Q | 4,972,518 | 5,602 | 3,007,849 | top_high_value | m3 s-1 |
+| daily | SSL | 4,935,461 | 3,286 | 630,499 | top_high_value | t d-1 |
+| daily | SSL | 4,682,162 | 3,289 | 631,183 | top_high_value | t d-1 |
+| daily | SSL | 4,645,106 | 3,292 | 634,481 | top_high_value | t d-1 |
 
 _Showing first 20 of 180 rows._
 

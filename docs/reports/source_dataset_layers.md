@@ -8,87 +8,87 @@
 
 ## Headline
 
-- Release-visible source datasets: 25
-- Release-visible membership rows: 46,240
-- Release-visible attributed records: 22,231,692
+- Release-visible source datasets: 22
+- Release-visible membership rows: 53,763
+- Release-visible attributed records: 22,666,931
 - Pipeline-only layers marked unsupported: 4
 
 ## Release Layer Summary
 
-| source name | layer | rows | clusters | records | resolutions |
+| source name | layer | rows | reference stations | records | resolutions |
 |---|---|---|---|---|---|
-| Bayern | main_station_catalog | 34 | 34 | 388,964 | daily |
-| Bayern | source_station_catalog | 34 | 34 | 388,964 | daily |
+| Bayern | main_station_catalog | 37 | 37 | 421,052 | daily |
+| Bayern | source_station_catalog | 37 | 37 | 421,052 | daily |
 | Chao_Phraya_River | main_station_catalog | 7 | 7 | 348 | annual |
 | Chao_Phraya_River | source_station_catalog | 7 | 7 | 348 | annual |
-| Dethier | satellite_catalog | 372 | 372 | 133,823 | monthly |
-| EUSEDcollab | main_station_catalog | 244 | 244 | 66,637 | monthly |
-| EUSEDcollab | source_station_catalog | 244 | 244 | 66,637 | monthly |
-| Eurasian_River | main_station_catalog | 17 | 17 | 3,204 | monthly |
-| Eurasian_River | source_station_catalog | 17 | 17 | 3,204 | monthly |
+| Dethier | satellite_catalog | 372 | 9 | 133,823 | monthly |
+| EUSEDcollab | main_station_catalog | 244 | 244 | 66,637 | daily\|monthly |
+| EUSEDcollab | source_station_catalog | 244 | 244 | 66,637 | daily\|monthly |
+| Eurasian_River | main_station_catalog | 17 | 17 | 3,263 | monthly |
+| Eurasian_River | source_station_catalog | 17 | 17 | 3,263 | monthly |
 | Fukushima | main_station_catalog | 2 | 2 | 3,069 | daily |
 | Fukushima | source_station_catalog | 2 | 2 | 3,069 | daily |
-| GFQA_v2 | main_station_catalog | 1,910 | 1,901 | 56,457 | annual\|daily\|monthly |
-| GFQA_v2 | source_station_catalog | 2,050 | 1,901 | 56,457 | annual\|daily\|monthly |
-| GSED | satellite_catalog | 5,237 | 5,237 | 2,144,599 | monthly |
-| GloRiSe | main_station_catalog | 77 | 77 | 103 | daily\|monthly |
+| GFQA_v2 | main_station_catalog | 5,583 | 5,499 | 236,513 | annual\|daily\|monthly |
+| GFQA_v2 | source_station_catalog | 5,812 | 5,499 | 186,867 | annual\|daily\|monthly |
+| GSED | satellite_catalog | 5,237 | 14 | 2,144,599 | monthly |
+| GloRiSe | main_station_catalog | 79 | 77 | 649 | daily\|monthly |
 | GloRiSe | source_station_catalog | 77 | 77 | 103 | daily\|monthly |
-| HYBAM | main_station_catalog | 12 | 12 | 11,826 | daily |
-| HYBAM | source_station_catalog | 12 | 12 | 11,826 | daily |
+| HYBAM | main_station_catalog | 12 | 12 | 9,404 | daily |
+| HYBAM | source_station_catalog | 12 | 12 | 9,404 | daily |
 
-_Showing first 18 of 43 rows._
+_Showing first 18 of 40 rows._
 
 ## Source Rollup
 
-| source name | layers | total rows | total clusters | total records |
-|---|---|---|---|---|
-| RiverSed | satellite_catalog | 32,941 | 32,941 | 14,199,854 |
-| USGS | main_station_catalog\|source_station_catalog | 1,774 | 1,774 | 3,319,577 |
-| GSED | satellite_catalog | 5,237 | 5,237 | 2,144,599 |
-| HYDAT | main_station_catalog\|source_station_catalog | 1,010 | 1,010 | 1,340,635 |
-| Bayern | main_station_catalog\|source_station_catalog | 68 | 68 | 777,928 |
-| Dethier | satellite_catalog | 372 | 372 | 133,823 |
-| EUSEDcollab | main_station_catalog\|source_station_catalog | 488 | 488 | 133,274 |
-| GFQA_v2 | main_station_catalog\|source_station_catalog | 3,960 | 3,802 | 112,914 |
-| HYBAM | main_station_catalog\|source_station_catalog | 24 | 24 | 23,652 |
-| Mekong_Delta | main_station_catalog\|source_station_catalog | 8 | 8 | 22,646 |
-| Robotham | main_station_catalog\|source_station_catalog | 6 | 6 | 6,864 |
-| Eurasian_River | main_station_catalog\|source_station_catalog | 34 | 34 | 6,408 |
-| Fukushima | main_station_catalog\|source_station_catalog | 4 | 4 | 6,138 |
-| NERC | main_station_catalog\|source_station_catalog | 8 | 8 | 1,248 |
-| Chao_Phraya_River | main_station_catalog\|source_station_catalog | 14 | 14 | 696 |
-| Rhine | main_station_catalog\|source_station_catalog | 24 | 24 | 624 |
-| Shashi_Jianli | main_station_catalog\|source_station_catalog | 4 | 4 | 308 |
-| Huanghe | main_station_catalog\|source_station_catalog | 48 | 48 | 240 |
+| source name | layers | total rows | total records |
+|---|---|---|---|
+| RiverSed | satellite_catalog | 32,941 | 14,199,854 |
+| USGS | main_station_catalog\|source_station_catalog | 1,779 | 3,375,790 |
+| GSED | satellite_catalog | 5,237 | 2,144,599 |
+| HYDAT | main_station_catalog\|source_station_catalog | 1,089 | 1,348,003 |
+| Bayern | main_station_catalog\|source_station_catalog | 74 | 842,104 |
+| GFQA_v2 | main_station_catalog\|source_station_catalog | 11,395 | 423,380 |
+| Dethier | satellite_catalog | 372 | 133,823 |
+| EUSEDcollab | main_station_catalog\|source_station_catalog | 488 | 133,274 |
+| Mekong_Delta | main_station_catalog\|source_station_catalog | 8 | 23,842 |
+| HYBAM | main_station_catalog\|source_station_catalog | 24 | 18,808 |
+| Robotham | main_station_catalog\|source_station_catalog | 6 | 6,864 |
+| Eurasian_River | main_station_catalog\|source_station_catalog | 34 | 6,526 |
+| Fukushima | main_station_catalog\|source_station_catalog | 4 | 6,138 |
+| NERC | main_station_catalog\|source_station_catalog | 8 | 1,248 |
+| GloRiSe | main_station_catalog\|source_station_catalog | 156 | 752 |
+| Chao_Phraya_River | main_station_catalog\|source_station_catalog | 14 | 696 |
+| Rhine | main_station_catalog\|source_station_catalog | 24 | 624 |
+| Shashi_Jianli | main_station_catalog\|source_station_catalog | 4 | 308 |
 
-_Showing first 18 of 25 rows._
+_Showing first 18 of 22 rows._
 
 ## Membership Sample
 
-Membership rows are catalog-derived. Multiple source layers can refer to the same cluster, so totals are diagnostic rather than unique release totals.
+Membership rows are catalog-derived. Multiple source layers can refer to the same reference station, so totals are diagnostic rather than unique release totals.
 
-| source name | layer | resolution | cluster uid | row count | record count |
+| source name | layer | resolution | station uid | row count | record count |
 |---|---|---|---|---|---|
-| Bayern | main_station_catalog | daily | SED000061 | 1 | 21,909 |
-| Bayern | source_station_catalog | daily | SED000061 | 1 | 21,909 |
-| Bayern | main_station_catalog | daily | SED000082 | 1 | 21,906 |
-| Bayern | source_station_catalog | daily | SED000082 | 1 | 21,906 |
-| Bayern | source_station_catalog | daily | SED000060 | 1 | 21,904 |
-| Bayern | main_station_catalog | daily | SED000060 | 1 | 21,904 |
-| Bayern | main_station_catalog | daily | SED000072 | 1 | 21,899 |
-| Bayern | source_station_catalog | daily | SED000072 | 1 | 21,899 |
-| Bayern | source_station_catalog | daily | SED000077 | 1 | 21,898 |
-| Bayern | main_station_catalog | daily | SED000077 | 1 | 21,898 |
-| Bayern | main_station_catalog | daily | SED000058 | 1 | 21,843 |
-| Bayern | source_station_catalog | daily | SED000058 | 1 | 21,843 |
-| Bayern | source_station_catalog | daily | SED000070 | 1 | 21,250 |
-| Bayern | main_station_catalog | daily | SED000070 | 1 | 21,250 |
-| Bayern | main_station_catalog | daily | SED000084 | 1 | 21,043 |
-| Bayern | source_station_catalog | daily | SED000084 | 1 | 21,043 |
-| Bayern | main_station_catalog | daily | SED000076 | 1 | 20,810 |
-| Bayern | source_station_catalog | daily | SED000076 | 1 | 20,810 |
+| Bayern | main_station_catalog | daily | SED000052 | 1 | 21,909 |
+| Bayern | source_station_catalog | daily | SED000052 | 1 | 21,909 |
+| Bayern | source_station_catalog | daily | SED000051 | 1 | 21,906 |
+| Bayern | source_station_catalog | daily | SED000076 | 1 | 21,906 |
+| Bayern | main_station_catalog | daily | SED000076 | 1 | 21,906 |
+| Bayern | main_station_catalog | daily | SED000051 | 1 | 21,906 |
+| Bayern | source_station_catalog | daily | SED000053 | 1 | 21,902 |
+| Bayern | main_station_catalog | daily | SED000053 | 1 | 21,902 |
+| Bayern | main_station_catalog | daily | SED000065 | 1 | 21,899 |
+| Bayern | source_station_catalog | daily | SED000065 | 1 | 21,899 |
+| Bayern | source_station_catalog | daily | SED000070 | 1 | 21,898 |
+| Bayern | main_station_catalog | daily | SED000070 | 1 | 21,898 |
+| Bayern | main_station_catalog | daily | SED000049 | 1 | 21,843 |
+| Bayern | source_station_catalog | daily | SED000049 | 1 | 21,843 |
+| Bayern | source_station_catalog | daily | SED000063 | 1 | 21,250 |
+| Bayern | main_station_catalog | daily | SED000063 | 1 | 21,250 |
+| Bayern | main_station_catalog | daily | SED000078 | 1 | 21,043 |
+| Bayern | source_station_catalog | daily | SED000078 | 1 | 21,043 |
 
-_Showing first 18 of 46,240 rows._
+_Showing first 18 of 53,763 rows._
 
 ## Unsupported Pipeline Layers
 
