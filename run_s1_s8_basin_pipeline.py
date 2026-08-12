@@ -3,12 +3,13 @@
 Run the scripts_basin_test basin mainline in order.
 
 Default stage layout:
-  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8 -> s9
 
 Stage details:
   s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
   s7 = cluster GPKG + source-station GPKG + cluster-basin GPKG
   s8 = release package + catalogs + validation report
+  s9 = public station-name conversion for sed_reference_release_minimal
 
 Typical usage:
   # Show all available command-line options
@@ -69,7 +70,7 @@ OUTPUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test" / "output"
 ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
-STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8")
+STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9")
 EXPLICIT_STAGES = STAGES[:5] + ("s5b",) + STAGES[5:]
 
 # ---- Built-in runtime defaults -------------------------------------------------
@@ -78,7 +79,7 @@ EXPLICIT_STAGES = STAGES[:5] + ("s5b",) + STAGES[5:]
 # For one-off runs, prefer passing CLI arguments so the change only affects
 # the current invocation.
 BUILTIN_START_AT = "s1"
-BUILTIN_END_AT = "s8"
+BUILTIN_END_AT = "s9"
 BUILTIN_STRICT_S1 = False
 
 BUILTIN_S2_WORKERS = 40
@@ -115,6 +116,8 @@ BUILTIN_S8_MINIMAL_MATRIX_WORKERS = 3
 BUILTIN_S8_MINIMAL_COMPRESSION = 4
 BUILTIN_S8_SKIP_MINIMAL_CLIMATOLOGY = False
 BUILTIN_S8_SKIP_MINIMAL_SATELLITE = False
+BUILTIN_S9_STRICT = True
+BUILTIN_S9_COPY_EXAMPLE = True
 BUILTIN_CLUSTER_POLL_SECONDS = 60
 
 
@@ -272,6 +275,7 @@ def _resolve_selected_stages(args):
 
 def stage_outputs():
     release_dir = OUTPUT_DIR / "sed_reference_release"
+    minimal_dir = OUTPUT_DIR / "sed_reference_release_minimal"
     return {
         "s1": [
             OUTPUT_DIR / "s1_verify_time_resolution_results.csv",
@@ -327,9 +331,13 @@ def stage_outputs():
             release_dir / "release_validation_report.csv",
             release_dir / "release_inventory.csv",
             release_dir / "README.md",
-            OUTPUT_DIR / "sed_reference_release_minimal" / "release_validation_report.csv",
-            OUTPUT_DIR / "sed_reference_release_minimal" / "release_inventory.csv",
-            OUTPUT_DIR / "sed_reference_release_minimal" / "README.md",
+            minimal_dir / "release_validation_report.csv",
+            minimal_dir / "release_inventory.csv",
+            minimal_dir / "README.md",
+        ],
+        "s9": [
+            minimal_dir / "public_station_names_report.csv",
+            minimal_dir / "example_reference_workflow.py",
         ],
     }
 
@@ -601,6 +609,19 @@ def build_stage_specs(args, python_bin):
         },
     ]
 
+    s9_cmd = [
+        python_bin,
+        str(SCRIPT_DIR / "s9_public_station_names.py"),
+        "--release-dir",
+        str(OUTPUT_DIR / "sed_reference_release_minimal"),
+    ]
+    if args.s9_strict:
+        s9_cmd.append("--strict")
+    if not args.s9_copy_example:
+        s9_cmd.append("--no-example")
+    if args.dry_run:
+        s9_cmd.append("--dry-run")
+
     return {
         "s1": {
             "label": "verify time resolution",
@@ -689,12 +710,21 @@ def build_stage_specs(args, python_bin):
             "label": "publish reference release package",
             "commands": s8_commands,
         },
+        "s9": {
+            "label": "convert public minimal release names",
+            "commands": [
+                {
+                    "name": "s9_public_station_names",
+                    "cmd": s9_cmd,
+                }
+            ],
+        },
     }
 
 
 def parse_args(defaults=None):
     parser = argparse.ArgumentParser(
-        description="Run the scripts_basin_test s1-s8 basin mainline in order."
+        description="Run the scripts_basin_test s1-s9 basin mainline in order."
     )
     parser.add_argument("--python", help="Python 3 interpreter used to launch each step.")
     parser.add_argument(
@@ -707,7 +737,7 @@ def parse_args(defaults=None):
     parser.add_argument(
         "--steps",
         help=(
-            "Comma-separated explicit stage list, e.g. s1,s2,s5 or s4,s6,s8. "
+            "Comma-separated explicit stage list, e.g. s1,s2,s5 or s4,s6,s8,s9. "
             "When set, --start-at/--end-at are ignored."
         ),
     )
@@ -910,6 +940,20 @@ def parse_args(defaults=None):
         default=BUILTIN_S8_SKIP_MINIMAL_SATELLITE,
         help="Skip building the satellite extension package in s8 minimal release.",
     )
+    parser.add_argument(
+        "--s9-no-strict",
+        action="store_false",
+        dest="s9_strict",
+        default=BUILTIN_S9_STRICT,
+        help="Do not fail S9 when residual old public cluster schema names remain.",
+    )
+    parser.add_argument(
+        "--s9-no-example",
+        action="store_false",
+        dest="s9_copy_example",
+        default=BUILTIN_S9_COPY_EXAMPLE,
+        help="Do not copy the public minimal example workflow into the S9 package.",
+    )
     if defaults:
         parser.set_defaults(**defaults)
     return parser.parse_args()
@@ -1021,6 +1065,8 @@ def _confirm_config(args, stages, python_bin):
         ("s8 skip minimal climatology", str(args.s8_skip_minimal_climatology)),
         ("s8 skip minimal satellite", str(args.s8_skip_minimal_satellite)),
         ("s8 skip gpkg", str(args.s8_skip_gpkg)),
+        ("s9 strict public-name audit", str(args.s9_strict)),
+        ("s9 copy example workflow", str(args.s9_copy_example)),
         ("include local basins", str(args.include_local_basins)),
         ("strict s1", str(args.strict_s1)),
         ("cluster poll seconds", str(args.cluster_poll_seconds)),
@@ -1047,7 +1093,7 @@ def _confirm_config(args, stages, python_bin):
     ]
 
     hints = [
-        ("Stages", "--steps s1,s2,s3,s5,s6  or  --start-at s4 --end-at s8"),
+        ("Stages", "--steps s1,s2,s3,s5,s6  or  --start-at s4 --end-at s9"),
         ("MERIT_DIR", "--merit-dir /path/to/MERIT_Hydro"),
         ("S4_N_WORKERS", "--s4-workers N"),
         ("S4_BATCH_SIZE", "--s4-batch-size N"),
@@ -1083,6 +1129,8 @@ def _confirm_config(args, stages, python_bin):
         ("s8 minimal compression", "--s8-minimal-compression N"),
         ("s8 skip minimal climatology", "--s8-skip-minimal-climatology"),
         ("s8 skip minimal satellite", "--s8-skip-minimal-satellite"),
+        ("s9 strict public-name audit", "--s9-no-strict (to warn but continue)"),
+        ("s9 copy example workflow", "--s9-no-example (to skip copying the example)"),
         ("include local basins", "--include-local-basins"),
         ("strict s1", "--strict-s1"),
         ("cluster poll seconds", "--cluster-poll-seconds N"),
@@ -1166,6 +1214,8 @@ _CONFIG_FIELDS = [
     ("s8_minimal_compression", "--s8-minimal-compression"),
     ("s8_skip_minimal_climatology", "--s8-skip-minimal-climatology"),
     ("s8_skip_minimal_satellite", "--s8-skip-minimal-satellite"),
+    ("s9_strict", "--s9-no-strict"),
+    ("s9_copy_example", "--s9-no-example"),
     ("python", "--python"),
     ("log_file", "--log-file"),
 ]
@@ -1192,12 +1242,12 @@ def _write_config_template():
 
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
-  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
+  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8, s9
   steps: ""
 
   # 起始 / 结束阶段（steps 为空时生效）
   start_at: s1
-  end_at: s8
+  end_at: s9
 
   # 试跑模式：只打印命令，不实际执行
   dry_run: false
@@ -1259,6 +1309,10 @@ cli:
   s8_minimal_compression: 4           # NetCDF compression level (0-9)
   s8_skip_minimal_climatology: false  # Skip climatology extension package
   s8_skip_minimal_satellite: false    # Skip satellite extension package
+
+  # s9: public station-name conversion for minimal release
+  s9_strict: true          # residual old public cluster schema names fail the stage
+  s9_copy_example: true    # include example_reference_workflow.py in the minimal package
 
 # ============================================================
 # 环境变量（仅通过 export 设置，非 CLI 参数）
@@ -1424,6 +1478,8 @@ def main():
         _print_and_log(log_fp, "s8 minimal compression:        {}".format(args.s8_minimal_compression))
         _print_and_log(log_fp, "s8 skip minimal climatology:  {}".format(args.s8_skip_minimal_climatology))
         _print_and_log(log_fp, "s8 skip minimal satellite:    {}".format(args.s8_skip_minimal_satellite))
+        _print_and_log(log_fp, "s9 strict public-name audit:   {}".format(args.s9_strict))
+        _print_and_log(log_fp, "s9 copy example workflow:      {}".format(args.s9_copy_example))
         _print_and_log(log_fp, "include local basins:    {}".format(args.include_local_basins))
         _print_and_log(log_fp, "strict s1:               {}".format(args.strict_s1))
         _print_and_log(log_fp, "cluster poll seconds:    {}".format(args.cluster_poll_seconds))
