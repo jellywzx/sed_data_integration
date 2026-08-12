@@ -61,12 +61,19 @@
    - 仅有年份范围（如 time_coverage_start/end 或 bounds） -> "long_term_average_起始年_结束年"
    - 否则                    -> "single_point_time_具体时间" 或 "single_point_interpret_error_..."
 
-4) 一致性判断（consistent）
+4) 最终语义判定（final_semantics）
+   对正常的 daily / monthly / annual 时间轴：
+   - 时间轴与 metadata 一致     -> 直接采用时间轴结果（classification_basis: time_axis）
+   - metadata 没写              -> 采用 path_semantics 结果（classification_basis: path_semantics）
+   - 时间轴与 metadata 冲突     -> 暂时仍采用时间轴结果，但进入人工审核队列
+                                   （classification_basis: time_axis_conflict_pending_review）
+
+5) 一致性判断（consistent）
    仅对路径分类为 daily / monthly / annually_climatology 的文件做一致性判定：
-   - 路径 daily               -> 仅当 detected_frequency = "daily" 时 consistent = True
-   - 路径 monthly             -> 仅当 detected_frequency = "monthly" 时 consistent = True
-   - 路径 annually_climatology-> 仅当 detected_frequency 为 "annual" 或 "quarterly" 时 consistent = True
-   - detected_frequency 为 "error:..." 或 "no_time_var" 时一律判为不一致（consistent = False）
+   - 路径 daily               -> 仅当 final_semantics = "daily" 时 consistent = True
+   - 路径 monthly             -> 仅当 final_semantics = "monthly" 时 consistent = True
+   - 路径 annually_climatology-> 仅当 final_semantics 为 "annual" 或 "climatology" 时 consistent = True
+   - final_semantics 为 "error:..." 或 "no_time_var" 时一律判为不一致（consistent = False）
    - 路径为其他或 None        -> 不判定，consistent = True（不纳入不一致统计）
 
 ---
@@ -128,7 +135,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUT_CSV = S1_VERIFY_CSV
 REVIEW_QUEUE_CSV = S1_REVIEW_QUEUE_CSV
 REVIEW_OVERRIDES_CSV = S1_REVIEW_OVERRIDES_CSV
-WORKERS = 32
+WORKERS = 48
 
 from time_resolution import classify_frequency
 
@@ -657,9 +664,10 @@ def _load_manual_overrides(path_obj):
     return overrides
 
 
-def _resolve_final_semantics(row, override):
+def _resolve_final_semantics(row, override, path_semantics=""):
     time_axis = str(row.get("time_axis_semantics", "") or "").strip().lower()
     metadata = str(row.get("metadata_semantics", "") or "").strip().lower()
+    ps = str(path_semantics or "").strip().lower()
     if override is not None:
         note = str(override.get("review_note", "")).strip()
         return {
@@ -676,6 +684,20 @@ def _resolve_final_semantics(row, override):
                 "classification_basis": "time_axis_conflict_pending_review",
                 "review_required": True,
                 "review_reason": "time_axis={} conflicts with metadata={}".format(time_axis, metadata),
+            }
+        if not metadata:
+            # metadata 没写 → 采用 path_semantics 结果
+            _PATH_SEMANTICS_TO_FINAL = {
+                "daily": "daily",
+                "monthly": "monthly",
+                "annually_climatology": "annual",
+            }
+            resolved = _PATH_SEMANTICS_TO_FINAL.get(ps, time_axis)
+            return {
+                "final_semantics": resolved,
+                "classification_basis": "path_semantics",
+                "review_required": False,
+                "review_reason": "",
             }
         return {
             "final_semantics": time_axis,
@@ -738,7 +760,7 @@ def _build_result_row(record, root_dir, overrides):
         }
     else:
         override = overrides.get(rel_path)
-        resolution_result = _resolve_final_semantics(record, override)
+        resolution_result = _resolve_final_semantics(record, override, _path_semantics(path_resolution))
 
     final_semantics = resolution_result["final_semantics"]
     consistent = is_consistent(path_resolution, final_semantics)
