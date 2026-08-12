@@ -31,6 +31,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.ticker import AutoMinorLocator
 from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
@@ -86,6 +87,11 @@ OKABE_ITO = {
 SOURCE_NAME_MAP = {
     "USGS": "USGS NWIS",
     "RiverSed": "RivSed",
+    "Milliman & Farnsworth":"Milliman",
+    "Vanmaercke et al.":"Vanmaercke",
+    "High Mountain Asia (HMA)":"HMA",
+    "Huanghe (Yellow River)":"Huanghe",
+    "Ali & De Boer (Upper Indus)":'Ali_De_Boer',
 }
 
 # --- Layout spacing (separate control) ---
@@ -322,8 +328,17 @@ def load_other_product_sources_from_minimal(
     climatology_raw["source_name"] = (
         climatology_raw["source_name"].astype(str).str.strip()
     )
-    climatology_raw["first_year"] = _year_from_column(climatology_raw, "time")
-    climatology_raw["last_year"] = _year_from_column(climatology_raw, "time")
+    _has_clim_time_range = (
+        "time_start" in climatology_raw.columns
+        and "time_end" in climatology_raw.columns
+        and climatology_raw["time_start"].notna().any()
+    )
+    if _has_clim_time_range:
+        climatology_raw["first_year"] = _year_from_column(climatology_raw, "time_start")
+        climatology_raw["last_year"] = _year_from_column(climatology_raw, "time_end")
+    else:
+        climatology_raw["first_year"] = _year_from_column(climatology_raw, "time")
+        climatology_raw["last_year"] = _year_from_column(climatology_raw, "time")
     climatology_raw = climatology_raw[climatology_raw["source_name"].ne("")]
     if climatology_raw.empty:
         climatology = empty.copy()
@@ -422,6 +437,8 @@ def _set_year_limits(ax, time_df: pd.DataFrame) -> None:
     year_min = int(np.floor(time_df["first_year"].min() / 10.0) * 10)
     year_max = int(np.ceil(time_df["last_year"].max() / 10.0) * 10)
     ax.set_xlim(year_min - 2, year_max + 9)
+    ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.tick_params(axis="x", which="minor", length=3, width=0.6, colors=TEMPORAL_LINE_COLOR)
 
 
 def annotate_cluster_counts_on_twin(
