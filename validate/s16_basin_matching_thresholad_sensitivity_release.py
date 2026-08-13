@@ -75,10 +75,10 @@ RELEASE_RESOLUTIONS = ("daily", "monthly", "annual")
 
 # Default expected cluster counts (derived from the current release)
 DEFAULT_EXPECTED_CLUSTER_COUNTS = {
-    "daily": 1596,
-    "monthly": 2117,
-    "annual": 58,
-    "total": 3762,
+    "daily": 7120,
+    "monthly": 228,
+    "annual": 31,
+    "total": 7379,
 }
 
 
@@ -156,10 +156,11 @@ def load_release_station_table(
         "source_station_catalog.csv",
     )
 
-    ssc["path_basename"] = ssc["source_station_paths"].apply(
-        lambda p: Path(str(p).strip()).name if pd.notna(p) else ""
+    ssc["path_basenames"] = ssc["source_station_paths"].apply(
+        lambda p: [Path(part.strip()).name for part in str(p).split("|") if part.strip()]
+        if pd.notna(p) else []
     )
-    if (ssc["path_basename"] == "").any():
+    if (ssc["path_basenames"].apply(len) == 0).any():
         raise ValueError("source_station_catalog.csv contains blank paths")
 
     # Filter to main-product resolutions only
@@ -167,13 +168,25 @@ def load_release_station_table(
     if len(ssc) == 0:
         raise RuntimeError("No release-eligible stations in daily/monthly/annual resolutions")
 
-    # Each source_station must appear in exactly one resolution
-    dup_uids = ssc.groupby("source_station_uid")["resolution"].nunique()
-    multi_res_stations = dup_uids[dup_uids > 1]
-    if len(multi_res_stations):
+    # A source station may legitimately contribute records at more than one
+    # resolution: s6 groups source files by physical station (resolution
+    # independent) and s7 emits one catalog row per (source_station_uid,
+    # resolution).  Enforce the actual invariants instead:
+    #   * each (source_station_uid, resolution) pair is unique, and
+    #   * each source_station_uid maps to exactly one release cluster.
+    dup_pairs = int(ssc.duplicated(subset=["source_station_uid", "resolution"]).sum())
+    if dup_pairs:
         raise RuntimeError(
-            "source_station_catalog has stations in multiple resolutions: {}".format(
-                list(multi_res_stations.index[:5])
+            "source_station_catalog has {} duplicate (source_station_uid, resolution) rows".format(
+                dup_pairs
+            )
+        )
+    multi_cluster = ssc.groupby("source_station_uid")["cluster_id"].nunique()
+    multi_cluster_uids = multi_cluster[multi_cluster > 1]
+    if len(multi_cluster_uids):
+        raise RuntimeError(
+            "source_station_catalog has source stations mapped to multiple clusters: {}".format(
+                list(multi_cluster_uids.index[:5])
             )
         )
 
@@ -189,22 +202,39 @@ def load_release_station_table(
             )
         )
 
-    # Build s5 path basename
-    require_columns(s5_df, ["path", "station_id", "cluster_id"], "s5 clustered station CSV")
-    s5_df = s5_df.copy()
-    s5_df["path_basename"] = s5_df["path"].apply(
+    # Build s5 path-basename lookup (path basename is unique in s5).
+    require_columns(
+        s5_df, ["path", "station_id", "cluster_id", "resolution"],
+        "s5 clustered station CSV",
+    )
+    s5_lookup = s5_df.copy()
+    s5_lookup["path_basename"] = s5_lookup["path"].apply(
         lambda p: Path(str(p).strip()).name if pd.notna(p) else ""
     )
-
-    # 1:1 join on path basename
-    merged = ssc.merge(
-        s5_df[["path_basename", "station_id", "cluster_id"]].rename(
-            columns={"cluster_id": "s5_cluster_id"}
-        ),
-        on="path_basename",
-        how="left",
-        validate="one_to_one",
+    s5_lookup = (
+        s5_lookup[["path_basename", "station_id", "cluster_id", "resolution"]]
+        .rename(columns={"cluster_id": "s5_cluster_id", "resolution": "s5_resolution"})
+        .drop_duplicates("path_basename")
     )
+
+    # Join source stations to s5 via their (possibly multiple) source files.
+    # A source station aggregates every file that shares the same physical
+    # station; for multi-resolution stations prefer the file whose s5
+    # resolution matches the catalog row, otherwise fall back to the first file.
+    merged = ssc.explode("path_basenames").rename(
+        columns={"path_basenames": "path_basename"}
+    )
+    merged = merged.merge(
+        s5_lookup, on="path_basename", how="left", validate="many_to_one"
+    )
+    merged["_resolution_match"] = (
+        merged["resolution"].astype(str) == merged["s5_resolution"].fillna("").astype(str)
+    )
+    merged = merged.sort_values("_resolution_match", ascending=False, kind="stable")
+    merged = merged.drop_duplicates(
+        subset=["source_station_uid", "resolution"], keep="first"
+    )
+    merged = merged.drop(columns=["_resolution_match", "s5_resolution"])
 
     n_missing = merged["station_id"].isna().sum()
     if n_missing:
@@ -768,10 +798,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Config:
         "--upstream-area-col",
         default=DEFAULT_UPSTREAM_AREA_COL,
     )
+    _default_expected_counts = ",".join(
+        "{}:{}".format(k, v) for k, v in DEFAULT_EXPECTED_CLUSTER_COUNTS.items()
+    )
     parser.add_argument(
         "--expected-cluster-counts",
-        default="daily:1596,monthly:2117,annual:58,total:3762",
-        help="Comma-separated key:value pairs. Default: daily:1596,monthly:2117,annual:58,total:3762",
+        default=_default_expected_counts,
+        help="Comma-separated key:value pairs. Default: {}".format(
+            _default_expected_counts
+        ),
     )
     parser.add_argument(
         "--require-release-baseline-match",
