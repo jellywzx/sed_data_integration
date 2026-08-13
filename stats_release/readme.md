@@ -620,10 +620,10 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
 - `flag_by_variable`: 按 variable 汇总
 - `flag_by_source`: 所有源聚合（标注为 `all_release_sources`，此处不做源级拆分）
 - `flag_by_resolution`: 按 temporal_resolution 汇总
-- `health_kpis`: 详尽健康指标，含各种比例（good_rate/derived_rate/suspect_rate/bad_rate/missing_rate/usable_rate/problem_rate/issue_rate）
+- `health_kpis`: 详尽健康指标，含各种比例（good_rate/derived_rate/suspect_rate/bad_rate/missing_rate/usable_rate/problem_rate）
 - `stage_effectiveness`: QC 各阶段有效性评估
 - `issue_hotspots`: 问题最集中的 top 100 条目
-- `yearly_trends`: 逐年问题率趋势
+- `yearly_trends`: 按变量/标记变量的三类分布（analysis-ready 0-1 / suspect+bad 2-3 / missing 9）
 
 ### 输出说明
 

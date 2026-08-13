@@ -31,7 +31,7 @@ if __package__ in {None, ""}:
 
 from stats_release.release_io import add_common_args, context_from_args, copy_report_to_docs, setup_matplotlib, write_csv, write_markdown
 from stats_release.release_paths import PRODUCT_FILES
-from stats_release.common_stats import FLAG_VALUES, pct, save_figure
+from stats_release.common_stats import pct, resolution_values, save_figure
 from stats_release.reporting import (
     append_figure_index,
     append_table_section,
@@ -44,6 +44,17 @@ from stats_release.reporting import (
 
 DEFAULT_FLAG_MEANINGS = {0: "good", 1: "estimated", 2: "suspect", 3: "bad", 8: "not_checked", 9: "missing"}
 FLAG_COLORS = {0: "#2ca02c", 1: "#1f77b4", 2: "#ff7f0e", 3: "#d62728", 8: "#9467bd", 9: "#7f7f7f"}
+PRODUCT_GROUPS = {"master": "main", "climatology": "climatology", "satellite": "satellite"}
+FINAL_TO_STAGE_FLAGS = {
+    "Q": ("Q_qc1", "Q_qc2"),
+    "SSC": ("SSC_qc1", "SSC_qc2", "SSC_qc3"),
+    "SSL": ("SSL_qc1", "SSL_qc2", "SSL_qc3"),
+}
+YEARLY_TREND_PRODUCTS = (
+    ("master_nc", "master"),
+    ("climatology_nc", "climatology"),
+    ("satellite_nc", "satellite"),
+)
 
 
 def _flag_mapping(var) -> dict:
@@ -73,6 +84,10 @@ def _declared_flag_values(var, mapping: dict) -> list:
         except Exception:
             pass
     return sorted(set(declared))
+
+
+def _product_group(product: str) -> str:
+    return PRODUCT_GROUPS.get(str(product), str(product))
 
 
 def _count_flags_for_product(ctx, file_name: str, product: str, chunk_size: int) -> tuple:
@@ -127,6 +142,460 @@ def _count_flags_for_product(ctx, file_name: str, product: str, chunk_size: int)
     return pd.DataFrame(rows), pd.DataFrame(schema_rows)
 
 
+def _read_text_slice(ds, name: str, start: int, stop: int) -> np.ndarray:
+    if name not in ds.variables:
+        return np.asarray([""] * max(0, stop - start), dtype=object)
+    arr = np.asarray(ds.variables[name][start:stop], dtype=object).reshape(-1)
+    return np.asarray([str(item).strip() for item in arr], dtype=object)
+
+
+def _read_flag_slice(ds, name: str, start: int, stop: int, fill_value: int = 9) -> np.ndarray:
+    arr = np.ma.asarray(ds.variables[name][start:stop]).filled(fill_value).reshape(-1)
+    return np.asarray(arr, dtype=np.int16)
+
+
+def _record_dimension(ds) -> tuple[str, int]:
+    for name in ("n_records", "n_satellite_records"):
+        if name in ds.dimensions:
+            return name, len(ds.dimensions[name])
+    return "", 0
+
+
+def _read_resolution_slice(ds, start: int, stop: int) -> np.ndarray:
+    if "resolution" not in ds.variables:
+        return np.asarray(["unknown"] * max(0, stop - start), dtype=object)
+    var = ds.variables["resolution"]
+    if getattr(var.dtype, "kind", "") in {"i", "u", "f"}:
+        return resolution_values(ds, slice(start, stop))
+    values = _read_text_slice(ds, "resolution", start, stop)
+    values[values == ""] = "unknown"
+    return values
+
+
+def _read_year_slice(ds, start: int, stop: int) -> np.ndarray:
+    n = max(0, stop - start)
+    years = np.full(n, np.nan, dtype="float64")
+    if "time" not in ds.variables:
+        return years
+    time_var = ds.variables["time"]
+    values = np.ma.asarray(time_var[start:stop]).astype("float64")
+    if np.ma.isMaskedArray(values):
+        values = values.filled(np.nan)
+    values = np.asarray(values, dtype="float64").reshape(-1)
+    valid = np.isfinite(values)
+    if not np.any(valid):
+        return years
+    import netCDF4 as nc4
+
+    units = getattr(time_var, "units", "days since 1970-01-01")
+    calendar = getattr(time_var, "calendar", "gregorian")
+    try:
+        dates = nc4.num2date(values[valid], units=units, calendar=calendar, only_use_cftime_datetimes=False)
+    except TypeError:
+        dates = nc4.num2date(values[valid], units=units, calendar=calendar)
+    for idx, date in zip(np.flatnonzero(valid), dates):
+        year = getattr(date, "year", None)
+        if year is None:
+            parsed = pd.to_datetime(str(date), errors="coerce")
+            if pd.isna(parsed):
+                continue
+            year = parsed.year
+        years[idx] = int(year)
+    return years
+
+
+def _flag_class_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    meanings = frame["flag_meaning"].astype(str)
+    out = frame.copy()
+    out = out.assign(
+        is_good=meanings.isin(["good", "pass", "not_propagated"]) | out["flag_value"].eq(0),
+        is_estimated=meanings.isin(["estimated", "derived"]) | out["flag_value"].eq(1),
+        is_suspect=meanings.eq("suspect") | out["flag_value"].eq(2),
+        is_bad=meanings.eq("bad") | out["flag_value"].eq(3),
+        is_missing=meanings.eq("missing") | out["flag_value"].eq(9),
+        is_not_checked=meanings.eq("not_checked") | out["flag_value"].eq(8),
+    )
+    out["is_usable"] = out["is_good"] | out["is_estimated"]
+    out["is_problem"] = out["is_suspect"] | out["is_bad"]
+    return out
+
+
+def _health_from_counts(counts: pd.DataFrame, group_cols) -> pd.DataFrame:
+    if counts.empty:
+        return pd.DataFrame()
+    classified = _flag_class_columns(counts)
+    rows = []
+    for keys, group in classified.groupby(group_cols, dropna=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        row = dict(zip(group_cols, keys))
+        total = int(group["count"].sum())
+        good = int(group.loc[group["is_good"], "count"].sum())
+        estimated = int(group.loc[group["is_estimated"], "count"].sum())
+        usable = int(group.loc[group["is_usable"], "count"].sum())
+        suspect = int(group.loc[group["is_suspect"], "count"].sum())
+        bad = int(group.loc[group["is_bad"], "count"].sum())
+        missing = int(group.loc[group["is_missing"], "count"].sum())
+        not_checked = int(group.loc[group["is_not_checked"], "count"].sum())
+        problem = int(group.loc[group["is_problem"], "count"].sum())
+        row.update(
+            {
+                "n_total": total,
+                "good_count": good,
+                "derived_count": estimated,
+                "analysis_ready_count": usable,
+                "usable_count": usable,
+                "suspect_count": suspect,
+                "bad_count": bad,
+                "not_checked_count": not_checked,
+                "missing_count": missing,
+                "problem_count": problem,
+                "good_rate": pct(good, total),
+                "derived_rate": pct(estimated, total),
+                "analysis_ready_rate": pct(usable, total),
+                "usable_rate": pct(usable, total),
+                "suspect_rate": pct(suspect, total),
+                "bad_rate": pct(bad, total),
+                "not_checked_rate": pct(not_checked, total),
+                "missing_rate": pct(missing, total),
+                "problem_rate": pct(problem, total),
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _build_main_flag_counts_by_resolution(ctx, chunk_size: int) -> pd.DataFrame:
+    path = ctx.require_input(ctx.release_file(PRODUCT_FILES["master_nc"]), required=False)
+    if path is None:
+        return pd.DataFrame()
+    rows = []
+    with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
+        if "n_records" not in ds.dimensions:
+            return pd.DataFrame()
+        n_records = len(ds.dimensions["n_records"])
+        flag_vars = [name for name in ds.variables if name.endswith("_flag") or "_qc" in name]
+        for flag_var in sorted(flag_vars):
+            var = ds.variables[flag_var]
+            if getattr(var.dtype, "kind", "") not in {"i", "u", "f"}:
+                continue
+            meaning_map = _flag_mapping(var)
+            counts = {}
+            for start in range(0, n_records, chunk_size):
+                stop = min(start + chunk_size, n_records)
+                resolution = resolution_values(ds, slice(start, stop))
+                values = _read_flag_slice(ds, flag_var, start, stop)
+                frame = pd.DataFrame({"temporal_resolution": resolution, "flag_value": values})
+                grouped = frame.groupby(["temporal_resolution", "flag_value"], dropna=False).size().reset_index(name="count")
+                for _, row in grouped.iterrows():
+                    key = (str(row["temporal_resolution"]), int(row["flag_value"]))
+                    counts[key] = counts.get(key, 0) + int(row["count"])
+            variable = _variable_from_flag(flag_var)
+            qc_level, qc_stage = _stage_from_flag(flag_var)
+            for (resolution, value), count in sorted(counts.items()):
+                rows.append(
+                    {
+                        "product_group": "main",
+                        "temporal_resolution": resolution,
+                        "qc_level": qc_level,
+                        "qc_stage": qc_stage,
+                        "variable": variable,
+                        "flag_variable": flag_var,
+                        "flag": int(value),
+                        "flag_value": int(value),
+                        "meaning": meaning_map.get(int(value), DEFAULT_FLAG_MEANINGS.get(int(value), "other")),
+                        "flag_meaning": meaning_map.get(int(value), DEFAULT_FLAG_MEANINGS.get(int(value), "other")),
+                        "count": int(count),
+                    }
+                )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    group_cols = ["product_group", "temporal_resolution", "flag_variable"]
+    out["n_total"] = out.groupby(group_cols, dropna=False)["count"].transform("sum").astype(int)
+    out["percentage"] = out.apply(lambda r: pct(r["count"], r["n_total"]), axis=1)
+    order = {"daily": 0, "monthly": 1, "annual": 2}
+    out["_resolution_order"] = out["temporal_resolution"].map(order).fillna(99)
+    out = out.sort_values(["_resolution_order", "variable", "flag_variable", "flag"]).drop(columns=["_resolution_order"])
+    return out.reset_index(drop=True)
+
+
+def _build_main_resolution_health(flag_by_resolution: pd.DataFrame) -> pd.DataFrame:
+    if flag_by_resolution.empty:
+        return pd.DataFrame()
+    final_counts = flag_by_resolution[flag_by_resolution["qc_level"].eq("final")].copy()
+    if final_counts.empty:
+        return pd.DataFrame()
+    health = _health_from_counts(
+        final_counts,
+        ["product_group", "temporal_resolution", "variable", "flag_variable"],
+    )
+    order = {"daily": 0, "monthly": 1, "annual": 2}
+    health["_resolution_order"] = health["temporal_resolution"].map(order).fillna(99)
+    health = health.sort_values(["_resolution_order", "variable", "flag_variable"]).drop(columns=["_resolution_order"])
+    return health.reset_index(drop=True)
+
+
+def _build_yearly_final_flag_counts(ctx, chunk_size: int) -> pd.DataFrame:
+    rows = []
+    for product_key, release_component in YEARLY_TREND_PRODUCTS:
+        path = ctx.require_input(ctx.release_file(PRODUCT_FILES[product_key]), required=False)
+        if path is None:
+            continue
+        with ctx.open_dataset(PRODUCT_FILES[product_key], required=True) as ds:
+            record_dim, n_records = _record_dimension(ds)
+            if not record_dim or n_records <= 0:
+                continue
+            flag_vars = [
+                name
+                for name in sorted(ds.variables)
+                if name.endswith("_flag")
+                and getattr(ds.variables[name].dtype, "kind", "") in {"i", "u", "f"}
+                and ds.variables[name].dimensions[:1] == (record_dim,)
+            ]
+            for start in range(0, n_records, chunk_size):
+                stop = min(start + chunk_size, n_records)
+                years = _read_year_slice(ds, start, stop)
+                valid_year = np.isfinite(years)
+                if not np.any(valid_year):
+                    continue
+                resolution = _read_resolution_slice(ds, start, stop)
+                for flag_var in flag_vars:
+                    values = _read_flag_slice(ds, flag_var, start, stop)
+                    frame = pd.DataFrame(
+                        {
+                            "year": years[valid_year].astype(int),
+                            "temporal_resolution": resolution[valid_year],
+                            "flag_value": values[valid_year],
+                        }
+                    )
+                    grouped = (
+                        frame.groupby(["year", "temporal_resolution", "flag_value"], dropna=False)
+                        .size()
+                        .reset_index(name="count")
+                    )
+                    meaning_map = _flag_mapping(ds.variables[flag_var])
+                    variable = _variable_from_flag(flag_var)
+                    for _, row in grouped.iterrows():
+                        flag_value = int(row["flag_value"])
+                        rows.append(
+                            {
+                                "product_group": _product_group(release_component),
+                                "release_component": release_component,
+                                "year": int(row["year"]),
+                                "temporal_resolution": str(row["temporal_resolution"]),
+                                "qc_level": "final",
+                                "qc_stage": "final",
+                                "variable": variable,
+                                "flag_variable": flag_var,
+                                "flag": flag_value,
+                                "flag_value": flag_value,
+                                "meaning": meaning_map.get(flag_value, DEFAULT_FLAG_MEANINGS.get(flag_value, "other")),
+                                "flag_meaning": meaning_map.get(flag_value, DEFAULT_FLAG_MEANINGS.get(flag_value, "other")),
+                                "count": int(row["count"]),
+                            }
+                        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    group_cols = ["product_group", "release_component", "year", "temporal_resolution", "flag_variable"]
+    out = (
+        out.groupby(
+            [
+                "product_group",
+                "release_component",
+                "year",
+                "temporal_resolution",
+                "qc_level",
+                "qc_stage",
+                "variable",
+                "flag_variable",
+                "flag",
+                "flag_value",
+                "meaning",
+                "flag_meaning",
+            ],
+            dropna=False,
+        )
+        .agg(count=("count", "sum"))
+        .reset_index()
+    )
+    out["n_total"] = out.groupby(group_cols, dropna=False)["count"].transform("sum").astype(int)
+    out["percentage"] = out.apply(lambda r: pct(r["count"], r["n_total"]), axis=1)
+    order = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4, "unknown": 5}
+    out["_product_order"] = out["release_component"].map({"master": 0, "climatology": 1, "satellite": 2}).fillna(99)
+    out["_resolution_order"] = out["temporal_resolution"].map(order).fillna(99)
+    out = out.sort_values(["_product_order", "year", "_resolution_order", "variable", "flag"]).drop(
+        columns=["_product_order", "_resolution_order"]
+    )
+    return out.reset_index(drop=True)
+
+
+def _build_yearly_final_flag_trends(flag_by_year: pd.DataFrame) -> pd.DataFrame:
+    if flag_by_year.empty:
+        return pd.DataFrame()
+    yearly = _health_from_counts(
+        flag_by_year,
+        ["product_group", "release_component", "year", "temporal_resolution", "variable", "flag_variable"],
+    )
+    if yearly.empty:
+        return yearly
+    yearly["n_records"] = yearly["n_total"]
+    yearly["suspect_bad_count"] = yearly["problem_count"]
+    yearly["suspect_bad_rate"] = yearly["problem_rate"]
+    columns = [
+        "product_group",
+        "release_component",
+        "year",
+        "temporal_resolution",
+        "variable",
+        "flag_variable",
+        "n_records",
+        "analysis_ready_count",
+        "suspect_bad_count",
+        "missing_count",
+        "not_checked_count",
+        "good_count",
+        "derived_count",
+        "analysis_ready_rate",
+        "suspect_bad_rate",
+        "missing_rate",
+        "not_checked_rate",
+        "good_rate",
+        "derived_rate",
+    ]
+    yearly = yearly[[col for col in columns if col in yearly.columns]]
+    order = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4, "unknown": 5}
+    yearly["_product_order"] = yearly["release_component"].map({"master": 0, "climatology": 1, "satellite": 2}).fillna(99)
+    yearly["_resolution_order"] = yearly["temporal_resolution"].map(order).fillna(99)
+    yearly = yearly.sort_values(["_product_order", "year", "_resolution_order", "variable"]).drop(
+        columns=["_product_order", "_resolution_order"]
+    )
+    return yearly.reset_index(drop=True)
+
+
+def _build_final_good_stage_missing_by_source_resolution(ctx, chunk_size: int) -> pd.DataFrame:
+    path = ctx.require_input(ctx.release_file(PRODUCT_FILES["master_nc"]), required=False)
+    if path is None:
+        return pd.DataFrame()
+    rows = []
+    with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
+        if "n_records" not in ds.dimensions:
+            return pd.DataFrame()
+        n_records = len(ds.dimensions["n_records"])
+        for start in range(0, n_records, chunk_size):
+            stop = min(start + chunk_size, n_records)
+            source = _read_text_slice(ds, "source", start, stop)
+            source[source == ""] = "unknown"
+            resolution = resolution_values(ds, slice(start, stop))
+            for variable, stage_flags in FINAL_TO_STAGE_FLAGS.items():
+                final_flag = "{}_flag".format(variable)
+                if final_flag not in ds.variables:
+                    continue
+                final = _read_flag_slice(ds, final_flag, start, stop)
+                final_good = final == 0
+                if not np.any(final_good):
+                    continue
+                for stage_flag in stage_flags:
+                    if stage_flag not in ds.variables:
+                        continue
+                    stage = _read_flag_slice(ds, stage_flag, start, stop)
+                    frame = pd.DataFrame(
+                        {
+                            "source_dataset": source[final_good],
+                            "temporal_resolution": resolution[final_good],
+                            "stage_flag": stage[final_good],
+                        }
+                    )
+                    grouped = (
+                        frame.assign(
+                            final_good_count=1,
+                            stage_missing_count=frame["stage_flag"].eq(9).astype(int),
+                            stage_not_checked_count=frame["stage_flag"].eq(8).astype(int),
+                            stage_pass_count=frame["stage_flag"].eq(0).astype(int),
+                        )
+                        .groupby(["source_dataset", "temporal_resolution"], dropna=False)
+                        .agg(
+                            final_good_count=("final_good_count", "sum"),
+                            stage_missing_count=("stage_missing_count", "sum"),
+                            stage_not_checked_count=("stage_not_checked_count", "sum"),
+                            stage_pass_count=("stage_pass_count", "sum"),
+                        )
+                        .reset_index()
+                    )
+                    grouped.insert(0, "product_group", "main")
+                    grouped.insert(1, "release_component", "master")
+                    grouped.insert(5, "variable", variable)
+                    grouped.insert(6, "qc_stage", _stage_from_flag(stage_flag)[1])
+                    grouped.insert(7, "stage_flag_variable", stage_flag)
+                    rows.append(grouped)
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "product_group",
+                "release_component",
+                "source_dataset",
+                "temporal_resolution",
+                "variable",
+                "qc_stage",
+                "stage_flag_variable",
+                "final_good_count",
+                "stage_missing_count",
+                "stage_missing_rate",
+                "stage_not_checked_count",
+                "stage_not_checked_rate",
+                "stage_pass_count",
+                "stage_pass_rate",
+            ]
+        )
+    out = (
+        pd.concat(rows, ignore_index=True)
+        .groupby(
+            [
+                "product_group",
+                "release_component",
+                "source_dataset",
+                "temporal_resolution",
+                "variable",
+                "qc_stage",
+                "stage_flag_variable",
+            ],
+            dropna=False,
+        )
+        .agg(
+            final_good_count=("final_good_count", "sum"),
+            stage_missing_count=("stage_missing_count", "sum"),
+            stage_not_checked_count=("stage_not_checked_count", "sum"),
+            stage_pass_count=("stage_pass_count", "sum"),
+        )
+        .reset_index()
+    )
+    out["stage_missing_rate"] = out.apply(lambda r: pct(r["stage_missing_count"], r["final_good_count"]), axis=1)
+    out["stage_not_checked_rate"] = out.apply(lambda r: pct(r["stage_not_checked_count"], r["final_good_count"]), axis=1)
+    out["stage_pass_rate"] = out.apply(lambda r: pct(r["stage_pass_count"], r["final_good_count"]), axis=1)
+    out = out[
+        [
+            "product_group",
+            "release_component",
+            "source_dataset",
+            "temporal_resolution",
+            "variable",
+            "qc_stage",
+            "stage_flag_variable",
+            "final_good_count",
+            "stage_missing_count",
+            "stage_missing_rate",
+            "stage_not_checked_count",
+            "stage_not_checked_rate",
+            "stage_pass_count",
+            "stage_pass_rate",
+        ]
+    ]
+    return out.sort_values(["stage_missing_count", "final_good_count"], ascending=[False, False]).reset_index(drop=True)
+
+
 def build_qc_stats(ctx, chunk_size: int) -> dict:
     pieces = []
     schemas = []
@@ -141,7 +610,7 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
         meanings = counts["flag_meaning"].astype(str)
         counts = counts.assign(
             is_good=meanings.isin(["good", "pass", "not_propagated"]) | counts["flag_value"].eq(0),
-            is_estimated=meanings.eq("estimated"),
+            is_estimated=meanings.isin(["estimated", "derived"]) | counts["flag_value"].eq(1),
             is_suspect=meanings.eq("suspect") | counts["flag_value"].eq(2),
             is_bad=meanings.eq("bad") | counts["flag_value"].eq(3),
             is_missing=meanings.eq("missing") | counts["flag_value"].eq(9),
@@ -149,7 +618,7 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
         )
         counts["is_usable"] = counts["is_good"] | counts["is_estimated"]
         health = (
-            counts.assign(is_problem=counts["is_suspect"] | counts["is_bad"] | counts["is_missing"])
+            counts.assign(is_problem=counts["is_suspect"] | counts["is_bad"])
             .groupby(["product", "flag_variable"], dropna=False)
             .apply(
                 lambda g: pd.Series(
@@ -164,8 +633,7 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
                         "not_checked_count": int(g.loc[g["is_not_checked"], "count"].sum()),
                         "problem_count": int(g.loc[g["is_problem"], "count"].sum()),
                     }
-                ),
-                include_groups=False,
+                )
             )
             .reset_index()
         )
@@ -193,19 +661,22 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
             ]
         )
     legacy = _build_legacy_tables(counts, health)
+    final_good_stage_missing = _build_final_good_stage_missing_by_source_resolution(ctx, chunk_size)
+    flag_by_resolution = _build_main_flag_counts_by_resolution(ctx, chunk_size)
+    resolution_health_kpis = _build_main_resolution_health(flag_by_resolution)
+    flag_by_year = _build_yearly_final_flag_counts(ctx, chunk_size)
+    yearly_trends = _build_yearly_final_flag_trends(flag_by_year)
+    legacy["flag_by_resolution"] = flag_by_resolution
+    legacy["flag_by_year"] = flag_by_year
+    legacy["yearly_trends"] = yearly_trends
 
     # ---- final flags by resolution matrix ----
-    flag_summary = legacy.get("flag_summary", pd.DataFrame())
+    flag_summary = flag_by_resolution
     matrix_final_flags_by_resolution = pd.DataFrame()
     if not flag_summary.empty:
         final_flags = flag_summary[flag_summary["qc_level"].eq("final")].copy()
         if not final_flags.empty:
-            resolution_map = {"master": "daily", "climatology": "monthly", "satellite": "annual"}
-            final_flags["resolution"] = (
-                final_flags["temporal_resolution"]
-                .map(resolution_map)
-                .fillna(final_flags["temporal_resolution"])
-            )
+            final_flags["resolution"] = final_flags["temporal_resolution"]
             matrix_final_flags_by_resolution = (
                 final_flags.groupby(["resolution", "flag_variable", "flag"], dropna=False)
                 .agg(count=("count", "sum"))
@@ -218,6 +689,8 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
         "health": health,
         "flag_schema": schema,
         "matrix_final_flags_by_resolution": matrix_final_flags_by_resolution,
+        "final_good_stage_missing_by_source_resolution": final_good_stage_missing,
+        "resolution_health_kpis": resolution_health_kpis,
         **legacy,
     }
 
@@ -262,11 +735,14 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
     for _, row in counts.iterrows():
         variable = _variable_from_flag(row["flag_variable"])
         qc_level, qc_stage = _stage_from_flag(str(row["flag_variable"]))
+        product = str(row["product"])
         rows.append(
             {
                 "qc_level": qc_level,
                 "qc_stage": qc_stage,
-                "temporal_resolution": row["product"],
+                "product_group": _product_group(product),
+                "release_component": product,
+                "temporal_resolution": product,
                 "variable": variable,
                 "flag_variable": row["flag_variable"],
                 "flag": int(row["flag_value"]),
@@ -287,8 +763,7 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
     by_source = summary.copy()
     by_source.insert(0, "source_dataset", "all_release_sources")
     by_source.insert(1, "source_type", "all")
-    by_year = summary.copy()
-    by_year.insert(0, "year", "all")
+    by_year = pd.DataFrame()
     by_cluster = pd.DataFrame(
         columns=[
             "cluster_uid",
@@ -307,9 +782,12 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
     for _, row in health.iterrows():
         variable = _variable_from_flag(row["flag_variable"])
         total = int(row["total_flags"])
+        product = str(row["product"])
         health_rows.append(
             {
-                "temporal_resolution": row["product"],
+                "product_group": _product_group(product),
+                "release_component": product,
+                "temporal_resolution": product,
                 "variable": variable,
                 "flag_variable": row["flag_variable"],
                 "n_total": total,
@@ -321,7 +799,6 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
                 "missing_count": int(row["missing_count"]),
                 "usable_count": int(row["usable_count"]),
                 "problem_count": int(row["problem_count"]),
-                "issue_count": int(row["problem_count"] + row["missing_count"] + row["not_checked_count"]),
                 "good_rate": pct(row["good_count"], total),
                 "derived_rate": pct(row["estimated_count"], total),
                 "suspect_rate": pct(row["suspect_count"], total),
@@ -330,21 +807,19 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
                 "missing_rate": pct(row["missing_count"], total),
                 "usable_rate": pct(row["usable_count"], total),
                 "problem_rate": pct(row["problem_count"], total),
-                "issue_rate": pct(row["problem_count"] + row["missing_count"] + row["not_checked_count"], total),
             }
         )
     health_kpis = pd.DataFrame(health_rows)
     stage = health_kpis[health_kpis["flag_variable"].astype(str).str.contains("_qc")].copy()
     if not stage.empty:
         stage["qc_stage"] = stage["flag_variable"].map(lambda v: _stage_from_flag(v)[1])
-    hotspots = health_kpis.sort_values("issue_rate", ascending=False).head(100).copy()
+    hotspots = health_kpis.sort_values("problem_rate", ascending=False).head(100).copy()
     hotspots.insert(0, "grouping_level", "product_variable")
     hotspots.insert(1, "source_dataset", "all_release_sources")
     problem_clusters = hotspots.copy()
     problem_clusters.insert(0, "cluster_uid", "")
     problem_clusters.insert(1, "cluster_id", "")
-    yearly = by_year.groupby(["year", "temporal_resolution", "variable"], dropna=False).agg(issue_count=("count", "sum"), n_total=("n_total", "sum")).reset_index()
-    yearly["issue_rate"] = yearly.apply(lambda r: pct(r["issue_count"], r["n_total"]), axis=1)
+    yearly = pd.DataFrame()
     return {
         "flag_summary": summary,
         "flag_by_source": by_source,
@@ -471,6 +946,11 @@ def write_figures(stats: dict, figures_dir: Path, dpi: int) -> None:
 def _product_filter(frame: pd.DataFrame, product: str) -> pd.DataFrame:
     if frame is None or frame.empty:
         return pd.DataFrame()
+    group = _product_group(product)
+    if "product_group" in frame.columns:
+        return frame[frame["product_group"].astype(str).eq(group)].copy()
+    if "release_component" in frame.columns:
+        return frame[frame["release_component"].astype(str).eq(product)].copy()
     if "temporal_resolution" in frame.columns:
         return frame[frame["temporal_resolution"].astype(str).eq(product)].copy()
     if "product" in frame.columns:
@@ -499,6 +979,8 @@ def build_detailed_qc_report(
     by_resolution = stats.get("flag_by_resolution", pd.DataFrame())
     by_variable = stats.get("flag_by_variable", pd.DataFrame())
     problem_clusters = stats.get("flag_problem_clusters", pd.DataFrame())
+    final_good_stage_missing = stats.get("final_good_stage_missing_by_source_resolution", pd.DataFrame())
+    resolution_health = stats.get("resolution_health_kpis", pd.DataFrame())
 
     if product:
         flag_summary = _product_filter(flag_summary, product)
@@ -512,11 +994,14 @@ def build_detailed_qc_report(
         by_resolution = _product_filter(by_resolution, product)
         by_variable = _product_filter(by_variable, product)
         problem_clusters = _product_filter(problem_clusters, product)
+        final_good_stage_missing = _product_filter(final_good_stage_missing, product)
+        resolution_health = _product_filter(resolution_health, product)
 
     total_flags = pd.to_numeric(flag_counts.get("count", 0), errors="coerce").fillna(0).sum() if not flag_counts.empty else 0
     final_rows = flag_summary[flag_summary.get("qc_level", pd.Series(dtype=str)).astype(str).eq("final")] if not flag_summary.empty and "qc_level" in flag_summary.columns else pd.DataFrame()
     stage_rows = flag_summary[flag_summary.get("qc_level", pd.Series(dtype=str)).astype(str).eq("stage")] if not flag_summary.empty and "qc_level" in flag_summary.columns else pd.DataFrame()
     problem_total = pd.to_numeric(health.get("problem_count", 0), errors="coerce").fillna(0).sum() if not health.empty else 0
+    missing_total = pd.to_numeric(health.get("missing_count", 0), errors="coerce").fillna(0).sum() if not health.empty else 0
     usable_total = pd.to_numeric(health.get("usable_count", 0), errors="coerce").fillna(0).sum() if not health.empty else 0
 
     lines = [
@@ -535,6 +1020,7 @@ def build_detailed_qc_report(
         "- Stage flag rows: {}".format(fmt_int(len(stage_rows))),
         "- Usable flag count from health KPIs: {}".format(fmt_int(usable_total)),
         "- Problem flag count from health KPIs: {}".format(fmt_int(problem_total)),
+        "- Missing flag count from health KPIs: {}".format(fmt_int(missing_total)),
         "- Stage-effectiveness rows available: {}".format(fmt_int(len(stage))),
         "",
         "## Flag Schema",
@@ -549,7 +1035,7 @@ def build_detailed_qc_report(
         lines,
         "Final Flag Summary",
         final_rows,
-        columns=["temporal_resolution", "variable", "flag_variable", "flag", "meaning", "count", "percentage", "n_total"],
+        columns=["product_group", "release_component", "variable", "flag_variable", "flag", "meaning", "count", "percentage", "n_total"],
         sort_by="count",
         max_rows=24,
     )
@@ -557,7 +1043,7 @@ def build_detailed_qc_report(
         lines,
         "Stage Flag Summary",
         stage_rows,
-        columns=["temporal_resolution", "variable", "qc_stage", "flag_variable", "flag", "meaning", "count", "percentage", "n_total"],
+        columns=["product_group", "release_component", "variable", "qc_stage", "flag_variable", "flag", "meaning", "count", "percentage", "n_total"],
         sort_by="count",
         max_rows=24,
     )
@@ -565,38 +1051,158 @@ def build_detailed_qc_report(
         lines,
         "Health KPIs",
         health,
-        columns=["temporal_resolution", "variable", "flag_variable", "n_total", "good_count", "derived_count", "usable_count", "problem_count", "missing_count", "good_rate", "usable_rate", "problem_rate", "missing_rate"],
+        columns=[
+            "product_group",
+            "release_component",
+            "variable",
+            "flag_variable",
+            "n_total",
+            "good_count",
+            "derived_count",
+            "usable_count",
+            "problem_count",
+            "missing_count",
+            "good_rate",
+            "usable_rate",
+            "problem_rate",
+            "missing_rate",
+        ],
         sort_by="problem_count",
         max_rows=24,
-        note="Usable combines good and estimated/derived values when represented by release flags.",
+        note="Usable combines good and estimated/derived values (flags 0-1). Problem counts suspect/bad (flags 2-3) only; missing (flag 9) is reported separately.",
     )
     append_table_section(
         lines,
         "Issue Hotspots",
         hotspots,
-        columns=["grouping_level", "source_dataset", "temporal_resolution", "variable", "flag_variable", "n_total", "usable_count", "problem_count", "issue_count", "usable_rate", "problem_rate", "issue_rate"],
-        sort_by="issue_count",
+        columns=[
+            "grouping_level",
+            "source_dataset",
+            "product_group",
+            "release_component",
+            "variable",
+            "flag_variable",
+            "n_total",
+            "usable_count",
+            "problem_count",
+            "missing_count",
+            "usable_rate",
+            "problem_rate",
+            "missing_rate",
+        ],
+        sort_by="problem_count",
         max_rows=20,
     )
     append_table_section(
         lines,
         "Stage Effectiveness",
         stage,
-        columns=["temporal_resolution", "variable", "qc_stage", "flag_variable", "n_total", "good_count", "bad_count", "not_checked_count", "missing_count", "good_rate", "problem_rate", "missing_rate"],
+        columns=[
+            "product_group",
+            "release_component",
+            "variable",
+            "qc_stage",
+            "flag_variable",
+            "n_total",
+            "good_count",
+            "bad_count",
+            "not_checked_count",
+            "missing_count",
+            "good_rate",
+            "problem_rate",
+            "missing_rate",
+        ],
         sort_by="problem_count",
         max_rows=20,
     )
     append_table_section(
         lines,
+        "Final Flag Health by True Temporal Resolution",
+        resolution_health,
+        columns=[
+            "product_group",
+            "temporal_resolution",
+            "variable",
+            "flag_variable",
+            "n_total",
+            "good_count",
+            "derived_count",
+            "analysis_ready_count",
+            "problem_count",
+            "missing_count",
+            "good_rate",
+            "derived_rate",
+            "analysis_ready_rate",
+            "problem_rate",
+            "missing_rate",
+        ],
+        max_rows=18,
+        note="Rows are main-product final flags split by record-level temporal resolution; `analysis_ready` combines flags 0 and 1.",
+    )
+    append_table_section(
+        lines,
+        "Final Good With Missing Stage QC",
+        final_good_stage_missing,
+        columns=[
+            "product_group",
+            "release_component",
+            "source_dataset",
+            "temporal_resolution",
+            "variable",
+            "qc_stage",
+            "stage_flag_variable",
+            "final_good_count",
+            "stage_missing_count",
+            "stage_missing_rate",
+            "stage_not_checked_count",
+            "stage_not_checked_rate",
+            "stage_pass_count",
+            "stage_pass_rate",
+        ],
+        sort_by="stage_missing_count",
+        max_rows=24,
+        note="Rows are restricted to final good records (`*_flag == 0`) in the master release product; rates use `final_good_count` as denominator.",
+    )
+    append_table_section(
+        lines,
         "Flag Counts by Source",
         by_source,
+        columns=[
+            "source_dataset",
+            "source_type",
+            "qc_level",
+            "qc_stage",
+            "product_group",
+            "release_component",
+            "variable",
+            "flag_variable",
+            "flag",
+            "meaning",
+            "count",
+            "percentage",
+            "n_total",
+        ],
         max_rows=16,
     )
     append_table_section(
         lines,
-        "Flag Counts by Resolution",
+        "Flag Counts by True Temporal Resolution",
         by_resolution,
+        columns=[
+            "product_group",
+            "temporal_resolution",
+            "qc_level",
+            "qc_stage",
+            "variable",
+            "flag_variable",
+            "flag",
+            "meaning",
+            "count",
+            "percentage",
+            "n_total",
+        ],
         max_rows=16,
+        note="This table uses the main/master record-level `resolution` variable (`daily`, `monthly`, `annual`), not the release component name.",
     )
     append_table_section(
         lines,
@@ -608,13 +1214,48 @@ def build_detailed_qc_report(
         lines,
         "Problem Clusters",
         problem_clusters,
+        columns=[
+            "cluster_uid",
+            "cluster_id",
+            "grouping_level",
+            "source_dataset",
+            "product_group",
+            "release_component",
+            "variable",
+            "flag_variable",
+            "n_total",
+            "usable_count",
+            "problem_count",
+            "missing_count",
+            "usable_rate",
+            "problem_rate",
+            "missing_rate",
+        ],
         max_rows=16,
     )
     append_table_section(
         lines,
         "Yearly Trends",
         yearly,
+        columns=[
+            "product_group",
+            "release_component",
+            "year",
+            "temporal_resolution",
+            "variable",
+            "flag_variable",
+            "n_records",
+            "analysis_ready_count",
+            "suspect_bad_count",
+            "missing_count",
+            "analysis_ready_rate",
+            "suspect_bad_rate",
+            "missing_rate",
+        ],
+        sort_by="year",
+        ascending=False,
         max_rows=18,
+        note="Rows use final flag variables only (`*_flag`), grouped by `year x temporal_resolution x variable`; stage QC flags are excluded from the denominator.",
     )
     lines.extend(
         [
@@ -622,6 +1263,7 @@ def build_detailed_qc_report(
             "## Interpretation Notes",
             "",
             "- `good_rate` and `usable_rate` answer different questions; estimated or derived values can be usable even when not strictly good.",
+            "- Flag values partition into analysis-ready (0-1: good + derived/estimated), suspect/bad (2-3), and missing (9); `problem_count` covers suspect/bad only.",
             "- Stage QC rows are reported only for `_qc*` variables that exist in the release NetCDF products.",
             "- Satellite QC should be read together with satellite variable coverage because many validation rows are intentionally empty for some variables.",
         ]
@@ -666,12 +1308,7 @@ def main(argv=None) -> int:
         product_dir.mkdir(parents=True, exist_ok=True)
         for legacy_name in legacy_names:
             frame = stats[legacy_name]
-            if "temporal_resolution" in frame.columns:
-                sub = frame[frame["temporal_resolution"].astype(str).eq(product)].copy()
-            elif "product" in frame.columns:
-                sub = frame[frame["product"].astype(str).eq(product)].copy()
-            else:
-                sub = frame.iloc[0:0].copy()
+            sub = _product_filter(frame, product)
             write_csv(sub, product_dir / "table_qc_{}.csv".format(legacy_name))
     if not args.skip_figures:
         try:
