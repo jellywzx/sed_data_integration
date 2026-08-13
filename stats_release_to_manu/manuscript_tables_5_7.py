@@ -121,7 +121,7 @@ def build_table5(spatial_by_resolution: pd.DataFrame, spatial_summary: pd.DataFr
             raise ValueError("Missing {} row in spatial or temporal statistics for Table 5".format(resolution))
         srow = srow.iloc[0]
         trow = trow.iloc[0]
-        station_count = _int(srow["reference_station_count"])
+        station_count = _int(srow["cluster_count"])
         record_count = _int(srow["record_count"])
         first_year = _int(trow["first_year"])
         last_year = _int(trow["last_year"])
@@ -136,10 +136,7 @@ def build_table5(spatial_by_resolution: pd.DataFrame, spatial_summary: pd.DataFr
             }
         )
 
-    unique_stations = _summary_metric(spatial_summary, "final_reference_station_count")
-    if not unique_stations:
-        # Fallback to any generic cluster_count metric used by older stats output.
-        unique_stations = _summary_metric(spatial_summary, "reference_station_count")
+    unique_stations = _summary_metric(spatial_summary, "final_cluster_count")
     total_records = sum(int(row["Record count"]) for row in rows)
     first_year = min(int(str(row["Temporal span"]).split("–")[0]) for row in rows)
     last_year = max(int(str(row["Temporal span"]).split("–")[1]) for row in rows)
@@ -322,7 +319,7 @@ def main(argv=None) -> int:
 
     spatial_by_resolution = _read_csv(
         paths["Spatial coverage by resolution"],
-        {"resolution", "reference_station_count", "record_count"},
+        {"resolution", "cluster_count", "record_count"},
         "spatial coverage by resolution",
     )
     spatial_summary = _read_csv(

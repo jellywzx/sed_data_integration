@@ -435,7 +435,7 @@ def load_main_from_stats_tables(stats_root: Path) -> Tuple[pd.DataFrame, Dict[st
                 "source_dataset_count_metric": _as_int(mapping.get("total_source_datasets")),
                 "source_station_count_metric": _as_int(mapping.get("total_source_stations")),
                 "source_summed_station_count_metric": _as_int(
-                    mapping.get("total_clusters_source_sum", mapping.get("total_reference_stations_source_sum"))
+                    mapping.get("total_clusters_source_sum")
                 ),
                 "record_count_metric": _as_int(mapping.get("total_records")),
                 "first_year_metric": _as_int(mapping.get("earliest_year")),
@@ -602,7 +602,7 @@ def load_from_docs_markdown(repo_root: Path) -> Tuple[pd.DataFrame, pd.DataFrame
                 pd.DataFrame(
                     {
                         "source_name": table["source name"],
-                        "station_count": table.get("reference stations", np.nan),
+                        "station_count": table.get("clusters", table.get("reference stations", np.nan)),
                         "source_station_count": table.get("n source stations", np.nan),
                         "record_count": table.get("n records", np.nan),
                         "first_year": table.get("first year", np.nan),
@@ -617,7 +617,7 @@ def load_from_docs_markdown(repo_root: Path) -> Tuple[pd.DataFrame, pd.DataFrame
             meta["main"] = {
                 "source_dataset_count_metric": _as_int(mapping.get("total_source_datasets")),
                 "source_station_count_metric": _as_int(mapping.get("total_source_stations")),
-                "source_summed_station_count_metric": _as_int(mapping.get("total_reference_stations_source_sum")),
+                "source_summed_station_count_metric": _as_int(mapping.get("total_clusters_source_sum")),
                 "record_count_metric": _as_int(mapping.get("total_records")),
                 "first_year_metric": _as_int(mapping.get("earliest_year")),
                 "last_year_metric": _as_int(mapping.get("latest_year")),
