@@ -20,17 +20,17 @@
 | product | flag variable | flag value | flag meaning | long name |
 |---|---|---|---|---|
 | satellite | Q_flag | 0 | good |  |
-| satellite | Q_flag | 1 | estimated |  |
+| satellite | Q_flag | 1 | derived |  |
 | satellite | Q_flag | 2 | suspect |  |
 | satellite | Q_flag | 3 | bad |  |
 | satellite | Q_flag | 9 | missing |  |
 | satellite | SSC_flag | 0 | good |  |
-| satellite | SSC_flag | 1 | estimated |  |
+| satellite | SSC_flag | 1 | derived |  |
 | satellite | SSC_flag | 2 | suspect |  |
 | satellite | SSC_flag | 3 | bad |  |
 | satellite | SSC_flag | 9 | missing |  |
 | satellite | SSL_flag | 0 | good |  |
-| satellite | SSL_flag | 1 | estimated |  |
+| satellite | SSL_flag | 1 | derived |  |
 | satellite | SSL_flag | 2 | suspect |  |
 | satellite | SSL_flag | 3 | bad |  |
 | satellite | SSL_flag | 9 | missing |  |
