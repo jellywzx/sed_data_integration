@@ -119,29 +119,36 @@ def resolution_values(ds, key=slice(None)) -> np.ndarray:
     return np.asarray(read_text_var(ds, "resolution"), dtype=object)[key]
 
 
+# def classify_source(source_name: object, source_family: object = "") -> tuple[str, str]:
+    # """Classify source into (source_type, source_group) using the shared taxonomy."""
+    # source = clean_text(source_name)
+    # family = clean_text(source_family).lower()
+
+    # # Use the shared classifier when possible
+    # sf = classify_source_family(source, observation_type=family)
+    # if sf == "satellite":
+    #     return "satellite", "satellite products"
+    # if sf == "climatology":
+    #     return "climatology", "global compilations"
+    # if sf == "in_situ":
+    #     # Further subdivide in-situ for reporting
+    #     lower = source.lower()
+    #     if lower in {"usgs", "hydat", "bayern"}:
+    #         return "in-situ", "national agencies"
+    #     if lower in {"hybam"}:
+    #         return "in-situ", "regional datasets"
+    #     if source:
+    #         return "literature", "global compilations"
+    # if source:
+    #     return "literature", "global compilations"
+    # return "unknown", "unknown"
+
 def classify_source(source_name: object, source_family: object = "") -> tuple[str, str]:
-    """Classify source into (source_type, source_group) using the shared taxonomy."""
+    """Classify source using the shared source_family taxonomy only."""
     source = clean_text(source_name)
     family = clean_text(source_family).lower()
-
-    # Use the shared classifier when possible
     sf = classify_source_family(source, observation_type=family)
-    if sf == "satellite":
-        return "satellite", "satellite products"
-    if sf == "climatology":
-        return "climatology", "global compilations"
-    if sf == "in_situ":
-        # Further subdivide in-situ for reporting
-        lower = source.lower()
-        if lower in {"usgs", "hydat", "bayern"}:
-            return "in-situ", "national agencies"
-        if lower in {"hybam"}:
-            return "in-situ", "regional datasets"
-        if source:
-            return "literature", "global compilations"
-    if source:
-        return "literature", "global compilations"
-    return "unknown", "unknown"
+    return sf, sf
 
 
 def attach_source_classification(frame: pd.DataFrame, source_col: str = "source_name") -> pd.DataFrame:
