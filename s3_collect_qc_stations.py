@@ -26,6 +26,11 @@ station_key 是 s3-s5 的稳定内部关联键；station_id 仅是当前 s3 输�
 用法（在 Output_r 根目录下运行）：
   从 s2 重组目录扫描 .nc：
   python scripts/s3_collect_qc_stations.py [--root .] [--out scripts/output/s3_collected_stations.csv] [-j 32]
+
+  排除指定 source，不让它进入 basin 主线；排除后请从 s4 重新运行：
+  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe
+  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe GloRiSe/SS
+  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe,GloRiSe_SS
 """
 
 import argparse
@@ -387,6 +392,29 @@ def get_source_from_organized_path(path, root_dir):
         return "unknown"
 
 
+def normalize_source_selector(value):
+    """Normalize source filters so GloRiSe/SS and GloRiSe_SS match the s3 source."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    text = re.sub(r"\s*/\s*", "_", text)
+    text = re.sub(r"[^\w\-]+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_").lower()
+
+
+def split_source_selectors(values):
+    """Parse --exclude-source values; supports repeated values and comma-separated lists."""
+    selectors = set()
+    for raw in values or []:
+        for piece in str(raw).split(","):
+            norm = normalize_source_selector(piece)
+            if norm:
+                selectors.add(norm)
+    return selectors
+
+
 def _collect_one_nc(path, root_dir):
     """Worker: 读单个 nc 的 path/source/lat/lon/resolution/observation_type；source 从 s2 重组文件名解析。
     path 列存储相对于 root_dir（output_resolution_organized/）的相对路径，
@@ -430,11 +458,12 @@ def _collect_one_nc(path, root_dir):
 ORGANIZED_DIR = S2_ORGANIZED_DIR
 
 
-def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None):
+def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None, excluded_sources=None):
     """收集 root/{S2_ORGANIZED_DIR} 下全部 .nc 文件。"""
     root = Path(root_dir).resolve()
     scan_root = root / ORGANIZED_DIR
     excluded = {str(x).strip().lower() for x in (excluded_resolutions or []) if str(x).strip()}
+    excluded_source_keys = split_source_selectors(excluded_sources)
     paths = []
     for p in scan_root.rglob("*.nc"):
         try:
@@ -445,6 +474,10 @@ def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None):
             continue
         if rel.parts[0].strip().lower() in excluded:
             continue
+        if excluded_source_keys:
+            source = get_source_from_organized_path(p, scan_root)
+            if normalize_source_selector(source) in excluded_source_keys:
+                continue
         paths.append(str(p))
     paths = sorted(paths)
     if not paths:
@@ -532,6 +565,13 @@ def main():
         default="climatology",
         help="逗号分隔的分辨率目录名，默认排除 climatology，使其不进入 basin 主线",
     )
+    ap.add_argument(
+        "--exclude-source",
+        "--exclude-sources",
+        nargs="+",
+        default=[],
+        help="排除指定 source，可传多个，也支持逗号分隔；例如 Huanghe 或 GloRiSe/SS",
+    )
     args = ap.parse_args()
 
     if not HAS_NC:
@@ -545,15 +585,22 @@ def main():
         for x in str(args.exclude_resolutions).split(",")
         if x.strip()
     ]
+    excluded_sources = split_source_selectors(args.exclude_source)
 
     print(
-        "Collecting .nc stations from {} (workers={}, excluded={}) ...".format(
+        "Collecting .nc stations from {} (workers={}, excluded_resolutions={}, excluded_sources={}) ...".format(
             ORGANIZED_DIR,
             workers,
             ",".join(excluded_resolutions) if excluded_resolutions else "(none)",
+            ",".join(sorted(excluded_sources)) if excluded_sources else "(none)",
         )
     )
-    stations = collect_qc_nc_stations(root_dir, workers=workers, excluded_resolutions=excluded_resolutions)
+    stations = collect_qc_nc_stations(
+        root_dir,
+        workers=workers,
+        excluded_resolutions=excluded_resolutions,
+        excluded_sources=excluded_sources,
+    )
     if len(stations) == 0:
         print("No organized .nc files found with valid lat/lon.")
         return
