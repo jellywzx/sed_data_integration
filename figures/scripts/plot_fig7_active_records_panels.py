@@ -225,7 +225,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
 
     fig, axes = plt.subplots(3, 1, figsize=STYLE["figsize"], sharex=True)
     panels = [
-        ("active_clusters", "Active clusters", "Active clusters by year"),
+        ("active_clusters", "Active stations", "Active clusters by year"),
         ("record_count_any", "Record count", "Record count by year"),
         ("complete_triplet_ratio", "Complete Q\u2013SSC\u2013SSL cells (%)", "Complete Q\u2013SSC\u2013SSL triplets / any records"),
     ]

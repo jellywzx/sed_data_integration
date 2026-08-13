@@ -42,11 +42,13 @@ from stats_release.release_paths import DEFAULT_RELEASE_DIR, PRODUCT_FILES  # no
 
 
 DEFAULT_OUT_DIR = PROJECT_DIR / "output_other" / "s8_release_composite_spatial_coverage"
-DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
+DEFAULT_FIGURES_ROOT = Path(
+    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures"
+)
 S5B_LINKS_CSV = PROJECT_DIR / 'output' / 's5b_satellite_main_cluster_links_v2.csv'
 DPI = 300
 FIGSIZE = (12, 14)
-FIGURE_ID = "composite_spatial_coverage_manu_order"
+FIGURE_ID = "fig6_composite_spatial_coverage_manu_order"
 FONT_SIZES = {
     "map_tick": 9,
     "panel_label": 15,
