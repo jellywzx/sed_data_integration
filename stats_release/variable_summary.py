@@ -130,12 +130,14 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
             "extreme_value_review_points": empty,
             "flag01_summary_statistics": empty,
             "zero_value_flag_distribution": empty,
+            "flag01_colocated_variable_coverage": empty,
         }
     totals = {}
     values_by_key = {}
     flag01_values_by_key = {}
     zero_flag_counts = {}
     colocated = {}
+    flag01_colocated = {}
     extremes = []
     zero_source_audit = {}  # key: (resolution, source)
     with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
@@ -163,6 +165,42 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                 if flag_name in ds.variables:
                     flags_by_var[var] = np.ma.asarray(ds.variables[flag_name][slc]).filled(9).reshape(-1)
             any_present = masks["Q"] | masks["SSC"] | masks["SSL"]
+            # ---- Zero-source audit (SSC only) ----
+            ssc_vals = vals_by_var.get("SSC")
+            if ssc_vals is not None and ssc_vals.size:
+                ssc_zero_mask = masks.get("SSC", np.zeros(0, dtype=bool)) & (ssc_vals == 0)
+                if ssc_zero_mask.any() and source_values.size:
+                    chunk_source = source_values[start:stop]
+                    q_vals = vals_by_var.get("Q")
+                    q_mask = masks.get("Q", np.zeros(0, dtype=bool))
+                    ssc_flags_arr = flags_by_var.get("SSC")
+                    for resolution_str in sorted(set(res)):
+                        audit_rmask = res == resolution_str
+                        combined = audit_rmask & ssc_zero_mask
+                        if not combined.any():
+                            continue
+                        for src in sorted(set(chunk_source[combined])):
+                            src = str(src).strip()
+                            if not src:
+                                continue
+                            src_mask = combined & (chunk_source == src)
+                            if not src_mask.any():
+                                continue
+                            key = (str(resolution_str), src)
+                            item = zero_source_audit.setdefault(key, {
+                                "ssc_zero_total": 0,
+                                "q_zero_ssc_zero": 0,
+                                "q_pos_ssc_zero": 0,
+                                "direct_ssc_zero": 0,
+                                "derived_ssc_zero": 0,
+                            })
+                            item["ssc_zero_total"] += int(np.count_nonzero(src_mask))
+                            item["q_zero_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals == 0)))
+                            item["q_pos_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals > 0)))
+                            if ssc_flags_arr is not None:
+                                item["direct_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 0)))
+                                item["derived_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 1)))
+            # ---- End zero-source audit ----
             for resolution in sorted(set(res)):
                 resolution = str(resolution)
                 rmask = res == resolution
@@ -210,42 +248,6 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                             zitem = zero_flag_counts.setdefault((resolution, var), {})
                             for fv in np.unique(zero_flags):
                                 zitem[int(fv)] = zitem.get(int(fv), 0) + int(np.count_nonzero(zero_flags == fv))
-                # ---- Zero-source audit (SSC only) ----
-                ssc_vals = vals_by_var.get("SSC")
-                if ssc_vals is not None and ssc_vals.size:
-                    ssc_zero_mask = masks.get("SSC", np.zeros(0, dtype=bool)) & (ssc_vals == 0)
-                    if ssc_zero_mask.any() and source_values.size:
-                        chunk_source = source_values[start:stop]
-                        q_vals = vals_by_var.get("Q")
-                        q_mask = masks.get("Q", np.zeros(0, dtype=bool))
-                        ssc_flags_arr = flags_by_var.get("SSC")
-                        for resolution_str in sorted(set(res)):
-                            rmask = res == resolution_str
-                            combined = rmask & ssc_zero_mask
-                            if not combined.any():
-                                continue
-                            for src in sorted(set(chunk_source[combined])):
-                                src = str(src).strip()
-                                if not src:
-                                    continue
-                                src_mask = combined & (chunk_source == src)
-                                if not src_mask.any():
-                                    continue
-                                key = (str(resolution_str), src)
-                                item = zero_source_audit.setdefault(key, {
-                                    "ssc_zero_total": 0,
-                                    "q_zero_ssc_zero": 0,
-                                    "q_pos_ssc_zero": 0,
-                                    "direct_ssc_zero": 0,
-                                    "derived_ssc_zero": 0,
-                                })
-                                item["ssc_zero_total"] += int(np.count_nonzero(src_mask))
-                                item["q_zero_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals == 0)))
-                                item["q_pos_ssc_zero"] += int(np.count_nonzero(src_mask & q_mask & (q_vals > 0)))
-                                if ssc_flags_arr is not None:
-                                    item["direct_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 0)))
-                                    item["derived_ssc_zero"] += int(np.count_nonzero(src_mask & (ssc_flags_arr == 1)))
-                # ---- End zero-source audit ----
                 combos = {
                     "Q only": masks["Q"] & ~masks["SSC"] & ~masks["SSL"],
                     "SSC only": masks["SSC"] & ~masks["Q"] & ~masks["SSL"],
@@ -261,6 +263,22 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                     citem = colocated.setdefault((resolution, name), {"n_records": 0, "clusters": set()})
                     citem["n_records"] += int(np.count_nonzero(cmask))
                     citem["clusters"].update(int(v) for v in station_idx[cmask] if int(v) >= 0)
+
+                # Flag 0–1 co-located variable coverage
+                flag01_masks = {}
+                for var in VARIABLES:
+                    if var in flags_by_var:
+                        flag01_masks[var] = masks[var] & np.isin(flags_by_var[var], [0, 1])
+                    else:
+                        flag01_masks[var] = np.zeros_like(masks[var], dtype=bool)
+                flag01_combos = {
+                    "Q+SSC+SSL all flag 0\u20131": flag01_masks["Q"] & flag01_masks["SSC"] & flag01_masks["SSL"],
+                }
+                for name, fcmask0 in flag01_combos.items():
+                    fcmask = rmask & fcmask0
+                    fcitem = flag01_colocated.setdefault((resolution, name), {"n_records": 0, "clusters": set()})
+                    fcitem["n_records"] += int(np.count_nonzero(fcmask))
+                    fcitem["clusters"].update(int(v) for v in station_idx[fcmask] if int(v) >= 0)
 
     coverage_rows = []
     for resolution, item in sorted(totals.items()):
@@ -336,6 +354,21 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
                 "pct_of_clusters": pct(len(item["clusters"]), total_clusters),
             }
         )
+
+    # Flag 0–1 co-located variable coverage rows
+    flag01_colocated_rows = []
+    for (resolution, combo), item in sorted(flag01_colocated.items()):
+        total_records = totals.get(resolution, {}).get("n_records_total", 0)
+        total_clusters = len(totals.get(resolution, {}).get("clusters_total", set()))
+        flag01_colocated_rows.append(
+            {
+                "resolution": resolution,
+                "combination": combo,
+                "n_records": int(item["n_records"]),
+                "pct_records": pct(item["n_records"], total_records),
+                "n_clusters": len(item["clusters"]),
+            }
+        )
     extreme_df = pd.DataFrame(extremes)
     if not extreme_df.empty:
         extreme_df = (
@@ -358,11 +391,80 @@ def _scan_master_variable_tables(ctx, chunk_size: int) -> dict:
         "variable_coverage_by_resolution": pd.DataFrame(coverage_rows),
         "variable_summary_statistics": pd.DataFrame(summary_rows),
         "colocated_variable_coverage": pd.DataFrame(colocated_rows),
+        "flag01_colocated_variable_coverage": pd.DataFrame(flag01_colocated_rows),
         "extreme_value_review_points": extreme_df,
         "flag01_summary_statistics": pd.DataFrame(flag01_summary_rows),
         "zero_value_flag_distribution": pd.DataFrame(zero_flag_dist_rows),
         "zero_source_audit": pd.DataFrame(zero_source_audit_rows),
     }
+
+
+def _scan_monthly_flag01_source_variable(ctx, chunk_size: int) -> pd.DataFrame:
+    """Monthly-resolution source x variable statistics restricted to Flag 0-1.
+
+    Each (source, variable) group is further split by SSC_flag: 0 (direct
+    measurement), 1 (derived/estimated), and the combined Flag 0-1 subset.
+    """
+    path = ctx.require_input(ctx.release_file(PRODUCT_FILES["master_nc"]), required=False)
+    if path is None:
+        return pd.DataFrame()
+    values_by_key = {}
+    units = {var: "" for var in VARIABLES}
+    with ctx.open_dataset(PRODUCT_FILES["master_nc"], required=True) as ds:
+        n_records = netcdf_record_count(ds)
+        source_values = np.asarray(read_text_var(ds, "source"), dtype=object) if "source" in ds.variables else np.asarray([], dtype=object)
+        units = {var: getattr(ds.variables[var], "units", "") if var in ds.variables else "" for var in VARIABLES}
+        has_ssc_flag = "SSC_flag" in ds.variables
+        for start in range(0, n_records, chunk_size):
+            stop = min(start + chunk_size, n_records)
+            slc = slice(start, stop)
+            res = np.asarray(resolution_values(ds, slc), dtype=object)
+            monthly_mask = res == "monthly"
+            if not monthly_mask.any():
+                continue
+            chunk_source = source_values[start:stop]
+            if has_ssc_flag:
+                ssc_flag = np.ma.asarray(ds.variables["SSC_flag"][slc]).filled(9).reshape(-1)
+            else:
+                ssc_flag = np.full(stop - start, 9, dtype=int)
+            for var in VARIABLES:
+                vals = np.asarray(read_numeric_var(ds, var, key=slc)).reshape(-1)
+                present = np.isfinite(vals)
+                flag_name = "{}_flag".format(var)
+                flags = np.ma.asarray(ds.variables[flag_name][slc]).filled(9).reshape(-1) if flag_name in ds.variables else np.full(stop - start, 9)
+                base_mask = monthly_mask & present & np.isin(flags, [0, 1])
+                if not base_mask.any():
+                    continue
+                for src in sorted(set(chunk_source[base_mask])):
+                    src = str(src).strip()
+                    if not src:
+                        continue
+                    src_mask = base_mask & (chunk_source == src)
+                    values_by_key.setdefault((src, var, "0-1"), []).append(vals[src_mask].astype("float64"))
+                    for ssc_val in (0, 1):
+                        sub_mask = src_mask & (ssc_flag == ssc_val)
+                        if sub_mask.any():
+                            values_by_key.setdefault((src, var, str(ssc_val)), []).append(vals[sub_mask].astype("float64"))
+    rows = []
+    for (source, var, ssc_flag), pieces in sorted(values_by_key.items()):
+        vals = np.concatenate(pieces) if pieces else np.asarray([])
+        stats = numeric_stats(vals)
+        rows.append(
+            {
+                "source": source,
+                "variable": var,
+                "ssc_flag": ssc_flag,
+                "n": int(vals.size),
+                "median": stats["median"],
+                "p05": stats["p05"],
+                "p95": stats["p95"],
+                "p99": stats["p99"],
+                "min": stats["min"],
+                "max": stats["max"],
+                "unit": units.get(var, ""),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _count_satellite_by_source(ctx, chunk_size: int) -> pd.DataFrame:
@@ -414,14 +516,104 @@ def _count_satellite_by_source(ctx, chunk_size: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _count_master_source_variables(ctx, chunk_size: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Master-product per-source variable coverage and value distribution.
+
+    Returns (coverage_df, values_df):
+      - coverage_df: one row per (source_name, variable); n_records/n_present/
+        n_good/n_estimated/n_usable + percentages (mirrors _count_satellite_by_source).
+      - values_df: one row per (source, variable); value-distribution stats over
+        ALL finite values (all resolutions, flags 0-8).
+    """
+    file_name = PRODUCT_FILES["master_nc"]
+    path = ctx.require_input(ctx.release_file(file_name), required=False)
+    if path is None:
+        return pd.DataFrame(), pd.DataFrame()
+    coverage = {}
+    values_by_key = {}
+    units = {var: "" for var in VARIABLES}
+    with ctx.open_dataset(file_name, required=True) as ds:
+        n_records = netcdf_record_count(ds)
+        source_values = (
+            np.asarray(read_text_var(ds, "source"), dtype=object)
+            if "source" in ds.variables
+            else np.asarray([], dtype=object)
+        )
+        units = {var: getattr(ds.variables[var], "units", "") if var in ds.variables else "" for var in VARIABLES}
+        for start in range(0, n_records, chunk_size):
+            stop = min(start + chunk_size, n_records)
+            slc = slice(start, stop)
+            chunk_source = source_values[start:stop]
+            for var in VARIABLES:
+                values = np.asarray(read_numeric_var(ds, var, key=slc)).reshape(-1)
+                if values.size == 0:
+                    continue
+                present = np.isfinite(values)
+                flag_name = "{}_flag".format(var)
+                flags = (
+                    np.ma.asarray(ds.variables[flag_name][slc]).filled(9).reshape(-1)
+                    if flag_name in ds.variables
+                    else np.full(values.shape, 9)
+                )
+                for raw in sorted(set(chunk_source)):
+                    src = str(raw).strip()
+                    if not src:
+                        continue
+                    mask = chunk_source == raw  # compare raw element; label with stripped src
+                    item = coverage.setdefault(
+                        (src, var),
+                        {"n_records": 0, "n_present": 0, "n_good": 0, "n_estimated": 0, "n_usable": 0},
+                    )
+                    item["n_records"] += int(np.count_nonzero(mask))
+                    item["n_present"] += int(np.count_nonzero(mask & present))
+                    item["n_good"] += int(np.count_nonzero(mask & present & (flags == 0)))
+                    item["n_usable"] += int(np.count_nonzero(mask & present & np.isin(flags, [0, 1])))
+                    item["n_estimated"] += int(np.count_nonzero(mask & present & (flags == 1)))
+                    vals = values[mask & present]
+                    if vals.size:
+                        values_by_key.setdefault((src, var), []).append(vals.astype("float64"))
+
+    coverage_rows = []
+    for (source, var), item in sorted(coverage.items()):
+        row = {"product": "master", "source_name": source, "variable": var}
+        row.update(item)
+        n = row["n_records"]
+        row["present_percent"] = round(100.0 * row["n_present"] / n, 6) if n else 0.0
+        row["good_percent"] = round(100.0 * row["n_good"] / n, 6) if n else 0.0
+        row["estimated_percent"] = round(100.0 * row["n_estimated"] / n, 6) if n else 0.0
+        row["usable_percent"] = round(100.0 * row["n_usable"] / n, 6) if n else 0.0
+        coverage_rows.append(row)
+
+    value_rows = []
+    for (source, var), pieces in sorted(values_by_key.items()):
+        vals = np.concatenate(pieces) if pieces else np.asarray([])
+        stats = numeric_stats(vals)
+        value_rows.append({
+            "source": source,
+            "variable": var,
+            "n": int(vals.size),
+            "mean": stats["mean"],
+            "median": stats["median"],
+            "min": stats["min"],
+            "max": stats["max"],
+            "p05": stats["p05"],
+            "p95": stats["p95"],
+            "p99": stats["p99"],
+            "unit": units.get(var, ""),
+        })
+
+    return pd.DataFrame(coverage_rows), pd.DataFrame(value_rows)
+
+
 def build_variable_stats(ctx, chunk_size: int) -> dict:
     legacy = _scan_master_variable_tables(ctx, chunk_size)
-    legacy["variable_coverage_by_resolution_analysis_grade"] = legacy["variable_coverage_by_resolution"].assign(analysis_grade="release_nonmissing") if not legacy["variable_coverage_by_resolution"].empty else pd.DataFrame()
-    legacy["variable_summary_statistics_analysis_grade"] = legacy["variable_summary_statistics"].assign(analysis_grade="release_nonmissing") if not legacy["variable_summary_statistics"].empty else pd.DataFrame()
-    legacy["colocated_variable_coverage_analysis_grade"] = legacy["colocated_variable_coverage"].assign(analysis_grade="release_nonmissing") if not legacy["colocated_variable_coverage"].empty else pd.DataFrame()
+    master_coverage, master_values = _count_master_source_variables(ctx, chunk_size)
     result = {
         "variable_coverage": build_variable_summary(ctx, chunk_size),
         "satellite_variable_by_source": _count_satellite_by_source(ctx, chunk_size),
+        "monthly_flag01_source_variable": _scan_monthly_flag01_source_variable(ctx, chunk_size),
+        "master_variable_by_source": master_coverage,
+        "master_source_variable_values": master_values,
         **legacy,
     }
     return result
@@ -483,7 +675,7 @@ def build_satellite_coverage_warning(
         "## Satellite Product Coverage Warning",
         "",
         "**The satellite product (``sed_reference_satellite.nc``) is validation-only and "
-        "MUST NOT be treated as a complete Q/SSC/SSL time series for any station.**",
+        "should not be interpreted as a uniformly complete Q\u2013SSC\u2013SSL time-series product because variable availability differs among source datasets.**",
         "",
         "It concatenates records from multiple independent satellite-derived sources "
         "(Dethier, GSED, RiverSed) that each cover different variables.  Reading a "
@@ -561,16 +753,17 @@ def build_satellite_coverage_warning(
 def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_dir: Path, report_dir: Path) -> list[str]:
     coverage = stats.get("variable_coverage", pd.DataFrame())
     by_resolution = stats.get("variable_coverage_by_resolution", pd.DataFrame())
-    by_resolution_analysis = stats.get("variable_coverage_by_resolution_analysis_grade", pd.DataFrame())
     summary = stats.get("variable_summary_statistics", pd.DataFrame())
-    summary_analysis = stats.get("variable_summary_statistics_analysis_grade", pd.DataFrame())
     colocated = stats.get("colocated_variable_coverage", pd.DataFrame())
-    colocated_analysis = stats.get("colocated_variable_coverage_analysis_grade", pd.DataFrame())
     satellite = stats.get("satellite_variable_by_source", pd.DataFrame())
     extremes = stats.get("extreme_value_review_points", pd.DataFrame())
     flag01_summary = stats.get("flag01_summary_statistics", pd.DataFrame())
     zero_flag_dist = stats.get("zero_value_flag_distribution", pd.DataFrame())
     zero_source_audit = stats.get("zero_source_audit", pd.DataFrame())
+    flag01_colocated = stats.get("flag01_colocated_variable_coverage", pd.DataFrame())
+    monthly_flag01_source_var = stats.get("monthly_flag01_source_variable", pd.DataFrame())
+    master_by_source = stats.get("master_variable_by_source", pd.DataFrame())
+    master_source_values = stats.get("master_source_variable_values", pd.DataFrame())
 
     total_products = coverage["product"].nunique() if not coverage.empty and "product" in coverage.columns else 0
     total_records = pd.to_numeric(coverage.get("n_records", 0), errors="coerce").fillna(0).sum() if not coverage.empty else 0
@@ -619,22 +812,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         ],
         sort_by="n_records_total",
         max_rows=8,
-    )
-    append_table_section(
-        lines,
-        "Analysis-Grade Coverage by Resolution",
-        by_resolution_analysis,
-        columns=[
-            "resolution",
-            "analysis_grade",
-            "n_records_total",
-            "Q_record_coverage_pct",
-            "SSC_record_coverage_pct",
-            "SSL_record_coverage_pct",
-        ],
-        sort_by="n_records_total",
-        max_rows=8,
-        note="Analysis-grade rows use the release filter emitted by this module; no non-release QC intermediates are read.",
+        note="Includes all finite (non-NaN) values regardless of quality flag (flags 0–8). Does not filter to flags 0–3.",
     )
     append_table_section(
         lines,
@@ -643,14 +821,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         columns=["resolution", "variable", "n_nonmissing_records", "n_nonmissing_clusters", "mean", "median", "min", "max", "p05", "p95", "p99", "unit"],
         sort_by="n_nonmissing_records",
         max_rows=18,
-    )
-    append_table_section(
-        lines,
-        "Analysis-Grade Summary Statistics",
-        summary_analysis,
-        columns=["resolution", "variable", "analysis_grade", "n_nonmissing_records", "mean", "median", "p05", "p95", "p99", "unit"],
-        sort_by="n_nonmissing_records",
-        max_rows=18,
+        note="Statistics computed on all finite (non-NaN) values regardless of quality flag (flags 0–8).",
     )
     append_table_section(
         lines,
@@ -681,19 +852,48 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
     )
     append_table_section(
         lines,
+        "Monthly Flag 0–1 Source × Variable Statistics (master product)",
+        monthly_flag01_source_var,
+        columns=["source", "variable", "ssc_flag", "n", "median", "p05", "p95", "p99", "min", "max", "unit"],
+        sort_by="n",
+        max_rows=60,
+        note="Monthly-resolution records only. Values restricted to the variable's own flag 0 or 1. `ssc_flag` splits each source × variable into 0 (direct measurement), 1 (derived/estimated), and 0-1 (combined Flag 0-1 subset).",
+    )
+    append_table_section(
+        lines,
+        "Master Source by Variable",
+        master_by_source,
+        columns=["source_name", "variable", "n_records", "n_present", "n_good", "n_estimated", "n_usable", "present_percent", "good_percent", "estimated_percent", "usable_percent"],
+        sort_by="n_records",
+        max_rows=60,
+        note="Master product (`sed_reference_master.nc`). Presence counts include all finite values regardless of flag; `n_good`/`n_estimated` use the variable's own flag 0/1. A 0-present row means that source does not provide that variable.",
+    )
+    append_table_section(
+        lines,
+        "Master Source \u00d7 Variable Value Distribution",
+        master_source_values,
+        columns=["source", "variable", "n", "mean", "median", "min", "max", "p05", "p95", "p99", "unit"],
+        sort_by="n",
+        max_rows=60,
+        note="Master product. Value statistics over all finite values (all resolutions, flags 0\u20138), complementing the monthly Flag 0\u20131 table above.",
+    )
+    append_table_section(
+        lines,
         "Co-Located Variable Coverage",
         colocated,
         columns=["resolution", "combination", "combination_type", "n_records", "n_clusters", "pct_of_all_records", "pct_of_nonempty_records", "pct_of_clusters"],
         sort_by="n_records",
         max_rows=18,
+        note="Co-location counts include all finite (non-NaN) values regardless of quality flag (flags 0–8).",
     )
     append_table_section(
         lines,
-        "Analysis-Grade Co-Located Coverage",
-        colocated_analysis,
-        columns=["resolution", "analysis_grade", "combination", "n_records", "n_clusters", "pct_of_nonempty_records", "pct_of_clusters"],
+        "Flag 0–1 Co-Located Variable Coverage (master product)",
+        flag01_colocated,
+        columns=["resolution", "combination", "n_records", "pct_records", "n_clusters"],
         sort_by="n_records",
-        max_rows=18,
+        max_rows=8,
+        note="Only records where Q, SSC, and SSL all have flag 0 (good) or 1 (estimated/derived) simultaneously.",
     )
     append_table_section(
         lines,
@@ -724,6 +924,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         columns=["resolution", "variable", "value", "station_index", "record_index", "review_reason", "unit"],
         sort_by="value",
         max_rows=20,
+        note="Extreme values selected from all finite (non-NaN) records regardless of quality flag.",
     )
     lines.extend(
         [
@@ -732,7 +933,22 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
             "",
             "- `good_percent` can be misleading when a release intentionally marks derived SSL as estimated; always check `estimated_percent` to distinguish estimated data (acceptable) from truly missing/problematic data. The gap `usable_percent - good_percent` is explained by `estimated_percent`.",
             "- Satellite rows MUST be filtered by source and variable before use because validation-sidecar variable density is source-dependent and highly variable (see Satellite Product Coverage Warning above).",
+            "- Cluster percentages across variable combinations are non-exclusive because the same cluster may contain different variable combinations at different time steps.",
             "- Extreme review points are candidates for manual inspection, not automatic removal rules.",
+        "",
+        "### Quality Flag Reference",
+        "",
+        "| Flag | Meaning |",
+        "|------|---------|",
+        "| 0 | good (direct measurement) |",
+        "| 1 | derived / estimated |",
+        "| 2 | suspect |",
+        "| 3 | bad |",
+        "| 8 | not checked |",
+        "| 9 | missing (NaN in data variables) |",
+        "",
+        "Tables without \"Flag\" in the title (Matrix Coverage, Summary Statistics, Co-Located Coverage, Extreme Values) include **all finite values regardless of flag** (flags 0\u20138). Use the Flag 0\u20131 and Zero-Value Flag Distribution tables to assess data quality.",
+        "",
         ]
     )
     append_figure_index(lines, figures_dir, report_dir)
@@ -751,16 +967,6 @@ def main(argv=None) -> int:
     stats = build_variable_stats(ctx, chunk_size)
     for name, frame in stats.items():
         write_csv(frame, tables_dir / "table_{}.csv".format(name))
-    for legacy_name in (
-        "variable_coverage_by_resolution",
-        "variable_coverage_by_resolution_analysis_grade",
-        "variable_summary_statistics",
-        "variable_summary_statistics_analysis_grade",
-        "colocated_variable_coverage",
-        "colocated_variable_coverage_analysis_grade",
-        "extreme_value_review_points",
-    ):
-        write_csv(stats[legacy_name], tables_dir / "table_{}.csv".format(legacy_name))
     out_csv = tables_dir / "table_variable_coverage.csv"
     if not args.skip_figures:
         try:

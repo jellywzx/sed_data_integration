@@ -118,7 +118,7 @@ RELEASE_ACDD_CONFIG = {
         "A Harmonized Global Station-Reference Dataset of River Discharge, "
         "Suspended Sediment Concentration, and Suspended Sediment Load"
     ),
-    "naming_authority": "org.earth-system-science-data",
+    "naming_authority": "doi.org",
     "keywords": (
         "river discharge, suspended sediment concentration, "
         "suspended sediment load, river sediment, global rivers, "
@@ -133,13 +133,16 @@ RELEASE_ACDD_CONFIG = {
         "(CC BY 4.0); https://creativecommons.org/licenses/by/4.0/"
     ),
     "references": (
-        "Dataset manuscript: <MANUSCRIPT_CITATION_OR_DOI>; "
-        "source-dataset references are provided in source_dataset_catalog.csv."
+        "Dataset documentation and methodology are described in the "
+        "accompanying manuscript; source-dataset references and access "
+        "information are provided in source_dataset_catalog.csv."
     ),
     "publisher_name": "Zenodo",
     "citation": (
-        "Dataset manuscript: <MANUSCRIPT_CITATION_OR_DOI>; "
-        "source-dataset references are provided in source_dataset_catalog.csv."
+        "Wei, Z., Liu, C., Wei, Z., and Dai, Y. (2026): "
+        "A Harmonized Global Station-Reference Dataset of River Discharge, "
+        "Suspended Sediment Concentration, and Suspended Sediment Load, "
+        "version 1.0.0, Zenodo, https://doi.org/10.5281/zenodo.21896563."
     ),
 }
 

@@ -428,7 +428,7 @@ def _apply_acdd_global_attrs(ds, kind, release_context):
     _set_attr(ds, "date_metadata_modified", now)
 
     _set_attr_if_empty(ds, "release_version", release_version if release_version != "unversioned" else "")
-    _set_attr_if_empty(ds, "title", description["title"])
+    _set_attr(ds, "title", description["title"])
     _set_attr_if_empty(ds, "summary", description["summary"])
     _set_attr_if_empty(ds, "keywords", RELEASE_ACDD_CONFIG["keywords"])
     _set_attr_if_empty(ds, "creator_name", _context_or_config(release_context, "creator_name"))
@@ -448,6 +448,10 @@ def _apply_acdd_global_attrs(ds, kind, release_context):
             _set_attr_if_empty(ds, attr_name, value)
         else:
             _set_attr_if_empty(ds, attr_name, "")
+
+    # 发布层权威属性：强制覆盖 s6 源可能残留的旧值
+    _set_attr(ds, "references", _context_or_config(release_context, "references"))
+    _set_attr(ds, "citation", _context_or_config(release_context, "citation"))
 
     resolution = description["time_coverage_resolution"]
     if resolution:
