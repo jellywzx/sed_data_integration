@@ -55,6 +55,10 @@ YEARLY_TREND_PRODUCTS = (
     ("climatology_nc", "climatology"),
     ("satellite_nc", "satellite"),
 )
+CLUSTER_PRODUCTS = (
+    ("master_nc", "master", "station_index", "cluster_id"),
+    ("satellite_nc", "satellite", "satellite_station_index", "cluster_id_station"),
+)
 
 
 def _flag_mapping(var) -> dict:
@@ -147,6 +151,20 @@ def _read_text_slice(ds, name: str, start: int, stop: int) -> np.ndarray:
         return np.asarray([""] * max(0, stop - start), dtype=object)
     arr = np.asarray(ds.variables[name][start:stop], dtype=object).reshape(-1)
     return np.asarray([str(item).strip() for item in arr], dtype=object)
+
+
+def _read_text_all(ds, name: str) -> np.ndarray:
+    if name not in ds.variables:
+        return np.asarray([], dtype=object)
+    arr = np.asarray(ds.variables[name][:], dtype=object).reshape(-1)
+    return np.asarray([str(item).strip() for item in arr], dtype=object)
+
+
+def _read_numeric_slice(ds, name: str, start: int, stop: int, fill_value: int = -1) -> np.ndarray:
+    arr = np.ma.asarray(ds.variables[name][start:stop])
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(fill_value)
+    return np.asarray(arr, dtype=np.int64).reshape(-1)
 
 
 def _read_flag_slice(ds, name: str, start: int, stop: int, fill_value: int = 9) -> np.ndarray:
@@ -476,6 +494,151 @@ def _build_yearly_final_flag_trends(flag_by_year: pd.DataFrame) -> pd.DataFrame:
     return yearly.reset_index(drop=True)
 
 
+def _build_problem_clusters(ctx, chunk_size: int) -> pd.DataFrame:
+    rows = []
+    for product_key, release_component, station_index_var, station_cluster_id_var in CLUSTER_PRODUCTS:
+        path = ctx.require_input(ctx.release_file(PRODUCT_FILES[product_key]), required=False)
+        if path is None:
+            continue
+        with ctx.open_dataset(PRODUCT_FILES[product_key], required=True) as ds:
+            record_dim, n_records = _record_dimension(ds)
+            if not record_dim or n_records <= 0:
+                continue
+            if station_index_var not in ds.variables or "cluster_uid" not in ds.variables:
+                continue
+            cluster_uids = _read_text_all(ds, "cluster_uid")
+            if cluster_uids.size == 0:
+                continue
+            if station_cluster_id_var in ds.variables:
+                station_cluster_ids = np.asarray(ds.variables[station_cluster_id_var][:], dtype=np.int64).reshape(-1)
+            else:
+                station_cluster_ids = np.arange(cluster_uids.size, dtype=np.int64)
+            flag_vars = [
+                name
+                for name in sorted(ds.variables)
+                if name.endswith("_flag")
+                and getattr(ds.variables[name].dtype, "kind", "") in {"i", "u", "f"}
+                and ds.variables[name].dimensions[:1] == (record_dim,)
+            ]
+            for start in range(0, n_records, chunk_size):
+                stop = min(start + chunk_size, n_records)
+                station_index = _read_numeric_slice(ds, station_index_var, start, stop)
+                valid_station = (station_index >= 0) & (station_index < cluster_uids.size)
+                if not np.any(valid_station):
+                    continue
+                cluster_uid = np.full(stop - start, "", dtype=object)
+                cluster_id = np.full(stop - start, -1, dtype=np.int64)
+                cluster_uid[valid_station] = cluster_uids[station_index[valid_station]]
+                valid_id = valid_station & (station_index < station_cluster_ids.size)
+                cluster_id[valid_id] = station_cluster_ids[station_index[valid_id]]
+                valid_cluster = valid_station & (cluster_uid != "")
+                if not np.any(valid_cluster):
+                    continue
+                resolution = _read_resolution_slice(ds, start, stop)
+                for flag_var in flag_vars:
+                    values = _read_flag_slice(ds, flag_var, start, stop)
+                    frame = pd.DataFrame(
+                        {
+                            "cluster_uid": cluster_uid[valid_cluster],
+                            "cluster_id": cluster_id[valid_cluster],
+                            "temporal_resolution": resolution[valid_cluster],
+                            "n_records": 1,
+                            "analysis_ready_count": np.isin(values[valid_cluster], [0, 1]).astype(int),
+                            "suspect_bad_count": np.isin(values[valid_cluster], [2, 3]).astype(int),
+                            "missing_count": (values[valid_cluster] == 9).astype(int),
+                            "good_count": (values[valid_cluster] == 0).astype(int),
+                            "derived_count": (values[valid_cluster] == 1).astype(int),
+                        }
+                    )
+                    grouped = (
+                        frame.groupby(["cluster_uid", "cluster_id", "temporal_resolution"], dropna=False)
+                        .agg(
+                            n_records=("n_records", "sum"),
+                            analysis_ready_count=("analysis_ready_count", "sum"),
+                            suspect_bad_count=("suspect_bad_count", "sum"),
+                            missing_count=("missing_count", "sum"),
+                            good_count=("good_count", "sum"),
+                            derived_count=("derived_count", "sum"),
+                        )
+                        .reset_index()
+                    )
+                    variable = _variable_from_flag(flag_var)
+                    for _, row in grouped.iterrows():
+                        rows.append(
+                            {
+                                "product_group": _product_group(release_component),
+                                "release_component": release_component,
+                                "cluster_uid": str(row["cluster_uid"]),
+                                "cluster_id": int(row["cluster_id"]),
+                                "temporal_resolution": str(row["temporal_resolution"]),
+                                "variable": variable,
+                                "flag_variable": flag_var,
+                                "n_records": int(row["n_records"]),
+                                "analysis_ready_count": int(row["analysis_ready_count"]),
+                                "suspect_bad_count": int(row["suspect_bad_count"]),
+                                "missing_count": int(row["missing_count"]),
+                                "good_count": int(row["good_count"]),
+                                "derived_count": int(row["derived_count"]),
+                            }
+                        )
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out = (
+        out.groupby(
+            [
+                "product_group",
+                "release_component",
+                "cluster_uid",
+                "cluster_id",
+                "temporal_resolution",
+                "variable",
+                "flag_variable",
+            ],
+            dropna=False,
+        )
+        .agg(
+            n_records=("n_records", "sum"),
+            analysis_ready_count=("analysis_ready_count", "sum"),
+            suspect_bad_count=("suspect_bad_count", "sum"),
+            missing_count=("missing_count", "sum"),
+            good_count=("good_count", "sum"),
+            derived_count=("derived_count", "sum"),
+        )
+        .reset_index()
+    )
+    out["analysis_ready_rate"] = out.apply(lambda r: pct(r["analysis_ready_count"], r["n_records"]), axis=1)
+    out["suspect_bad_rate"] = out.apply(lambda r: pct(r["suspect_bad_count"], r["n_records"]), axis=1)
+    out["missing_rate"] = out.apply(lambda r: pct(r["missing_count"], r["n_records"]), axis=1)
+    out["good_rate"] = out.apply(lambda r: pct(r["good_count"], r["n_records"]), axis=1)
+    out["derived_rate"] = out.apply(lambda r: pct(r["derived_count"], r["n_records"]), axis=1)
+    out["grouping_level"] = "cluster_variable_resolution"
+    clusters = out[out["suspect_bad_count"].gt(0)].copy()
+    columns = [
+        "cluster_uid",
+        "cluster_id",
+        "grouping_level",
+        "product_group",
+        "release_component",
+        "temporal_resolution",
+        "variable",
+        "flag_variable",
+        "n_records",
+        "analysis_ready_count",
+        "suspect_bad_count",
+        "missing_count",
+        "analysis_ready_rate",
+        "suspect_bad_rate",
+        "missing_rate",
+        "good_count",
+        "derived_count",
+        "good_rate",
+        "derived_rate",
+    ]
+    clusters = clusters[[col for col in columns if col in clusters.columns]]
+    return clusters.sort_values(["suspect_bad_count", "suspect_bad_rate"], ascending=[False, False]).reset_index(drop=True)
+
+
 def _build_final_good_stage_missing_by_source_resolution(ctx, chunk_size: int) -> pd.DataFrame:
     path = ctx.require_input(ctx.release_file(PRODUCT_FILES["master_nc"]), required=False)
     if path is None:
@@ -666,9 +829,12 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
     resolution_health_kpis = _build_main_resolution_health(flag_by_resolution)
     flag_by_year = _build_yearly_final_flag_counts(ctx, chunk_size)
     yearly_trends = _build_yearly_final_flag_trends(flag_by_year)
+    problem_clusters = _build_problem_clusters(ctx, chunk_size)
     legacy["flag_by_resolution"] = flag_by_resolution
     legacy["flag_by_year"] = flag_by_year
     legacy["yearly_trends"] = yearly_trends
+    legacy["flag_by_cluster"] = pd.DataFrame()
+    legacy["flag_problem_clusters"] = problem_clusters
 
     # ---- final flags by resolution matrix ----
     flag_summary = flag_by_resolution
@@ -691,6 +857,7 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
         "matrix_final_flags_by_resolution": matrix_final_flags_by_resolution,
         "final_good_stage_missing_by_source_resolution": final_good_stage_missing,
         "resolution_health_kpis": resolution_health_kpis,
+        "cluster_problem_kpis": problem_clusters,
         **legacy,
     }
 
@@ -755,9 +922,12 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
     summary = pd.DataFrame(rows)
     by_variable = (
         summary.groupby(["qc_level", "qc_stage", "variable", "flag_variable", "flag", "meaning"], dropna=False)
-        .agg(count=("count", "sum"), n_total=("n_total", "sum"))
+        .agg(count=("count", "sum"))
         .reset_index()
     )
+    by_variable["n_total"] = by_variable.groupby(["qc_level", "qc_stage", "variable", "flag_variable"], dropna=False)[
+        "count"
+    ].transform("sum")
     by_variable["percentage"] = by_variable.apply(lambda r: pct(r["count"], r["n_total"]), axis=1)
     by_resolution = summary.copy()
     by_source = summary.copy()
@@ -816,9 +986,7 @@ def _build_legacy_tables(counts: pd.DataFrame, health: pd.DataFrame) -> dict:
     hotspots = health_kpis.sort_values("problem_rate", ascending=False).head(100).copy()
     hotspots.insert(0, "grouping_level", "product_variable")
     hotspots.insert(1, "source_dataset", "all_release_sources")
-    problem_clusters = hotspots.copy()
-    problem_clusters.insert(0, "cluster_uid", "")
-    problem_clusters.insert(1, "cluster_id", "")
+    problem_clusters = pd.DataFrame()
     yearly = pd.DataFrame()
     return {
         "flag_summary": summary,
@@ -1218,20 +1386,22 @@ def build_detailed_qc_report(
             "cluster_uid",
             "cluster_id",
             "grouping_level",
-            "source_dataset",
             "product_group",
             "release_component",
+            "temporal_resolution",
             "variable",
             "flag_variable",
-            "n_total",
-            "usable_count",
-            "problem_count",
+            "n_records",
+            "analysis_ready_count",
+            "suspect_bad_count",
             "missing_count",
-            "usable_rate",
-            "problem_rate",
+            "analysis_ready_rate",
+            "suspect_bad_rate",
             "missing_rate",
         ],
+        sort_by="suspect_bad_count",
         max_rows=16,
+        note="Rows are true cluster-level final-flag summaries for release products that carry SED cluster identifiers; `suspect_bad` combines flags 2 and 3.",
     )
     append_table_section(
         lines,
