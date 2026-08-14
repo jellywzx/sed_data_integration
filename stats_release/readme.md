@@ -530,28 +530,26 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
   - unresolved: basin_status=unresolved
 
 #### (2) 状态/标记/质量汇总（`status_counts` / `spatial_match_*_counts`）
-- 按 basin_status + basin_flag 统计行数、聚类数、记录数
+- 按 basin_status + basin_flag 统计 cluster-resolution rows、unique cluster_uid 数、记录数
 - 按 match_quality、spatial_error_class 统计
 - 按 resolution × basin_status、distance_bin × basin_status 交叉统计
 
 #### (3) 未解决源和国家的专项统计（`unresolved_by_source` / `unresolved_by_country`）
-- 按数据源统计未解决（unresolved）的行数和记录数及百分比
+- 按数据源统计未解决（unresolved）的 cluster-resolution rows 和记录数及百分比；source 层统计为 non-exclusive，不能跨 source 求和
 - 按国家统计未解决的情况
 
 #### (4) 已解决点标记异常（`resolved_point_anomalies`）
 - 查找已解决（resolved）但 point_in_local 或 point_in_basin 存在异常的记录
 
-#### (5) 阈值敏感性分析（`spatial_match_threshold_sensitivity`）
-- 不同距离阈值（0/100/1000/5000/10000/50000 m）下被"接受"的行数和百分比
+#### (5) 已解决 assignment 的后验距离过滤保留率（`resolved_assignment_distance_filter_retention`）
+- 在当前 production-resolved assignments 上施加不同距离过滤（0/100/1000/5000/10000/50000 m），统计会保留多少
+- 这不是重新运行 basin matching 的 maximum-distance sensitivity test
 
 #### (6) 人工复查队列（`manual_review_*`）
-- 大偏移队列（top 200，按距离降序）
+- 最大空间偏移队列（top 200，按距离降序，不限 basin_flag）
 - 面积不匹配队列（top 200）
 - 几何不一致队列（top 200）
 - 高风险队列（match_quality=manual_review 或 unresolved，top 200）
-
-#### (7) 有报告汇水面积的行子集统计（`reported_area_*`）
-- 对 basin_area >0 的行子集重复上述分类统计
 
 ### 输出说明
 
@@ -567,15 +565,15 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
 | `table_basin_spatial_match_error_class_counts.csv` | 空间错误分类汇总 | high_confidence 比例越高越好 |
 | `table_basin_spatial_match_quality_counts.csv` | 匹配质量汇总 |
 | `table_basin_spatial_match_distance_bins.csv` | 距离分箱×状态 |
-| `table_basin_spatial_match_threshold_sensitivity.csv` | 阈值敏感性分析 | 用于选择合理的距离接受阈值 |
+| `table_basin_spatial_match_status_by_merit_basin_area_presence.csv` | 是否具有 MERIT-derived `basin_area` × 状态 | 这不是来源报告面积；unresolved cluster 按设计缺失 `basin_area` |
+| `table_basin_resolved_assignment_distance_filter_retention.csv` | 当前 resolved assignment 的后验距离过滤保留率 | 不能解释为重新运行 matching 的阈值敏感性 |
 | `table_basin_unresolved_by_source.csv` | 按数据源的未解决统计 | 了解哪些源的数据匹配困难 |
 | `table_basin_unresolved_by_country.csv` | 按国家的未解决统计 | 了解哪些地区匹配困难 |
 | `table_basin_resolved_point_anomalies.csv` | 已解决但位置标记异常 | 需要核验的 resolved 记录 |
-| `table_basin_manual_review_top_large_offsets.csv` | 大偏移队列（top 200） |
+| `table_basin_manual_review_largest_spatial_offsets.csv` | 最大空间偏移队列（top 200） |
 | `table_basin_manual_review_area_mismatch.csv` | 面积不匹配队列 |
 | `table_basin_manual_review_geometry_inconsistent.csv` | 几何不一致队列 |
 | `table_basin_manual_review_high_risk.csv` | 高风险队列 |
-| `table_basin_reported_area_*.csv` | 有面积数据的行子集统计 | 了解有面积数据的记录匹配质量是否更好 |
 | `table_basin_remote_sensing_exclusion_summary.csv` | 遥测排除说明 | 说明卫星验证记录不在此目录中 |
 | `table_basin_unknown_stations.csv` | 状态/坐标不明的记录 | 需要人工调查 |
 
@@ -588,8 +586,8 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
 - `spatial_error_class_counts.png` — 空间错误分类条形图
 - `distance_hist_logx.png` — 匹配距离直方图（log10 轴）
 - `unknown_points_map.png` — 未解决点全球分布散点图
-- `threshold_sensitivity.png` — 阈值敏感度曲线
-- `basin_status_by_reported_area_presence.png` / `reported_area_presence_counts.png`
+- `resolved_assignment_distance_filter_retention.png` — 当前 resolved assignment 的后验距离过滤保留率
+- `basin_status_by_merit_basin_area_presence.png` / `merit_basin_area_presence_counts.png`
 
 ---
 
