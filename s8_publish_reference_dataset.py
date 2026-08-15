@@ -136,6 +136,24 @@ DEFAULT_SATELLITE_VALIDATION_NC = PROJECT_ROOT / S6_SATELLITE_VALIDATION_NC
 DEFAULT_SATELLITE_VALIDATION_CATALOG_CSV = PROJECT_ROOT / S6_SATELLITE_VALIDATION_CATALOG_CSV
 DEFAULT_RELEASE_SATELLITE_NC = PROJECT_ROOT / RELEASE_SATELLITE_NC
 DEFAULT_RELEASE_SATELLITE_CATALOG_CSV = PROJECT_ROOT / RELEASE_SATELLITE_CATALOG_CSV
+RELEASE_SATELLITE_DAILY_NC_NAME = "sed_reference_satellite_daily.nc"
+RELEASE_SATELLITE_MONTHLY_NC_NAME = "sed_reference_satellite_monthly.nc"
+SATELLITE_RESOLUTION_SUBSETS = (
+    (
+        "daily",
+        RELEASE_SATELLITE_DAILY_NC_NAME,
+        ("rivsed", "riversed", "river_sed"),
+        "daily",
+        "RivSed/RiverSed daily satellite validation-only observations.",
+    ),
+    (
+        "monthly",
+        RELEASE_SATELLITE_MONTHLY_NC_NAME,
+        ("gsed", "dethier"),
+        "monthly",
+        "GSED and Dethier monthly satellite validation-only observations.",
+    ),
+)
 # ---- s8 built-in runtime policy ----
 # 不想每次命令行输参数，就改这里。
 
@@ -566,6 +584,227 @@ def _normalize_release_netcdf_metadata(release_paths_by_kind, source_paths_by_ki
             )
         )
     return all_rows
+
+
+def _normalize_satellite_source_name(value):
+    text = _clean_text(value).lower()
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _satellite_source_equivalent_names(value):
+    normalized = _normalize_satellite_source_name(value)
+    names = {normalized}
+    if normalized in {"rivsed", "riversed"}:
+        names.update({"rivsed", "riversed"})
+    return names
+
+
+def _source_matches_any(value, aliases):
+    normalized = _normalize_satellite_source_name(value)
+    alias_values = {_normalize_satellite_source_name(alias) for alias in aliases}
+    return normalized in alias_values
+
+
+def _copy_netcdf_variable_attrs(src_var, dst_var):
+    for name in src_var.ncattrs():
+        if name == "_FillValue":
+            continue
+        dst_var.setncattr(name, src_var.getncattr(name))
+
+
+def _create_like_variable(dst, name, src_var):
+    kwargs = {}
+    if "_FillValue" in src_var.ncattrs():
+        kwargs["fill_value"] = src_var.getncattr("_FillValue")
+    return dst.createVariable(name, src_var.dtype, src_var.dimensions, **kwargs)
+
+
+def _copy_indexed_variable(src_var, dst_var, indices):
+    if len(indices) == 0:
+        dst_var[:] = np.asarray([], dtype=object if src_var.dtype is str or src_var.dtype == str else src_var.dtype)
+        return
+    dst_var[:] = src_var[np.asarray(indices, dtype=np.int64)]
+
+
+def _count_satellite_subset_records(src, station_keep, record_chunk_size=1000000):
+    if "satellite_station_index" not in src.variables:
+        return 0
+    var = src.variables["satellite_station_index"]
+    n_records = len(src.dimensions.get("n_satellite_records", []))
+    count = 0
+    for start in range(0, n_records, record_chunk_size):
+        stop = min(start + record_chunk_size, n_records)
+        indices = np.asarray(var[start:stop], dtype=np.int64).reshape(-1)
+        valid = (indices >= 0) & (indices < len(station_keep))
+        count += int(np.count_nonzero(valid & station_keep[indices.clip(0, len(station_keep) - 1)]))
+    return count
+
+
+def _copy_satellite_record_variable_subset(
+    name,
+    src_var,
+    dst_var,
+    station_index_var,
+    n_records,
+    station_keep,
+    station_index_remap,
+    record_chunk_size=1000000,
+):
+    out_start = 0
+    record_axis = src_var.dimensions.index("n_satellite_records")
+    for start in range(0, n_records, record_chunk_size):
+        stop = min(start + record_chunk_size, n_records)
+        source_station_indices = np.asarray(station_index_var[start:stop], dtype=np.int64).reshape(-1)
+        valid = (source_station_indices >= 0) & (source_station_indices < len(station_keep))
+        safe_indices = source_station_indices.clip(0, len(station_keep) - 1)
+        keep = valid & station_keep[safe_indices]
+        if not keep.any():
+            continue
+        slices = [slice(None)] * len(src_var.dimensions)
+        slices[record_axis] = slice(start, stop)
+        values = src_var[tuple(slices)]
+        if name == "satellite_station_index":
+            subset = station_index_remap[source_station_indices[keep]]
+        elif record_axis == 0:
+            subset = values[keep]
+        else:
+            subset = np.take(values, np.flatnonzero(keep), axis=record_axis)
+        out_stop = out_start + int(np.count_nonzero(keep))
+        out_slices = [slice(None)] * len(src_var.dimensions)
+        out_slices[record_axis] = slice(out_start, out_stop)
+        dst_var[tuple(out_slices)] = subset
+        out_start = out_stop
+
+
+def _write_satellite_resolution_subset(
+    src_path,
+    dst_path,
+    source_aliases,
+    time_coverage_resolution,
+    force=False,
+):
+    if nc4 is None:
+        raise RuntimeError("netCDF4 is required to write satellite resolution subsets")
+
+    src_path = Path(src_path)
+    dst_path = Path(dst_path)
+    if dst_path.exists() or dst_path.is_symlink():
+        if not force:
+            raise FileExistsError("Satellite subset output exists: {}".format(dst_path))
+        _ensure_removed(dst_path)
+    _prepare_parent(dst_path)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".{}.subset.".format(dst_path.name),
+        suffix=".tmp",
+        dir=str(dst_path.parent),
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
+    try:
+        with nc4.Dataset(src_path, "r") as src:
+            n_stations = len(src.dimensions.get("n_satellite_stations", []))
+            station_sources = _read_text_var(src, "source", size=n_stations)
+            station_keep = np.asarray(
+                [_source_matches_any(source, source_aliases) for source in station_sources],
+                dtype=bool,
+            )
+            station_indices = np.flatnonzero(station_keep)
+            if len(station_indices) == 0:
+                raise RuntimeError(
+                    "No satellite stations matched aliases {} in {}".format(
+                        ", ".join(source_aliases),
+                        src_path,
+                    )
+                )
+
+            source_names = _read_text_var(src, "source_name", size=len(src.dimensions.get("n_sources", [])))
+            source_indices = [
+                idx
+                for idx, name in enumerate(source_names)
+                if _source_matches_any(name, source_aliases)
+            ]
+            if not source_indices:
+                kept_station_sources = {
+                    _clean_text(station_sources[idx])
+                    for idx in station_indices
+                    if _clean_text(station_sources[idx])
+                }
+                source_indices = [
+                    idx
+                    for idx, name in enumerate(source_names)
+                    if _clean_text(name) in kept_station_sources
+                ]
+
+            station_index_remap = np.full(n_stations, -1, dtype=np.int64)
+            station_index_remap[station_indices] = np.arange(len(station_indices), dtype=np.int64)
+            source_name_to_new_index = {}
+            for new_idx, old_idx in enumerate(source_indices):
+                for equivalent_name in _satellite_source_equivalent_names(source_names[old_idx]):
+                    source_name_to_new_index[equivalent_name] = new_idx
+            n_records = _count_satellite_subset_records(src, station_keep)
+
+            with nc4.Dataset(tmp_path, "w", format=src.data_model) as dst:
+                for name in src.ncattrs():
+                    dst.setncattr(name, src.getncattr(name))
+
+                for dim_name, dim in src.dimensions.items():
+                    if dim_name == "n_satellite_stations":
+                        dim_size = len(station_indices)
+                    elif dim_name == "n_satellite_records":
+                        dim_size = n_records
+                    elif dim_name == "n_sources":
+                        dim_size = len(source_indices)
+                    else:
+                        dim_size = None if dim.isunlimited() else len(dim)
+                    dst.createDimension(dim_name, dim_size)
+
+                for name, src_var in src.variables.items():
+                    dst_var = _create_like_variable(dst, name, src_var)
+                    _copy_netcdf_variable_attrs(src_var, dst_var)
+                    dims = tuple(src_var.dimensions)
+                    if dims == ("n_satellite_stations",):
+                        if name == "source_index":
+                            values = [
+                                source_name_to_new_index.get(
+                                    _normalize_satellite_source_name(station_sources[idx]),
+                                    -1,
+                                )
+                                for idx in station_indices
+                            ]
+                            dst_var[:] = np.asarray(values, dtype=np.int32)
+                        else:
+                            _copy_indexed_variable(src_var, dst_var, station_indices)
+                    elif dims == ("n_sources",):
+                        _copy_indexed_variable(src_var, dst_var, source_indices)
+                    elif "n_satellite_records" in dims:
+                        _copy_satellite_record_variable_subset(
+                            name,
+                            src_var,
+                            dst_var,
+                            src.variables["satellite_station_index"],
+                            len(src.dimensions.get("n_satellite_records", [])),
+                            station_keep,
+                            station_index_remap,
+                        )
+                    else:
+                        dst_var[:] = src_var[:]
+
+        os.replace(str(tmp_path), str(dst_path))
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+    apply_release_conventions(dst_path, "satellite")
+    with nc4.Dataset(dst_path, "a") as ds:
+        ds.setncattr("time_coverage_resolution", time_coverage_resolution)
+        ds.setncattr("satellite_subset_sources", ", ".join(source_aliases))
+        ds.setncattr("satellite_subset_resolution", time_coverage_resolution)
+    return dst_path
 
 
 def _write_csv(df, path):
@@ -2082,6 +2321,77 @@ def _append_satellite_release_checks(
         )
 
 
+def _append_satellite_subset_release_checks(rows, subset_specs):
+    for label, path, aliases, expected_resolution in subset_specs:
+        path = Path(path)
+        exists = path.is_file()
+        rows.append(
+            {
+                "check": "satellite_subset_exists_{}".format(label),
+                "status": "pass" if exists else "fail",
+                "details": str(path),
+            }
+        )
+        if not exists:
+            continue
+
+        with nc4.Dataset(path, "r") as ds:
+            n_stations = len(ds.dimensions.get("n_satellite_stations", []))
+            n_records = len(ds.dimensions.get("n_satellite_records", []))
+            sources = sorted(set(_read_text_var(ds, "source", size=n_stations)))
+            bad_sources = [
+                source for source in sources
+                if source and not _source_matches_any(source, aliases)
+            ]
+            actual_resolution = _clean_text(getattr(ds, "time_coverage_resolution", ""))
+            station_indices = _read_int_array(
+                ds,
+                "satellite_station_index",
+                fill_value=-1,
+                size=n_records,
+            )
+            index_ok = (
+                n_records > 0
+                and len(station_indices) == n_records
+                and np.all(station_indices >= 0)
+                and (n_stations > 0)
+                and np.all(station_indices < n_stations)
+            )
+            rows.append(
+                {
+                    "check": "satellite_subset_sources_{}".format(label),
+                    "status": "pass" if not bad_sources and n_stations > 0 else "fail",
+                    "details": "sources={}; bad_sources={}; n_stations={}".format(
+                        "|".join(sources) if sources else "(none)",
+                        "|".join(bad_sources) if bad_sources else "(none)",
+                        n_stations,
+                    ),
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_subset_time_coverage_resolution_{}".format(label),
+                    "status": "pass" if actual_resolution == expected_resolution else "fail",
+                    "details": "expected={} actual={}".format(
+                        expected_resolution,
+                        actual_resolution or "(empty)",
+                    ),
+                }
+            )
+            rows.append(
+                {
+                    "check": "satellite_subset_station_index_bounds_{}".format(label),
+                    "status": "pass" if index_ok else "fail",
+                    "details": "n_records={} n_satellite_stations={} min_index={} max_index={}".format(
+                        n_records,
+                        n_stations,
+                        int(station_indices.min()) if len(station_indices) else "(empty)",
+                        int(station_indices.max()) if len(station_indices) else "(empty)",
+                    ),
+                }
+            )
+
+
 def write_release_readme(out_path):
     content = """# Sediment Reference Dataset Release
 
@@ -2095,6 +2405,8 @@ This directory is the user-facing release layer of the sediment reference datase
 - `sed_reference_timeseries_annual.nc`: annual `station x time` matrix for validation, now with cell-level `selected_source_station_uid`.
 - `sed_reference_climatology.nc`: standalone climatology dataset.
 - `sed_reference_satellite.nc`: required validation-only satellite dataset, published separately from the main station-reference merge.
+- `sed_reference_satellite_daily.nc`: daily satellite subset containing RivSed/RiverSed observations.
+- `sed_reference_satellite_monthly.nc`: monthly satellite subset containing GSED and Dethier observations.
 - Mainline and climatology records require at least one sediment variable (`SSC` or `SSL`) to be present; Q-only time steps are not published.
 
 ## Catalogs
@@ -2108,7 +2420,10 @@ This directory is the user-facing release layer of the sediment reference datase
 ## Satellite Dataset
 
 - `sed_reference_satellite.nc` contains required validation-only satellite or satellite-like sediment observations, including sources such as RiverSed, GSED, Dethier, and AquaSat where present.
+- `sed_reference_satellite_daily.nc` contains the RivSed/RiverSed daily subset and has global attribute `time_coverage_resolution=daily`.
+- `sed_reference_satellite_monthly.nc` contains the GSED and Dethier monthly subset and has global attribute `time_coverage_resolution=monthly`.
 - `satellite_catalog.csv` describes the satellite stations and links them to the main reference clusters through s5b v2 `linked_cluster_uid / linked_cluster_id` fields.
+- `satellite_catalog.csv` is the full satellite catalog; no separate daily/monthly satellite catalogs are produced.
 - Satellite records are excluded from the main station-reference merge and do not enter `sed_reference_master.nc` or the daily/monthly/annual matrix NetCDF files.
 - Use this dataset for satellite-vs-station validation, spatial diagnostics, and downstream comparison.
 - Legacy names such as `sed_reference_satellite_validation.nc` and `satellite_validation_catalog.csv` are compatibility aliases only; new workflows should use `sed_reference_satellite.nc` and `satellite_catalog.csv`.
@@ -2181,6 +2496,7 @@ def validate_release(
     overlap_candidates_csv=None,
     satellite_validation_nc=None,
     satellite_validation_catalog_csv=None,
+    satellite_subset_ncs=None,
     convention_audit_rows=None,
 ):
     if nc4 is None:
@@ -2792,6 +3108,7 @@ def validate_release(
         cluster_station_catalog=cluster_station_catalog,
         station_catalog=cluster_resolution_catalog,
     )
+    _append_satellite_subset_release_checks(rows, satellite_subset_ncs or [])
 
     report_df = pd.DataFrame(rows)
     _write_csv(report_df, out_csv)
@@ -2985,6 +3302,25 @@ def main():
     )
     print("Release metadata convention checks: {} rows".format(len(convention_audit_rows)))
 
+    satellite_subset_specs = []
+    for label, file_name, aliases, time_resolution, description in SATELLITE_RESOLUTION_SUBSETS:
+        subset_path = _write_satellite_resolution_subset(
+            sat_nc_dst,
+            out_dir / file_name,
+            aliases,
+            time_resolution,
+            force=args.force,
+        )
+        satellite_subset_specs.append((label, subset_path, aliases, time_resolution))
+        file_records.append(("satellite_netcdf", subset_path, description))
+        print(
+            "Prepared satellite {} release NC: {} ({})".format(
+                label,
+                subset_path.name,
+                time_resolution,
+            )
+        )
+
     satellite_geo_lookup = _geo_lookup_from_nc(
         sat_nc_dst,
         "satellite_station_uid",
@@ -3138,6 +3474,7 @@ def main():
             overlap_candidates_csv=overlap_candidates_validation_path,
             satellite_validation_nc=sat_nc_dst,
             satellite_validation_catalog_csv=sat_catalog_dst,
+            satellite_subset_ncs=satellite_subset_specs,
             convention_audit_rows=convention_audit_rows,
         )
         file_records.append(("report", validation_path, "Release validation report"))

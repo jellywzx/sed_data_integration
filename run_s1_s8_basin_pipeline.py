@@ -87,6 +87,7 @@ BUILTIN_S2_CLEAR = False
 BUILTIN_S2_DATASET = ""
 BUILTIN_S3_WORKERS = 32
 BUILTIN_S3_EXCLUDE_RESOLUTIONS = "climatology"
+BUILTIN_S3_EXCLUDE_SOURCE = ""
 
 BUILTIN_S4_WORKERS = 24
 BUILTIN_S4_BATCH_SIZE = 50
@@ -116,6 +117,7 @@ BUILTIN_S8_MINIMAL_MATRIX_WORKERS = 3
 BUILTIN_S8_MINIMAL_COMPRESSION = 4
 BUILTIN_S8_SKIP_MINIMAL_CLIMATOLOGY = False
 BUILTIN_S8_SKIP_MINIMAL_SATELLITE = False
+BUILTIN_S8_SATELLITE_DAILY_MONTHLY = False
 BUILTIN_S9_STRICT = True
 BUILTIN_S9_COPY_EXAMPLE = True
 BUILTIN_CLUSTER_POLL_SECONDS = 60
@@ -324,6 +326,8 @@ def stage_outputs():
             release_dir / "sed_reference_timeseries_annual.nc",
             release_dir / "sed_reference_climatology.nc",
             release_dir / "sed_reference_satellite.nc",
+            release_dir / "sed_reference_satellite_daily.nc",
+            release_dir / "sed_reference_satellite_monthly.nc",
             release_dir / "station_catalog.csv",
             release_dir / "source_station_catalog.csv",
             release_dir / "source_dataset_catalog.csv",
@@ -331,6 +335,8 @@ def stage_outputs():
             release_dir / "release_validation_report.csv",
             release_dir / "release_inventory.csv",
             release_dir / "README.md",
+            minimal_dir / "sed_reference_satellite_daily.nc",
+            minimal_dir / "sed_reference_satellite_monthly.nc",
             minimal_dir / "release_validation_report.csv",
             minimal_dir / "release_inventory.csv",
             minimal_dir / "README.md",
@@ -604,6 +610,7 @@ def build_stage_specs(args, python_bin):
             ]
             + (["--skip-climatology"] if args.s8_skip_minimal_climatology else [])
             + (["--skip-satellite"] if args.s8_skip_minimal_satellite else [])
+            + (["--satellite-daily-monthly"] if args.s8_satellite_daily_monthly else [])
             + (["--force"] if args.s8_force else [])
             + (["--dry-run"] if args.dry_run else []),
         },
@@ -665,7 +672,8 @@ def build_stage_specs(args, python_bin):
                         str(args.s3_workers),
                         "--exclude-resolutions",
                         args.s3_exclude_resolutions,
-                    ],
+                    ]
+                    + _optional_multi_arg("--exclude-source", args.s3_exclude_source),
                 }
             ],
         },
@@ -804,6 +812,16 @@ def parse_args(defaults=None):
         default=BUILTIN_S3_EXCLUDE_RESOLUTIONS,
         help="Comma-separated resolutions excluded from s3. Default keeps climatology out of the basin mainline.",
     )
+    parser.add_argument(
+        "--s3-exclude-source",
+        "--s3-exclude-sources",
+        nargs="+",
+        default=BUILTIN_S3_EXCLUDE_SOURCE,
+        help=(
+            "Source(s) excluded from s3 basin-mainline collection. Supports multiple values "
+            "and comma-separated values, for example: --s3-exclude-source Huanghe GloRiSe/SS."
+        ),
+    )
     parser.add_argument("--s4-workers", type=int, default=BUILTIN_S4_WORKERS, help="Worker count for s4 via S4_N_WORKERS.")
     parser.add_argument(
         "--s4-array-size",
@@ -941,6 +959,12 @@ def parse_args(defaults=None):
         help="Skip building the satellite extension package in s8 minimal release.",
     )
     parser.add_argument(
+        "--s8-satellite-daily-monthly",
+        action="store_true",
+        default=BUILTIN_S8_SATELLITE_DAILY_MONTHLY,
+        help="Build the s8 minimal satellite package as daily/monthly subsets instead of the full set.",
+    )
+    parser.add_argument(
         "--s9-no-strict",
         action="store_false",
         dest="s9_strict",
@@ -1046,6 +1070,7 @@ def _confirm_config(args, stages, python_bin):
         ("Include climatology in s6 master", str(args.s6_include_climatology)),
         ("Skip climatology export", str(args.skip_climatology_export)),
         ("s3 exclude resolutions", args.s3_exclude_resolutions),
+        ("s3 exclude source", ", ".join(_split_multi_value(args.s3_exclude_source)) or "none"),
         ("s8 force overwrite", str(args.s8_force)),
         ("s8 skip validation", str(args.s8_skip_validation)),
         ("s8 include basin polygons", str(args.s8_include_basin_polygons)),
@@ -1115,6 +1140,7 @@ def _confirm_config(args, stages, python_bin):
         ("s2 dataset filter", "--s2-dataset Huanghe GloRiSe/SS"),
         ("s3 workers", "--s3-workers N"),
         ("s3 exclude resolutions", "--s3-exclude-resolutions"),
+        ("s3 exclude source", "--s3-exclude-source Huanghe GloRiSe/SS"),
         ("s4 array size", "--s4-array-size N"),
         ("s4 maxtasksperchild", "--s4-maxtasksperchild N"),
         ("s6 workers", "--s6-workers N"),
@@ -1129,6 +1155,7 @@ def _confirm_config(args, stages, python_bin):
         ("s8 minimal compression", "--s8-minimal-compression N"),
         ("s8 skip minimal climatology", "--s8-skip-minimal-climatology"),
         ("s8 skip minimal satellite", "--s8-skip-minimal-satellite"),
+        ("s8 satellite daily monthly", "--s8-satellite-daily-monthly"),
         ("s9 strict public-name audit", "--s9-no-strict (to warn but continue)"),
         ("s9 copy example workflow", "--s9-no-example (to skip copying the example)"),
         ("include local basins", "--include-local-basins"),
@@ -1188,6 +1215,7 @@ _CONFIG_FIELDS = [
     ("s2_dataset", "--s2-dataset"),
     ("s3_workers", "--s3-workers"),
     ("s3_exclude_resolutions", "--s3-exclude-resolutions"),
+    ("s3_exclude_source", "--s3-exclude-source"),
     ("s4_workers", "--s4-workers"),
     ("s4_array_size", "--s4-array-size"),
     ("s4_batch_size", "--s4-batch-size"),
@@ -1214,6 +1242,7 @@ _CONFIG_FIELDS = [
     ("s8_minimal_compression", "--s8-minimal-compression"),
     ("s8_skip_minimal_climatology", "--s8-skip-minimal-climatology"),
     ("s8_skip_minimal_satellite", "--s8-skip-minimal-satellite"),
+    ("s8_satellite_daily_monthly", "--s8-satellite-daily-monthly"),
     ("s9_strict", "--s9-no-strict"),
     ("s9_copy_example", "--s9-no-example"),
     ("python", "--python"),
@@ -1266,13 +1295,14 @@ cli:
   strict_s1: false
 
   # s2: 按分辨率整理
-  s2_workers: 8            # 并行 worker 数，推荐 4-16
+  s2_workers: 40            # 并行 worker 数，推荐 4-16
   s2_clear: false          # 清空旧输出目录重新组织
   s2_dataset: ""           # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32
   s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
+  s3_exclude_source: ""     # 排除的 source；留空=不排除。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s4: 流域追踪
   s4_workers: 24           # S4_N_WORKERS，推荐 8-48
@@ -1309,6 +1339,7 @@ cli:
   s8_minimal_compression: 4           # NetCDF compression level (0-9)
   s8_skip_minimal_climatology: false  # Skip climatology extension package
   s8_skip_minimal_satellite: false    # Skip satellite extension package
+  s8_satellite_daily_monthly: false   # Build minimal satellite package as daily/monthly subsets
 
   # s9: public station-name conversion for minimal release
   s9_strict: true          # residual old public cluster schema names fail the stage
@@ -1457,6 +1488,7 @@ def main():
             else:
                 _print_and_log(log_fp, "S4 current s3 SHA256:    unavailable (s3 CSV missing)")
         _print_and_log(log_fp, "s3 exclude resolutions:  {}".format(args.s3_exclude_resolutions))
+        _print_and_log(log_fp, "s3 exclude source:       {}".format(", ".join(_split_multi_value(args.s3_exclude_source)) or "none"))
         _print_and_log(log_fp, "s8 force overwrite:      {}".format(args.s8_force))
         _print_and_log(log_fp, "s8 skip validation:      {}".format(args.s8_skip_validation))
         _print_and_log(log_fp, "s8 include basin poly:   {}".format(args.s8_include_basin_polygons))
@@ -1478,6 +1510,7 @@ def main():
         _print_and_log(log_fp, "s8 minimal compression:        {}".format(args.s8_minimal_compression))
         _print_and_log(log_fp, "s8 skip minimal climatology:  {}".format(args.s8_skip_minimal_climatology))
         _print_and_log(log_fp, "s8 skip minimal satellite:    {}".format(args.s8_skip_minimal_satellite))
+        _print_and_log(log_fp, "s8 satellite daily monthly:   {}".format(args.s8_satellite_daily_monthly))
         _print_and_log(log_fp, "s9 strict public-name audit:   {}".format(args.s9_strict))
         _print_and_log(log_fp, "s9 copy example workflow:      {}".format(args.s9_copy_example))
         _print_and_log(log_fp, "include local basins:    {}".format(args.include_local_basins))
