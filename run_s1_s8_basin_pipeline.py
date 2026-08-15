@@ -87,6 +87,7 @@ BUILTIN_S2_CLEAR = False
 BUILTIN_S2_DATASET = ""
 BUILTIN_S3_WORKERS = 32
 BUILTIN_S3_EXCLUDE_RESOLUTIONS = "climatology"
+BUILTIN_S3_EXCLUDE_SOURCE = ""
 
 BUILTIN_S4_WORKERS = 24
 BUILTIN_S4_BATCH_SIZE = 50
@@ -669,7 +670,8 @@ def build_stage_specs(args, python_bin):
                         str(args.s3_workers),
                         "--exclude-resolutions",
                         args.s3_exclude_resolutions,
-                    ],
+                    ]
+                    + _optional_multi_arg("--exclude-source", args.s3_exclude_source),
                 }
             ],
         },
@@ -807,6 +809,16 @@ def parse_args(defaults=None):
         "--s3-exclude-resolutions",
         default=BUILTIN_S3_EXCLUDE_RESOLUTIONS,
         help="Comma-separated resolutions excluded from s3. Default keeps climatology out of the basin mainline.",
+    )
+    parser.add_argument(
+        "--s3-exclude-source",
+        "--s3-exclude-sources",
+        nargs="+",
+        default=BUILTIN_S3_EXCLUDE_SOURCE,
+        help=(
+            "Source(s) excluded from s3 basin-mainline collection. Supports multiple values "
+            "and comma-separated values, for example: --s3-exclude-source Huanghe GloRiSe/SS."
+        ),
     )
     parser.add_argument("--s4-workers", type=int, default=BUILTIN_S4_WORKERS, help="Worker count for s4 via S4_N_WORKERS.")
     parser.add_argument(
@@ -1050,6 +1062,7 @@ def _confirm_config(args, stages, python_bin):
         ("Include climatology in s6 master", str(args.s6_include_climatology)),
         ("Skip climatology export", str(args.skip_climatology_export)),
         ("s3 exclude resolutions", args.s3_exclude_resolutions),
+        ("s3 exclude source", ", ".join(_split_multi_value(args.s3_exclude_source)) or "none"),
         ("s8 force overwrite", str(args.s8_force)),
         ("s8 skip validation", str(args.s8_skip_validation)),
         ("s8 include basin polygons", str(args.s8_include_basin_polygons)),
@@ -1119,6 +1132,7 @@ def _confirm_config(args, stages, python_bin):
         ("s2 dataset filter", "--s2-dataset Huanghe GloRiSe/SS"),
         ("s3 workers", "--s3-workers N"),
         ("s3 exclude resolutions", "--s3-exclude-resolutions"),
+        ("s3 exclude source", "--s3-exclude-source Huanghe GloRiSe/SS"),
         ("s4 array size", "--s4-array-size N"),
         ("s4 maxtasksperchild", "--s4-maxtasksperchild N"),
         ("s6 workers", "--s6-workers N"),
@@ -1192,6 +1206,7 @@ _CONFIG_FIELDS = [
     ("s2_dataset", "--s2-dataset"),
     ("s3_workers", "--s3-workers"),
     ("s3_exclude_resolutions", "--s3-exclude-resolutions"),
+    ("s3_exclude_source", "--s3-exclude-source"),
     ("s4_workers", "--s4-workers"),
     ("s4_array_size", "--s4-array-size"),
     ("s4_batch_size", "--s4-batch-size"),
@@ -1270,13 +1285,14 @@ cli:
   strict_s1: false
 
   # s2: 按分辨率整理
-  s2_workers: 8            # 并行 worker 数，推荐 4-16
+  s2_workers: 40            # 并行 worker 数，推荐 4-16
   s2_clear: false          # 清空旧输出目录重新组织
   s2_dataset: ""           # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32
   s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
+  s3_exclude_source: ""     # 排除的 source；留空=不排除。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
 
   # s4: 流域追踪
   s4_workers: 24           # S4_N_WORKERS，推荐 8-48
@@ -1461,6 +1477,7 @@ def main():
             else:
                 _print_and_log(log_fp, "S4 current s3 SHA256:    unavailable (s3 CSV missing)")
         _print_and_log(log_fp, "s3 exclude resolutions:  {}".format(args.s3_exclude_resolutions))
+        _print_and_log(log_fp, "s3 exclude source:       {}".format(", ".join(_split_multi_value(args.s3_exclude_source)) or "none"))
         _print_and_log(log_fp, "s8 force overwrite:      {}".format(args.s8_force))
         _print_and_log(log_fp, "s8 skip validation:      {}".format(args.s8_skip_validation))
         _print_and_log(log_fp, "s8 include basin poly:   {}".format(args.s8_include_basin_polygons))
