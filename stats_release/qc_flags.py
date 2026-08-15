@@ -633,7 +633,8 @@ def build_qc_stats(ctx, chunk_size: int) -> dict:
                         "not_checked_count": int(g.loc[g["is_not_checked"], "count"].sum()),
                         "problem_count": int(g.loc[g["is_problem"], "count"].sum()),
                     }
-                )
+                ),
+                include_groups=False,
             )
             .reset_index()
         )
