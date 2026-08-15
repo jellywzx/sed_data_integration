@@ -117,6 +117,7 @@ BUILTIN_S8_MINIMAL_MATRIX_WORKERS = 3
 BUILTIN_S8_MINIMAL_COMPRESSION = 4
 BUILTIN_S8_SKIP_MINIMAL_CLIMATOLOGY = False
 BUILTIN_S8_SKIP_MINIMAL_SATELLITE = False
+BUILTIN_S8_SATELLITE_DAILY_MONTHLY = False
 BUILTIN_S9_STRICT = True
 BUILTIN_S9_COPY_EXAMPLE = True
 BUILTIN_CLUSTER_POLL_SECONDS = 60
@@ -609,6 +610,7 @@ def build_stage_specs(args, python_bin):
             ]
             + (["--skip-climatology"] if args.s8_skip_minimal_climatology else [])
             + (["--skip-satellite"] if args.s8_skip_minimal_satellite else [])
+            + (["--satellite-daily-monthly"] if args.s8_satellite_daily_monthly else [])
             + (["--force"] if args.s8_force else [])
             + (["--dry-run"] if args.dry_run else []),
         },
@@ -957,6 +959,12 @@ def parse_args(defaults=None):
         help="Skip building the satellite extension package in s8 minimal release.",
     )
     parser.add_argument(
+        "--s8-satellite-daily-monthly",
+        action="store_true",
+        default=BUILTIN_S8_SATELLITE_DAILY_MONTHLY,
+        help="Build the s8 minimal satellite package as daily/monthly subsets instead of the full set.",
+    )
+    parser.add_argument(
         "--s9-no-strict",
         action="store_false",
         dest="s9_strict",
@@ -1147,6 +1155,7 @@ def _confirm_config(args, stages, python_bin):
         ("s8 minimal compression", "--s8-minimal-compression N"),
         ("s8 skip minimal climatology", "--s8-skip-minimal-climatology"),
         ("s8 skip minimal satellite", "--s8-skip-minimal-satellite"),
+        ("s8 satellite daily monthly", "--s8-satellite-daily-monthly"),
         ("s9 strict public-name audit", "--s9-no-strict (to warn but continue)"),
         ("s9 copy example workflow", "--s9-no-example (to skip copying the example)"),
         ("include local basins", "--include-local-basins"),
@@ -1233,6 +1242,7 @@ _CONFIG_FIELDS = [
     ("s8_minimal_compression", "--s8-minimal-compression"),
     ("s8_skip_minimal_climatology", "--s8-skip-minimal-climatology"),
     ("s8_skip_minimal_satellite", "--s8-skip-minimal-satellite"),
+    ("s8_satellite_daily_monthly", "--s8-satellite-daily-monthly"),
     ("s9_strict", "--s9-no-strict"),
     ("s9_copy_example", "--s9-no-example"),
     ("python", "--python"),
@@ -1329,6 +1339,7 @@ cli:
   s8_minimal_compression: 4           # NetCDF compression level (0-9)
   s8_skip_minimal_climatology: false  # Skip climatology extension package
   s8_skip_minimal_satellite: false    # Skip satellite extension package
+  s8_satellite_daily_monthly: false   # Build minimal satellite package as daily/monthly subsets
 
   # s9: public station-name conversion for minimal release
   s9_strict: true          # residual old public cluster schema names fail the stage
@@ -1499,6 +1510,7 @@ def main():
         _print_and_log(log_fp, "s8 minimal compression:        {}".format(args.s8_minimal_compression))
         _print_and_log(log_fp, "s8 skip minimal climatology:  {}".format(args.s8_skip_minimal_climatology))
         _print_and_log(log_fp, "s8 skip minimal satellite:    {}".format(args.s8_skip_minimal_satellite))
+        _print_and_log(log_fp, "s8 satellite daily monthly:   {}".format(args.s8_satellite_daily_monthly))
         _print_and_log(log_fp, "s9 strict public-name audit:   {}".format(args.s9_strict))
         _print_and_log(log_fp, "s9 copy example workflow:      {}".format(args.s9_copy_example))
         _print_and_log(log_fp, "include local basins:    {}".format(args.include_local_basins))

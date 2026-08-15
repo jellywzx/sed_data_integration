@@ -145,7 +145,6 @@ global_attributes_to_keep:
 - standard_name_vocabulary
 forbidden_files:
 - sed_reference_master.nc
-- sed_reference_satellite.nc
 forbidden_variables:
 - source_name
 - selected_source_index
