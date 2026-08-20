@@ -319,9 +319,13 @@ def _read_explanatory_meta_from_nc(path):
     try:
         with nc4.Dataset(path, "r") as ds:
             meta = read_explanatory_metadata(ds)
+            meta.update(read_station_metadata(ds))
     except Exception:
         meta = {}
     return {
+        "source_station_id": _clean_text(meta.get("source_station_id", "")),
+        "station_name": _clean_text(meta.get("station_name", "")),
+        "river_name": _clean_text(meta.get("river_name", "")),
         "source_station_temporal_span": _clean_text(meta.get("temporal_span", "")),
         "source_station_time_coverage_start": _clean_text(meta.get("time_coverage_start", "")),
         "source_station_time_coverage_end": _clean_text(meta.get("time_coverage_end", "")),
@@ -403,6 +407,11 @@ def _clean_text(value):
     if isinstance(value, float) and np.isnan(value):
         return ""
     return str(value).strip()
+
+
+def _is_missing_source_station_text(value):
+    text = _clean_text(value)
+    return text == "" or text == "/"
 
 
 def _clean_coord(value):
@@ -1422,11 +1431,11 @@ def main():
                 ncols=120,
                 file=sys.stderr,
             ):
-                explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(path_str)
+                explanatory_meta_cache[path_str] = _read_explanatory_meta_from_nc(_resolve_station_path(path_str))
         else:
             with ProcessPoolExecutor(max_workers=metadata_workers) as ex:
                 futures = {
-                    ex.submit(_read_explanatory_meta_worker, path_str): path_str
+                    ex.submit(_read_explanatory_meta_worker, str(_resolve_station_path(path_str))): path_str
                     for path_str in unique_meta_paths
                 }
 
@@ -1439,7 +1448,8 @@ def main():
                 ) as pbar:
                     for future in as_completed(futures):
                         path_str, meta = future.result()
-                        explanatory_meta_cache[path_str] = meta
+                        cache_key = futures[future]
+                        explanatory_meta_cache[cache_key] = meta
                         pbar.update(1)
 
     print("Building source-station map: {} station rows ...".format(len(stations)))
@@ -1470,6 +1480,19 @@ def main():
             explanatory_meta = {}
         else:
             explanatory_meta = explanatory_meta_cache.get(path_str, {})
+
+        if _is_missing_source_station_text(row_dict["source_station_id"]):
+            meta_source_station_id = _clean_text(explanatory_meta.get("source_station_id", ""))
+            if meta_source_station_id:
+                row_dict["source_station_id"] = meta_source_station_id
+        if _is_missing_source_station_text(row_dict["station_name"]):
+            meta_station_name = _clean_text(explanatory_meta.get("station_name", ""))
+            if meta_station_name:
+                row_dict["station_name"] = meta_station_name
+        if _is_missing_source_station_text(row_dict["river_name"]):
+            meta_river_name = _clean_text(explanatory_meta.get("river_name", ""))
+            if meta_river_name:
+                row_dict["river_name"] = meta_river_name
 
         key = _build_source_station_key(row_dict)
         idx = source_station_lookup.get(key)

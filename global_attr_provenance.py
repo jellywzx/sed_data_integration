@@ -31,7 +31,7 @@ PROMOTED_ATTR_ALIASES = OrderedDict(
         ("geo_attribute_method", ("geo_attribute_method", "Geo_Attribute_Method")),
         ("geo_boundary_dataset", ("geo_boundary_dataset", "Geo_Boundary_Dataset")),
         ("geo_boundary_version", ("geo_boundary_version", "Geo_Boundary_Version")),
-        ("station_id", ("station_id", "Source_ID", "Station_ID", "source_id", "stationID", "ID", "location_id")),
+        ("station_id", ("station_id", "source_station_id", "Source_ID", "Station_ID", "source_id", "stationID", "ID", "location_id")),
         ("dataset_name", ("dataset_name", "Dataset_Name")),
         ("data_source_name", ("data_source_name", "Data_Source_Name")),
         ("observation_type", ("observation_type", "Observation_Type")),

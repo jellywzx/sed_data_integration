@@ -25,6 +25,7 @@ STATION_NAME_ATTR_KEYS = ["station_name", "Station_Name", "stationName", "name"]
 RIVER_NAME_ATTR_KEYS = ["river_name", "River_Name", "riverName", "river"]
 STATION_ID_ATTR_KEYS = [
     "station_id",
+    "source_station_id",
     "Source_ID",
     "Station_ID",
     "source_id",
