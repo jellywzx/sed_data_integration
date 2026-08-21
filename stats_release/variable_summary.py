@@ -516,21 +516,23 @@ def _count_satellite_by_source(ctx, chunk_size: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _count_master_source_variables(ctx, chunk_size: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _count_master_source_variables(ctx, chunk_size: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Master-product per-source variable coverage and value distribution.
 
-    Returns (coverage_df, values_df):
+    Returns (coverage_df, values_df, flag01_values_df):
       - coverage_df: one row per (source_name, variable); n_records/n_present/
         n_good/n_estimated/n_usable + percentages (mirrors _count_satellite_by_source).
       - values_df: one row per (source, variable); value-distribution stats over
         ALL finite values (all resolutions, flags 0-8).
+      - flag01_values_df: like values_df but restricted to flag 0-1 values only.
     """
     file_name = PRODUCT_FILES["master_nc"]
     path = ctx.require_input(ctx.release_file(file_name), required=False)
     if path is None:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     coverage = {}
     values_by_key = {}
+    flag01_values_by_key = {}
     units = {var: "" for var in VARIABLES}
     with ctx.open_dataset(file_name, required=True) as ds:
         n_records = netcdf_record_count(ds)
@@ -572,6 +574,9 @@ def _count_master_source_variables(ctx, chunk_size: int) -> tuple[pd.DataFrame, 
                     vals = values[mask & present]
                     if vals.size:
                         values_by_key.setdefault((src, var), []).append(vals.astype("float64"))
+                    flag01_vals = values[mask & present & np.isin(flags, [0, 1])]
+                    if flag01_vals.size:
+                        flag01_values_by_key.setdefault((src, var), []).append(flag01_vals.astype("float64"))
 
     coverage_rows = []
     for (source, var), item in sorted(coverage.items()):
@@ -602,18 +607,37 @@ def _count_master_source_variables(ctx, chunk_size: int) -> tuple[pd.DataFrame, 
             "unit": units.get(var, ""),
         })
 
-    return pd.DataFrame(coverage_rows), pd.DataFrame(value_rows)
+    flag01_value_rows = []
+    for (source, var), pieces in sorted(flag01_values_by_key.items()):
+        vals = np.concatenate(pieces) if pieces else np.asarray([])
+        stats = numeric_stats(vals)
+        flag01_value_rows.append({
+            "source": source,
+            "variable": var,
+            "n": int(vals.size),
+            "mean": stats["mean"],
+            "median": stats["median"],
+            "min": stats["min"],
+            "max": stats["max"],
+            "p05": stats["p05"],
+            "p95": stats["p95"],
+            "p99": stats["p99"],
+            "unit": units.get(var, ""),
+        })
+
+    return pd.DataFrame(coverage_rows), pd.DataFrame(value_rows), pd.DataFrame(flag01_value_rows)
 
 
 def build_variable_stats(ctx, chunk_size: int) -> dict:
     legacy = _scan_master_variable_tables(ctx, chunk_size)
-    master_coverage, master_values = _count_master_source_variables(ctx, chunk_size)
+    master_coverage, master_values, master_values_flag01 = _count_master_source_variables(ctx, chunk_size)
     result = {
         "variable_coverage": build_variable_summary(ctx, chunk_size),
         "satellite_variable_by_source": _count_satellite_by_source(ctx, chunk_size),
         "monthly_flag01_source_variable": _scan_monthly_flag01_source_variable(ctx, chunk_size),
         "master_variable_by_source": master_coverage,
         "master_source_variable_values": master_values,
+        "master_source_variable_values_flag01": master_values_flag01,
         **legacy,
     }
     return result
@@ -764,6 +788,7 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
     monthly_flag01_source_var = stats.get("monthly_flag01_source_variable", pd.DataFrame())
     master_by_source = stats.get("master_variable_by_source", pd.DataFrame())
     master_source_values = stats.get("master_source_variable_values", pd.DataFrame())
+    master_source_values_flag01 = stats.get("master_source_variable_values_flag01", pd.DataFrame())
 
     total_products = coverage["product"].nunique() if not coverage.empty and "product" in coverage.columns else 0
     total_records = pd.to_numeric(coverage.get("n_records", 0), errors="coerce").fillna(0).sum() if not coverage.empty else 0
@@ -876,6 +901,15 @@ def build_detailed_variable_report(ctx, stats: dict, tables_dir: Path, figures_d
         sort_by="n",
         max_rows=60,
         note="Master product. Value statistics over all finite values (all resolutions, flags 0\u20138), complementing the monthly Flag 0\u20131 table above.",
+    )
+    append_table_section(
+        lines,
+        "Master Source \u00d7 Variable Value Distribution (Flag 0\u20131)",
+        master_source_values_flag01,
+        columns=["source", "variable", "n", "mean", "median", "min", "max", "p05", "p95", "p99", "unit"],
+        sort_by="n",
+        max_rows=60,
+        note="Master product. Value statistics over finite values restricted to the variable's own flag 0 (good) or 1 (derived/estimated), all resolutions.",
     )
     append_table_section(
         lines,
