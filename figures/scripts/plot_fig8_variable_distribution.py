@@ -87,8 +87,8 @@ OKABE_ITO = {
 }
 
 PRODUCT_COLORS = {
-    "daily":       OKABE_ITO["orange"],
-    "monthly":     OKABE_ITO["sky_blue"],
+    "daily":       OKABE_ITO["sky_blue"],
+    "monthly":     OKABE_ITO["orange"],
     "annual":      OKABE_ITO["bluish_green"],
 }
 
@@ -563,18 +563,13 @@ def _read_values_for_figure(ctx: ReleaseContext, product: str, file_name: str, v
     return {"values": _concat_values(value_pieces), "flags": _concat_values(flag_pieces).astype("int16")}
 
 
-def _plot_axis_limits(values: np.ndarray, fixed_limits: tuple[float, float]) -> tuple[float, float]:
-    if values.size < 2:
-        return fixed_limits
+def _plot_axis_limits(values: np.ndarray) -> tuple[float, float]:
     low, high = np.percentile(values, [1, 99])
     if not np.isfinite(low) or not np.isfinite(high) or low >= high:
-        return fixed_limits
+        center = float(np.median(values))
+        low = high = center
     pad = max((high - low) * 0.05, 0.05)
-    low = max(float(fixed_limits[0]), float(low - pad))
-    high = min(float(fixed_limits[1]), float(high + pad))
-    if low >= high:
-        return fixed_limits
-    return low, high
+    return float(low - pad), float(high + pad)
 
 
 def write_figure_and_artifacts(
@@ -612,7 +607,6 @@ def write_figure_and_artifacts(
     N_BINS = 55
 
     xlabels = {"Q": "Q (m³ s⁻¹)", "SSC": "SSC (mg L⁻¹)", "SSL": "SSL (t d⁻¹)"}
-    fixed_x_limits = {"Q": (-3.0, 5.0), "SSC": (-1.0, 5.0), "SSL": (-3.0, 7.0)}
 
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 9.0), sharex=False)
     plotting_rows = []
@@ -632,30 +626,31 @@ def write_figure_and_artifacts(
                 continue
 
             if use_log[var_name]:
+                # 零值无法取 log10，单独抽出；直方图只对正值取对数，
+                # 零值在下方作为左侧“0”刻度/柱单独标注，不再压入对数轴。
                 positive = values > 0
-                values = values[positive]
-                flags = flags[positive]
-                if values.size == 0:
-                    continue
-                plot_values = np.log10(values)
+                n_zero = int(np.count_nonzero(~positive))
+                plot_values = np.log10(values[positive]) if np.any(positive) else np.asarray([], dtype="float64")
             else:
                 plot_values = values
+                n_zero = 0
 
             n_good = int(np.count_nonzero(flags == 0))
             n_estimated = int(np.count_nonzero(flags == 1))
-            n_usable = int(plot_values.size)
+            n_usable = int(values.size)
             product_data[product] = {
                 "values": plot_values,
                 "n_good": n_good,
                 "n_estimated": n_estimated,
                 "n_usable": n_usable,
+                "n_zero": n_zero,
             }
             combined_values.append(plot_values)
 
         any_data = bool(product_data)
         if any_data:
             all_values = _concat_values(combined_values)
-            x_min, x_max = _plot_axis_limits(all_values, fixed_x_limits[var_name])
+            x_min, x_max = _plot_axis_limits(all_values)
             bins = np.linspace(x_min, x_max, N_BINS)
 
             for product, _file_name in products:
@@ -665,12 +660,14 @@ def write_figure_and_artifacts(
                 n_good = product_data[product]["n_good"]
                 n_estimated = product_data[product]["n_estimated"]
                 n_usable = product_data[product]["n_usable"]
+                n_zero = product_data[product]["n_zero"]
                 color = PRODUCT_COLORS.get(product, "#333333")
 
                 if product == "annual":
                     q05, q25, q50, q75, q95 = np.percentile(plot_values, [5, 25, 50, 75, 95])
                     plotting_rows.append({
                         "plot_kind": "boxplot",
+                        "n_zero": n_zero,
                         "flag_filter": "flag_0_or_1_usable",
                         "variable": var_name,
                         "product": product,
@@ -690,6 +687,7 @@ def write_figure_and_artifacts(
                     })
                     plotting_rows.append({
                         "plot_kind": "rug",
+                        "n_zero": n_zero,
                         "flag_filter": "flag_0_or_1_usable",
                         "variable": var_name,
                         "product": product,
@@ -709,6 +707,7 @@ def write_figure_and_artifacts(
                     })
                     plotting_rows.append({
                         "plot_kind": "iqr_marker",
+                        "n_zero": n_zero,
                         "flag_filter": "flag_0_or_1_usable",
                         "variable": var_name,
                         "product": product,
@@ -735,6 +734,7 @@ def write_figure_and_artifacts(
                 for i in range(len(counts)):
                     plotting_rows.append({
                         "plot_kind": "histogram",
+                        "n_zero": n_zero,
                         "flag_filter": "flag_0_or_1_usable",
                         "variable": var_name,
                         "product": product,
@@ -763,6 +763,7 @@ def write_figure_and_artifacts(
                     label="{}".format(product),
                 )
 
+            total_zero = int(sum(item["n_zero"] for item in product_data.values()))
             q05, q50, q95 = np.percentile(all_values, [5, 50, 95])
             for statistic, x_value, linestyle, linewidth in [
                 ("P5", q05, "--", 0.9),
@@ -772,6 +773,7 @@ def write_figure_and_artifacts(
                 ax.axvline(x_value, color="0.25", linestyle=linestyle, linewidth=linewidth, alpha=0.85)
                 plotting_rows.append({
                     "plot_kind": "summary_line",
+                    "n_zero": total_zero,
                     "flag_filter": "flag_0_or_1_usable",
                     "variable": var_name,
                     "product": "all",
@@ -785,14 +787,12 @@ def write_figure_and_artifacts(
                     "p95": "",
                     "statistic": statistic,
                     "x_value": x_value,
-                    "n_usable": int(all_values.size),
+                    "n_usable": int(sum(item["n_usable"] for item in product_data.values())),
                     "n_good": int(sum(item["n_good"] for item in product_data.values())),
                     "n_estimated": int(sum(item["n_estimated"] for item in product_data.values())),
                 })
 
             ax.set_xlim(x_min, x_max)
-            if var_name == "SSC":
-                ax.xaxis.set_major_locator(mpl.ticker.FixedLocator([0, 1, 2, 3, 4]))
             ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{10**v:g}"))
 
             if "annual" in product_data:
@@ -839,7 +839,8 @@ def write_figure_and_artifacts(
                     handles, labels = ax.get_legend_handles_labels()
                     handles.extend([annual_handle, solid_line, dash_line])
                     labels.extend([annual_handle.get_label(), solid_line.get_label(), dash_line.get_label()])
-                    ax.legend(handles, labels, frameon=False, fontsize=FONT_SIZE_LEGEND, loc="upper right")
+                    ax.legend(handles, labels, frameon=False, fontsize=FONT_SIZE_LEGEND,
+                              loc="center left", bbox_to_anchor=(0.15, 0.7))
             else:
                 if idx == 0:
                     solid_line = mpl.lines.Line2D(
@@ -851,7 +852,8 @@ def write_figure_and_artifacts(
                     handles, labels = ax.get_legend_handles_labels()
                     handles.extend([solid_line, dash_line])
                     labels.extend([solid_line.get_label(), dash_line.get_label()])
-                    ax.legend(handles, labels, frameon=False, fontsize=FONT_SIZE_LEGEND, loc="upper right")
+                    ax.legend(handles, labels, frameon=False, fontsize=FONT_SIZE_LEGEND,
+                              loc="center left", bbox_to_anchor=(1.02, 0.5))
 
         if not any_data:
             ax.text(0.5, 0.5, "No valid {} values".format(var_name),
@@ -961,13 +963,14 @@ def write_figure_and_artifacts(
         "- Plotting data saved: Yes",
         "- Plotting script saved: Yes",
         "- Input paths documented: Yes (variable at script top)",
-        "- Filtering rules documented: Yes (finite values, positive values for log10, flag == 0 or flag == 1)",
+        "- Filtering rules documented: Yes (finite values, flag == 0 or flag == 1; zero values excluded from the log10 histogram and counted via the n_zero column of the plotting data)",
         "- Colour and marker mappings defined in code: Yes (PRODUCT_COLORS)",
         "- Figure can be regenerated from saved files: Yes",
         "",
         "## Notes",
         "",
         "- Flag 0 is good data and flag 1 is estimated/derived data; both are included as usable data in this figure.",
+        "- Zero values (Q/SSC/SSL == 0) cannot be represented on a logarithmic axis; they are excluded from the log10 histogram (counted via the n_zero column of the plotting data) rather than being floored into the lowest bin.",
         "- A manual Coblis check should be performed on the final exported file.",
         "",
     ]

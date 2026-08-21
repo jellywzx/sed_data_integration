@@ -18,7 +18,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 
 # Ensure the project environment's libstdc++ is globally visible before importing
 # numerical libraries, matching the previous companion helper behavior.
@@ -35,11 +35,13 @@ from matplotlib.ticker import AutoMinorLocator
 from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent.parent
 DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
+DEFAULT_NC_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
 DEFAULT_OUTPUT_DIR = Path(
     "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures"
 )
@@ -72,6 +74,18 @@ TEMPORAL_POINT_COLOR = "#E69F00"
 TEMPORAL_LINE_WIDTH = 2
 TEMPORAL_LINE_ALPHA = 0.6
 TEMPORAL_POINT_SIZE = 100
+RESOLUTION_COLORS = {
+    "daily": "#0072B2",
+    "monthly": "#009E73",
+    "annual": "#D55E00",
+    "mixed": "#7A7A7A",
+}
+
+RESOLUTION_NC_FILES = {
+    "daily": "sed_reference_timeseries_daily.nc",
+    "monthly": "sed_reference_timeseries_monthly.nc",
+    "annual": "sed_reference_timeseries_annual.nc",
+}
 
 OKABE_ITO = {
     "black": "#000000",
@@ -279,7 +293,73 @@ def _nunique_nonempty(values: pd.Series) -> int:
     return int(clean.nunique())
 
 
-def load_main_sources_from_minimal(release_dir: Path) -> pd.DataFrame:
+def _clean_text_values(values) -> List[str]:
+    text = pd.Series(np.asarray(values).ravel()).astype(str).str.strip()
+    text = text[~text.str.lower().isin({"", "nan", "nat", "none"})]
+    return text.tolist()
+
+
+def _split_sources_used(values) -> List[str]:
+    sources: List[str] = []
+    for value in _clean_text_values(values):
+        sources.extend(part.strip() for part in value.split("|") if part.strip())
+    return sources
+
+
+def _read_resolution_sources_from_nc(nc_release_dir: Path) -> Dict[str, Set[str]]:
+    source_resolutions: Dict[str, Set[str]] = {}
+    nc_release_dir = Path(nc_release_dir)
+
+    for resolution, filename in RESOLUTION_NC_FILES.items():
+        nc_path = nc_release_dir / filename
+        if not nc_path.is_file():
+            raise FileNotFoundError("Required resolution NC not found: {}".format(nc_path))
+
+        try:
+            with xr.open_dataset(nc_path) as ds:
+                nc_resolution = str(ds.attrs.get("time_type", resolution)).strip().lower()
+                if nc_resolution and nc_resolution != resolution:
+                    raise ValueError(
+                        "{} has time_type={!r}, expected {!r}".format(
+                            nc_path, nc_resolution, resolution
+                        )
+                    )
+                if "source_name" not in ds.variables and "sources_used" not in ds.variables:
+                    raise ValueError(
+                        "{} must contain source_name or sources_used".format(nc_path)
+                    )
+
+                sources: Set[str] = set()
+                if "source_name" in ds.variables:
+                    sources.update(_clean_text_values(ds["source_name"].values))
+                if "sources_used" in ds.variables:
+                    sources.update(_split_sources_used(ds["sources_used"].values))
+        except Exception as exc:
+            raise RuntimeError("Failed to read resolution membership from {}".format(nc_path)) from exc
+
+        if not sources:
+            raise ValueError("No source datasets found in {}".format(nc_path))
+        for source in sources:
+            source_resolutions.setdefault(source, set()).add(resolution)
+
+    return source_resolutions
+
+
+def _resolution_from_source_membership(
+    source_name: str, source_resolutions: Dict[str, Set[str]]
+) -> str:
+    resolutions = source_resolutions.get(source_name, set())
+    if not resolutions:
+        raise ValueError(
+            "Source {!r} from source_station_catalog.csv was not found in the "
+            "daily/monthly/annual resolution NC files".format(source_name)
+        )
+    if len(resolutions) > 1:
+        return "mixed"
+    return next(iter(resolutions))
+
+
+def load_main_sources_from_minimal(release_dir: Path, nc_release_dir: Path) -> pd.DataFrame:
     df = _read_minimal_catalog(release_dir, "source_station_catalog.csv")
     _require_columns(
         df,
@@ -293,6 +373,7 @@ def load_main_sources_from_minimal(release_dir: Path) -> pd.DataFrame:
     df["first_year"] = _year_from_column(df, "time_start")
     df["last_year"] = _year_from_column(df, "time_end")
     df = df[df["source_name"].ne("")]
+    source_resolutions = _read_resolution_sources_from_nc(nc_release_dir)
 
     grouped = (
         df.groupby("source_name", as_index=False)
@@ -305,6 +386,9 @@ def load_main_sources_from_minimal(release_dir: Path) -> pd.DataFrame:
         )
         .sort_values(["cluster_count", "source_name"], ascending=[True, False])
         .reset_index(drop=True)
+    )
+    grouped["resolution"] = grouped["source_name"].apply(
+        lambda source: _resolution_from_source_membership(source, source_resolutions)
     )
     grouped["source_name"] = grouped["source_name"].replace(SOURCE_NAME_MAP)
     return grouped
@@ -587,7 +671,9 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
     )
     ax_cluster.set_yticks(y)
     ax_cluster.set_yticklabels(df["source_name"])
-    ax_cluster.set_xlabel("Cluster count", color=SPATIAL_COLOR)
+    for tick_label, resolution in zip(ax_cluster.get_yticklabels(), df["resolution"]):
+        tick_label.set_color(RESOLUTION_COLORS.get(resolution, RESOLUTION_COLORS["mixed"]))
+    ax_cluster.set_xlabel("Station count", color=SPATIAL_COLOR)
     ax_cluster.tick_params(axis="x", colors=SPATIAL_COLOR)
     ax_cluster.spines["bottom"].set_color(SPATIAL_COLOR)
     ax_cluster.grid(axis="x", linewidth=0.3, alpha=0.45, color=SPATIAL_COLOR)
@@ -647,7 +733,9 @@ def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.25) -> None:
 
 def legend_handles() -> List[object]:
     return [
-        Patch(facecolor=SPATIAL_COLOR, alpha=0.45, edgecolor="none", label="main clusters"),
+        Patch(facecolor=RESOLUTION_COLORS["daily"], alpha=0.45, edgecolor="none", label="Daily"),
+        Patch(facecolor=RESOLUTION_COLORS["monthly"], alpha=0.45, edgecolor="none", label="Monthly"),
+        Patch(facecolor=RESOLUTION_COLORS["annual"], alpha=0.45, edgecolor="none", label="Annual"),
         Patch(
             facecolor=SPATIAL_COLOR,
             alpha=0.72,
@@ -661,6 +749,14 @@ def legend_handles() -> List[object]:
             edgecolor="none",
             label="climatology stations",
         ),
+        
+        Patch(
+            facecolor=OKABE_ITO["reddish_purple"],
+            alpha=0.48,
+            edgecolor="none",
+            label="satellite stations",
+        ),
+
         Line2D(
             [0],
             [0],
@@ -668,12 +764,7 @@ def legend_handles() -> List[object]:
             linewidth=TEMPORAL_LINE_WIDTH,
             label="temporal span",
         ),
-        Patch(
-            facecolor=OKABE_ITO["reddish_purple"],
-            alpha=0.48,
-            edgecolor="none",
-            label="satellite stations",
-        ),
+
         Line2D(
             [0],
             [0],
@@ -737,9 +828,9 @@ def plot_combined_direct(
         OKABE_ITO["reddish_purple"],
     )
 
-    add_panel_label(ax_main, "(a) Main station-reference matrices", x=-0.15, y=1.1)
-    add_panel_label(ax_climatology, "(b) Climatology auxiliary layer", x=-0.15, y=1.35)
-    add_panel_label(ax_satellite, "(c) Satellite-derived auxiliary layer", x=-0.15, y=1.35)
+    add_panel_label(ax_main, "(a) Main station-reference component", x=-0.15, y=1.1)
+    add_panel_label(ax_climatology, "(b) Climatology auxiliary component", x=-0.15, y=1.35)
+    add_panel_label(ax_satellite, "(c) Satellite-derived auxiliary component", x=-0.15, y=1.35)
 
     ax_satellite.legend(
         handles=legend_handles(),
@@ -868,6 +959,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Release CSV directory. Default: {}".format(DEFAULT_RELEASE_DIR),
     )
     parser.add_argument(
+        "--nc-release-dir",
+        default=str(DEFAULT_NC_RELEASE_DIR),
+        help="Final release NC directory. Default: {}".format(DEFAULT_NC_RELEASE_DIR),
+    )
+    parser.add_argument(
         "--out-dir",
         default=str(DEFAULT_OUTPUT_DIR),
         help="Figure output directory. Default: {}".format(DEFAULT_OUTPUT_DIR),
@@ -891,10 +987,11 @@ def main(argv=None) -> int:
     configure_matplotlib()
 
     release_dir = Path(args.release_dir).expanduser().resolve()
+    nc_release_dir = Path(args.nc_release_dir).expanduser().resolve()
     figure_dirs = ensure_figure_dirs(Path(args.out_dir).expanduser().resolve())
     dpi = int(args.dpi)
 
-    merged = load_main_sources_from_minimal(release_dir)
+    merged = load_main_sources_from_minimal(release_dir, nc_release_dir)
     climatology_df, satellite_df = load_other_product_sources_from_minimal(release_dir)
     data_paths = write_plotting_data(
         figure_dirs["data"],

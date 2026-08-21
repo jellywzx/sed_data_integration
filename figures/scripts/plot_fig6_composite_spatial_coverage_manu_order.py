@@ -517,9 +517,9 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
             transform=legend_ax.transAxes,
             clip_on=False,
         )
-        legend_ax.text(0.20, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
+        legend_ax.text(0.17, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.13
-    legend_ax.text(0.08, y - 0.03, "Total clusters: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, y - 0.03, "Total stations: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     legend_ax.text(0.08, y - 0.15, "Point size: basin area (km²)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     sample_y = y - 0.29
     for area_value, x_dot in ((100, 0.14), (10000, 0.39), (100000, 0.67)):

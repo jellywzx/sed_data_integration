@@ -78,7 +78,7 @@ PANEL_TITLES = {
 # Top source groups are selected as the union of the largest contributors
 # within each resolution. Remaining sources are grouped as Other.
 TOP_N_PER_RESOLUTION = 5
-OTHER_LABEL = "Other matrix sources"
+OTHER_LABEL = "Other sources"
 
 # Paul Tol bright colour palette — optimized for scientific publications.
 # Colourblind-safe (tested with Coblis), high perceptual contrast, designed to
@@ -108,6 +108,10 @@ SOURCE_DISPLAY_NAMES = {
 # Choose "bar" or "area".
 # "bar" is more literal for annual counts; "area" gives a smoother overview.
 PLOT_KIND = "bar"
+
+# Whether to draw the zoom inset subplot inside panel (b) Monthly.
+# Set to False to hide the inset and its red axvspan highlight.
+DRAW_MONTHLY_INSET = False
 
 CHUNK_TIME = 366
 DPI = 300
@@ -652,7 +656,7 @@ def draw_resolution_panel(
     )
 
     ax.set_title(PANEL_TITLES[resolution], loc="left", weight="bold")
-    ax.set_ylabel("Matrix records per year" if resolution == "monthly" else "")
+    ax.set_ylabel("Records per year" if resolution == "monthly" else "")
     ax.yaxis.set_major_formatter(FuncFormatter(compact_count))
     ax.grid(axis="y", linewidth=0.35, alpha=0.5)
     ax.set_axisbelow(True)
@@ -718,7 +722,7 @@ def draw_three_panel_plot(
     DAILY_ZOOM_END = 1960    # end year for daily inset x-axis
 
     # --- Inset for monthly panel: zoom on pre-1985 to reveal early-year detail ---
-    if monthly_pivot is not None:
+    if DRAW_MONTHLY_INSET and monthly_pivot is not None:
         inset_ax = inset_axes(
             axes[1],
             width="100%",

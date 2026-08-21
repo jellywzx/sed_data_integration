@@ -25,7 +25,7 @@ import pandas as pd
 PATHS = {
     "pairs_csv": (
         "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/validate/output/validation_results_s5b/"
+        "Output_r/scripts_basin_test/validate/output/s11_satellite_insitu/"
         "validation_satellite_insitu_pairs.csv"
     ),
     "figures_root": (
@@ -405,6 +405,17 @@ SOURCE_PAIRS = [
     "Dethier vs GFQA_v2",
 ]
 
+# -- Text drawn in the top-right corner of each row's rightmost panel ---------
+# Keys must match SOURCE_PAIRS (they are used to filter the data); the values
+# are the strings actually shown on the figure.  Edit the values here to
+# change the displayed row labels without touching the data filtering.
+SOURCE_PAIR_LABELS = {
+    "RiverSed vs USGS": "RivSed vs USGS",
+    "GSED vs GFQA_v2": "GSED vs GFQA_v2",
+    "RiverSed vs HYDAT": "RivSed vs HYDAT",
+    "Dethier vs GFQA_v2": "Dethier vs GFQA_v2",
+}
+
 WINDOWS = ("exact", "pm1d", "pm2d")  # cumulative: exact ⊂ pm1d ⊂ pm2d
 
 
@@ -548,10 +559,13 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
         ax = axes[row_idx][-1]
         sp_color = pair_colors[sp]
         sp_marker = pair_markers[sp]
-        # Add a small legend-like annotation on the rightmost panel
+        # Add a small legend-like annotation on the rightmost panel.
+        # Use SOURCE_PAIR_LABELS so the drawn text can be set independently
+        # from the data-filtering key in SOURCE_PAIRS.
+        label = SOURCE_PAIR_LABELS.get(sp, sp)
         ax.text(
             0.98, 0.93,
-            sp,
+            label,
             transform=ax.transAxes,
             fontsize=STYLE["legend_text_size"],
             fontweight="bold",

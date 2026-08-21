@@ -66,12 +66,12 @@ FONT_SIZE_PANEL_LABEL = 18
 
 SOURCE_STATION_CSV = "source_station_catalog.csv"
 SOURCE_DATASET_CSV = "source_dataset_catalog.csv"
-SATELLITE_CSV = "satellite_catalog.csv"
+# SATELLITE_CSV = "satellite_catalog.csv"
 CLIMATOLOGY_NC = "sed_reference_climatology.nc"
 
 UNKNOWN_DATASET_LABEL = "unknown dataset"
 SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
-SATELLITE_SOURCE_ORDER = ["RiverSed", "GSED", "Dethier"]
+# SATELLITE_SOURCE_ORDER = ["RiverSed", "GSED", "Dethier"]
 MIN_LAT = -60  # southern extent bound, excluding Antarctica
 
 SOURCE_NAME_ALIASES = {
@@ -128,17 +128,17 @@ OKABE_ITO_EXTENDED = [
 
 TOP_MARKERS = ["o", "^", "s", "D", "P", "X", "*", "p", "h", "<"]
 
-SATELLITE_COLORS = {
-    "RiverSed": OKABE_ITO["blue"],
-    "GSED": OKABE_ITO["vermillion"],
-    "Dethier": OKABE_ITO["bluish_green"],
-}
-
-SATELLITE_MARKERS = {
-    "RiverSed": "o",
-    "GSED": "^",
-    "Dethier": "s",
-}
+# SATELLITE_COLORS = {
+#     "RiverSed": OKABE_ITO["blue"],
+#     "GSED": OKABE_ITO["vermillion"],
+#     "Dethier": OKABE_ITO["bluish_green"],
+# }
+#
+# SATELLITE_MARKERS = {
+#     "RiverSed": "o",
+#     "GSED": "^",
+#     "Dethier": "s",
+# }
 
 PREFERRED_LEGEND_LABEL_ORDER = [
     "GloRiSe v1.1",
@@ -285,8 +285,6 @@ def write_plotting_data(
     catalog: pd.DataFrame,
     top_sources: List[str],
     category_counts: Dict[str, int],
-    satellite_points: pd.DataFrame,
-    satellite_counts: Dict[str, int],
 ) -> List[Path]:
     outputs = [
         _write_csv(points[["lat", "lon", "source_name", "category", "input_file"]],
@@ -295,10 +293,10 @@ def write_plotting_data(
                     data_dir / "{}_panel_a_top_sources.csv".format(figure_id)),
         _write_csv(pd.DataFrame(list(category_counts.items()), columns=["category", "n_stations"]),
                     data_dir / "{}_panel_a_category_counts.csv".format(figure_id)),
-        _write_csv(satellite_points[["lat", "lon", "source", "input_file"]],
-                    data_dir / "{}_panel_b_satellite_points.csv".format(figure_id)),
-        _write_csv(pd.DataFrame(list(satellite_counts.items()), columns=["source", "n_stations"]),
-                    data_dir / "{}_panel_b_satellite_source_counts.csv".format(figure_id)),
+        # _write_csv(satellite_points[["lat", "lon", "source", "input_file"]],
+        #             data_dir / "{}_panel_b_satellite_points.csv".format(figure_id)),
+        # _write_csv(pd.DataFrame(list(satellite_counts.items()), columns=["source", "n_stations"]),
+        #             data_dir / "{}_panel_b_satellite_source_counts.csv".format(figure_id)),
     ]
     return outputs
 
@@ -410,25 +408,25 @@ def read_source_station_catalog(release_dir: Path, catalog_names: Iterable[str])
     return out[out["source_name"].ne("")].copy()
 
 
-def read_satellite_catalog(release_dir: Path) -> pd.DataFrame:
-    path = require_file(release_dir / SATELLITE_CSV)
-    frame = pd.read_csv(path, usecols=lambda col: col in {"source", "lat", "lon"})
-    required = {"source", "lat", "lon"}
-    missing = sorted(required.difference(frame.columns))
-    if missing:
-        raise ValueError("{} is missing columns: {}".format(path, ", ".join(missing)))
-
-    out = pd.DataFrame(
-        {
-            "source": frame["source"].map(clean_text),
-            "lat": pd.to_numeric(frame["lat"], errors="coerce"),
-            "lon": pd.to_numeric(frame["lon"], errors="coerce"),
-            "input_file": SATELLITE_CSV,
-        }
-    )
-    out = out[out["source"].isin(SATELLITE_SOURCE_ORDER)].copy()
-    out = out[valid_latlon(out)].copy()
-    return out.reset_index(drop=True)
+# def read_satellite_catalog(release_dir: Path) -> pd.DataFrame:
+#     path = require_file(release_dir / SATELLITE_CSV)
+#     frame = pd.read_csv(path, usecols=lambda col: col in {"source", "lat", "lon"})
+#     required = {"source", "lat", "lon"}
+#     missing = sorted(required.difference(frame.columns))
+#     if missing:
+#         raise ValueError("{} is missing columns: {}".format(path, ", ".join(missing)))
+#
+#     out = pd.DataFrame(
+#         {
+#             "source": frame["source"].map(clean_text),
+#             "lat": pd.to_numeric(frame["lat"], errors="coerce"),
+#             "lon": pd.to_numeric(frame["lon"], errors="coerce"),
+#             "input_file": SATELLITE_CSV,
+#         }
+#     )
+#     out = out[out["source"].isin(SATELLITE_SOURCE_ORDER)].copy()
+#     out = out[valid_latlon(out)].copy()
+#     return out.reset_index(drop=True)
 
 
 def read_nc_source_points(release_dir: Path, file_name: str, catalog_names: Iterable[str]) -> pd.DataFrame:
@@ -729,68 +727,66 @@ def draw_top_sources_panel(
         leg_clim._legend_box.align = "left"
     
 
-def draw_satellite_panel(ax, satellite_points: pd.DataFrame, counts: Dict[str, int]) -> None:
-    if HAS_CARTOPY and hasattr(ax, "projection"):
-        setup_cartopy_axis(ax)
-    else:
-        setup_plain_axis(ax)
-
-    for idx, source in enumerate(SATELLITE_SOURCE_ORDER):
-        subset = satellite_points[satellite_points["source"].eq(source)]
-        if subset.empty:
-            continue
-        size = 4 if source == "RiverSed" else 8
-        alpha = 0.25 if source == "RiverSed" else 0.55
-        scatter_points(
-            ax,
-            subset,
-            SATELLITE_COLORS[source],
-            source,
-            size=size,
-            alpha=alpha,
-            zorder=3 + idx,
-            marker=SATELLITE_MARKERS[source],
-        )
-
-    handles = []
-    for source in SATELLITE_SOURCE_ORDER:
-        if counts.get(source, 0) <= 0:
-            continue
-        handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker=SATELLITE_MARKERS[source],
-                color="none",
-                markerfacecolor=SATELLITE_COLORS[source],
-                markeredgecolor="#333333",
-                markeredgewidth=0.3,
-                markersize=6,
-                label="{} ({:,})".format(SOURCE_NAME_ALIASES.get(source, source), counts[source]),
-            )
-        )
-    leg_sat = ax.legend(
-        handles=handles,
-        loc="lower left",
-        bbox_to_anchor=(0.06, 0.02),
-        ncol=1,
-        frameon=False,
-        fontsize=FONT_SIZE_LEGEND,
-        columnspacing=1.2,
-        handletextpad=0.35,
-        title="Satellite",
-        title_fontsize=FONT_SIZE_LEGEND,
-    )
-    leg_sat.get_title().set_fontweight("bold")
-    leg_sat._legend_box.align = "left"
+# def draw_satellite_panel(ax, satellite_points: pd.DataFrame, counts: Dict[str, int]) -> None:
+#     if HAS_CARTOPY and hasattr(ax, "projection"):
+#         setup_cartopy_axis(ax)
+#     else:
+#         setup_plain_axis(ax)
+#
+#     for idx, source in enumerate(SATELLITE_SOURCE_ORDER):
+#         subset = satellite_points[satellite_points["source"].eq(source)]
+#         if subset.empty:
+#             continue
+#         size = 4 if source == "RiverSed" else 8
+#         alpha = 0.25 if source == "RiverSed" else 0.55
+#         scatter_points(
+#             ax,
+#             subset,
+#             SATELLITE_COLORS[source],
+#             source,
+#             size=size,
+#             alpha=alpha,
+#             zorder=3 + idx,
+#             marker=SATELLITE_MARKERS[source],
+#         )
+#
+#     handles = []
+#     for source in SATELLITE_SOURCE_ORDER:
+#         if counts.get(source, 0) <= 0:
+#             continue
+#         handles.append(
+#             Line2D(
+#                 [0],
+#                 [0],
+#                 marker=SATELLITE_MARKERS[source],
+#                 color="none",
+#                 markerfacecolor=SATELLITE_COLORS[source],
+#                 markeredgecolor="#333333",
+#                 markeredgewidth=0.3,
+#                 markersize=6,
+#                 label="{} ({:,})".format(SOURCE_NAME_ALIASES.get(source, source), counts[source]),
+#             )
+#         )
+#     leg_sat = ax.legend(
+#         handles=handles,
+#         loc="lower left",
+#         bbox_to_anchor=(0.06, 0.02),
+#         ncol=1,
+#         frameon=False,
+#         fontsize=FONT_SIZE_LEGEND,
+#         columnspacing=1.2,
+#         handletextpad=0.35,
+#         title="Satellite",
+#         title_fontsize=FONT_SIZE_LEGEND,
+#     )
+#     leg_sat.get_title().set_fontweight("bold")
+#     leg_sat._legend_box.align = "left"
 
 
 def plot_map(
     points: pd.DataFrame,
     top_sources: List[str],
     counts: Dict[str, int],
-    satellite_points: pd.DataFrame,
-    satellite_counts: Dict[str, int],
     figure_id: str,
     figure_dirs: dict,
     dpi: int,
@@ -799,19 +795,19 @@ def plot_map(
     figure_dirs["final"].mkdir(parents=True, exist_ok=True)
     if HAS_CARTOPY:
         fig, axes = plt.subplots(
-            2,
+            1,
             1,
             figsize=FIGSIZE,
             subplot_kw={"projection": ccrs.Robinson()},
         )
     else:
-        fig, axes = plt.subplots(2, 1, figsize=FIGSIZE)
+        fig, axes = plt.subplots(1, 1, figsize=FIGSIZE)
 
-    draw_top_sources_panel(axes[0], points, top_sources, counts, legend_user_order)
-    add_panel_label(axes[0], "(a)")
+    draw_top_sources_panel(axes, points, top_sources, counts, legend_user_order)
+    add_panel_label(axes, "(a)")
 
-    draw_satellite_panel(axes[1], satellite_points, satellite_counts)
-    add_panel_label(axes[1], "(b)")
+    # draw_satellite_panel(axes[1], satellite_points, satellite_counts)
+    # add_panel_label(axes[1], "(b)")
 
     fig.subplots_adjust(left=0.02, right=0.98, top=0.97, bottom=0.04, hspace=0.04)
 
@@ -828,7 +824,6 @@ def print_summary(
     points: pd.DataFrame,
     input_counts: pd.Series,
     top_sources: List[str],
-    satellite_counts: Dict[str, int],
 ) -> None:
     category_counts = points.groupby("category").size().to_dict()
     catalog_counts = catalog.set_index("source_name")["n_source_stations"].to_dict()
@@ -848,9 +843,9 @@ def print_summary(
             print("  {}: {:,}".format(source, int(count)))
     print("\nFinal valid lat/lon points: {:,}".format(len(points)))
     print("\nPanel (a) excludes satellite sources.")
-    print("\nPanel (b) satellite source datasets:")
-    for source in SATELLITE_SOURCE_ORDER:
-        print("  {}: {:,}".format(source, int(satellite_counts.get(source, 0))))
+    # print("\nPanel (b) satellite source datasets:")
+    # for source in SATELLITE_SOURCE_ORDER:
+    #     print("  {}: {:,}".format(source, int(satellite_counts.get(source, 0))))
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +864,7 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
 
     catalog = read_dataset_catalog(release_dir)
     points, input_counts = load_all_points(release_dir, catalog)
-    satellite_points = read_satellite_catalog(release_dir)
+    # satellite_points = read_satellite_catalog(release_dir)
     top_sources = select_top_sources(catalog, top_n, exclude_names=SATELLITE_DATASETS)
     points = add_categories(points, top_sources)
 
@@ -882,18 +877,16 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
         print(mismatches.to_string(index=False))
 
     category_counts = points.groupby("category").size().to_dict()
-    satellite_counts = {
-        source: int((satellite_points["source"] == source).sum())
-        for source in SATELLITE_SOURCE_ORDER
-    }
-    print_summary(catalog, points, input_counts, top_sources, satellite_counts)
+    # satellite_counts = {
+    #     source: int((satellite_points["source"] == source).sum())
+    #     for source in SATELLITE_SOURCE_ORDER
+    # }
+    print_summary(catalog, points, input_counts, top_sources)
 
     outputs = plot_map(
         points,
         top_sources,
         category_counts,
-        satellite_points,
-        satellite_counts,
         figure_id,
         figure_dirs,
         dpi,
@@ -907,8 +900,6 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
         catalog,
         top_sources,
         category_counts,
-        satellite_points,
-        satellite_counts,
     )
     script_src = Path(__file__).resolve()
     if script_src != script_copy_path:

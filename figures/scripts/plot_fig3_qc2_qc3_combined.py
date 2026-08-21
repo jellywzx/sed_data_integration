@@ -748,7 +748,7 @@ def main():
     # --- Create figure ---
     width_cm = 35.0
     height_cm = 25.0
-    dpi = 300
+    dpi = 400
     figsize = (width_cm / 2.54, height_cm / 2.54)
 
 

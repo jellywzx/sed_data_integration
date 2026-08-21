@@ -58,7 +58,7 @@ DEFAULT_RESOLUTION = "daily"
 DEFAULT_EXAMPLE_CLUSTER_UID = "SED000107"
 DEFAULT_TIMESERIES_RESOLUTION = "daily"
 DEFAULT_DPI = 300
-DEFAULT_FIGURE_NUMBER = "model_validation"
+DEFAULT_FIGURE_NUMBER = "fig10_validate_model_with_sed_reference"
 
 # --- Regional map parameters ---
 DEFAULT_REGION_LAT_MIN = -20

@@ -77,8 +77,16 @@ RESOLUTION_COLORS = {
 }
 LINE_STYLES = {
     "daily": {"linestyle": "-", "marker": "None"},
-    "monthly": {"linestyle": "-", "marker": ".", "markersize": 4},
+    "monthly": {
+        "linestyle": "-",
+        "marker": "None",
+    },
     "annual": {"linestyle": "-", "marker": "o", "markersize": 4},
+}
+PLOT_ZORDER = {
+    "daily": 2,
+    "annual": 3,
+    "monthly": 4,
 }
 
 # ---- Central visual-style configuration ---------------------------------
@@ -236,6 +244,8 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
             if group.empty:
                 continue
             values = pd.to_numeric(group[value_col], errors="coerce")
+            if value_col in {"active_clusters", "record_count_any"}:
+                values = values.where(values > 0)
             if value_col == "complete_triplet_ratio":
                 values = values * 100.0
             ax.plot(
@@ -244,11 +254,13 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
                 color=RESOLUTION_COLORS.get(resolution),
                 linewidth=STYLE["line_width"],
                 label=str(resolution),
+                zorder=PLOT_ZORDER.get(resolution, 2),
                 **LINE_STYLES.get(resolution, {}),
             )
         ax.set_ylabel(ylabel)
         ax.grid(alpha=STYLE["grid_alpha"])
 
+    axes[0].set_yscale("log")
     axes[1].set_yscale("log")
     axes[2].set_xlabel("Year")
     axes[2].set_ylim(0, 105)
@@ -330,7 +342,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
         "- Colorblind-safe palette used: fixed blue/orange/green categorical (needs manual Coblis review)",
         "- Continuous color map, if applicable: N/A",
         "- Coblis or equivalent check completed: requires manual review",
-        "- Figure remains interpretable under color-vision-deficiency simulation: daily=blue/solid, monthly=orange/line+dot, annual=green/dots",
+        "- Figure remains interpretable under color-vision-deficiency simulation: daily=blue/solid, monthly=orange/solid line, annual=green/filled circles",
         "- Categories are distinguished by more than color when needed: yes \u2014 each resolution also has a distinct line/marker style",
         "",
         "## Font and text",
@@ -346,8 +358,8 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
         "",
         "- Legend included inside figure: yes",
         "- All colors explained: yes \u2014 daily (blue), monthly (orange), annual (green)",
-        "- All markers explained: yes \u2014 annual uses filled circles, monthly uses small dots, daily uses solid line only",
-        "- All line styles explained: yes \u2014 daily solid, monthly solid+dot, annual dots only",
+        "- All markers explained: yes \u2014 annual uses filled circles, daily and monthly use solid lines only",
+        "- All line styles explained: yes \u2014 daily solid, monthly solid, annual solid+filled circles",
         "- Point sizes explained, if applicable: yes (marker sizes defined in module-level LINE_STYLES)",
         "- Color bar included and labeled, if applicable: N/A",
         "- Legend does not obscure data: yes (placed above panels)",
