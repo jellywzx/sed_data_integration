@@ -72,6 +72,31 @@ SOURCE_PATH_COLUMNS = (
     "nc_path",
     "file_path",
 )
+DAILY_MEAN_SOURCE_KEYS = frozenset((
+    "usgs", "usgs_nwis", "hydat", "bayern", "shashi_jianli", "shashi", "jianli",
+))
+DAILY_DISCRETE_SOURCE_KEYS = frozenset((
+    "gfqa", "gfqa_v2", "global_flow_and_water_quality_archive_v2",
+    "glorise", "glorise_v1_1", "hybam", "rhine", "nerc", "myanmar",
+))
+DAILY_FROM_HIGHFREQ_SOURCE_KEYS = frozenset((
+    "robotham", "fukushima", "mekong", "mekong_delta",
+))
+MONTHLY_PRODUCT_SOURCE_KEYS = frozenset((
+    "eurasian_river", "eusedcollab", "eusedcollab_dataset", "gsed", "dethier",
+))
+MONTHLY_DAILY_MIN_COVERAGE = 0.70
+MONTHLY_DAILY_MIN_VALID_DAYS = 20
+ANNUAL_MONTHLY_MIN_COVERAGE = 0.75
+ANNUAL_MONTHLY_MIN_VALID_MONTHS = 9
+TEMPORAL_AUDIT_COLUMNS = [
+    "cluster_uid", "cluster_id", "satellite_source", "satellite_source_station_uid",
+    "satellite_record_id", "satellite_source_resolution", "linked_resolution",
+    "satellite_time_support_class", "variable", "satellite_period_start",
+    "satellite_period_end", "audit_reason", "candidate_sources",
+    "n_candidate_records", "n_values_aggregated", "coverage_fraction",
+    "temporal_alignment_mode",
+]
 
 
 def log_progress(message: str) -> None:
@@ -201,6 +226,139 @@ def _family_key(value) -> str:
         return ""
     text = re.sub(r"[^a-z0-9]+", "_", text)
     return re.sub(r"_+", "_", text).strip("_")
+
+
+def _source_key_matches(value, keys: Iterable[str]) -> bool:
+    key = _family_key(value)
+    if not key:
+        return False
+    compact = key.replace("_", "")
+    for candidate in keys:
+        candidate_key = _family_key(candidate)
+        if not candidate_key:
+            continue
+        candidate_compact = candidate_key.replace("_", "")
+        if (
+            key == candidate_key
+            or candidate_key in key
+            or key in candidate_key
+            or compact == candidate_compact
+            or candidate_compact in compact
+            or compact in candidate_compact
+        ):
+            return True
+    return False
+
+
+def classify_time_support_class(
+    source: str,
+    resolution: str,
+    source_family: str = "",
+    variable: str = "",
+) -> str:
+    resolution = _normalize_resolution(resolution)
+    source_text = _clean_text(source)
+    key = _family_key(source_text)
+    variable = _clean_text(variable).upper()
+    if resolution == "monthly":
+        if _source_key_matches(key, MONTHLY_PRODUCT_SOURCE_KEYS):
+            return "monthly_product"
+        return "monthly_unknown"
+    if resolution == "annual":
+        return "annual_product"
+    if resolution != "daily":
+        return "unknown"
+    if "bayern" in key and ("raw" in key or "sensor" in key):
+        return "daily_from_highfreq"
+    if _source_key_matches(key, DAILY_FROM_HIGHFREQ_SOURCE_KEYS):
+        return "daily_from_highfreq"
+    if _source_key_matches(key, DAILY_DISCRETE_SOURCE_KEYS):
+        return "daily_discrete"
+    if _source_key_matches(key, DAILY_MEAN_SOURCE_KEYS):
+        return "daily_mean"
+    normalized_family = _normalize_family_label(source_family)
+    if normalized_family == "satellite":
+        return "daily_satellite"
+    return "daily_unknown"
+
+
+def _period_bounds_for_resolution(value, resolution: str) -> Tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]:
+    timestamp = pd.to_datetime(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(timestamp):
+        return pd.NaT, pd.NaT, pd.NaT
+    timestamp = pd.Timestamp(timestamp).floor("D")
+    resolution = _normalize_resolution(resolution)
+    if resolution == "monthly":
+        start = pd.Timestamp(year=timestamp.year, month=timestamp.month, day=1)
+        end = start + pd.offsets.MonthEnd(0)
+    elif resolution == "annual":
+        start = pd.Timestamp(year=timestamp.year, month=1, day=1)
+        end = pd.Timestamp(year=timestamp.year, month=12, day=31)
+    else:
+        start = timestamp
+        end = timestamp
+    center = start + (end - start) / 2
+    return start, end, center
+
+
+def _add_temporal_metadata(out: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
+    source_resolution_col = _first_existing(
+        raw.columns,
+        ("source_resolution", "satellite_resolution", "native_resolution", "original_resolution"),
+    )
+    linked_resolution_col = _first_existing(
+        raw.columns,
+        ("linked_resolution", "s5b_linked_resolution", "target_resolution"),
+    )
+    if source_resolution_col is not None:
+        out["source_resolution"] = raw[source_resolution_col].map(_normalize_resolution)
+    else:
+        out["source_resolution"] = out["resolution"].map(_normalize_resolution)
+    if linked_resolution_col is not None:
+        linked = raw[linked_resolution_col].map(_normalize_resolution)
+        out["linked_resolution"] = linked.where(linked.astype(str).str.strip().ne(""), out["resolution"])
+    else:
+        out["linked_resolution"] = out["resolution"].map(_normalize_resolution)
+    out["source_resolution"] = out["source_resolution"].where(
+        out["source_resolution"].astype(str).str.strip().ne(""),
+        out["resolution"],
+    )
+    out["linked_resolution"] = out["linked_resolution"].where(
+        out["linked_resolution"].astype(str).str.strip().ne(""),
+        out["resolution"],
+    )
+    out["is_cross_resolution"] = (
+        out["source_resolution"].map(_normalize_resolution)
+        != out["linked_resolution"].map(_normalize_resolution)
+    )
+    support_cache: Dict[Tuple[str, str, str], str] = {}
+    support_values = []
+    for source, resolution, family in zip(
+        out["source"], out["source_resolution"], out["source_family"]
+    ):
+        key = (_clean_text(source), _normalize_resolution(resolution), _clean_text(family))
+        support = support_cache.get(key)
+        if support is None:
+            support = classify_time_support_class(key[0], key[1], key[2])
+            support_cache[key] = support
+        support_values.append(support)
+    out["time_support_class"] = support_values
+    time_values = pd.to_datetime(out["time"], errors="coerce").dt.floor("D")
+    source_resolution = out["source_resolution"].map(_normalize_resolution)
+    out["period_start"] = time_values
+    out["period_end"] = time_values
+    monthly = source_resolution.eq("monthly") & time_values.notna()
+    if monthly.any():
+        month_start = time_values.loc[monthly].dt.to_period("M").dt.to_timestamp()
+        out.loc[monthly, "period_start"] = month_start
+        out.loc[monthly, "period_end"] = month_start + pd.offsets.MonthEnd(0)
+    annual = source_resolution.eq("annual") & time_values.notna()
+    if annual.any():
+        years = time_values.loc[annual].dt.year
+        out.loc[annual, "period_start"] = pd.to_datetime(years.astype(str) + "-01-01")
+        out.loc[annual, "period_end"] = pd.to_datetime(years.astype(str) + "-12-31")
+    out["period_center"] = out["period_start"] + (out["period_end"] - out["period_start"]) / 2
+    return out
 
 
 def _normalize_family_label(value) -> str:
@@ -688,6 +846,7 @@ def normalize_observation_table(
         if col is not None:
             out[canonical] = raw[col]
 
+    out = _add_temporal_metadata(out, raw)
     out["input_mode"] = input_mode
     has_cluster = (
         out["cluster_uid"].astype(str).str.strip().ne("")
@@ -737,15 +896,600 @@ def _method_notes(input_mode: str) -> str:
     )
 
 
+def _pair_output_columns() -> List[str]:
+    return [
+        "cluster_uid", "cluster_id", "resolution", "variable", "pairing_window",
+        "window_exclusive", "satellite_time", "insitu_time", "time_delta_days",
+        "satellite_source", "insitu_source", "satellite_source_family",
+        "insitu_source_family", "satellite_source_station_uid",
+        "insitu_source_station_uid", "satellite_record_id", "insitu_record_id",
+        "satellite_value", "insitu_value", "diff_satellite_minus_insitu",
+        "pct_error_vs_insitu", "satellite_flag", "insitu_flag", "source_pair",
+        "satellite_ssc", "insitu_ssc", "satellite_river_width_class",
+        "insitu_river_width_class", "satellite_river_width_m",
+        "insitu_river_width_m", "satellite_climate_zone", "insitu_climate_zone",
+        "method_notes", "assumptions", "temporal_alignment_mode",
+        "satellite_time_support_class", "insitu_time_support_class",
+        "satellite_period_start", "satellite_period_end",
+        "insitu_period_start", "insitu_period_end",
+        "n_insitu_values_aggregated", "insitu_coverage_fraction",
+        "is_cross_resolution",
+    ]
+
+
+def _row_time_support_class(row: pd.Series, variable: str = "") -> str:
+    return classify_time_support_class(
+        row.get("source", ""),
+        row.get("source_resolution", row.get("resolution", "")),
+        row.get("source_family", ""),
+        variable=variable,
+    )
+
+
+def _timestamp_or_nat(value) -> pd.Timestamp:
+    parsed = pd.to_datetime(pd.Series([value]), errors="coerce").iloc[0]
+    return pd.NaT if pd.isna(parsed) else pd.Timestamp(parsed)
+
+
+def _format_sources(values: Iterable[object]) -> str:
+    return "|".join(sorted({clean for clean in (_clean_text(value) for value in values) if clean}))
+
+
+def _worst_flag_value(values: pd.Series):
+    if values.empty:
+        return np.nan
+    ranks = values.map(_flag_rank)
+    if ranks.empty:
+        return np.nan
+    return values.iloc[int(np.argmax(ranks.to_numpy(dtype=float)))]
+
+
+def _base_pair_record(
+    sat: pd.Series,
+    insitu_source: str,
+    insitu_source_family: str,
+    insitu_source_station_uid: str,
+    insitu_record_id: str,
+    variable: str,
+    pairing_window: str,
+    satellite_time,
+    insitu_time,
+    time_delta_days: int,
+    satellite_value: float,
+    insitu_value: float,
+    satellite_flag,
+    insitu_flag,
+    insitu_ssc,
+    insitu_river_width_class,
+    insitu_river_width_m,
+    insitu_climate_zone,
+    temporal_alignment_mode: str,
+    satellite_time_support_class: str,
+    insitu_time_support_class: str,
+    satellite_period_start,
+    satellite_period_end,
+    insitu_period_start,
+    insitu_period_end,
+    n_insitu_values_aggregated: int,
+    insitu_coverage_fraction: float,
+    is_cross_resolution: bool,
+    method_notes: str,
+) -> Dict[str, object]:
+    diff = satellite_value - insitu_value
+    pct = diff / insitu_value * 100.0 if insitu_value != 0 else float("nan")
+    return {
+        "cluster_uid": sat.get("cluster_uid", ""),
+        "cluster_id": sat.get("cluster_id", ""),
+        "resolution": sat.get("resolution", ""),
+        "variable": variable,
+        "pairing_window": pairing_window,
+        "window_exclusive": WINDOW_EXCLUSIVE,
+        "satellite_time": satellite_time,
+        "insitu_time": insitu_time,
+        "time_delta_days": int(time_delta_days),
+        "satellite_source": sat.get("source", ""),
+        "insitu_source": insitu_source,
+        "satellite_source_family": sat.get("source_family", ""),
+        "insitu_source_family": insitu_source_family,
+        "satellite_source_station_uid": sat.get("source_station_uid", ""),
+        "insitu_source_station_uid": insitu_source_station_uid,
+        "satellite_record_id": sat.get("record_id", ""),
+        "insitu_record_id": insitu_record_id,
+        "satellite_value": satellite_value,
+        "insitu_value": insitu_value,
+        "diff_satellite_minus_insitu": diff,
+        "pct_error_vs_insitu": pct,
+        "satellite_flag": satellite_flag,
+        "insitu_flag": insitu_flag,
+        "source_pair": "{} vs {}".format(sat.get("source", ""), insitu_source),
+        "satellite_ssc": sat.get("SSC", np.nan),
+        "insitu_ssc": insitu_ssc,
+        "satellite_river_width_class": sat.get("river_width_class", ""),
+        "insitu_river_width_class": insitu_river_width_class,
+        "satellite_river_width_m": sat.get("river_width_m", np.nan),
+        "insitu_river_width_m": insitu_river_width_m,
+        "satellite_climate_zone": sat.get("climate_zone", ""),
+        "insitu_climate_zone": insitu_climate_zone,
+        "method_notes": method_notes,
+        "assumptions": ASSUMPTIONS_BASE,
+        "temporal_alignment_mode": temporal_alignment_mode,
+        "satellite_time_support_class": satellite_time_support_class,
+        "insitu_time_support_class": insitu_time_support_class,
+        "satellite_period_start": satellite_period_start,
+        "satellite_period_end": satellite_period_end,
+        "insitu_period_start": insitu_period_start,
+        "insitu_period_end": insitu_period_end,
+        "n_insitu_values_aggregated": int(n_insitu_values_aggregated),
+        "insitu_coverage_fraction": insitu_coverage_fraction,
+        "is_cross_resolution": bool(is_cross_resolution),
+    }
+
+
+def _temporal_audit_record(
+    sat: pd.Series,
+    variable: str,
+    reason: str,
+    candidate_sources: str = "",
+    n_candidate_records: int = 0,
+    n_values_aggregated: int = 0,
+    coverage_fraction: float = math.nan,
+    temporal_alignment_mode: str = "",
+) -> Dict[str, object]:
+    return {
+        "cluster_uid": sat.get("cluster_uid", ""),
+        "cluster_id": sat.get("cluster_id", ""),
+        "satellite_source": sat.get("source", ""),
+        "satellite_source_station_uid": sat.get("source_station_uid", ""),
+        "satellite_record_id": sat.get("record_id", ""),
+        "satellite_source_resolution": sat.get("source_resolution", sat.get("resolution", "")),
+        "linked_resolution": sat.get("linked_resolution", sat.get("resolution", "")),
+        "satellite_time_support_class": _row_time_support_class(sat, variable),
+        "variable": variable,
+        "satellite_period_start": sat.get("period_start", pd.NaT),
+        "satellite_period_end": sat.get("period_end", pd.NaT),
+        "audit_reason": reason,
+        "candidate_sources": candidate_sources,
+        "n_candidate_records": int(n_candidate_records),
+        "n_values_aggregated": int(n_values_aggregated),
+        "coverage_fraction": coverage_fraction,
+        "temporal_alignment_mode": temporal_alignment_mode,
+    }
+
+
+def _aggregate_daily_candidates_for_period(
+    candidates: pd.DataFrame,
+    variable: str,
+    period_start: pd.Timestamp,
+    period_end: pd.Timestamp,
+) -> List[Dict[str, object]]:
+    if candidates.empty:
+        return []
+    flag_col = "{}_flag".format(variable)
+    in_period = candidates[
+        (candidates["_time_day"] >= period_start)
+        & (candidates["_time_day"] <= period_end)
+        & pd.to_numeric(candidates[variable], errors="coerce").notna()
+    ].copy()
+    if in_period.empty:
+        return []
+    period_days = max(1, int((period_end - period_start).days) + 1)
+    aggregates: List[Dict[str, object]] = []
+    group_cols = ["source", "source_station_uid"]
+    for (_, _), group in _groupby_compat(in_period, group_cols):
+        values = pd.to_numeric(group[variable], errors="coerce").dropna()
+        if values.empty:
+            continue
+        n_days = int(group.loc[values.index, "_time_day"].nunique())
+        coverage = float(n_days) / float(period_days)
+        passes_coverage = (
+            coverage >= MONTHLY_DAILY_MIN_COVERAGE
+            or n_days >= MONTHLY_DAILY_MIN_VALID_DAYS
+        )
+        aggregates.append(
+            {
+                "source": group["source"].iloc[0],
+                "source_family": group["source_family"].iloc[0],
+                "source_station_uid": group["source_station_uid"].iloc[0],
+                "record_id": "|".join(group.loc[values.index, "record_id"].astype(str).head(5)),
+                "value": float(values.mean()),
+                "flag": _worst_flag_value(group.loc[values.index, flag_col]) if flag_col in group else np.nan,
+                "flag_rank": max(_flag_rank(value) for value in group.loc[values.index, flag_col]) if flag_col in group else 9.0,
+                "ssc": (
+                    float(pd.to_numeric(group.loc[values.index, "SSC"], errors="coerce").mean())
+                    if "SSC" in group and pd.to_numeric(group.loc[values.index, "SSC"], errors="coerce").notna().any()
+                    else np.nan
+                ),
+                "river_width_class": group.get("river_width_class", pd.Series([""])).iloc[0],
+                "river_width_m": group.get("river_width_m", pd.Series([np.nan])).iloc[0],
+                "climate_zone": group.get("climate_zone", pd.Series([""])).iloc[0],
+                "n_days": n_days,
+                "coverage": coverage,
+                "passes_coverage": passes_coverage,
+                "time_support_class": _row_time_support_class(group.iloc[0], variable),
+            }
+        )
+    return aggregates
+
+
+def _aggregate_monthly_satellite_for_annual_period(
+    candidates: pd.DataFrame,
+    variable: str,
+    period_start: pd.Timestamp,
+    period_end: pd.Timestamp,
+) -> Optional[Dict[str, object]]:
+    if candidates.empty:
+        return None
+    flag_col = "{}_flag".format(variable)
+    in_period = candidates[
+        (pd.to_datetime(candidates["period_start"], errors="coerce") >= period_start)
+        & (pd.to_datetime(candidates["period_start"], errors="coerce") <= period_end)
+        & pd.to_numeric(candidates[variable], errors="coerce").notna()
+    ].copy()
+    if in_period.empty:
+        return None
+    values = pd.to_numeric(in_period[variable], errors="coerce").dropna()
+    if values.empty:
+        return None
+    n_months = int(pd.to_datetime(in_period.loc[values.index, "period_start"], errors="coerce").dt.to_period("M").nunique())
+    coverage = float(n_months) / 12.0
+    passes_coverage = (
+        coverage >= ANNUAL_MONTHLY_MIN_COVERAGE
+        or n_months >= ANNUAL_MONTHLY_MIN_VALID_MONTHS
+    )
+    return {
+        "record_id": "|".join(in_period.loc[values.index, "record_id"].astype(str).head(5)),
+        "value": float(values.mean()),
+        "flag": _worst_flag_value(in_period.loc[values.index, flag_col]) if flag_col in in_period else np.nan,
+        "ssc": (
+            float(pd.to_numeric(in_period.loc[values.index, "SSC"], errors="coerce").mean())
+            if "SSC" in in_period and pd.to_numeric(in_period.loc[values.index, "SSC"], errors="coerce").notna().any()
+            else np.nan
+        ),
+        "n_months": n_months,
+        "coverage": coverage,
+        "passes_coverage": passes_coverage,
+    }
+
+
+def _pair_monthly_satellite_year_to_annual_variable(
+    sat_year_group: pd.DataFrame,
+    insitu: pd.DataFrame,
+    variable: str,
+    method_notes: str,
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    rows: List[Dict[str, object]] = []
+    audits: List[Dict[str, object]] = []
+    if sat_year_group.empty:
+        return rows, audits
+    sat = sat_year_group.sort_values(["period_start", "record_id"], kind="mergesort").iloc[0].copy()
+    first_period = _timestamp_or_nat(sat.get("period_start", pd.NaT))
+    if pd.isna(first_period):
+        audits.append(_temporal_audit_record(sat, variable, "missing_satellite_period"))
+        return rows, audits
+    year = int(first_period.year)
+    annual_start = pd.Timestamp(year=year, month=1, day=1)
+    annual_end = pd.Timestamp(year=year, month=12, day=31)
+    annual_center = annual_start + (annual_end - annual_start) / 2
+    sat_aggregate = _aggregate_monthly_satellite_for_annual_period(
+        sat_year_group, variable, annual_start, annual_end
+    )
+    if sat_aggregate is None:
+        audits.append(_temporal_audit_record(sat, variable, "no_satellite_values", temporal_alignment_mode="monthly_to_annual_aggregate"))
+        return rows, audits
+    if not sat_aggregate["passes_coverage"]:
+        audits.append(
+            _temporal_audit_record(
+                sat,
+                variable,
+                "insufficient_temporal_coverage",
+                candidate_sources=_format_sources(sat_year_group.get("source", pd.Series(dtype=object))),
+                n_candidate_records=len(sat_year_group),
+                n_values_aggregated=sat_aggregate["n_months"],
+                coverage_fraction=sat_aggregate["coverage"],
+                temporal_alignment_mode="monthly_to_annual_aggregate",
+            )
+        )
+        return rows, audits
+
+    valid = insitu.loc[pd.to_numeric(insitu[variable], errors="coerce").notna()].copy()
+    candidate_sources = _format_sources(valid.get("source", pd.Series(dtype=object)))
+    if valid.empty:
+        audits.append(_temporal_audit_record(sat, variable, "no_insitu_values", n_candidate_records=0))
+        return rows, audits
+    valid["variable_time_support_class"] = [
+        _row_time_support_class(row, variable) for _, row in valid.iterrows()
+    ]
+    compatible = valid[valid["variable_time_support_class"].eq("annual_product")].copy()
+    if compatible.empty:
+        audits.append(
+            _temporal_audit_record(
+                sat,
+                variable,
+                "unsupported_time_support_class",
+                candidate_sources=candidate_sources,
+                n_candidate_records=len(valid),
+                temporal_alignment_mode="monthly_to_annual_aggregate",
+            )
+        )
+        return rows, audits
+    same_period = compatible[
+        pd.to_datetime(compatible["period_start"], errors="coerce").eq(annual_start)
+    ].copy()
+    if same_period.empty:
+        audits.append(
+            _temporal_audit_record(
+                sat,
+                variable,
+                "no_matching_annual_period",
+                candidate_sources=_format_sources(compatible["source"]),
+                n_candidate_records=len(compatible),
+                temporal_alignment_mode="monthly_to_annual_aggregate",
+            )
+        )
+        return rows, audits
+    same_period["_flag_rank"] = same_period["{}_flag".format(variable)].map(_flag_rank)
+    best = same_period.sort_values(
+        ["_flag_rank", "source", "source_station_uid", "record_id"],
+        kind="mergesort",
+    ).iloc[0]
+    sat_pair = sat.copy()
+    sat_pair[variable] = sat_aggregate["value"]
+    sat_pair["{}_flag".format(variable)] = sat_aggregate["flag"]
+    sat_pair["record_id"] = sat_aggregate["record_id"]
+    sat_pair["period_start"] = annual_start
+    sat_pair["period_end"] = annual_end
+    sat_pair["period_center"] = annual_center
+    if variable == "SSC" or pd.notna(sat_aggregate["ssc"]):
+        sat_pair["SSC"] = sat_aggregate["ssc"]
+    rows.append(
+        _base_pair_record(
+            sat_pair,
+            best.get("source", ""),
+            best.get("source_family", ""),
+            best.get("source_station_uid", ""),
+            best.get("record_id", ""),
+            variable,
+            "period",
+            annual_center,
+            best.get("period_center", annual_center),
+            0,
+            float(sat_aggregate["value"]),
+            float(best.get(variable, np.nan)),
+            sat_aggregate["flag"],
+            best.get("{}_flag".format(variable), np.nan),
+            best.get("SSC", np.nan),
+            best.get("river_width_class", ""),
+            best.get("river_width_m", np.nan),
+            best.get("climate_zone", ""),
+            "monthly_to_annual_aggregate",
+            _row_time_support_class(sat, variable),
+            _row_time_support_class(best, variable),
+            annual_start,
+            annual_end,
+            best.get("period_start", pd.NaT),
+            best.get("period_end", pd.NaT),
+            1,
+            1.0,
+            True,
+            method_notes,
+        )
+    )
+    return rows, audits
+
+
+def _pair_cross_resolution_satellite_variable(
+    sat: pd.Series,
+    insitu: pd.DataFrame,
+    variable: str,
+    method_notes: str,
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]]]:
+    rows: List[Dict[str, object]] = []
+    audits: List[Dict[str, object]] = []
+    sat_value = pd.to_numeric(pd.Series([sat.get(variable, np.nan)]), errors="coerce").iloc[0]
+    if pd.isna(sat_value) or not np.isfinite(float(sat_value)):
+        return rows, audits
+
+    sat_source_resolution = _normalize_resolution(sat.get("source_resolution", sat.get("resolution", "")))
+    linked_resolution = _normalize_resolution(sat.get("linked_resolution", sat.get("resolution", "")))
+    is_cross_resolution = bool(sat_source_resolution and linked_resolution and sat_source_resolution != linked_resolution)
+    sat_support = _row_time_support_class(sat, variable)
+    sat_start = _timestamp_or_nat(sat.get("period_start", pd.NaT))
+    sat_end = _timestamp_or_nat(sat.get("period_end", pd.NaT))
+    sat_center = _timestamp_or_nat(sat.get("period_center", sat.get("_time_day", pd.NaT)))
+    if pd.isna(sat_start) or pd.isna(sat_end):
+        audits.append(_temporal_audit_record(sat, variable, "missing_satellite_period"))
+        return rows, audits
+
+    valid = insitu.loc[pd.to_numeric(insitu[variable], errors="coerce").notna()].copy()
+    candidate_sources = _format_sources(valid.get("source", pd.Series(dtype=object)))
+    if valid.empty:
+        audits.append(_temporal_audit_record(sat, variable, "no_insitu_values", n_candidate_records=0))
+        return rows, audits
+
+    if sat_source_resolution == "monthly" and linked_resolution == "daily":
+        valid["variable_time_support_class"] = [
+            _row_time_support_class(row, variable) for _, row in valid.iterrows()
+        ]
+        compatible = valid[
+            valid["variable_time_support_class"].isin(["daily_mean", "daily_from_highfreq"])
+        ].copy()
+        if compatible.empty:
+            reason = (
+                "discrete_sampling_not_comparable"
+                if valid["variable_time_support_class"].eq("daily_discrete").any()
+                else "unsupported_time_support_class"
+            )
+            audits.append(
+                _temporal_audit_record(
+                    sat,
+                    variable,
+                    reason,
+                    candidate_sources=candidate_sources,
+                    n_candidate_records=len(valid),
+                    temporal_alignment_mode="monthly_to_daily_aggregate",
+                )
+            )
+            return rows, audits
+        aggregates = _aggregate_daily_candidates_for_period(
+            compatible, variable, sat_start, sat_end
+        )
+        passed = [item for item in aggregates if item["passes_coverage"]]
+        if not passed:
+            best_coverage = max([item["coverage"] for item in aggregates], default=math.nan)
+            best_n = max([item["n_days"] for item in aggregates], default=0)
+            audits.append(
+                _temporal_audit_record(
+                    sat,
+                    variable,
+                    "insufficient_temporal_coverage",
+                    candidate_sources=_format_sources(compatible["source"]),
+                    n_candidate_records=len(compatible),
+                    n_values_aggregated=best_n,
+                    coverage_fraction=best_coverage,
+                    temporal_alignment_mode="monthly_to_daily_aggregate",
+                )
+            )
+            return rows, audits
+        best = sorted(
+            passed,
+            key=lambda item: (
+                -int(item["n_days"]),
+                -float(item["coverage"]),
+                float(item["flag_rank"]),
+                str(item["source"]).lower(),
+                str(item["source_station_uid"]).lower(),
+            ),
+        )[0]
+        rows.append(
+            _base_pair_record(
+                sat,
+                best["source"],
+                best["source_family"],
+                best["source_station_uid"],
+                best["record_id"],
+                variable,
+                "period",
+                sat_center,
+                sat_center,
+                0,
+                float(sat_value),
+                float(best["value"]),
+                sat.get("{}_flag".format(variable), np.nan),
+                best["flag"],
+                best["ssc"],
+                best["river_width_class"],
+                best["river_width_m"],
+                best["climate_zone"],
+                "monthly_to_daily_aggregate",
+                sat_support,
+                best["time_support_class"],
+                sat_start,
+                sat_end,
+                sat_start,
+                sat_end,
+                best["n_days"],
+                best["coverage"],
+                is_cross_resolution,
+                method_notes,
+            )
+        )
+        return rows, audits
+
+    if sat_source_resolution == "monthly" and linked_resolution == "monthly":
+        valid["variable_time_support_class"] = [
+            _row_time_support_class(row, variable) for _, row in valid.iterrows()
+        ]
+        compatible = valid[valid["variable_time_support_class"].eq("monthly_product")].copy()
+        if compatible.empty:
+            audits.append(
+                _temporal_audit_record(
+                    sat,
+                    variable,
+                    "unsupported_time_support_class",
+                    candidate_sources=candidate_sources,
+                    n_candidate_records=len(valid),
+                    temporal_alignment_mode="monthly_to_monthly_period",
+                )
+            )
+            return rows, audits
+        same_period = compatible[
+            pd.to_datetime(compatible["period_start"], errors="coerce").eq(sat_start)
+        ].copy()
+        if same_period.empty:
+            audits.append(
+                _temporal_audit_record(
+                    sat,
+                    variable,
+                    "no_matching_monthly_period",
+                    candidate_sources=_format_sources(compatible["source"]),
+                    n_candidate_records=len(compatible),
+                    temporal_alignment_mode="monthly_to_monthly_period",
+                )
+            )
+            return rows, audits
+        same_period["_flag_rank"] = same_period["{}_flag".format(variable)].map(_flag_rank)
+        best = same_period.sort_values(
+            ["_flag_rank", "source", "source_station_uid", "record_id"],
+            kind="mergesort",
+        ).iloc[0]
+        rows.append(
+            _base_pair_record(
+                sat,
+                best.get("source", ""),
+                best.get("source_family", ""),
+                best.get("source_station_uid", ""),
+                best.get("record_id", ""),
+                variable,
+                "period",
+                sat_center,
+                best.get("period_center", sat_center),
+                0,
+                float(sat_value),
+                float(best.get(variable, np.nan)),
+                sat.get("{}_flag".format(variable), np.nan),
+                best.get("{}_flag".format(variable), np.nan),
+                best.get("SSC", np.nan),
+                best.get("river_width_class", ""),
+                best.get("river_width_m", np.nan),
+                best.get("climate_zone", ""),
+                "monthly_to_monthly_period",
+                sat_support,
+                _row_time_support_class(best, variable),
+                sat_start,
+                sat_end,
+                best.get("period_start", pd.NaT),
+                best.get("period_end", pd.NaT),
+                1,
+                1.0,
+                is_cross_resolution,
+                method_notes,
+            )
+        )
+        return rows, audits
+
+    audits.append(
+        _temporal_audit_record(
+            sat,
+            variable,
+            "unsupported_resolution_transition",
+            candidate_sources=candidate_sources,
+            n_candidate_records=len(valid),
+            temporal_alignment_mode="unsupported",
+        )
+    )
+    return rows, audits
+
+
 def _pair_group_worker(
     item: Tuple[int, pd.DataFrame, Tuple[str, ...], str]
-) -> Tuple[int, List[Dict[str, object]]]:
+) -> Tuple[int, List[Dict[str, object]], List[Dict[str, object]]]:
     ordinal, group, windows, input_mode = item
     rows: List[Dict[str, object]] = []
+    audits: List[Dict[str, object]] = []
     satellites = group[group["source_family"] == "satellite"]
     insitu = group[group["source_family"] == "in_situ"]
     if satellites.empty or insitu.empty:
-        return ordinal, rows
+        return ordinal, rows, audits
 
     insitu_per_var = {}
     for variable in VARIABLES:
@@ -761,7 +1505,33 @@ def _pair_group_worker(
         )
 
     method_notes = _method_notes(input_mode)
-    for _, sat in satellites.iterrows():
+    satellite_source_resolution = satellites["source_resolution"].map(_normalize_resolution)
+    satellite_linked_resolution = satellites["linked_resolution"].map(_normalize_resolution)
+    monthly_to_annual_mask = satellite_source_resolution.eq("monthly") & satellite_linked_resolution.eq("annual")
+    if monthly_to_annual_mask.any():
+        annual_satellites = satellites.loc[monthly_to_annual_mask].copy()
+        annual_satellites["_period_year"] = pd.to_datetime(
+            annual_satellites["period_start"], errors="coerce"
+        ).dt.year
+        for variable in VARIABLES:
+            valid_satellites = annual_satellites.loc[
+                pd.to_numeric(annual_satellites[variable], errors="coerce").notna()
+                & annual_satellites["_period_year"].notna()
+            ].copy()
+            if valid_satellites.empty:
+                continue
+            for _, sat_year_group in _groupby_compat(
+                valid_satellites,
+                ["source", "source_station_uid", "_period_year"],
+            ):
+                annual_rows, annual_audits = _pair_monthly_satellite_year_to_annual_variable(
+                    sat_year_group, insitu, variable, method_notes
+                )
+                rows.extend(annual_rows)
+                audits.extend(annual_audits)
+    satellites_for_row_loop = satellites.loc[~monthly_to_annual_mask].copy()
+
+    for _, sat in satellites_for_row_loop.iterrows():
         sat_cluster_uid = sat.get("cluster_uid", "")
         sat_cluster_id = sat.get("cluster_id", "")
         sat_resolution = sat.get("resolution", "")
@@ -774,6 +1544,18 @@ def _pair_group_worker(
         sat_river_width_class = sat.get("river_width_class", "")
         sat_river_width_m = sat.get("river_width_m", np.nan)
         sat_climate_zone = sat.get("climate_zone", "")
+        sat_source_resolution = _normalize_resolution(sat.get("source_resolution", sat_resolution))
+        sat_linked_resolution = _normalize_resolution(sat.get("linked_resolution", sat_resolution))
+        is_cross_resolution = bool(sat_source_resolution and sat_linked_resolution and sat_source_resolution != sat_linked_resolution)
+
+        if is_cross_resolution or (sat_source_resolution == "monthly" and sat_linked_resolution == "monthly"):
+            for variable in VARIABLES:
+                cross_rows, cross_audits = _pair_cross_resolution_satellite_variable(
+                    sat, insitu, variable, method_notes
+                )
+                rows.extend(cross_rows)
+                audits.extend(cross_audits)
+            continue
 
         for variable in VARIABLES:
             valid = insitu_per_var.get(variable)
@@ -807,51 +1589,40 @@ def _pair_group_worker(
                     insitu_value = float(best.get(variable, np.nan))
                 except (ValueError, TypeError):
                     insitu_value = np.nan
-                diff = sat_value - insitu_value
-                pct = (
-                    diff / insitu_value * 100.0
-                    if insitu_value != 0
-                    else float("nan")
-                )
                 rows.append(
-                    {
-                        "cluster_uid": sat_cluster_uid,
-                        "cluster_id": sat_cluster_id,
-                        "resolution": sat_resolution,
-                        "variable": variable,
-                        "pairing_window": window,
-                        "window_exclusive": WINDOW_EXCLUSIVE,
-                        "satellite_time": sat_time,
-                        "insitu_time": best["_time_day"],
-                        "time_delta_days": int(best["_time_delta_days"]),
-                        "satellite_source": sat_source,
-                        "insitu_source": best.get("source", ""),
-                        "satellite_source_family": sat_source_family,
-                        "insitu_source_family": best.get("source_family", ""),
-                        "satellite_source_station_uid": sat_source_station_uid,
-                        "insitu_source_station_uid": best.get("source_station_uid", ""),
-                        "satellite_record_id": sat_record_id,
-                        "insitu_record_id": best.get("record_id", ""),
-                        "satellite_value": sat_value,
-                        "insitu_value": insitu_value,
-                        "diff_satellite_minus_insitu": diff,
-                        "pct_error_vs_insitu": pct,
-                        "satellite_flag": sat.get("{}_flag".format(variable), np.nan),
-                        "insitu_flag": best.get("{}_flag".format(variable), np.nan),
-                        "source_pair": "{} vs {}".format(sat_source, best.get("source", "")),
-                        "satellite_ssc": sat_ssc,
-                        "insitu_ssc": best.get("SSC", np.nan),
-                        "satellite_river_width_class": sat_river_width_class,
-                        "insitu_river_width_class": best.get("river_width_class", ""),
-                        "satellite_river_width_m": sat_river_width_m,
-                        "insitu_river_width_m": best.get("river_width_m", np.nan),
-                        "satellite_climate_zone": sat_climate_zone,
-                        "insitu_climate_zone": best.get("climate_zone", ""),
-                        "method_notes": method_notes,
-                        "assumptions": ASSUMPTIONS_BASE,
-                    }
+                    _base_pair_record(
+                        sat,
+                        best.get("source", ""),
+                        best.get("source_family", ""),
+                        best.get("source_station_uid", ""),
+                        best.get("record_id", ""),
+                        variable,
+                        window,
+                        sat_time,
+                        best["_time_day"],
+                        int(best["_time_delta_days"]),
+                        sat_value,
+                        insitu_value,
+                        sat.get("{}_flag".format(variable), np.nan),
+                        best.get("{}_flag".format(variable), np.nan),
+                        best.get("SSC", np.nan),
+                        best.get("river_width_class", ""),
+                        best.get("river_width_m", np.nan),
+                        best.get("climate_zone", ""),
+                        "same_resolution_nearest_day",
+                        _row_time_support_class(sat, variable),
+                        _row_time_support_class(best, variable),
+                        sat.get("period_start", sat_time),
+                        sat.get("period_end", sat_time),
+                        best.get("period_start", best["_time_day"]),
+                        best.get("period_end", best["_time_day"]),
+                        1,
+                        1.0,
+                        False,
+                        method_notes,
+                    )
                 )
-    return ordinal, rows
+    return ordinal, rows, audits
 
 
 def pair_satellite_insitu_records(
@@ -860,22 +1631,13 @@ def pair_satellite_insitu_records(
     input_mode: str = "",
     workers: int = 1,
     progress=log_progress,
-) -> pd.DataFrame:
-    columns = [
-        "cluster_uid", "cluster_id", "resolution", "variable", "pairing_window",
-        "window_exclusive", "satellite_time", "insitu_time", "time_delta_days",
-        "satellite_source", "insitu_source", "satellite_source_family",
-        "insitu_source_family", "satellite_source_station_uid",
-        "insitu_source_station_uid", "satellite_record_id", "insitu_record_id",
-        "satellite_value", "insitu_value", "diff_satellite_minus_insitu",
-        "pct_error_vs_insitu", "satellite_flag", "insitu_flag", "source_pair",
-        "satellite_ssc", "insitu_ssc", "satellite_river_width_class",
-        "insitu_river_width_class", "satellite_river_width_m",
-        "insitu_river_width_m", "satellite_climate_zone", "insitu_climate_zone",
-        "method_notes", "assumptions",
-    ]
+    return_audit: bool = False,
+):
+    columns = _pair_output_columns()
     if observations.empty:
-        return pd.DataFrame(columns=columns)
+        empty_pairs = pd.DataFrame(columns=columns)
+        empty_audit = pd.DataFrame(columns=TEMPORAL_AUDIT_COLUMNS)
+        return (empty_pairs, empty_audit) if return_audit else empty_pairs
     work = observations.copy()
     work["_cluster_key"] = _cluster_group_key(work)
     work["_time_day"] = pd.to_datetime(work["time"], errors="coerce").dt.floor("D")
@@ -900,9 +1662,13 @@ def pair_satellite_insitu_records(
         with ProcessPoolExecutor(max_workers=workers) as executor:
             results = list(executor.map(_pair_group_worker, tasks, chunksize=chunksize))
     rows: List[Dict[str, object]] = []
-    for _, group_rows in sorted(results, key=lambda item: item[0]):
+    audit_rows: List[Dict[str, object]] = []
+    for _, group_rows, group_audits in sorted(results, key=lambda item: item[0]):
         rows.extend(group_rows)
-    return pd.DataFrame(rows, columns=columns)
+        audit_rows.extend(group_audits)
+    pairs = pd.DataFrame(rows, columns=columns)
+    audit = pd.DataFrame(audit_rows, columns=TEMPORAL_AUDIT_COLUMNS)
+    return (pairs, audit) if return_audit else pairs
 
 
 def _load_external_attributes(path: Optional[Path]) -> pd.DataFrame:
@@ -1099,15 +1865,39 @@ def compute_satellite_insitu_metrics(pair_records: pd.DataFrame) -> pd.DataFrame
     columns = [
         "group_type", "pairing_window", "window_exclusive", "variable",
         "source_pair", "ssc_bin", "river_width_class", "climate_zone",
-        "high_turbidity", "bias", "RMSE", "MAE", "MAPE",
+        "high_turbidity", "temporal_alignment_mode",
+        "satellite_time_support_class", "insitu_time_support_class",
+        "is_cross_resolution", "bias", "RMSE", "MAE", "MAPE",
         "median_absolute_error", "Pearson", "Spearman", "R2", "n_pairs",
         "n_clusters", "method_notes", "assumptions",
     ]
     if pair_records.empty:
         return pd.DataFrame(columns=columns)
+    pair_records = pair_records.copy()
+    for name, default in (
+        ("temporal_alignment_mode", "same_resolution_nearest_day"),
+        ("satellite_time_support_class", "unknown"),
+        ("insitu_time_support_class", "unknown"),
+        ("is_cross_resolution", False),
+    ):
+        if name not in pair_records.columns:
+            pair_records[name] = default
     group_specs = {
         "overall": [],
         "source_pair": ["source_pair"],
+        "temporal_alignment": [
+            "temporal_alignment_mode",
+            "satellite_time_support_class",
+            "insitu_time_support_class",
+            "is_cross_resolution",
+        ],
+        "source_pair_temporal": [
+            "source_pair",
+            "temporal_alignment_mode",
+            "satellite_time_support_class",
+            "insitu_time_support_class",
+            "is_cross_resolution",
+        ],
         "source_pair_ssc_bin": ["source_pair", "ssc_bin"],
         "source_pair_width": ["source_pair", "river_width_class"],
         "source_pair_climate": ["source_pair", "climate_zone"],
@@ -1131,6 +1921,10 @@ def compute_satellite_insitu_metrics(pair_records: pd.DataFrame) -> pd.DataFrame
                 "river_width_class": values.get("river_width_class", "ALL"),
                 "climate_zone": values.get("climate_zone", "ALL"),
                 "high_turbidity": values.get("high_turbidity", "ALL"),
+                "temporal_alignment_mode": values.get("temporal_alignment_mode", "ALL"),
+                "satellite_time_support_class": values.get("satellite_time_support_class", "ALL"),
+                "insitu_time_support_class": values.get("insitu_time_support_class", "ALL"),
+                "is_cross_resolution": values.get("is_cross_resolution", "ALL"),
                 "n_clusters": int(_cluster_group_key(group).nunique()),
                 "method_notes": (
                     str(group["method_notes"].iloc[0])
@@ -1381,7 +2175,7 @@ DEFAULT_LINKAGE_CSV = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
 DEFAULT_S5_CSV = OUTPUT_R_ROOT / S5_BASIN_CLUSTERED_CSV
 DEFAULT_SOURCE_ROOT = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
 DEFAULT_RELEASE_DIR = OUTPUT_R_ROOT / "scripts_basin_test/output/sed_reference_release"
-DEFAULT_OUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test/validate/output/validation_results_s5b"
+DEFAULT_OUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test/validate/output/s11_satellite_insitu"
 
 REQUIRED_LINKAGE_COLUMNS = {
     "satellite_location_uid", "cluster_id", "cluster_uid", "source", "path",
@@ -1713,6 +2507,7 @@ def _read_one_satellite_source(
                     "cluster_id": row.get("cluster_id", ""),
                     "cluster_uid": _clean_text(row.get("cluster_uid", "")),
                     "resolution": _normalize_resolution(row.get("resolution", "")),
+                    "source_resolution": _normalize_resolution(row.get("resolution", "")),
                     "linked_cluster_id": row.get("linked_cluster_id", ""),
                     "linked_cluster_uid": _clean_text(row.get("linked_cluster_uid", "")),
                     "linked_resolution": _normalize_resolution(row.get("linked_resolution", "")),
@@ -1812,7 +2607,14 @@ def _normalize_v2_linkage_table(linkage: pd.DataFrame, s5_csv: Path) -> pd.DataF
     normalized["resolution"] = merged["resolution"].map(_normalize_resolution)
     normalized["linked_cluster_id"] = merged["linked_cluster_id"]
     normalized["linked_cluster_uid"] = merged["linked_cluster_uid"].map(_clean_text)
-    normalized["linked_resolution"] = merged["satellite_resolution"].map(_normalize_resolution)
+    if "linked_resolution" in merged.columns:
+        linked_resolution = merged["linked_resolution"].map(_clean_text)
+        fallback_resolution = merged["satellite_resolution"].map(_clean_text)
+        normalized["linked_resolution"] = linked_resolution.where(
+            linked_resolution.ne(""), fallback_resolution
+        ).map(_normalize_resolution)
+    else:
+        normalized["linked_resolution"] = merged["satellite_resolution"].map(_normalize_resolution)
     normalized["link_status"] = merged["link_status"].map(_clean_text).str.lower()
     normalized["link_method"] = merged["link_method"].map(_clean_text)
     normalized["link_quality"] = merged["link_confidence"].map(_clean_text)
@@ -2360,12 +3162,13 @@ def run_validation(
 
     observations = pd.concat([insitu, satellite], ignore_index=True, sort=False)
     pair_mode = "s5b_linkage_csv+selected_master_catalog_filtered"
-    pairs = base.pair_satellite_insitu_records(
+    pairs, temporal_audit = base.pair_satellite_insitu_records(
         observations,
         windows=windows,
         input_mode=pair_mode,
         workers=workers,
         progress=log_progress,
+        return_audit=True,
     )
     pairs = _attach_linkage_metadata(pairs, linkage)
     pairs = base.assign_strata(
@@ -2380,17 +3183,20 @@ def run_validation(
     metric_path = out_dir / "validation_satellite_insitu_metrics.csv"
     load_report_path = out_dir / "validation_satellite_source_load_report.csv"
     linkage_summary_path = out_dir / "validation_s5b_linkage_summary.csv"
+    temporal_audit_path = out_dir / "validation_temporal_alignment_audit.csv"
     summary_path = out_dir / "validation_satellite_insitu_summary.md"
     pairs.to_csv(pair_path, index=False)
     metrics.to_csv(metric_path, index=False)
     load_report.to_csv(load_report_path, index=False)
     linkage_summary.to_csv(linkage_summary_path, index=False)
+    temporal_audit.to_csv(temporal_audit_path, index=False)
 
     generated_outputs: List[Tuple[str, str]] = [
         (pair_path.name, "generated"),
         (metric_path.name, "generated"),
         (load_report_path.name, "generated"),
         (linkage_summary_path.name, "generated"),
+        (temporal_audit_path.name, "generated"),
     ]
     if write_plots:
         generated_outputs.extend(
@@ -2446,6 +3252,7 @@ def run_validation(
         )
         handle.write("- Satellite source-load status counts: `{}`.\n".format(status_counts))
         handle.write("- Satellite observation rows loaded: {}.\n".format(len(satellite)))
+        handle.write("- Temporal alignment audit rows: {}.\n".format(len(temporal_audit)))
         handle.write("- Final pair rows: {}; metric rows: {}.\n".format(len(pairs), len(metrics)))
     log_progress(
         "Complete: pairs={}, metric_rows={}, satellite_rows={}".format(
