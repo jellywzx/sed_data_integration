@@ -1,130 +1,161 @@
 #!/usr/bin/env python3
-"""Cross-source comparison between main matrices and climatology observations.
+"""Cross-resolution consistency assessment for the main sediment matrices.
 
-The script spatially links climatology stations to released main-matrix clusters,
-excludes records selected from the same source dataset, aggregates daily/monthly/
-annual main-matrix observations to period-matched long-term means, and compares
-SSC and SSL in scatter plots and summary tables.
+This read-only validation script compares the released daily, monthly, and
+annual station-reference matrices after aggregating the finer-resolution
+product to the calendar support of the coarser-resolution product:
 
-Scientific interpretation
--------------------------
-Climatology timestamps are treated as representative only. Period matching uses
-station-level source coverage fields (start/end year) when available. Main-matrix
-values are first averaged within each calendar year and then averaged across the
-valid overlapping years, so years with dense sampling do not dominate the
-long-term mean.
+* daily -> monthly
+* daily -> annual
+* monthly -> annual
 
-Default inputs under --release-dir:
-  sed_reference_timeseries_daily.nc
-  sed_reference_timeseries_monthly.nc
-  sed_reference_timeseries_annual.nc
-  sed_reference_climatology.nc
+The script has two complementary purposes:
 
-Default outputs under --out-dir:
-  s13_match_funnel.csv
-  s13_spatial_candidates.csv
-  s13_selected_station_matches.csv
-  s13_source_specific_pair_values.csv
-  s13_resolution_pair_values.csv
-  s13_primary_pair_values.csv
-  s13_summary_metrics.csv
-  s13_scatter_main_climatology.png
-  s13_scatter_main_climatology.pdf
-  s13_main_climatology_report.md
+1. Product-processing consistency: determine whether values in a finer matrix,
+   after transparent temporal aggregation, agree with values in a coarser
+   matrix at the same ``cluster_uid`` and calendar period.
+2. Provenance-aware cross-source diagnostics: distinguish comparisons that use
+   the same source station from comparisons supported by different source
+   datasets. Same-source comparisons are processing checks, not independent
+   observational validation.
+
+The script never modifies release products. It writes detailed pair tables,
+structural diagnostics, summary statistics, publication-style figures, and a
+Markdown report under ``validate/output/s18_cross_resolution`` by
+default.
+
+Expected release inputs
+-----------------------
+* sed_reference_timeseries_daily.nc
+* sed_reference_timeseries_monthly.nc
+* sed_reference_timeseries_annual.nc
+* source_station_catalog.csv
+
+Core conventions
+----------------
+* Q is compared as an arithmetic mean in m3 s-1.
+* SSC is compared as an arithmetic mean in mg L-1.
+* SSL is compared as mean daily load in t d-1, not as a monthly/annual sum.
+* ``good`` mode retains flag 0 only.
+* ``analysis_ready`` mode retains flags 0 and 1.
+* Zero values are retained for linear-space errors but excluded from log-ratio
+  statistics and log-log figures.
+* All available pairs are retained. Observation support is reported and
+  classified rather than hidden behind a single hard-coded coverage cutoff.
+
+Example
+-------
+python validate/s18_validate_cross_resolution_consistency.py \
+  --release-dir output/sed_reference_release \
+  --out-dir validate/output/s18_cross_resolution \
+  --flag-modes good analysis_ready \
+  --monthly-weighting both \
+  --overwrite
 """
 
+from __future__ import annotations
 
 import argparse
+import json
 import math
+import os
 import re
 import sys
-import time
-import unicodedata
-from difflib import SequenceMatcher
+import time as time_module
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 
+def _import_pyplot():
+    """Import matplotlib lazily; plotting is optional and some cluster
+    environments lack a compatible libstdc++ for the compiled extension."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        return plt
+    except Exception as exc:  # pragma: no cover - environment dependent
+        log(f"Skipping plots because matplotlib is unavailable: {exc}")
+        return None
+
+
+
 try:
     import netCDF4 as nc4
-except ImportError as exc:  # pragma: no cover - handled at runtime
-    try:
-        from h5netcdf import legacyapi as nc4
-    except ImportError:
-        nc4 = None
-        _NETCDF_IMPORT_ERROR = exc
-    else:
-        _NETCDF_IMPORT_ERROR = None
-else:
-    _NETCDF_IMPORT_ERROR = None
+except ImportError:  # pragma: no cover - checked explicitly in main
+    nc4 = None
+
+try:
+    from scipy import stats as scipy_stats
+except ImportError:  # pragma: no cover - statistics have fallbacks
+    scipy_stats = None
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = SCRIPT_DIR.parent
-DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
-DEFAULT_OUT_DIR = PROJECT_DIR / "validate" / "output" / "main_climatology"
-
-MATRIX_FILENAMES = {
+VARIABLES: Tuple[str, ...] = ("Q", "SSC", "SSL")
+FLAG_VARIABLES: Mapping[str, str] = {
+    "Q": "Q_flag",
+    "SSC": "SSC_flag",
+    "SSL": "SSL_flag",
+}
+FLAG_MODES: Mapping[str, Tuple[int, ...]] = {
+    "good": (0,),
+    "analysis_ready": (0, 1),
+}
+COMPARISON_SPECS: Tuple[Tuple[str, str, str], ...] = (
+    ("daily_monthly", "daily", "monthly"),
+    ("daily_annual", "daily", "annual"),
+    ("monthly_annual", "monthly", "annual"),
+)
+MATRIX_FILENAMES: Mapping[str, str] = {
     "daily": "sed_reference_timeseries_daily.nc",
     "monthly": "sed_reference_timeseries_monthly.nc",
     "annual": "sed_reference_timeseries_annual.nc",
 }
-CLIMATOLOGY_FILENAME = "sed_reference_climatology.nc"
-VARIABLES = ("SSC", "SSL")
-FLAG_VARIABLES = {"SSC": "SSC_flag", "SSL": "SSL_flag"}
-RESOLUTION_PRIORITY = {"daily": 1, "monthly": 2, "annual": 3}
-EARTH_RADIUS_M = 6_371_008.8
-FILL_VALUES = (-9999.0, -9999, 9.96921e36)
+FILL_VALUES: Tuple[float, ...] = (-9999.0, 9.969209968386869e36)
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+DEFAULT_RELEASE_DIR = REPO_ROOT / "output" / "sed_reference_release"
+DEFAULT_OUT_DIR = SCRIPT_DIR / "output" / "s18_cross_resolution"
+DEFAULT_SOURCE_CATALOG = DEFAULT_RELEASE_DIR / "source_station_catalog.csv"
 
 
-# Source aliases are deliberately conservative. Canonicalization is used only
-# to identify obvious same-source comparisons that must be excluded.
-SOURCE_ALIASES = {
-    "usgs": "usgs_nwis",
-    "usgsnwis": "usgs_nwis",
-    "usgs_nwis": "usgs_nwis",
-    "nwis": "usgs_nwis",
-    "hydatdataset": "hydat",
-    "hydat_dataset": "hydat",
-    "gfqa": "gfqa_v2",
-    "gfqav2": "gfqa_v2",
-    "gfqa_v2": "gfqa_v2",
-    "globalflowandwaterqualityarchivev2": "gfqa_v2",
-    "global_flow_and_water_quality_archive_v2": "gfqa_v2",
-    "eusedcollabdataset": "eusedcollab",
-    "eusedcollab_dataset": "eusedcollab",
-    "millimanfarnsworth": "milliman",
-    "milliman_farnsworth": "milliman",
-    "alianddeboer": "ali_de_boer",
-    "ali_de_boer_dataset": "ali_de_boer",
-    "hmadataset": "hma",
-    "hma_dataset": "hma",
-    "vanmaerckeetal2014africansedimentyielddatabase": "vanmaercke",
-    "vanmaercke_et_al_2014_african_sediment_yield_database": "vanmaercke",
-}
+@dataclass(frozen=True)
+class MatrixStationMetadata:
+    cluster_uid: str
+    row_index: int
+    lat: float
+    lon: float
+    basin_area: float
+    station_name: str
+    river_name: str
+    basin_status: str
 
-GENERIC_NAME_TOKENS = {
-    "river",
-    "riv",
-    "station",
-    "gauge",
-    "gauging",
-    "site",
-    "at",
-    "near",
-    "the",
-    "of",
-}
+
+@dataclass(frozen=True)
+class SourceInfo:
+    source_station_uid: str
+    resolution: str
+    source_name: str
+    native_id: str
+    station_name: str
+    river_name: str
+    lat: float
+    lon: float
+    canonical_key: str
 
 
 class ValidationError(RuntimeError):
-    """Raised for a release structure that cannot support the comparison."""
+    """Raised for actionable input or release-structure problems."""
 
 
 def log(message: str) -> None:
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    stamp = time_module.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{stamp}] {message}", flush=True)
 
 
@@ -139,1403 +170,1855 @@ def clean_text(value) -> str:
     if isinstance(value, (bytes, np.bytes_)):
         value = value.decode("utf-8", errors="ignore")
     text = str(value).replace("\x00", "").strip()
-    return "" if text.lower() in {"", "nan", "none", "nat", "null", "n/a", "na"} else text
-
-
-def normalize_name(value, remove_generic: bool = False) -> str:
-    text = clean_text(value)
-    if not text:
+    if text.lower() in {"", "nan", "none", "nat", "null", "na", "n/a"}:
         return ""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    if remove_generic:
-        tokens = [token for token in tokens if token not in GENERIC_NAME_TOKENS]
-    return " ".join(tokens)
+    return text
 
 
-def canonical_source(value) -> str:
-    key = normalize_name(value).replace(" ", "_")
-    compact = key.replace("_", "")
-    return SOURCE_ALIASES.get(key, SOURCE_ALIASES.get(compact, key))
+def normalize_token(value: str) -> str:
+    text = clean_text(value).lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return re.sub(r"_+", "_", text).strip("_")
 
 
-def name_similarity(left, right, remove_generic: bool = False) -> float:
-    a = normalize_name(left, remove_generic=remove_generic)
-    b = normalize_name(right, remove_generic=remove_generic)
-    if not a or not b:
-        return np.nan
-    if a == b:
-        return 1.0
-    return float(SequenceMatcher(None, a, b).ratio())
+def decode_text_vector(values) -> List[str]:
+    """Decode NetCDF VLEN strings or fixed-width character arrays."""
+    arr = np.ma.asarray(values)
+    if np.ma.isMaskedArray(arr):
+        if arr.dtype.kind in {"S", "U", "O"}:
+            arr = arr.filled("")
+        else:
+            arr = arr.filled(np.nan)
+    arr = np.asarray(arr)
+    if arr.ndim == 0:
+        return [clean_text(arr.item())]
+
+    if arr.dtype.kind in {"S", "U"} and arr.ndim >= 2 and arr.dtype.itemsize <= 4:
+        rows = arr.reshape((-1, arr.shape[-1]))
+        decoded = []
+        for row in rows:
+            decoded.append("".join(clean_text(item) for item in row).strip())
+        return decoded
+
+    return [clean_text(item) for item in arr.reshape(-1)]
 
 
-def parse_flag_list(text: str) -> Tuple[int, ...]:
-    values: List[int] = []
-    for token in str(text).split(","):
-        token = token.strip()
-        if token:
-            values.append(int(token))
-    if not values:
-        raise argparse.ArgumentTypeError("At least one quality flag is required")
-    return tuple(sorted(set(values)))
-
-
-def resolve_path(value: Optional[str], default: Path) -> Path:
-    path = Path(value).expanduser() if value else default
-    return path.resolve()
-
-
-def require_netcdf() -> None:
-    if nc4 is None:
-        raise RuntimeError(
-            "netCDF4 is required for this script. Install it with 'pip install netCDF4'. "
-            f"Original import error: {_NETCDF_IMPORT_ERROR}"
-        )
-
-
-def _fill_candidates(var) -> List[float]:
-    fills: List[float] = list(FILL_VALUES)
-    for attr in ("_FillValue", "missing_value"):
-        try:
-            raw = getattr(var, attr)
-        except Exception:
-            continue
-        try:
-            fills.extend(np.asarray(raw).astype(float).reshape(-1).tolist())
-        except Exception:
-            pass
-    return fills
-
-
-def read_numeric(var, key=slice(None)) -> np.ndarray:
-    raw = np.ma.asarray(var[key])
-    if np.ma.isMaskedArray(raw):
-        raw = raw.filled(np.nan)
-    arr = np.asarray(raw, dtype=np.float64)
-    for fill in _fill_candidates(var):
-        if np.isfinite(fill):
-            arr[arr == fill] = np.nan
+def read_numeric(values) -> np.ndarray:
+    arr = np.ma.asarray(values).astype(np.float64)
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(np.nan)
+    arr = np.asarray(arr, dtype=np.float64)
+    for fill in FILL_VALUES:
+        arr[arr == fill] = np.nan
     arr[~np.isfinite(arr)] = np.nan
     return arr
 
 
-def read_int(var, key=slice(None), fill_value: int = -1) -> np.ndarray:
-    raw = np.ma.asarray(var[key])
-    if np.ma.isMaskedArray(raw):
-        raw = raw.filled(fill_value)
-    arr = np.asarray(raw)
-    out = np.full(arr.shape, fill_value, dtype=np.int64)
+def read_flags(values) -> np.ndarray:
+    arr = np.ma.asarray(values)
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(9)
+    arr = np.asarray(arr)
+    out = np.full(arr.shape, 9, dtype=np.int16)
+    try:
+        numeric = arr.astype(np.float64)
+        valid = np.isfinite(numeric)
+        out[valid] = numeric[valid].astype(np.int16)
+    except (TypeError, ValueError):
+        pass
+    out[~np.isin(out, np.array([0, 1, 2, 3, 9], dtype=np.int16))] = 9
+    return out
+
+
+def read_indices(values, fill: int = -1) -> np.ndarray:
+    arr = np.ma.asarray(values)
+    if np.ma.isMaskedArray(arr):
+        arr = arr.filled(fill)
+    arr = np.asarray(arr)
+    out = np.full(arr.shape, fill, dtype=np.int64)
     try:
         numeric = arr.astype(np.float64)
         valid = np.isfinite(numeric)
         out[valid] = numeric[valid].astype(np.int64)
-    except Exception:
+    except (TypeError, ValueError):
         pass
     return out
 
 
-def read_text(var, key=slice(None)) -> List[str]:
-    raw = np.ma.asarray(var[key])
-    if np.ma.isMaskedArray(raw):
-        if raw.dtype.kind in {"S", "U", "O"}:
-            raw = raw.filled("")
-        else:
-            raw = raw.filled(np.nan)
-    arr = np.asarray(raw)
-    if arr.ndim == 0:
-        return [clean_text(arr.item())]
-    if arr.dtype.kind in {"S", "U"} and arr.ndim >= 2:
-        rows = arr.reshape((-1, arr.shape[-1]))
-        return [clean_text("".join(clean_text(item) for item in row)) for row in rows]
-    return [clean_text(item) for item in arr.reshape(-1)]
-
-
-def variable_or_none(ds, names: Sequence[str]):
-    for name in names:
-        if name in ds.variables:
-            return ds.variables[name]
-    return None
-
-
-def dimension_size(ds, preferred: Sequence[str], fallback_var: Optional[str] = None) -> int:
-    for name in preferred:
-        if name in ds.dimensions:
-            return len(ds.dimensions[name])
-    if fallback_var and fallback_var in ds.variables:
-        return int(np.asarray(ds.variables[fallback_var][:]).shape[0])
-    raise ValidationError(f"Cannot determine dimension size from {preferred}")
-
-
-def pad_list(values: Sequence, size: int, fill="") -> List:
-    values = list(values)
-    if len(values) >= size:
-        return values[:size]
-    return values + [fill] * (size - len(values))
-
-
-def pad_array(values: np.ndarray, size: int, fill=np.nan, dtype=np.float64) -> np.ndarray:
-    arr = np.asarray(values, dtype=dtype).reshape(-1)
-    if len(arr) >= size:
-        return arr[:size]
-    return np.concatenate([arr, np.full(size - len(arr), fill, dtype=dtype)])
-
-
-def decode_time_values(ds) -> Tuple[np.ndarray, List[str]]:
-    if "time" not in ds.variables:
-        raise ValidationError("NetCDF file does not contain a time variable")
-    var = ds.variables["time"]
-    values = read_numeric(var).reshape(-1)
-    units = clean_text(getattr(var, "units", "days since 1970-01-01")) or "days since 1970-01-01"
-    calendar = clean_text(getattr(var, "calendar", "standard")) or "standard"
-    years = np.full(len(values), -1, dtype=np.int32)
-    labels = [""] * len(values)
-
-    valid_idx = np.where(np.isfinite(values))[0]
-    if len(valid_idx) == 0:
-        return years, labels
-
+def decode_time_variable(var) -> pd.DatetimeIndex:
+    values = np.ma.asarray(var[:])
+    if np.ma.isMaskedArray(values):
+        values = values.filled(np.nan)
+    units = clean_text(getattr(var, "units", "days since 1970-01-01"))
+    calendar = clean_text(getattr(var, "calendar", "gregorian")) or "gregorian"
     try:
-        dates = nc4.num2date(
-            values[valid_idx],
+        decoded = nc4.num2date(
+            values,
             units=units,
             calendar=calendar,
             only_use_cftime_datetimes=False,
             only_use_python_datetimes=False,
         )
-        for idx, date in zip(valid_idx, np.asarray(dates).reshape(-1)):
-            year = int(getattr(date, "year"))
-            years[idx] = year
-            try:
-                labels[idx] = date.strftime("%Y-%m-%d")
-            except Exception:
-                labels[idx] = str(date)
-        return years, labels
-    except Exception:
-        pass
-
-    match = re.search(r"days\s+since\s+(\d{4}-\d{2}-\d{2})", units, flags=re.I)
-    origin = pd.Timestamp(match.group(1) if match else "1970-01-01")
-    parsed = origin + pd.to_timedelta(values[valid_idx], unit="D")
-    years[valid_idx] = parsed.year.to_numpy(dtype=np.int32)
-    for idx, date in zip(valid_idx, parsed):
-        labels[idx] = date.strftime("%Y-%m-%d")
-    return years, labels
-
-
-def extract_years(value) -> List[int]:
-    text = clean_text(value)
-    years = []
-    for token in re.findall(r"(?<!\d)(18\d{2}|19\d{2}|20\d{2}|21\d{2})(?!\d)", text):
-        year = int(token)
-        if 1800 <= year <= 2199:
-            years.append(year)
-    return years
-
-
-def parse_coverage_years(start, end, temporal_span="") -> Tuple[Optional[int], Optional[int], str]:
-    start_years = extract_years(start)
-    end_years = extract_years(end)
-    span_years = extract_years(temporal_span)
-
-    start_year = start_years[0] if start_years else (min(span_years) if span_years else None)
-    end_year = end_years[-1] if end_years else (max(span_years) if span_years else None)
-
-    if start_year is not None and end_year is not None:
-        if end_year < start_year:
-            start_year, end_year = end_year, start_year
-        return start_year, end_year, "known"
-    if start_year is not None:
-        return start_year, start_year, "partial_single_year"
-    if end_year is not None:
-        return end_year, end_year, "partial_single_year"
-    return None, None, "unknown"
-
-
-def load_main_station_catalog(matrix_paths: Mapping[str, Path]) -> pd.DataFrame:
-    catalog: Dict[str, Dict] = {}
-
-    for resolution, path in matrix_paths.items():
-        if not path.is_file():
-            log(f"Matrix not found, skipping {resolution}: {path}")
-            continue
-        log(f"Reading {resolution} station metadata: {path}")
-        with nc4.Dataset(path, "r") as ds:
-            n_stations = dimension_size(ds, ("n_stations", "station"), fallback_var="lat")
-            uid_var = variable_or_none(ds, ("station_uid",))
-            if uid_var is not None:
-                uids = pad_list(read_text(uid_var), n_stations)
-            elif "station_reference_id" in ds.variables:
-                ids = read_int(ds.variables["station_reference_id"], fill_value=-1).reshape(-1)
-                uids = [f"SED{int(value):06d}" if value >= 0 else "" for value in ids]
+        strings = []
+        for item in np.asarray(decoded).reshape(-1):
+            if item is None:
+                strings.append("")
             else:
-                raise ValidationError(f"{path} contains neither station_uid nor station_reference_id")
-
-            lat = pad_array(read_numeric(ds.variables["lat"]), n_stations)
-            lon = pad_array(read_numeric(ds.variables["lon"]), n_stations)
-            station_name = pad_list(read_text(ds.variables["station_name"]), n_stations) if "station_name" in ds.variables else [""] * n_stations
-            river_name = pad_list(read_text(ds.variables["river_name"]), n_stations) if "river_name" in ds.variables else [""] * n_stations
-            basin_status = pad_list(read_text(ds.variables["basin_status"]), n_stations, "unknown") if "basin_status" in ds.variables else ["unknown"] * n_stations
-
-            for idx in range(n_stations):
-                uid = clean_text(uids[idx])
-                if not uid:
-                    uid = f"{resolution.upper()}_ROW_{idx:06d}"
-                row = catalog.setdefault(
-                    uid,
-                    {
-                        "main_station_uid": uid,
-                        "main_lat": np.nan,
-                        "main_lon": np.nan,
-                        "main_station_name": "",
-                        "main_river_name": "",
-                        "main_basin_status": "unknown",
-                        "available_resolutions": [],
-                        "daily_index": np.nan,
-                        "monthly_index": np.nan,
-                        "annual_index": np.nan,
-                    },
-                )
-                if not np.isfinite(row["main_lat"]) and np.isfinite(lat[idx]):
-                    row["main_lat"] = float(lat[idx])
-                if not np.isfinite(row["main_lon"]) and np.isfinite(lon[idx]):
-                    row["main_lon"] = float(lon[idx])
-                if not row["main_station_name"] and station_name[idx]:
-                    row["main_station_name"] = station_name[idx]
-                if not row["main_river_name"] and river_name[idx]:
-                    row["main_river_name"] = river_name[idx]
-                status = clean_text(basin_status[idx]) or "unknown"
-                if row["main_basin_status"] == "unknown" or status == "resolved":
-                    row["main_basin_status"] = status
-                row["available_resolutions"].append(resolution)
-                row[f"{resolution}_index"] = int(idx)
-
-    if not catalog:
-        raise ValidationError("No main matrix station metadata could be loaded")
-
-    rows = list(catalog.values())
-    for row in rows:
-        row["available_resolutions"] = "|".join(sorted(set(row["available_resolutions"])))
-    result = pd.DataFrame(rows)
-    result["main_station_name_norm"] = result["main_station_name"].map(lambda x: normalize_name(x, True))
-    result["main_river_name_norm"] = result["main_river_name"].map(lambda x: normalize_name(x, True))
-    return result
+                try:
+                    strings.append(item.isoformat())
+                except Exception:
+                    strings.append(str(item))
+        result = pd.to_datetime(strings, errors="coerce")
+    except Exception:
+        numeric = pd.to_numeric(np.asarray(values).reshape(-1), errors="coerce")
+        result = pd.to_datetime(numeric, unit="D", origin="1970-01-01", errors="coerce")
+    return pd.DatetimeIndex(result).tz_localize(None)
 
 
-def _station_field(ds, name: str, n_stations: int, default="") -> List:
+def _read_optional_station_numeric(ds, name: str, size: int) -> np.ndarray:
     if name not in ds.variables:
-        return [default] * n_stations
-    return pad_list(read_text(ds.variables[name]), n_stations, default)
-
-
-def load_climatology_records(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    if not path.is_file():
-        raise FileNotFoundError(f"Climatology NetCDF not found: {path}")
-    log(f"Reading climatology observations: {path}")
-
-    with nc4.Dataset(path, "r") as ds:
-        n_stations = dimension_size(ds, ("n_stations", "station"), fallback_var="lat")
-        n_records = dimension_size(ds, ("n_records", "record"), fallback_var="time")
-
-        station_index = read_int(ds.variables["station_index"], fill_value=-1).reshape(-1) if "station_index" in ds.variables else np.arange(n_records, dtype=np.int64)
-        station_index = pad_array(station_index, n_records, fill=-1, dtype=np.int64)
-
-        source_index = read_int(ds.variables["source_index"], fill_value=-1).reshape(-1) if "source_index" in ds.variables else np.full(n_stations, -1, dtype=np.int64)
-        source_index = pad_array(source_index, n_stations, fill=-1, dtype=np.int64)
-
-        source_names = read_text(ds.variables["source_name"]) if "source_name" in ds.variables else []
-        record_sources = read_text(ds.variables["source"]) if "source" in ds.variables else []
-        record_sources = pad_list(record_sources, n_records)
-
-        station_uid = _station_field(ds, "station_uid", n_stations)
-        station_name = _station_field(ds, "station_name", n_stations)
-        river_name = _station_field(ds, "river_name", n_stations)
-        source_station_id = _station_field(ds, "source_station_id", n_stations)
-        coverage_start = _station_field(ds, "source_station_time_coverage_start", n_stations)
-        coverage_end = _station_field(ds, "source_station_time_coverage_end", n_stations)
-        temporal_span = _station_field(ds, "temporal_span", n_stations)
-        lat = pad_array(read_numeric(ds.variables["lat"]), n_stations)
-        lon = pad_array(read_numeric(ds.variables["lon"]), n_stations)
-
-        years, time_labels = decode_time_values(ds)
-        years = pad_array(years, n_records, fill=-1, dtype=np.int32)
-        time_labels = pad_list(time_labels, n_records)
-
-        values: Dict[str, np.ndarray] = {}
-        flags: Dict[str, np.ndarray] = {}
-        for variable in VARIABLES:
-            values[variable] = pad_array(read_numeric(ds.variables[variable]), n_records) if variable in ds.variables else np.full(n_records, np.nan)
-            flag_name = FLAG_VARIABLES[variable]
-            flags[variable] = pad_array(
-                read_int(ds.variables[flag_name], fill_value=9),
-                n_records,
-                fill=9,
-                dtype=np.int64,
-            ) if flag_name in ds.variables else np.full(n_records, 9, dtype=np.int64)
-
-    station_rows: List[Dict] = []
-    for idx in range(n_stations):
-        src_idx = int(source_index[idx]) if idx < len(source_index) else -1
-        source = source_names[src_idx] if 0 <= src_idx < len(source_names) else ""
-        uid = clean_text(station_uid[idx]) or f"CLM{idx:06d}"
-        start_year, end_year, coverage_status = parse_coverage_years(
-            coverage_start[idx], coverage_end[idx], temporal_span[idx]
+        return np.full(size, np.nan, dtype=np.float64)
+    values = read_numeric(ds.variables[name][:]).reshape(-1)
+    if len(values) != size:
+        raise ValidationError(
+            f"Variable {name!r} has {len(values)} values; expected {size} station values"
         )
-        station_rows.append(
-            {
-                "climatology_station_index": idx,
-                "climatology_station_uid": uid,
-                "climatology_source": clean_text(source),
-                "climatology_source_canonical": canonical_source(source),
-                "climatology_station_name": station_name[idx],
-                "climatology_river_name": river_name[idx],
-                "climatology_source_station_id": source_station_id[idx],
-                "climatology_lat": float(lat[idx]) if np.isfinite(lat[idx]) else np.nan,
-                "climatology_lon": float(lon[idx]) if np.isfinite(lon[idx]) else np.nan,
-                "climatology_coverage_start_text": coverage_start[idx],
-                "climatology_coverage_end_text": coverage_end[idx],
-                "climatology_temporal_span": temporal_span[idx],
-                "coverage_start_year": start_year,
-                "coverage_end_year": end_year,
-                "coverage_status": coverage_status,
-            }
+    return values
+
+
+def _read_optional_station_text(ds, name: str, size: int) -> List[str]:
+    if name not in ds.variables:
+        return [""] * size
+    values = decode_text_vector(ds.variables[name][:])
+    if len(values) != size:
+        raise ValidationError(
+            f"Variable {name!r} has {len(values)} values; expected {size} station values"
         )
-    stations = pd.DataFrame(station_rows)
-
-    record_rows: List[Dict] = []
-    for record_idx in range(n_records):
-        station_idx = int(station_index[record_idx])
-        if station_idx < 0 or station_idx >= n_stations:
-            continue
-        station = station_rows[station_idx].copy()
-        if not station["climatology_source"] and record_sources[record_idx]:
-            station["climatology_source"] = record_sources[record_idx]
-            station["climatology_source_canonical"] = canonical_source(record_sources[record_idx])
-        if not any(np.isfinite(values[var][record_idx]) for var in VARIABLES):
-            continue
-        station.update(
-            {
-                "climatology_record_index": record_idx,
-                "climatology_record_uid": f"{station['climatology_station_uid']}::R{record_idx:06d}",
-                "climatology_representative_year": int(years[record_idx]) if years[record_idx] >= 0 else np.nan,
-                "climatology_representative_time": time_labels[record_idx],
-                "SSC": values["SSC"][record_idx],
-                "SSC_flag": int(flags["SSC"][record_idx]),
-                "SSL": values["SSL"][record_idx],
-                "SSL_flag": int(flags["SSL"][record_idx]),
-            }
-        )
-        record_rows.append(station)
-
-    records = pd.DataFrame(record_rows)
-    if records.empty:
-        raise ValidationError("Climatology file contains no SSC or SSL records")
-    return stations, records
+    return values
 
 
-def haversine_distances_m(lat: float, lon: float, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
-    lat1 = math.radians(float(lat))
-    lon1 = math.radians(float(lon))
-    lat2 = np.radians(lats.astype(np.float64))
-    lon2 = np.radians(lons.astype(np.float64))
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
-    a = np.clip(a, 0.0, 1.0)
-    return 2.0 * EARTH_RADIUS_M * np.arcsin(np.sqrt(a))
+class MatrixReader:
+    """Memory-conscious row reader for one released station-by-time matrix."""
 
+    def __init__(self, path: Path, resolution: str):
+        if nc4 is None:
+            raise ValidationError("netCDF4 is required; install it with `pip install netCDF4`")
+        self.path = Path(path)
+        self.resolution = resolution
+        if not self.path.is_file():
+            raise FileNotFoundError(f"Matrix file not found: {self.path}")
+        self.ds = nc4.Dataset(self.path, "r")
 
-def build_spatial_candidates(
-    climatology_stations: pd.DataFrame,
-    main_stations: pd.DataFrame,
-    exact_distance_m: float,
-    max_distance_m: float,
-    sensitivity_distance_m: float,
-    name_similarity_threshold: float,
-) -> pd.DataFrame:
-    main_valid = main_stations[
-        np.isfinite(main_stations["main_lat"]) & np.isfinite(main_stations["main_lon"])
-    ].copy()
-    if main_valid.empty:
-        raise ValidationError("No main-matrix clusters have valid coordinates")
+        required = {"cluster_uid", "time"}.union(VARIABLES).union(FLAG_VARIABLES.values())
+        missing = sorted(name for name in required if name not in self.ds.variables)
+        if missing:
+            self.close()
+            raise ValidationError(f"{self.path.name} is missing required variables: {missing}")
 
-    main_lats = main_valid["main_lat"].to_numpy(dtype=np.float64)
-    main_lons = main_valid["main_lon"].to_numpy(dtype=np.float64)
-    rows: List[Dict] = []
-
-    valid_clim = climatology_stations[
-        np.isfinite(climatology_stations["climatology_lat"])
-        & np.isfinite(climatology_stations["climatology_lon"])
-    ]
-    for counter, (_, station) in enumerate(valid_clim.iterrows(), start=1):
-        if counter % 250 == 0:
-            log(f"Spatial matching progress: {counter}/{len(valid_clim)} climatology stations")
-        distances = haversine_distances_m(
-            station["climatology_lat"],
-            station["climatology_lon"],
-            main_lats,
-            main_lons,
-        )
-        candidate_positions = np.where(distances <= sensitivity_distance_m)[0]
-        for pos in candidate_positions:
-            main = main_valid.iloc[int(pos)]
-            distance = float(distances[pos])
-            station_sim = name_similarity(
-                station["climatology_station_name"], main["main_station_name"], remove_generic=True
+        self.cluster_uids = decode_text_vector(self.ds.variables["cluster_uid"][:])
+        if not self.cluster_uids:
+            self.close()
+            raise ValidationError(f"No cluster_uid values found in {self.path}")
+        if len(set(self.cluster_uids)) != len(self.cluster_uids):
+            duplicates = pd.Series(self.cluster_uids).value_counts()
+            duplicate_ids = duplicates[duplicates > 1].index.tolist()[:10]
+            self.close()
+            raise ValidationError(
+                f"Duplicate cluster_uid values in {self.path.name}: {duplicate_ids}"
             )
-            river_sim = name_similarity(
-                station["climatology_river_name"], main["main_river_name"], remove_generic=True
-            )
-            station_support = bool(np.isfinite(station_sim) and station_sim >= name_similarity_threshold)
-            river_support = bool(np.isfinite(river_sim) and river_sim >= name_similarity_threshold)
-            if distance <= exact_distance_m:
-                match_class = "coordinate_exact"
-            elif distance <= max_distance_m:
-                match_class = "coordinate_near"
-            else:
-                match_class = "sensitivity_near"
-            rows.append(
-                {
-                    "climatology_station_uid": station["climatology_station_uid"],
-                    "climatology_source": station["climatology_source"],
-                    "climatology_station_name": station["climatology_station_name"],
-                    "climatology_river_name": station["climatology_river_name"],
-                    "climatology_lat": station["climatology_lat"],
-                    "climatology_lon": station["climatology_lon"],
-                    "main_station_uid": main["main_station_uid"],
-                    "main_station_name": main["main_station_name"],
-                    "main_river_name": main["main_river_name"],
-                    "main_lat": main["main_lat"],
-                    "main_lon": main["main_lon"],
-                    "main_basin_status": main["main_basin_status"],
-                    "available_resolutions": main["available_resolutions"],
-                    "daily_index": main["daily_index"],
-                    "monthly_index": main["monthly_index"],
-                    "annual_index": main["annual_index"],
-                    "distance_m": distance,
-                    "spatial_match_class": match_class,
-                    "station_name_similarity": station_sim,
-                    "river_name_similarity": river_sim,
-                    "station_name_support": station_support,
-                    "river_name_support": river_support,
-                    "name_support_count": int(station_support) + int(river_support),
-                }
-            )
+        self.index_by_uid = {uid: idx for idx, uid in enumerate(self.cluster_uids)}
+        self.time = decode_time_variable(self.ds.variables["time"])
+        if self.time.isna().all():
+            self.close()
+            raise ValidationError(f"Could not decode time coordinate in {self.path}")
 
-    return pd.DataFrame(rows)
-
-
-def select_spatial_matches(
-    climatology_stations: pd.DataFrame,
-    candidates: pd.DataFrame,
-    exact_distance_m: float,
-    max_distance_m: float,
-    ambiguity_distance_gap_m: float,
-    ambiguity_distance_ratio: float,
-    require_name_support_for_near: bool,
-    resolved_main_only: bool,
-) -> pd.DataFrame:
-    candidate_groups = {
-        uid: group.copy()
-        for uid, group in candidates.groupby("climatology_station_uid", sort=False)
-    } if not candidates.empty else {}
-    rows: List[Dict] = []
-
-    for _, station in climatology_stations.iterrows():
-        uid = station["climatology_station_uid"]
-        group = candidate_groups.get(uid, pd.DataFrame()).copy()
-        if not group.empty:
-            group = group[group["distance_m"] <= max_distance_m].copy()
-            if resolved_main_only:
-                group = group[group["main_basin_status"].astype(str).str.lower().eq("resolved")]
-
-        base = station.to_dict()
-        base.update(
-            {
-                "match_status": "no_primary_candidate",
-                "n_primary_candidates": 0,
-                "selected_main_station_uid": "",
-                "selected_distance_m": np.nan,
-                "selected_spatial_match_class": "",
-                "selected_main_station_name": "",
-                "selected_main_river_name": "",
-                "selected_main_basin_status": "",
-                "selected_available_resolutions": "",
-                "selected_daily_index": np.nan,
-                "selected_monthly_index": np.nan,
-                "selected_annual_index": np.nan,
-                "selected_station_name_similarity": np.nan,
-                "selected_river_name_similarity": np.nan,
-                "selection_reason": "no candidate within primary distance threshold",
-            }
+        n_stations = len(self.cluster_uids)
+        self.lat = _read_optional_station_numeric(self.ds, "lat", n_stations)
+        self.lon = _read_optional_station_numeric(self.ds, "lon", n_stations)
+        self.basin_area = _read_optional_station_numeric(self.ds, "basin_area", n_stations)
+        self.station_name = _read_optional_station_text(self.ds, "station_name", n_stations)
+        self.river_name = _read_optional_station_text(self.ds, "river_name", n_stations)
+        self.basin_status = _read_optional_station_text(self.ds, "basin_status", n_stations)
+        self.source_names = (
+            decode_text_vector(self.ds.variables["source_name"][:])
+            if "source_name" in self.ds.variables
+            else []
         )
-        if group.empty:
-            rows.append(base)
-            continue
 
-        group["_exact_rank"] = (group["distance_m"] <= exact_distance_m).astype(int)
-        group = group.sort_values(
-            ["_exact_rank", "name_support_count", "distance_m", "main_station_uid"],
-            ascending=[False, False, True, True],
-        ).reset_index(drop=True)
-        base["n_primary_candidates"] = int(len(group))
-        top = group.iloc[0]
+    def close(self) -> None:
+        try:
+            self.ds.close()
+        except Exception:
+            pass
 
-        selected = False
-        reason = ""
-        if len(group) == 1:
-            selected = True
-            reason = "only primary-distance candidate"
+    def __enter__(self) -> "MatrixReader":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def metadata(self, cluster_uid: str) -> MatrixStationMetadata:
+        idx = self.index_by_uid[cluster_uid]
+        return MatrixStationMetadata(
+            cluster_uid=cluster_uid,
+            row_index=idx,
+            lat=float(self.lat[idx]) if np.isfinite(self.lat[idx]) else np.nan,
+            lon=float(self.lon[idx]) if np.isfinite(self.lon[idx]) else np.nan,
+            basin_area=(
+                float(self.basin_area[idx]) if np.isfinite(self.basin_area[idx]) else np.nan
+            ),
+            station_name=self.station_name[idx],
+            river_name=self.river_name[idx],
+            basin_status=self.basin_status[idx],
+        )
+
+    def _read_row(self, variable_name: str, row_index: int):
+        var = self.ds.variables[variable_name]
+        dims = tuple(getattr(var, "dimensions", ()))
+        if not dims:
+            return var[:]
+        station_dim = None
+        for candidate in ("n_stations", "station", "stations"):
+            if candidate in dims:
+                station_dim = candidate
+                break
+        if station_dim is None:
+            # The released matrices use n_stations as the first dimension.
+            station_axis = 0
         else:
-            second = group.iloc[1]
-            top_exact = float(top["distance_m"]) <= exact_distance_m
-            second_exact = float(second["distance_m"]) <= exact_distance_m
-            if top_exact and not second_exact:
-                selected = True
-                reason = "only exact-distance candidate"
-            elif int(top["name_support_count"]) > int(second["name_support_count"]):
-                selected = True
-                reason = "stronger station/river name support"
-            else:
-                gap = float(second["distance_m"]) - float(top["distance_m"])
-                ratio = float(second["distance_m"]) / max(float(top["distance_m"]), 1.0)
-                if gap >= ambiguity_distance_gap_m or ratio >= ambiguity_distance_ratio:
-                    selected = True
-                    reason = "nearest candidate clearly separated from second candidate"
-                else:
-                    reason = "top candidates are not clearly distinguishable"
+            station_axis = dims.index(station_dim)
+        slices = [slice(None)] * len(dims)
+        slices[station_axis] = row_index
+        return var[tuple(slices)]
 
-        if selected and require_name_support_for_near:
-            if float(top["distance_m"]) > exact_distance_m and int(top["name_support_count"]) == 0:
-                selected = False
-                reason = "near match lacks station or river name support"
-                base["match_status"] = "near_without_name_support"
+    def read_cluster_rows(self, cluster_uid: str) -> Dict[str, object]:
+        idx = self.index_by_uid[cluster_uid]
+        values = {name: read_numeric(self._read_row(name, idx)).reshape(-1) for name in VARIABLES}
+        flags = {
+            name: read_flags(self._read_row(FLAG_VARIABLES[name], idx)).reshape(-1)
+            for name in VARIABLES
+        }
 
-        if selected:
-            base.update(
-                {
-                    "match_status": "selected",
-                    "selected_main_station_uid": top["main_station_uid"],
-                    "selected_distance_m": float(top["distance_m"]),
-                    "selected_spatial_match_class": top["spatial_match_class"],
-                    "selected_main_station_name": top["main_station_name"],
-                    "selected_main_river_name": top["main_river_name"],
-                    "selected_main_basin_status": top["main_basin_status"],
-                    "selected_available_resolutions": top["available_resolutions"],
-                    "selected_daily_index": top["daily_index"],
-                    "selected_monthly_index": top["monthly_index"],
-                    "selected_annual_index": top["annual_index"],
-                    "selected_station_name_similarity": top["station_name_similarity"],
-                    "selected_river_name_similarity": top["river_name_similarity"],
-                    "selection_reason": reason,
-                }
+        n_time = len(self.time)
+        for name in VARIABLES:
+            if len(values[name]) != n_time or len(flags[name]) != n_time:
+                raise ValidationError(
+                    f"{self.path.name}: row length mismatch for {cluster_uid} {name}; "
+                    f"values={len(values[name])}, flags={len(flags[name])}, time={n_time}"
+                )
+
+        if "selected_source_station_uid" in self.ds.variables:
+            source_uids = decode_text_vector(
+                self._read_row("selected_source_station_uid", idx)
             )
-        elif base["match_status"] == "no_primary_candidate":
-            base["match_status"] = "ambiguous"
-            base["selection_reason"] = reason
         else:
-            base["selection_reason"] = reason
-        rows.append(base)
+            source_uids = [""] * n_time
+        if len(source_uids) != n_time:
+            source_uids = (source_uids + [""] * n_time)[:n_time]
 
-    return pd.DataFrame(rows)
+        if "selected_source_index" in self.ds.variables:
+            source_indices = read_indices(
+                self._read_row("selected_source_index", idx), fill=-1
+            ).reshape(-1)
+        else:
+            source_indices = np.full(n_time, -1, dtype=np.int64)
+        if len(source_indices) != n_time:
+            padded = np.full(n_time, -1, dtype=np.int64)
+            limit = min(n_time, len(source_indices))
+            padded[:limit] = source_indices[:limit]
+            source_indices = padded
+
+        source_names = []
+        for source_index in source_indices:
+            integer = int(source_index)
+            if 0 <= integer < len(self.source_names):
+                source_names.append(self.source_names[integer])
+            else:
+                source_names.append("")
+
+        return {
+            "time": self.time,
+            "values": values,
+            "flags": flags,
+            "source_station_uid": np.asarray(source_uids, dtype=object),
+            "source_name": np.asarray(source_names, dtype=object),
+        }
 
 
-def _source_names_from_matrix(ds) -> List[str]:
-    if "source_name" not in ds.variables:
-        raise ValidationError("Matrix does not contain source_name lookup")
-    return read_text(ds.variables["source_name"])
+def choose_column(columns: Iterable[str], candidates: Sequence[str]) -> Optional[str]:
+    exact = {str(col): str(col) for col in columns}
+    lower = {str(col).lower(): str(col) for col in columns}
+    for candidate in candidates:
+        if candidate in exact:
+            return exact[candidate]
+        if candidate.lower() in lower:
+            return lower[candidate.lower()]
+    return None
 
 
-def _matrix_row_index(anchor: pd.Series, resolution: str) -> Optional[int]:
-    value = anchor.get(f"selected_{resolution}_index", np.nan)
+def numeric_or_nan(value) -> float:
     try:
-        if pd.isna(value):
-            return None
-        return int(value)
-    except Exception:
-        return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return np.nan
+    return number if np.isfinite(number) else np.nan
 
 
-def _coverage_mask(
-    years: np.ndarray,
-    start_year: Optional[int],
-    end_year: Optional[int],
-    allow_unknown_coverage: bool,
-) -> Tuple[np.ndarray, str, Optional[int], Optional[int]]:
-    valid_years = years >= 0
-    if start_year is not None and end_year is not None:
-        return valid_years & (years >= int(start_year)) & (years <= int(end_year)), "known", int(start_year), int(end_year)
-    if allow_unknown_coverage:
-        observed = years[valid_years]
-        if len(observed) == 0:
-            return np.zeros(len(years), dtype=bool), "unknown_no_main_years", None, None
-        return valid_years, "unknown_used_all_main_years", int(observed.min()), int(observed.max())
-    return np.zeros(len(years), dtype=bool), "unknown_excluded", None, None
+def canonical_source_key(
+    source_name: str,
+    native_id: str,
+    station_name: str,
+    river_name: str,
+    lat: float,
+    lon: float,
+    fallback_uid: str,
+) -> str:
+    source_key = normalize_token(source_name) or "unknown_source"
+    native_key = normalize_token(native_id)
+    if native_key:
+        return f"{source_key}|id:{native_key}"
+
+    station_key = normalize_token(station_name)
+    river_key = normalize_token(river_name)
+    if np.isfinite(lat) and np.isfinite(lon):
+        coordinate_key = f"{lat:.4f},{lon:.4f}"
+        if station_key or river_key:
+            return f"{source_key}|name:{station_key}|river:{river_key}|coord:{coordinate_key}"
+        return f"{source_key}|coord:{coordinate_key}"
+
+    if station_key or river_key:
+        return f"{source_key}|name:{station_key}|river:{river_key}"
+    return f"{source_key}|uid:{normalize_token(fallback_uid) or 'unknown'}"
 
 
-def aggregate_one_anchor_variable(
-    anchor: pd.Series,
+class SourceCatalogResolver:
+    """Resolve matrix provenance UIDs to cross-resolution source identities."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.by_uid_resolution: Dict[Tuple[str, str], SourceInfo] = {}
+        self.unique_by_uid: Dict[str, SourceInfo] = {}
+        self._cache: Dict[Tuple[str, str, str], SourceInfo] = {}
+        if not self.path.is_file():
+            log(f"Source-station catalogue not found; provenance identity will use matrix fields only: {self.path}")
+            return
+
+        table = pd.read_csv(self.path, keep_default_na=False, low_memory=False)
+        uid_col = choose_column(table.columns, ("source_station_uid", "cluster_uid"))
+        resolution_col = choose_column(table.columns, ("resolution", "time_resolution"))
+        source_col = choose_column(table.columns, ("source_name", "source", "dataset"))
+        native_col = choose_column(
+            table.columns,
+            ("source_station_native_id", "source_station_id", "native_id"),
+        )
+        station_col = choose_column(
+            table.columns,
+            ("source_station_name", "station_name"),
+        )
+        river_col = choose_column(
+            table.columns,
+            ("source_station_river_name", "river_name"),
+        )
+        lat_col = choose_column(
+            table.columns,
+            ("source_station_lat", "lat", "latitude"),
+        )
+        lon_col = choose_column(
+            table.columns,
+            ("source_station_lon", "lon", "longitude"),
+        )
+        if uid_col is None:
+            log(f"Catalogue {self.path.name} lacks source_station_uid; using matrix provenance only")
+            return
+
+        seen_by_uid: MutableMapping[str, List[SourceInfo]] = {}
+        for row in table.to_dict(orient="records"):
+            uid = clean_text(row.get(uid_col, ""))
+            if not uid:
+                continue
+            resolution = clean_text(row.get(resolution_col, "")).lower() if resolution_col else ""
+            source_name = clean_text(row.get(source_col, "")) if source_col else ""
+            native_id = clean_text(row.get(native_col, "")) if native_col else ""
+            station_name = clean_text(row.get(station_col, "")) if station_col else ""
+            river_name = clean_text(row.get(river_col, "")) if river_col else ""
+            lat = numeric_or_nan(row.get(lat_col, np.nan)) if lat_col else np.nan
+            lon = numeric_or_nan(row.get(lon_col, np.nan)) if lon_col else np.nan
+            key = canonical_source_key(
+                source_name,
+                native_id,
+                station_name,
+                river_name,
+                lat,
+                lon,
+                uid,
+            )
+            info = SourceInfo(
+                source_station_uid=uid,
+                resolution=resolution,
+                source_name=source_name,
+                native_id=native_id,
+                station_name=station_name,
+                river_name=river_name,
+                lat=lat,
+                lon=lon,
+                canonical_key=key,
+            )
+            self.by_uid_resolution[(uid, resolution)] = info
+            seen_by_uid.setdefault(uid, []).append(info)
+
+        for uid, infos in seen_by_uid.items():
+            canonical_keys = {info.canonical_key for info in infos}
+            if len(canonical_keys) == 1:
+                self.unique_by_uid[uid] = infos[0]
+
+        log(
+            f"Loaded source catalogue: rows={len(table):,}, "
+            f"uid-resolution keys={len(self.by_uid_resolution):,}"
+        )
+
+    def resolve(self, uid: str, resolution: str, matrix_source_name: str = "") -> SourceInfo:
+        uid = clean_text(uid)
+        resolution = clean_text(resolution).lower()
+        matrix_source_name = clean_text(matrix_source_name)
+        cache_key = (uid, resolution, matrix_source_name)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        info = self.by_uid_resolution.get((uid, resolution))
+        if info is None:
+            info = self.unique_by_uid.get(uid)
+        if info is None:
+            source_name = matrix_source_name
+            key = canonical_source_key(
+                source_name=source_name,
+                native_id="",
+                station_name="",
+                river_name="",
+                lat=np.nan,
+                lon=np.nan,
+                fallback_uid=uid,
+            )
+            info = SourceInfo(
+                source_station_uid=uid,
+                resolution=resolution,
+                source_name=source_name,
+                native_id="",
+                station_name="",
+                river_name="",
+                lat=np.nan,
+                lon=np.nan,
+                canonical_key=key,
+            )
+        elif not info.source_name and matrix_source_name:
+            key = canonical_source_key(
+                source_name=matrix_source_name,
+                native_id=info.native_id,
+                station_name=info.station_name,
+                river_name=info.river_name,
+                lat=info.lat,
+                lon=info.lon,
+                fallback_uid=uid,
+            )
+            info = SourceInfo(
+                source_station_uid=info.source_station_uid,
+                resolution=info.resolution,
+                source_name=matrix_source_name,
+                native_id=info.native_id,
+                station_name=info.station_name,
+                river_name=info.river_name,
+                lat=info.lat,
+                lon=info.lon,
+                canonical_key=key,
+            )
+
+        self._cache[cache_key] = info
+        return info
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    if not all(np.isfinite(value) for value in (lat1, lon1, lat2, lon2)):
+        return np.nan
+    radius = 6_371_008.8
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
+    )
+    return 2.0 * radius * math.asin(min(1.0, math.sqrt(a)))
+
+
+def symmetric_relative_difference(a: float, b: float) -> float:
+    if not np.isfinite(a) or not np.isfinite(b):
+        return np.nan
+    denominator = max(abs(a), abs(b))
+    if denominator == 0:
+        return 0.0
+    return abs(a - b) / denominator
+
+
+def structural_consistency_rows(
+    comparison: str,
+    lower: MatrixReader,
+    higher: MatrixReader,
+    common_uids: Sequence[str],
+    coordinate_tolerance_m: float,
+    basin_area_tolerance: float,
+) -> pd.DataFrame:
+    rows = []
+    for uid in common_uids:
+        a = lower.metadata(uid)
+        b = higher.metadata(uid)
+        distance = haversine_m(a.lat, a.lon, b.lat, b.lon)
+        area_diff = symmetric_relative_difference(a.basin_area, b.basin_area)
+        coordinate_pass = bool(np.isfinite(distance) and distance <= coordinate_tolerance_m)
+        if not np.isfinite(distance):
+            coordinate_pass = not (
+                np.isfinite(a.lat)
+                or np.isfinite(a.lon)
+                or np.isfinite(b.lat)
+                or np.isfinite(b.lon)
+            )
+        area_pass = bool(np.isfinite(area_diff) and area_diff <= basin_area_tolerance)
+        if not np.isfinite(area_diff):
+            area_pass = not (np.isfinite(a.basin_area) or np.isfinite(b.basin_area))
+        rows.append(
+            {
+                "comparison": comparison,
+                "cluster_uid": uid,
+                "lower_resolution": lower.resolution,
+                "higher_resolution": higher.resolution,
+                "coordinate_difference_m": distance,
+                "coordinate_pass": coordinate_pass,
+                "lower_lat": a.lat,
+                "lower_lon": a.lon,
+                "higher_lat": b.lat,
+                "higher_lon": b.lon,
+                "lower_basin_area_km2": a.basin_area,
+                "higher_basin_area_km2": b.basin_area,
+                "basin_area_relative_difference": area_diff,
+                "basin_area_pass": area_pass,
+                "lower_basin_status": a.basin_status,
+                "higher_basin_status": b.basin_status,
+                "basin_status_changed": clean_text(a.basin_status) != clean_text(b.basin_status),
+                "lower_station_name": a.station_name,
+                "higher_station_name": b.station_name,
+                "station_name_changed": clean_text(a.station_name) != clean_text(b.station_name),
+                "lower_river_name": a.river_name,
+                "higher_river_name": b.river_name,
+                "river_name_changed": clean_text(a.river_name) != clean_text(b.river_name),
+                "structural_pass": coordinate_pass and area_pass,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def period_labels(times: pd.DatetimeIndex, target_resolution: str) -> np.ndarray:
+    if target_resolution == "monthly":
+        return times.to_period("M").astype(str).to_numpy()
+    if target_resolution == "annual":
+        return times.year.astype("Int64").astype(str).to_numpy()
+    raise ValueError(f"Unsupported target resolution: {target_resolution}")
+
+
+def source_aggregation_methods(
+    source_resolution: str,
+    target_resolution: str,
+    monthly_weighting: str,
+) -> Tuple[str, ...]:
+    if source_resolution == "monthly" and target_resolution == "annual":
+        if monthly_weighting == "unweighted":
+            return ("unweighted_monthly_mean",)
+        if monthly_weighting == "days":
+            return ("days_weighted_monthly_mean",)
+        return ("unweighted_monthly_mean", "days_weighted_monthly_mean")
+    return ("arithmetic_mean",)
+
+
+def support_class(value: float, moderate_threshold: float, high_threshold: float) -> str:
+    if not np.isfinite(value):
+        return "unknown"
+    if value >= high_threshold:
+        return "high"
+    if value >= moderate_threshold:
+        return "moderate"
+    return "low"
+
+
+def derivation_class(flags: Sequence[int]) -> str:
+    values = sorted(set(int(value) for value in flags))
+    if values == [0]:
+        return "reported"
+    if values == [1]:
+        return "derived"
+    if values == [0, 1]:
+        return "mixed_reported_derived"
+    if not values:
+        return "unknown"
+    return "other"
+
+
+def join_unique(values: Iterable[str]) -> str:
+    cleaned = sorted({clean_text(value) for value in values if clean_text(value)})
+    return "||".join(cleaned)
+
+
+def provenance_payload(
+    uids: Sequence[str],
+    matrix_source_names: Sequence[str],
     resolution: str,
-    years: np.ndarray,
-    main_values: np.ndarray,
-    main_flags: np.ndarray,
-    selected_source_index: np.ndarray,
-    source_names: Sequence[str],
+    resolver: SourceCatalogResolver,
+) -> Dict[str, str]:
+    infos = []
+    for uid, matrix_source_name in zip(uids, matrix_source_names):
+        uid_clean = clean_text(uid)
+        source_clean = clean_text(matrix_source_name)
+        if not uid_clean and not source_clean:
+            continue
+        infos.append(resolver.resolve(uid_clean, resolution, source_clean))
+    return {
+        "source_station_uids": join_unique(info.source_station_uid for info in infos),
+        "source_names": join_unique(info.source_name for info in infos),
+        "canonical_source_keys": join_unique(info.canonical_key for info in infos),
+        "source_native_ids": join_unique(info.native_id for info in infos),
+    }
+
+
+def aggregate_group_value(values: np.ndarray, weights: np.ndarray, method: str) -> float:
+    if len(values) == 0:
+        return np.nan
+    if method == "days_weighted_monthly_mean":
+        valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+        if not np.any(valid):
+            return np.nan
+        return float(np.average(values[valid], weights=weights[valid]))
+    return float(np.nanmean(values))
+
+
+def aggregate_matrix_row(
+    row_data: Mapping[str, object],
+    matrix_resolution: str,
+    target_resolution: str,
     variable: str,
     allowed_flags: Sequence[int],
-    climatology_allowed_flags: Sequence[int],
-    min_overlap_years: int,
-    min_records_per_year: int,
-    allow_unknown_coverage: bool,
-) -> List[Dict]:
-    climate_value = anchor.get(variable, np.nan)
-    climate_flag = anchor.get(FLAG_VARIABLES[variable], 9)
-    if not np.isfinite(climate_value):
-        return []
-    try:
-        climate_flag = int(climate_flag)
-    except Exception:
-        climate_flag = 9
-    if climate_flag not in climatology_allowed_flags:
-        return []
-
-    start_year_raw = anchor.get("coverage_start_year")
-    end_year_raw = anchor.get("coverage_end_year")
-    start_year = int(start_year_raw) if pd.notna(start_year_raw) else None
-    end_year = int(end_year_raw) if pd.notna(end_year_raw) else None
-    coverage, period_status, effective_start, effective_end = _coverage_mask(
-        years, start_year, end_year, allow_unknown_coverage
-    )
-
-    base_valid = (
-        coverage
-        & np.isfinite(main_values)
-        & np.isin(main_flags, np.asarray(allowed_flags, dtype=np.int64))
-        & (selected_source_index >= 0)
-    )
-    if not np.any(base_valid):
-        return []
-
-    climate_source_canonical = canonical_source(anchor.get("climatology_source", ""))
-    valid_positions = np.where(base_valid)[0]
-    rows = []
-    for pos in valid_positions:
-        source_idx = int(selected_source_index[pos])
-        source = source_names[source_idx] if 0 <= source_idx < len(source_names) else ""
-        if not source:
-            continue
-        source_canonical = canonical_source(source)
-        if source_canonical and source_canonical == climate_source_canonical:
-            continue
-        rows.append(
-            {
-                "year": int(years[pos]),
-                "value": float(main_values[pos]),
-                "flag": int(main_flags[pos]),
-                "main_source": source,
-                "main_source_canonical": source_canonical,
-            }
-        )
-    if not rows:
-        return []
-
-    raw = pd.DataFrame(rows)
-    outputs: List[Dict] = []
-    for (source, source_canonical), source_df in raw.groupby(
-        ["main_source", "main_source_canonical"], dropna=False, sort=True
-    ):
-        annual = (
-            source_df.groupby("year", as_index=False)
-            .agg(
-                annual_mean=("value", "mean"),
-                records_in_year=("value", "size"),
-                derived_records_in_year=("flag", lambda x: int(np.count_nonzero(np.asarray(x) == 1))),
-            )
-        )
-        annual = annual[annual["records_in_year"] >= int(min_records_per_year)].copy()
-        if len(annual) < int(min_overlap_years):
-            continue
-
-        n_records = int(source_df[source_df["year"].isin(annual["year"])].shape[0])
-        if effective_start is not None and effective_end is not None and effective_end >= effective_start:
-            denominator = effective_end - effective_start + 1
-            overlap_fraction = float(len(annual) / denominator) if denominator > 0 else np.nan
-        else:
-            overlap_fraction = np.nan
-
-        source_flags = source_df[source_df["year"].isin(annual["year"])]["flag"].to_numpy(dtype=np.int64)
-        main_flag_class = "includes_derived" if np.any(source_flags == 1) else "reported_only"
-        climatology_flag_class = "derived" if climate_flag == 1 else "reported"
-        derivation_class = f"{climatology_flag_class}-{main_flag_class}"
-
-        output = anchor.to_dict()
-        output.update(
-            {
-                "resolution": resolution,
-                "variable": variable,
-                "climatology_value": float(climate_value),
-                "climatology_flag": climate_flag,
-                "main_source": clean_text(source),
-                "main_source_canonical": clean_text(source_canonical),
-                "main_aggregated_value": float(annual["annual_mean"].mean()),
-                "main_annual_sd": float(annual["annual_mean"].std(ddof=1)) if len(annual) > 1 else np.nan,
-                "main_annual_min": float(annual["annual_mean"].min()),
-                "main_annual_max": float(annual["annual_mean"].max()),
-                "n_overlap_years": int(len(annual)),
-                "first_overlap_year": int(annual["year"].min()),
-                "last_overlap_year": int(annual["year"].max()),
-                "n_main_records": n_records,
-                "median_records_per_year": float(annual["records_in_year"].median()),
-                "overlap_fraction": overlap_fraction,
-                "period_match_status": period_status,
-                "effective_period_start_year": effective_start,
-                "effective_period_end_year": effective_end,
-                "main_flag_class": main_flag_class,
-                "comparison_derivation_class": derivation_class,
-                "same_source_records_excluded": True,
-            }
-        )
-        outputs.append(output)
-    return outputs
-
-
-def build_source_specific_pairs(
-    anchors: pd.DataFrame,
-    matrix_paths: Mapping[str, Path],
-    allowed_flags: Sequence[int],
-    climatology_allowed_flags: Sequence[int],
-    min_overlap_years: int,
-    min_records_per_year: int,
-    allow_unknown_coverage: bool,
+    aggregation_method: str,
+    resolver: SourceCatalogResolver,
+    moderate_support_fraction: float,
+    high_support_fraction: float,
 ) -> pd.DataFrame:
-    outputs: List[Dict] = []
+    times = pd.DatetimeIndex(row_data["time"])
+    values = np.asarray(row_data["values"][variable], dtype=np.float64)
+    flags = np.asarray(row_data["flags"][variable], dtype=np.int16)
+    source_uids = np.asarray(row_data["source_station_uid"], dtype=object)
+    source_names = np.asarray(row_data["source_name"], dtype=object)
+    periods = period_labels(times, target_resolution)
 
-    for resolution, path in matrix_paths.items():
-        if not path.is_file():
-            continue
-        usable = anchors[anchors[f"selected_{resolution}_index"].notna()].copy()
-        if usable.empty:
-            log(f"No matched climatology records have a {resolution} matrix row")
-            continue
-        log(f"Building {resolution} period-matched comparisons for {len(usable)} climatology records")
-
-        with nc4.Dataset(path, "r") as ds:
-            years, _ = decode_time_values(ds)
-            source_names = _source_names_from_matrix(ds)
-            if "selected_source_index" not in ds.variables:
-                raise ValidationError(f"{path} does not contain selected_source_index")
-
-            grouped = usable.groupby("selected_main_station_uid", sort=False)
-            for station_counter, (station_uid, station_anchors) in enumerate(grouped, start=1):
-                if station_counter % 100 == 0:
-                    log(f"{resolution}: processed {station_counter}/{grouped.ngroups} matched stations")
-                row_idx = _matrix_row_index(station_anchors.iloc[0], resolution)
-                if row_idx is None:
-                    continue
-                selected_source_index = read_int(
-                    ds.variables["selected_source_index"], key=(row_idx, slice(None)), fill_value=-1
-                ).reshape(-1)
-                if len(selected_source_index) != len(years):
-                    raise ValidationError(
-                        f"{resolution} row length mismatch for {station_uid}: "
-                        f"source_index={len(selected_source_index)}, time={len(years)}"
-                    )
-
-                row_values: Dict[str, np.ndarray] = {}
-                row_flags: Dict[str, np.ndarray] = {}
-                for variable in VARIABLES:
-                    if variable not in ds.variables:
-                        row_values[variable] = np.full(len(years), np.nan)
-                    else:
-                        row_values[variable] = read_numeric(
-                            ds.variables[variable], key=(row_idx, slice(None))
-                        ).reshape(-1)
-                    flag_name = FLAG_VARIABLES[variable]
-                    if flag_name not in ds.variables:
-                        row_flags[variable] = np.full(len(years), 9, dtype=np.int64)
-                    else:
-                        row_flags[variable] = read_int(
-                            ds.variables[flag_name], key=(row_idx, slice(None)), fill_value=9
-                        ).reshape(-1)
-
-                for _, anchor in station_anchors.iterrows():
-                    for variable in VARIABLES:
-                        outputs.extend(
-                            aggregate_one_anchor_variable(
-                                anchor=anchor,
-                                resolution=resolution,
-                                years=years,
-                                main_values=row_values[variable],
-                                main_flags=row_flags[variable],
-                                selected_source_index=selected_source_index,
-                                source_names=source_names,
-                                variable=variable,
-                                allowed_flags=allowed_flags,
-                                climatology_allowed_flags=climatology_allowed_flags,
-                                min_overlap_years=min_overlap_years,
-                                min_records_per_year=min_records_per_year,
-                                allow_unknown_coverage=allow_unknown_coverage,
-                            )
-                        )
-
-    return pd.DataFrame(outputs)
-
-
-def select_resolution_pairs(source_specific: pd.DataFrame) -> pd.DataFrame:
-    if source_specific.empty:
-        return source_specific.copy()
-    work = source_specific.copy()
-    work["_source_rank"] = work["main_source"].astype(str)
-    sort_cols = [
-        "climatology_record_uid",
-        "selected_main_station_uid",
-        "variable",
-        "resolution",
-        "n_overlap_years",
-        "n_main_records",
-        "_source_rank",
-    ]
-    work = work.sort_values(
-        sort_cols,
-        ascending=[True, True, True, True, False, False, True],
+    valid = (
+        times.notna()
+        & np.isfinite(values)
+        & np.isin(flags, np.asarray(tuple(allowed_flags), dtype=np.int16))
     )
-    selected = work.drop_duplicates(
-        subset=["climatology_record_uid", "selected_main_station_uid", "variable", "resolution"],
-        keep="first",
-    ).drop(columns=["_source_rank"])
-    selected["main_source_selection_reason"] = "most valid overlap years, then most main records"
-    return selected.reset_index(drop=True)
+    if not np.any(valid):
+        return pd.DataFrame()
 
-
-def select_primary_pairs(resolution_pairs: pd.DataFrame) -> pd.DataFrame:
-    if resolution_pairs.empty:
-        return resolution_pairs.copy()
-    work = resolution_pairs.copy()
-    work["resolution_priority"] = work["resolution"].map(RESOLUTION_PRIORITY).fillna(0).astype(int)
-    work["_overlap_fraction_sort"] = work["overlap_fraction"].fillna(-1.0)
-    work = work.sort_values(
-        [
-            "climatology_record_uid",
-            "selected_main_station_uid",
-            "variable",
-            "n_overlap_years",
-            "_overlap_fraction_sort",
-            "resolution_priority",
-            "n_main_records",
-        ],
-        ascending=[True, True, True, False, False, False, False],
-    )
-    primary = work.drop_duplicates(
-        subset=["climatology_record_uid", "selected_main_station_uid", "variable"],
-        keep="first",
-    ).drop(columns=["_overlap_fraction_sort"])
-    primary["primary_resolution_selection_reason"] = (
-        "most overlap years, then greatest overlap fraction, then annual/monthly/daily priority"
-    )
-    return primary.reset_index(drop=True)
-
-
-def safe_corr(left: np.ndarray, right: np.ndarray) -> float:
-    if len(left) < 3:
-        return np.nan
-    if np.nanstd(left) == 0 or np.nanstd(right) == 0:
-        return np.nan
-    return float(np.corrcoef(left, right)[0, 1])
-
-
-def metric_row(group: pd.DataFrame, label_values: Mapping[str, str]) -> Dict:
-    x = pd.to_numeric(group["climatology_value"], errors="coerce").to_numpy(dtype=np.float64)
-    y = pd.to_numeric(group["main_aggregated_value"], errors="coerce").to_numpy(dtype=np.float64)
-    finite = np.isfinite(x) & np.isfinite(y)
-    x = x[finite]
-    y = y[finite]
-    positive = (x > 0) & (y > 0)
-    diff = y - x
-
-    row = dict(label_values)
-    row.update(
+    frame = pd.DataFrame(
         {
-            "n_pairs": int(len(x)),
-            "n_climatology_stations": int(group.loc[finite, "climatology_station_uid"].nunique()) if len(group) else 0,
-            "n_main_stations": int(group.loc[finite, "selected_main_station_uid"].nunique()) if len(group) else 0,
-            "bias_main_minus_climatology": float(np.mean(diff)) if len(diff) else np.nan,
-            "mae": float(np.mean(np.abs(diff))) if len(diff) else np.nan,
-            "rmse": float(np.sqrt(np.mean(diff ** 2))) if len(diff) else np.nan,
-            "median_distance_m": float(pd.to_numeric(group["selected_distance_m"], errors="coerce").median()),
-            "median_overlap_years": float(pd.to_numeric(group["n_overlap_years"], errors="coerce").median()),
-            "n_positive_pairs": int(np.count_nonzero(positive)),
+            "time": times[valid],
+            "period": periods[valid],
+            "value": values[valid],
+            "flag": flags[valid],
+            "source_station_uid": source_uids[valid],
+            "matrix_source_name": source_names[valid],
         }
     )
+    frame["days_in_month"] = frame["time"].dt.days_in_month.astype(float)
 
-    if np.count_nonzero(positive) >= 3:
-        log_x = np.log10(x[positive])
-        log_y = np.log10(y[positive])
-        rank_x = pd.Series(x[positive]).rank(method="average").to_numpy(dtype=np.float64)
-        rank_y = pd.Series(y[positive]).rank(method="average").to_numpy(dtype=np.float64)
-        ratio = y[positive] / x[positive]
-        row.update(
-            {
-                "spearman_rho": safe_corr(rank_x, rank_y),
-                "pearson_r_log10": safe_corr(log_x, log_y),
-                "median_log10_ratio": float(np.median(np.log10(ratio))),
-                "median_ratio_main_to_climatology": float(np.median(ratio)),
-                "within_factor_2_percent": float(np.mean((ratio >= 0.5) & (ratio <= 2.0)) * 100.0),
-                "within_factor_10_percent": float(np.mean((ratio >= 0.1) & (ratio <= 10.0)) * 100.0),
-            }
-        )
-    else:
-        row.update(
-            {
-                "spearman_rho": np.nan,
-                "pearson_r_log10": np.nan,
-                "median_log10_ratio": np.nan,
-                "median_ratio_main_to_climatology": np.nan,
-                "within_factor_2_percent": np.nan,
-                "within_factor_10_percent": np.nan,
-            }
-        )
-    return row
-
-
-def compute_summary_metrics(primary_pairs: pd.DataFrame) -> pd.DataFrame:
-    if primary_pairs.empty:
-        return pd.DataFrame()
-    rows: List[Dict] = []
-
-    for variable, group in primary_pairs.groupby("variable", sort=True):
-        rows.append(metric_row(group, {"summary_level": "overall", "variable": variable, "resolution": "all", "climatology_source": "all", "main_source": "all"}))
-
-    for (variable, resolution), group in primary_pairs.groupby(["variable", "resolution"], sort=True):
-        rows.append(metric_row(group, {"summary_level": "by_resolution", "variable": variable, "resolution": resolution, "climatology_source": "all", "main_source": "all"}))
-
-    for (variable, climate_source, main_source), group in primary_pairs.groupby(
-        ["variable", "climatology_source", "main_source"], sort=True, dropna=False
-    ):
-        rows.append(
-            metric_row(
-                group,
-                {
-                    "summary_level": "by_source_pair",
-                    "variable": variable,
-                    "resolution": "all",
-                    "climatology_source": clean_text(climate_source),
-                    "main_source": clean_text(main_source),
-                },
+    rows = []
+    for period, group in frame.groupby("period", sort=True):
+        group_values = group["value"].to_numpy(dtype=np.float64)
+        weights = group["days_in_month"].to_numpy(dtype=np.float64)
+        if aggregation_method == "days_weighted_monthly_mean":
+            monthly = (
+                group.assign(_month=group["time"].dt.to_period("M"))
+                .groupby("_month", sort=True)
+                .agg(value=("value", "mean"), days_in_month=("days_in_month", "first"))
             )
-        )
+            aggregated = aggregate_group_value(
+                monthly["value"].to_numpy(dtype=np.float64),
+                monthly["days_in_month"].to_numpy(dtype=np.float64),
+                aggregation_method,
+            )
+        else:
+            aggregated = aggregate_group_value(group_values, weights, aggregation_method)
+        if not np.isfinite(aggregated):
+            continue
 
+        unique_days = int(group["time"].dt.normalize().nunique())
+        unique_months = int(group["time"].dt.to_period("M").nunique())
+        if target_resolution == "monthly":
+            timestamp = pd.Period(period, freq="M").start_time
+            denominator = float(timestamp.days_in_month)
+            support = unique_days / denominator if denominator > 0 else np.nan
+        else:
+            year = int(period)
+            if matrix_resolution == "daily":
+                denominator = 366.0 if pd.Timestamp(year=year, month=12, day=31).is_leap_year else 365.0
+                support = unique_days / denominator
+            elif matrix_resolution == "monthly":
+                support = unique_months / 12.0
+            else:
+                support = np.nan
+
+        provenance = provenance_payload(
+            group["source_station_uid"].astype(str).tolist(),
+            group["matrix_source_name"].astype(str).tolist(),
+            matrix_resolution,
+            resolver,
+        )
+        rows.append(
+            {
+                "period": str(period),
+                "value": aggregated,
+                "n_records": int(len(group)),
+                "n_unique_days": unique_days,
+                "n_unique_months": unique_months,
+                "support_fraction": float(support) if np.isfinite(support) else np.nan,
+                "support_class": support_class(
+                    support,
+                    moderate_threshold=moderate_support_fraction,
+                    high_threshold=high_support_fraction,
+                ),
+                "flags_used": ",".join(str(value) for value in sorted(group["flag"].unique())),
+                "derivation_class": derivation_class(group["flag"].tolist()),
+                **provenance,
+            }
+        )
     return pd.DataFrame(rows)
 
 
-def build_funnel(
-    climatology_stations: pd.DataFrame,
-    climatology_records: pd.DataFrame,
-    candidates: pd.DataFrame,
-    selected_matches: pd.DataFrame,
-    anchors: pd.DataFrame,
-    source_specific_pairs: pd.DataFrame,
-    primary_pairs: pd.DataFrame,
-    exact_distance_m: float,
-    max_distance_m: float,
+def split_serialized(value: str) -> set:
+    return {token for token in clean_text(value).split("||") if token}
+
+
+def classify_provenance(lower_row: Mapping[str, object], higher_row: Mapping[str, object]) -> str:
+    lower_keys = split_serialized(lower_row.get("canonical_source_keys", ""))
+    higher_keys = split_serialized(higher_row.get("canonical_source_keys", ""))
+    lower_sources = split_serialized(lower_row.get("source_names", ""))
+    higher_sources = split_serialized(higher_row.get("source_names", ""))
+
+    if len(lower_keys) > 1 and len(higher_keys) > 1:
+        return "mixed_both_sources"
+    if len(lower_keys) > 1:
+        return "mixed_lower_sources"
+    if len(higher_keys) > 1:
+        return "mixed_higher_sources"
+    if len(lower_keys) == 1 and len(higher_keys) == 1:
+        if lower_keys == higher_keys:
+            return "same_source_station"
+        if lower_sources and higher_sources and lower_sources.intersection(higher_sources):
+            return "same_source_dataset_different_station"
+        if lower_sources and higher_sources and lower_sources.isdisjoint(higher_sources):
+            return "different_source_dataset"
+        return "different_or_unresolved_source_station"
+    if lower_sources and higher_sources:
+        if lower_sources.intersection(higher_sources):
+            return "same_source_dataset_unresolved_station"
+        return "different_source_dataset"
+    return "unknown_provenance"
+
+
+def pair_aggregates(
+    comparison: str,
+    cluster_uid: str,
+    lower_resolution: str,
+    higher_resolution: str,
+    variable: str,
+    flag_mode: str,
+    aggregation_method: str,
+    lower: pd.DataFrame,
+    higher: pd.DataFrame,
 ) -> pd.DataFrame:
-    valid_coords = np.isfinite(climatology_stations["climatology_lat"]) & np.isfinite(climatology_stations["climatology_lon"])
-    primary_candidate_uids = set(
-        candidates.loc[candidates["distance_m"] <= max_distance_m, "climatology_station_uid"].astype(str)
-    ) if not candidates.empty else set()
-    exact_candidate_uids = set(
-        candidates.loc[candidates["distance_m"] <= exact_distance_m, "climatology_station_uid"].astype(str)
-    ) if not candidates.empty else set()
+    if lower.empty or higher.empty:
+        return pd.DataFrame()
+    merged = lower.merge(higher, on="period", how="inner", suffixes=("_lower", "_higher"))
+    if merged.empty:
+        return pd.DataFrame()
 
-    rows = [
-        ("climatology_stations_total", len(climatology_stations), "unique climatology stations"),
-        ("climatology_records_with_ssc_or_ssl", len(climatology_records), "record-level climatology observations"),
-        ("climatology_stations_valid_coordinates", int(valid_coords.sum()), "finite WGS84 coordinates"),
-        ("stations_with_exact_candidate", len(exact_candidate_uids), f"at least one main cluster within {exact_distance_m:g} m"),
-        ("stations_with_primary_candidate", len(primary_candidate_uids), f"at least one main cluster within {max_distance_m:g} m"),
-        ("stations_selected_unique_match", int((selected_matches["match_status"] == "selected").sum()), "selected after ambiguity screening"),
-        ("stations_ambiguous", int((selected_matches["match_status"] == "ambiguous").sum()), "not uniquely distinguishable"),
-        ("selected_records_joined_to_main_cluster", len(anchors), "climatology records at selected stations"),
-        ("selected_records_known_coverage", int((anchors["coverage_status"] == "known").sum()) if len(anchors) else 0, "both coverage start and end resolved"),
-        ("source_specific_valid_pairs", len(source_specific_pairs), "variable-resolution-source pairs meeting overlap criteria"),
-        ("primary_valid_pairs", len(primary_pairs), "one primary resolution per climatology record, cluster and variable"),
-        ("primary_ssc_pairs", int((primary_pairs.get("variable", pd.Series(dtype=str)) == "SSC").sum()), "primary SSC pairs"),
-        ("primary_ssl_pairs", int((primary_pairs.get("variable", pd.Series(dtype=str)) == "SSL").sum()), "primary SSL pairs"),
-    ]
-    return pd.DataFrame(rows, columns=["stage", "count", "definition"])
-
-
-def format_number(value, digits: int = 3) -> str:
-    try:
-        if pd.isna(value):
-            return "NA"
-        return f"{float(value):.{digits}f}"
-    except Exception:
-        return "NA"
-
-
-def write_markdown_report(
-    path: Path,
-    args,
-    input_paths: Mapping[str, Path],
-    funnel: pd.DataFrame,
-    metrics: pd.DataFrame,
-) -> None:
-    lines = [
-        "# Main matrix - climatology cross-source comparison",
-        "",
-        "## Purpose",
-        "",
-        "This diagnostic links spatially coincident or nearby climatology stations to main-matrix clusters, excludes main-matrix records selected from the same source dataset, and compares period-matched long-term SSC and SSL estimates.",
-        "",
-        "Climatology time coordinates are not used as exact observation dates. The script uses source coverage years when available, first averages main-matrix observations within each calendar year, and then averages the resulting annual means across overlapping years.",
-        "",
-        "## Inputs",
-        "",
-    ]
-    for key, value in input_paths.items():
-        lines.append(f"- **{key}**: `{value}`")
-
-    lines.extend(
-        [
-            "",
-            "## Configuration",
-            "",
-            f"- Exact-coordinate threshold: {args.exact_distance_m:g} m",
-            f"- Primary nearby threshold: {args.max_distance_m:g} m",
-            f"- Sensitivity candidate threshold: {args.sensitivity_distance_m:g} m",
-            f"- Main allowed flags: {','.join(map(str, args.allowed_flags))}",
-            f"- Climatology allowed flags: {','.join(map(str, args.climatology_allowed_flags))}",
-            f"- Minimum valid overlap years: {args.min_overlap_years}",
-            f"- Minimum records per year: {args.min_records_per_year}",
-            f"- Unknown coverage allowed: {args.allow_unknown_coverage}",
-            f"- Resolved main clusters only: {args.resolved_main_only}",
-            f"- Name support required for non-exact matches: {args.require_name_support_for_near}",
-            "",
-            "## Match funnel",
-            "",
-            "| Stage | Count | Definition |",
-            "|---|---:|---|",
-        ]
-    )
-    for _, row in funnel.iterrows():
-        lines.append(f"| {row['stage']} | {int(row['count'])} | {row['definition']} |")
-
-    lines.extend(["", "## Overall metrics", ""])
-    overall = metrics[metrics["summary_level"] == "overall"] if not metrics.empty else pd.DataFrame()
-    if overall.empty:
-        lines.append("No primary SSC or SSL pairs met the configured spatial, source-independence, quality, and temporal-overlap criteria.")
-    else:
-        lines.extend(
-            [
-                "| Variable | n | Spearman rho | Pearson r (log10) | Median main/climatology ratio | Within factor 2 (%) | RMSE |",
-                "|---|---:|---:|---:|---:|---:|---:|",
-            ]
-        )
-        for _, row in overall.iterrows():
-            lines.append(
-                "| {variable} | {n} | {rho} | {pearson} | {ratio} | {factor2} | {rmse} |".format(
-                    variable=row["variable"],
-                    n=int(row["n_pairs"]),
-                    rho=format_number(row["spearman_rho"]),
-                    pearson=format_number(row["pearson_r_log10"]),
-                    ratio=format_number(row["median_ratio_main_to_climatology"]),
-                    factor2=format_number(row["within_factor_2_percent"], 1),
-                    rmse=format_number(row["rmse"]),
-                )
-            )
-
-    lines.extend(
-        [
-            "",
-            "## Interpretation notes",
-            "",
-            "- A selected pair indicates spatial coincidence or proximity, not proof that both products represent the identical physical gauge or cross-section.",
-            "- Each primary point uses one independent main-matrix source. Records whose selected source canonicalizes to the climatology source are excluded before aggregation.",
-            "- Daily, monthly, and annual matrices are processed separately. The primary table selects one resolution after source-specific aggregation; all retained alternatives remain in the resolution-level table.",
-            "- SSL remains in the release unit of t d-1. Daily SSL is averaged within year rather than summed, preserving comparability with standardized climatology SSL.",
-            "- Scatter plots and ratio metrics use positive finite values only. Zero values remain in the pair tables and raw-unit metrics.",
-            "",
-        ]
-    )
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def plot_pairs(primary_pairs: pd.DataFrame, png_path: Path, pdf_path: Path) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as exc:
-        log(f"Skipping plots because matplotlib is unavailable: {exc}")
-        return
-
-    if primary_pairs.empty:
-        log("No primary pairs to plot; skipping figure generation")
-        return
-
-    variables_present = [var for var in VARIABLES if var in set(primary_pairs.get("variable", []))]
-    if not variables_present:
-        variables_present = list(VARIABLES)
-    fig, axes = plt.subplots(1, len(variables_present), figsize=(6.4 * len(variables_present), 5.4), squeeze=False)
-    marker_by_resolution = {"daily": "o", "monthly": "s", "annual": "^"}
-
-    for axis, variable in zip(axes[0], variables_present):
-        subset = primary_pairs[primary_pairs.get("variable", pd.Series(dtype=str)) == variable].copy()
-        subset = subset[
-            np.isfinite(pd.to_numeric(subset.get("climatology_value"), errors="coerce"))
-            & np.isfinite(pd.to_numeric(subset.get("main_aggregated_value"), errors="coerce"))
-            & (pd.to_numeric(subset.get("climatology_value"), errors="coerce") > 0)
-            & (pd.to_numeric(subset.get("main_aggregated_value"), errors="coerce") > 0)
-        ]
-        if subset.empty:
-            axis.text(0.5, 0.5, f"No positive {variable} pairs", ha="center", va="center", transform=axis.transAxes)
-            axis.set_axis_off()
+    rows = []
+    for row in merged.to_dict(orient="records"):
+        lower_value = numeric_or_nan(row.get("value_lower"))
+        higher_value = numeric_or_nan(row.get("value_higher"))
+        if not np.isfinite(lower_value) or not np.isfinite(higher_value):
             continue
+        provenance_class = classify_provenance(
+            {
+                "canonical_source_keys": row.get("canonical_source_keys_lower", ""),
+                "source_names": row.get("source_names_lower", ""),
+            },
+            {
+                "canonical_source_keys": row.get("canonical_source_keys_higher", ""),
+                "source_names": row.get("source_names_higher", ""),
+            },
+        )
+        difference = lower_value - higher_value
+        ratio = np.nan
+        log_ratio = np.nan
+        if lower_value > 0 and higher_value > 0:
+            ratio = lower_value / higher_value
+            log_ratio = math.log10(ratio)
+        rows.append(
+            {
+                "comparison": comparison,
+                "cluster_uid": cluster_uid,
+                "lower_resolution": lower_resolution,
+                "higher_resolution": higher_resolution,
+                "period": row["period"],
+                "variable": variable,
+                "flag_mode": flag_mode,
+                "aggregation_method": aggregation_method,
+                "lower_aggregated_value": lower_value,
+                "higher_matrix_value": higher_value,
+                "difference_lower_minus_higher": difference,
+                "absolute_difference": abs(difference),
+                "ratio_lower_over_higher": ratio,
+                "log10_ratio_lower_over_higher": log_ratio,
+                "n_lower_records": int(row.get("n_records_lower", 0)),
+                "n_lower_unique_days": int(row.get("n_unique_days_lower", 0)),
+                "n_lower_unique_months": int(row.get("n_unique_months_lower", 0)),
+                "lower_support_fraction": numeric_or_nan(row.get("support_fraction_lower")),
+                "lower_support_class": clean_text(row.get("support_class_lower", "unknown")),
+                "n_higher_records": int(row.get("n_records_higher", 0)),
+                "lower_flags_used": clean_text(row.get("flags_used_lower", "")),
+                "higher_flags_used": clean_text(row.get("flags_used_higher", "")),
+                "lower_derivation_class": clean_text(row.get("derivation_class_lower", "")),
+                "higher_derivation_class": clean_text(row.get("derivation_class_higher", "")),
+                "lower_source_station_uids": clean_text(row.get("source_station_uids_lower", "")),
+                "higher_source_station_uids": clean_text(row.get("source_station_uids_higher", "")),
+                "lower_source_names": clean_text(row.get("source_names_lower", "")),
+                "higher_source_names": clean_text(row.get("source_names_higher", "")),
+                "lower_source_native_ids": clean_text(row.get("source_native_ids_lower", "")),
+                "higher_source_native_ids": clean_text(row.get("source_native_ids_higher", "")),
+                "lower_canonical_source_keys": clean_text(
+                    row.get("canonical_source_keys_lower", "")
+                ),
+                "higher_canonical_source_keys": clean_text(
+                    row.get("canonical_source_keys_higher", "")
+                ),
+                "provenance_class": provenance_class,
+                "derivation_pair_class": (
+                    f"{clean_text(row.get('derivation_class_lower', 'unknown'))}--"
+                    f"{clean_text(row.get('derivation_class_higher', 'unknown'))}"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
 
-        for resolution, group in subset.groupby("resolution", sort=True):
-            axis.scatter(
-                group["climatology_value"],
-                group["main_aggregated_value"],
-                marker=marker_by_resolution.get(resolution, "o"),
-                alpha=0.65,
-                s=34,
-                label=f"{resolution} (n={len(group)})",
+
+def safe_pearson(x: np.ndarray, y: np.ndarray) -> float:
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) < 2 or np.nanstd(x) == 0 or np.nanstd(y) == 0:
+        return np.nan
+    if scipy_stats is not None:
+        try:
+            return float(scipy_stats.pearsonr(x, y).statistic)
+        except Exception:
+            pass
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def safe_spearman(x: np.ndarray, y: np.ndarray) -> float:
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) < 2 or np.nanstd(x) == 0 or np.nanstd(y) == 0:
+        return np.nan
+    if scipy_stats is not None:
+        try:
+            return float(scipy_stats.spearmanr(x, y).statistic)
+        except Exception:
+            pass
+    return float(pd.Series(x).corr(pd.Series(y), method="spearman"))
+
+
+def metric_values(frame: pd.DataFrame) -> Dict[str, float]:
+    if frame.empty:
+        return {
+            "n_pairs": 0,
+            "n_clusters": 0,
+            "pearson_r": np.nan,
+            "spearman_rho": np.nan,
+            "bias": np.nan,
+            "mae": np.nan,
+            "rmse": np.nan,
+            "median_ratio": np.nan,
+            "median_log10_ratio": np.nan,
+            "factor_2_fraction": np.nan,
+            "factor_10_fraction": np.nan,
+            "n_positive_pairs": 0,
+        }
+    x = pd.to_numeric(frame["higher_matrix_value"], errors="coerce").to_numpy(dtype=float)
+    y = pd.to_numeric(frame["lower_aggregated_value"], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) == 0:
+        return metric_values(pd.DataFrame())
+    diff = y - x
+    positive = (x > 0) & (y > 0)
+    ratios = y[positive] / x[positive]
+    log_ratios = np.log10(ratios) if len(ratios) else np.array([], dtype=float)
+    return {
+        "n_pairs": int(len(x)),
+        "n_clusters": int(frame.loc[valid, "cluster_uid"].nunique()),
+        "pearson_r": safe_pearson(x, y),
+        "spearman_rho": safe_spearman(x, y),
+        "bias": float(np.mean(diff)),
+        "mae": float(np.mean(np.abs(diff))),
+        "rmse": float(np.sqrt(np.mean(diff**2))),
+        "median_ratio": float(np.median(ratios)) if len(ratios) else np.nan,
+        "median_log10_ratio": float(np.median(log_ratios)) if len(log_ratios) else np.nan,
+        "factor_2_fraction": (
+            float(np.mean((ratios >= 0.5) & (ratios <= 2.0))) if len(ratios) else np.nan
+        ),
+        "factor_10_fraction": (
+            float(np.mean((ratios >= 0.1) & (ratios <= 10.0))) if len(ratios) else np.nan
+        ),
+        "n_positive_pairs": int(len(ratios)),
+    }
+
+
+def summary_group_frames(pair_values: pd.DataFrame):
+    base_cols = ["comparison", "variable", "flag_mode", "aggregation_method"]
+    for key, group in pair_values.groupby(base_cols, dropna=False, sort=True):
+        key_dict = dict(zip(base_cols, key if isinstance(key, tuple) else (key,)))
+        yield "overall", key_dict, group
+        for provenance, sub in group.groupby("provenance_class", dropna=False, sort=True):
+            yield "provenance", {**key_dict, "provenance_class": provenance}, sub
+        for support, sub in group.groupby("lower_support_class", dropna=False, sort=True):
+            yield "support", {**key_dict, "lower_support_class": support}, sub
+        for (provenance, support), sub in group.groupby(
+            ["provenance_class", "lower_support_class"], dropna=False, sort=True
+        ):
+            yield (
+                "provenance_support",
+                {
+                    **key_dict,
+                    "provenance_class": provenance,
+                    "lower_support_class": support,
+                },
+                sub,
             )
 
-        values = np.concatenate(
-            [
-                subset["climatology_value"].to_numpy(dtype=np.float64),
-                subset["main_aggregated_value"].to_numpy(dtype=np.float64),
+
+def build_summary_metrics(pair_values: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if pair_values.empty:
+        return pd.DataFrame()
+    for scope, keys, group in summary_group_frames(pair_values):
+        rows.append(
+            {
+                "scope": scope,
+                **keys,
+                "provenance_class": keys.get("provenance_class", "all"),
+                "lower_support_class": keys.get("lower_support_class", "all"),
+                **metric_values(group),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def cluster_balanced_frame(group: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for cluster_uid, sub in group.groupby("cluster_uid", sort=True):
+        lower = pd.to_numeric(sub["lower_aggregated_value"], errors="coerce")
+        higher = pd.to_numeric(sub["higher_matrix_value"], errors="coerce")
+        valid = lower.notna() & higher.notna()
+        if not valid.any():
+            continue
+        rows.append(
+            {
+                "cluster_uid": cluster_uid,
+                "lower_aggregated_value": float(lower[valid].median()),
+                "higher_matrix_value": float(higher[valid].median()),
+                "n_period_pairs": int(valid.sum()),
+                "lower_support_fraction": float(
+                    pd.to_numeric(sub.loc[valid, "lower_support_fraction"], errors="coerce").median()
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def bootstrap_cluster_metrics(
+    cluster_frame: pd.DataFrame,
+    reps: int,
+    rng: np.random.Generator,
+) -> Dict[str, float]:
+    metric_names = ("bias", "mae", "rmse", "spearman_rho", "median_log10_ratio")
+    output = {f"{name}_ci_low": np.nan for name in metric_names}
+    output.update({f"{name}_ci_high": np.nan for name in metric_names})
+    if reps <= 0 or len(cluster_frame) < 2:
+        return output
+    samples: Dict[str, List[float]] = {name: [] for name in metric_names}
+    n = len(cluster_frame)
+    for _ in range(reps):
+        indices = rng.integers(0, n, size=n)
+        sampled = cluster_frame.iloc[indices].copy()
+        sampled["cluster_uid"] = [f"boot_{i}" for i in range(len(sampled))]
+        metrics = metric_values(sampled)
+        for name in metric_names:
+            value = metrics.get(name, np.nan)
+            if np.isfinite(value):
+                samples[name].append(float(value))
+    for name, values in samples.items():
+        if values:
+            output[f"{name}_ci_low"] = float(np.quantile(values, 0.025))
+            output[f"{name}_ci_high"] = float(np.quantile(values, 0.975))
+    return output
+
+
+def build_cluster_balanced_metrics(
+    pair_values: pd.DataFrame,
+    bootstrap_reps: int,
+    random_seed: int,
+) -> pd.DataFrame:
+    rows = []
+    rng = np.random.default_rng(random_seed)
+    if pair_values.empty:
+        return pd.DataFrame()
+    for scope, keys, group in summary_group_frames(pair_values):
+        cluster_frame = cluster_balanced_frame(group)
+        metrics = metric_values(cluster_frame) if not cluster_frame.empty else metric_values(pd.DataFrame())
+        rows.append(
+            {
+                "scope": scope,
+                **keys,
+                "provenance_class": keys.get("provenance_class", "all"),
+                "lower_support_class": keys.get("lower_support_class", "all"),
+                "n_original_period_pairs": int(len(group)),
+                **metrics,
+                **bootstrap_cluster_metrics(cluster_frame, bootstrap_reps, rng),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_source_pair_summary(pair_values: pd.DataFrame) -> pd.DataFrame:
+    if pair_values.empty:
+        return pd.DataFrame()
+    group_cols = [
+        "comparison",
+        "variable",
+        "flag_mode",
+        "aggregation_method",
+        "lower_source_names",
+        "higher_source_names",
+        "provenance_class",
+    ]
+    rows = []
+    for keys, group in pair_values.groupby(group_cols, dropna=False, sort=True):
+        key_dict = dict(zip(group_cols, keys if isinstance(keys, tuple) else (keys,)))
+        rows.append({**key_dict, **metric_values(group)})
+    return pd.DataFrame(rows)
+
+
+def primary_method(comparison: str) -> str:
+    if comparison == "monthly_annual":
+        return "unweighted_monthly_mean"
+    return "arithmetic_mean"
+
+
+def finite_text(value: float, digits: int = 3) -> str:
+    return f"{value:.{digits}f}" if np.isfinite(value) else "NA"
+
+
+def downsample(frame: pd.DataFrame, max_points: int, seed: int) -> pd.DataFrame:
+    if len(frame) <= max_points:
+        return frame
+    return frame.sample(n=max_points, random_state=seed)
+
+
+def plot_cross_resolution_scatter(
+    pair_values: pd.DataFrame,
+    out_png: Path,
+    out_pdf: Path,
+    flag_mode: str,
+    max_points: int,
+    random_seed: int,
+) -> None:
+    plt = _import_pyplot()
+    if plt is None:
+        return
+    comparisons = [spec[0] for spec in COMPARISON_SPECS]
+    labels = {
+        "daily_monthly": "Daily → monthly",
+        "daily_annual": "Daily → annual",
+        "monthly_annual": "Monthly → annual",
+    }
+    units = {"Q": "m³ s⁻¹", "SSC": "mg L⁻¹", "SSL": "t d⁻¹"}
+    fig, axes = plt.subplots(3, 3, figsize=(13.2, 12.2), constrained_layout=True)
+    legend_handles = None
+
+    for row_idx, variable in enumerate(VARIABLES):
+        for col_idx, comparison in enumerate(comparisons):
+            ax = axes[row_idx, col_idx]
+            subset = pair_values[
+                (pair_values["comparison"] == comparison)
+                & (pair_values["variable"] == variable)
+                & (pair_values["flag_mode"] == flag_mode)
+                & (pair_values["aggregation_method"] == primary_method(comparison))
+            ].copy()
+            subset = subset[
+                (pd.to_numeric(subset["higher_matrix_value"], errors="coerce") > 0)
+                & (pd.to_numeric(subset["lower_aggregated_value"], errors="coerce") > 0)
             ]
-        )
-        lower = 10 ** math.floor(math.log10(values.min()))
-        upper = 10 ** math.ceil(math.log10(values.max()))
-        if lower == upper:
-            lower /= 10.0
-            upper *= 10.0
-        line = np.logspace(math.log10(lower), math.log10(upper), 200)
-        axis.plot(line, line, linestyle="--", linewidth=1.2, label="1:1")
-        axis.plot(line, 2.0 * line, linestyle=":", linewidth=0.9)
-        axis.plot(line, 0.5 * line, linestyle=":", linewidth=0.9)
-        axis.plot(line, 10.0 * line, linestyle="-.", linewidth=0.7)
-        axis.plot(line, 0.1 * line, linestyle="-.", linewidth=0.7)
-        axis.set_xscale("log")
-        axis.set_yscale("log")
-        axis.set_xlim(lower, upper)
-        axis.set_ylim(lower, upper)
-        units = "mg L-1" if variable == "SSC" else "t d-1"
-        axis.set_xlabel(f"Climatology {variable} ({units})")
-        axis.set_ylabel(f"Main-matrix long-term mean {variable} ({units})")
-        axis.set_title(variable)
-        axis.grid(True, which="both", linewidth=0.4, alpha=0.35)
+            if subset.empty:
+                ax.text(0.5, 0.5, "No positive paired values", ha="center", va="center")
+                ax.set_axis_off()
+                continue
 
-        rank_x = subset["climatology_value"].rank().to_numpy(dtype=np.float64)
-        rank_y = subset["main_aggregated_value"].rank().to_numpy(dtype=np.float64)
-        rho = safe_corr(rank_x, rank_y)
-        ratio = np.median(
-            subset["main_aggregated_value"].to_numpy(dtype=np.float64)
-            / subset["climatology_value"].to_numpy(dtype=np.float64)
-        )
-        axis.text(
-            0.03,
-            0.97,
-            f"n = {len(subset)}\nSpearman rho = {format_number(rho)}\nMedian ratio = {format_number(ratio)}",
-            ha="left",
-            va="top",
-            transform=axis.transAxes,
-        )
-        axis.legend(loc="lower right", fontsize=8)
+            plotted = downsample(subset, max_points=max_points, seed=random_seed + row_idx * 10 + col_idx)
+            independent = plotted["provenance_class"].eq("different_source_dataset")
+            h1 = ax.scatter(
+                plotted.loc[~independent, "higher_matrix_value"],
+                plotted.loc[~independent, "lower_aggregated_value"],
+                s=9,
+                alpha=0.24,
+                linewidths=0,
+                label="Same/mixed source",
+            )
+            h2 = ax.scatter(
+                plotted.loc[independent, "higher_matrix_value"],
+                plotted.loc[independent, "lower_aggregated_value"],
+                s=16,
+                alpha=0.72,
+                linewidths=0,
+                label="Different source datasets",
+            )
+            legend_handles = (h1, h2)
 
-    fig.tight_layout()
-    fig.savefig(png_path, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
+            x = pd.to_numeric(subset["higher_matrix_value"], errors="coerce").to_numpy(float)
+            y = pd.to_numeric(subset["lower_aggregated_value"], errors="coerce").to_numpy(float)
+            combined = np.concatenate([x[np.isfinite(x)], y[np.isfinite(y)]])
+            low = 10 ** math.floor(math.log10(np.nanmin(combined)))
+            high = 10 ** math.ceil(math.log10(np.nanmax(combined)))
+            if low == high:
+                low /= 10.0
+                high *= 10.0
+            line = np.geomspace(low, high, 200)
+            ax.plot(line, line, linestyle="--", linewidth=1.0, label="1:1")
+            ax.plot(line, line * 2.0, linestyle=":", linewidth=0.8)
+            ax.plot(line, line / 2.0, linestyle=":", linewidth=0.8)
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_xlim(low, high)
+            ax.set_ylim(low, high)
+            ax.grid(True, which="both", linewidth=0.35, alpha=0.35)
+
+            metrics = metric_values(subset)
+            n_independent = int(
+                subset["provenance_class"].eq("different_source_dataset").sum()
+            )
+            annotation = (
+                f"n={metrics['n_pairs']:,}; clusters={metrics['n_clusters']:,}\n"
+                f"different-source n={n_independent:,}\n"
+                f"ρ={finite_text(metrics['spearman_rho'])}; "
+                f"median ratio={finite_text(metrics['median_ratio'], 2)}"
+            )
+            ax.text(
+                0.03,
+                0.97,
+                annotation,
+                transform=ax.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8.5,
+                bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "alpha": 0.78, "edgecolor": "none"},
+            )
+            if row_idx == 0:
+                ax.set_title(labels[comparison])
+            if row_idx == 2:
+                ax.set_xlabel(f"Coarser matrix {variable} ({units[variable]})")
+            if col_idx == 0:
+                ax.set_ylabel(f"Aggregated finer matrix {variable} ({units[variable]})")
+            ax.text(
+                0.01,
+                1.02,
+                f"({chr(97 + row_idx * 3 + col_idx)})",
+                transform=ax.transAxes,
+                fontweight="bold",
+            )
+
+    if legend_handles is not None:
+        fig.legend(
+            legend_handles,
+            ["Same/mixed source", "Different source datasets"],
+            loc="upper center",
+            ncol=2,
+            frameon=False,
+        )
+    fig.suptitle(
+        f"Cross-resolution consistency of main station-reference matrices ({flag_mode})",
+        y=1.015,
+        fontsize=14,
+    )
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(out_pdf, bbox_inches="tight")
     plt.close(fig)
 
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release-dir", default=str(DEFAULT_RELEASE_DIR), help="Directory containing released NetCDF files")
-    parser.add_argument("--climatology-file", default=None, help="Override climatology NetCDF path")
-    parser.add_argument("--daily-file", default=None, help="Override daily matrix path")
-    parser.add_argument("--monthly-file", default=None, help="Override monthly matrix path")
-    parser.add_argument("--annual-file", default=None, help="Override annual matrix path")
-    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Output directory")
-    parser.add_argument("--exact-distance-m", type=float, default=100.0, help="Coordinate-exact distance threshold")
-    parser.add_argument("--max-distance-m", type=float, default=1000.0, help="Primary nearby distance threshold")
-    parser.add_argument("--sensitivity-distance-m", type=float, default=5000.0, help="Candidate audit distance threshold")
-    parser.add_argument("--name-similarity-threshold", type=float, default=0.85, help="Station/river name support threshold")
-    parser.add_argument("--ambiguity-distance-gap-m", type=float, default=100.0, help="Minimum top-two distance gap for unique nearest selection")
-    parser.add_argument("--ambiguity-distance-ratio", type=float, default=1.5, help="Minimum second/first distance ratio for unique nearest selection")
-    parser.add_argument("--allowed-flags", type=parse_flag_list, default=(0, 1), help="Allowed main-matrix flags, comma separated")
-    parser.add_argument("--climatology-allowed-flags", type=parse_flag_list, default=(0, 1), help="Allowed climatology flags, comma separated")
-    parser.add_argument("--min-overlap-years", type=int, default=3, help="Minimum valid annual means for a source-specific pair")
-    parser.add_argument("--min-records-per-year", type=int, default=1, help="Minimum valid records required to retain a year")
-    parser.add_argument("--allow-unknown-coverage", action="store_true", help="Use all main-matrix years when climatology coverage is unknown")
-    parser.add_argument("--resolved-main-only", action="store_true", help="Restrict candidate main clusters to resolved basin assignments")
-    parser.add_argument("--require-name-support-for-near", action="store_true", help="Require station or river name support for matches beyond exact threshold")
-    parser.add_argument("--no-plots", action="store_true", help="Do not generate PNG/PDF scatter plots")
-    parser.add_argument("--overwrite", action="store_true", help="Allow replacement of existing outputs")
+def plot_support_sensitivity(
+    pair_values: pd.DataFrame,
+    out_png: Path,
+    flag_mode: str,
+    max_points: int,
+    random_seed: int,
+) -> None:
+    plt = _import_pyplot()
+    if plt is None:
+        return
+    comparisons = [spec[0] for spec in COMPARISON_SPECS]
+    labels = {
+        "daily_monthly": "Daily → monthly",
+        "daily_annual": "Daily → annual",
+        "monthly_annual": "Monthly → annual",
+    }
+    fig, axes = plt.subplots(3, 3, figsize=(13.2, 11.5), constrained_layout=True)
+    for row_idx, variable in enumerate(VARIABLES):
+        for col_idx, comparison in enumerate(comparisons):
+            ax = axes[row_idx, col_idx]
+            subset = pair_values[
+                (pair_values["comparison"] == comparison)
+                & (pair_values["variable"] == variable)
+                & (pair_values["flag_mode"] == flag_mode)
+                & (pair_values["aggregation_method"] == primary_method(comparison))
+            ].copy()
+            support = pd.to_numeric(subset["lower_support_fraction"], errors="coerce")
+            log_ratio = pd.to_numeric(
+                subset["log10_ratio_lower_over_higher"], errors="coerce"
+            ).abs()
+            subset = subset[support.notna() & log_ratio.notna()].copy()
+            if subset.empty:
+                ax.text(0.5, 0.5, "No log-ratio support pairs", ha="center", va="center")
+                ax.set_axis_off()
+                continue
+            subset["_support"] = pd.to_numeric(
+                subset["lower_support_fraction"], errors="coerce"
+            )
+            subset["_abs_log_ratio"] = pd.to_numeric(
+                subset["log10_ratio_lower_over_higher"], errors="coerce"
+            ).abs()
+            plotted = downsample(subset, max_points, random_seed + 100 + row_idx * 10 + col_idx)
+            ax.scatter(plotted["_support"], plotted["_abs_log_ratio"], s=9, alpha=0.25, linewidths=0)
+
+            bins = np.linspace(0.0, 1.0, 11)
+            subset["_bin"] = pd.cut(subset["_support"], bins=bins, include_lowest=True)
+            medians = subset.groupby("_bin", observed=True)["_abs_log_ratio"].median()
+            centers = [interval.mid for interval in medians.index]
+            ax.plot(centers, medians.values, marker="o", linewidth=1.2, label="Bin median")
+            ax.axhline(math.log10(2.0), linestyle=":", linewidth=0.9)
+            ax.set_xlim(-0.02, 1.02)
+            ax.grid(True, linewidth=0.35, alpha=0.35)
+            if row_idx == 0:
+                ax.set_title(labels[comparison])
+            if row_idx == 2:
+                ax.set_xlabel("Finer-product observation support fraction")
+            if col_idx == 0:
+                ax.set_ylabel(f"|log₁₀ ratio| ({variable})")
+            ax.text(
+                0.01,
+                1.02,
+                f"({chr(97 + row_idx * 3 + col_idx)})",
+                transform=ax.transAxes,
+                fontweight="bold",
+            )
+    fig.suptitle(
+        f"Cross-resolution disagreement versus observation support ({flag_mode})",
+        y=1.015,
+        fontsize=14,
+    )
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def markdown_table(frame: pd.DataFrame, max_rows: int = 30) -> str:
+    if frame is None or frame.empty:
+        return "_No rows._"
+    display = frame.head(max_rows).copy()
+    for column in display.columns:
+        if pd.api.types.is_float_dtype(display[column]):
+            display[column] = display[column].map(
+                lambda value: "" if pd.isna(value) else f"{value:.4g}"
+            )
+    headers = [str(column) for column in display.columns]
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for _, row in display.iterrows():
+        values = [clean_text(row[column]).replace("|", "\\|") for column in display.columns]
+        lines.append("| " + " | ".join(values) + " |")
+    if len(frame) > max_rows:
+        lines.append(f"\n_Showing {max_rows} of {len(frame)} rows._")
+    return "\n".join(lines)
+
+
+def write_report(
+    path: Path,
+    args,
+    overlap_summary: pd.DataFrame,
+    structural: pd.DataFrame,
+    funnel: pd.DataFrame,
+    summary: pd.DataFrame,
+    source_pairs: pd.DataFrame,
+) -> None:
+    overall = summary[
+        (summary.get("scope", "") == "overall")
+        & (summary.get("flag_mode", "") == "analysis_ready")
+    ].copy() if not summary.empty else pd.DataFrame()
+    if not overall.empty:
+        keep = [
+            "comparison",
+            "variable",
+            "aggregation_method",
+            "n_pairs",
+            "n_clusters",
+            "spearman_rho",
+            "bias",
+            "rmse",
+            "median_ratio",
+            "factor_2_fraction",
+        ]
+        overall = overall[[column for column in keep if column in overall.columns]]
+
+    structural_summary = pd.DataFrame()
+    if not structural.empty:
+        structural_summary = (
+            structural.groupby("comparison", as_index=False)
+            .agg(
+                common_clusters=("cluster_uid", "nunique"),
+                structural_pass=("structural_pass", "sum"),
+                structural_fail=("structural_pass", lambda values: int((~values.astype(bool)).sum())),
+                max_coordinate_difference_m=("coordinate_difference_m", "max"),
+                max_basin_area_relative_difference=("basin_area_relative_difference", "max"),
+            )
+        )
+
+    independent = source_pairs[
+        source_pairs.get("provenance_class", "").eq("different_source_dataset")
+    ].copy() if not source_pairs.empty else pd.DataFrame()
+    if not independent.empty:
+        independent = independent.sort_values(["n_pairs", "n_clusters"], ascending=False)
+        keep = [
+            "comparison",
+            "variable",
+            "flag_mode",
+            "aggregation_method",
+            "lower_source_names",
+            "higher_source_names",
+            "n_pairs",
+            "n_clusters",
+            "spearman_rho",
+            "median_ratio",
+        ]
+        independent = independent[[column for column in keep if column in independent.columns]]
+
+    lines = [
+        "# Cross-resolution consistency assessment",
+        "",
+        "## Interpretation",
+        "",
+        "This assessment compares finer-resolution matrix values, aggregated to calendar months or years, with values in the coarser main station-reference matrices at common `cluster_uid` values and periods. Comparisons involving the same source station assess processing, temporal classification, aggregation, and export consistency; they are not independent observational validation. Comparisons between different source datasets provide stronger cross-source evidence but remain conditional on common cluster assignment and temporal support.",
+        "",
+        "## Configuration",
+        "",
+        f"- Release directory: `{args.release_dir}`",
+        f"- Flag modes: `{','.join(args.flag_modes)}`",
+        f"- Monthly-to-annual weighting: `{args.monthly_weighting}`",
+        f"- Support classes: low < {args.moderate_support_fraction:g}; moderate < {args.high_support_fraction:g}; high ≥ {args.high_support_fraction:g}",
+        f"- Coordinate tolerance: {args.coordinate_tolerance_m:g} m",
+        f"- Basin-area relative tolerance: {args.basin_area_tolerance:g}",
+        f"- Cluster bootstrap repetitions: {args.bootstrap_reps}",
+        "",
+        "## Cross-resolution cluster inventory",
+        "",
+        markdown_table(overlap_summary),
+        "",
+        "## Structural consistency",
+        "",
+        markdown_table(structural_summary),
+        "",
+        "## Match funnel",
+        "",
+        markdown_table(funnel, max_rows=60),
+        "",
+        "## Overall analysis-ready metrics",
+        "",
+        markdown_table(overall, max_rows=30),
+        "",
+        "## Different-source dataset pairings",
+        "",
+        markdown_table(independent, max_rows=30),
+        "",
+        "## Output interpretation notes",
+        "",
+        "- Q, SSC, and SSL are compared as arithmetic means unless the monthly-to-annual days-weighted sensitivity is explicitly selected.",
+        "- SSL remains in t d-1 and is therefore averaged rather than summed.",
+        "- Linear-space bias, MAE, and RMSE include zero values. Ratio, log-ratio, factor-of-2, and log-log plots use positive pairs only.",
+        "- Sparse periods are retained and identified by `lower_support_fraction` and `lower_support_class`; users can apply their own support threshold from the detailed pair tables.",
+        "- `different_source_dataset` is the most relevant provenance class for cross-source support. `same_source_station` should be interpreted as a processing consistency check.",
+        "",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def ensure_writable_outputs(paths: Sequence[Path], overwrite: bool) -> None:
+    existing = [path for path in paths if path.exists()]
+    if existing and not overwrite:
+        sample = "\n".join(str(path) for path in existing[:10])
+        raise FileExistsError(
+            "Output files already exist. Use --overwrite to replace them:\n" + sample
+        )
+
+
+def parse_flag_modes(text: str) -> Tuple[str, ...]:
+    modes = tuple(clean_text(token).lower() for token in str(text).split(",") if clean_text(token))
+    unknown = sorted(set(modes) - set(FLAG_MODES))
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"Unknown flag mode(s): {unknown}; choose from {sorted(FLAG_MODES)}"
+        )
+    if not modes:
+        raise argparse.ArgumentTypeError("At least one flag mode is required")
+    return modes
+
+
+def resolve_path(value: str, base: Path = REPO_ROOT) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    if path.exists():
+        return path.resolve()
+    return (base / path).resolve()
+
+
+def parse_args(argv: Optional[Sequence[str]] = None):
+    """Parse command-line options; defaults reproduce the baseline run."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Cross-resolution consistency assessment for the main sediment "
+            "matrices: aggregate finer-resolution matrix rows to the coarser "
+            "product's calendar support and compare Q/SSC/SSL."
+        )
+    )
+    parser.add_argument("--release-dir", default=str(DEFAULT_RELEASE_DIR))
+    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    parser.add_argument(
+        "--source-station-catalog",
+        default=None,
+        help="Defaults to <release-dir>/source_station_catalog.csv",
+    )
+    parser.add_argument(
+        "--flag-modes",
+        nargs="+",
+        choices=sorted(FLAG_MODES),
+        default=["good", "analysis_ready"],
+    )
+    parser.add_argument(
+        "--monthly-weighting",
+        choices=("unweighted", "days", "both"),
+        default="both",
+    )
+    parser.add_argument("--moderate-support-fraction", type=float, default=0.50)
+    parser.add_argument("--high-support-fraction", type=float, default=0.80)
+    parser.add_argument("--coordinate-tolerance-m", type=float, default=10.0)
+    parser.add_argument("--basin-area-tolerance", type=float, default=0.001)
+    parser.add_argument("--resolved-only", action="store_true")
+    parser.add_argument("--bootstrap-reps", type=int, default=500)
+    parser.add_argument("--random-seed", type=int, default=42)
+    parser.add_argument("--max-plot-points", type=int, default=30000)
+    parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--overwrite", action="store_true", default=True)
     args = parser.parse_args(argv)
 
-    args.release_dir = Path(args.release_dir).expanduser().resolve()
-    args.out_dir = Path(args.out_dir).expanduser().resolve()
-    args.climatology_file = resolve_path(args.climatology_file, args.release_dir / CLIMATOLOGY_FILENAME)
-    args.matrix_paths = {
-        "daily": resolve_path(args.daily_file, args.release_dir / MATRIX_FILENAMES["daily"]),
-        "monthly": resolve_path(args.monthly_file, args.release_dir / MATRIX_FILENAMES["monthly"]),
-        "annual": resolve_path(args.annual_file, args.release_dir / MATRIX_FILENAMES["annual"]),
-    }
+    args.release_dir = resolve_path(args.release_dir)
+    args.out_dir = resolve_path(args.out_dir)
+    if args.source_station_catalog:
+        args.source_station_catalog = resolve_path(args.source_station_catalog)
+    else:
+        args.source_station_catalog = (
+            args.release_dir / "source_station_catalog.csv"
+        ).resolve()
 
-    if args.exact_distance_m < 0 or args.max_distance_m <= 0:
-        parser.error("Distance thresholds must be positive")
-    if args.exact_distance_m > args.max_distance_m:
-        parser.error("--exact-distance-m cannot exceed --max-distance-m")
-    if args.sensitivity_distance_m < args.max_distance_m:
-        parser.error("--sensitivity-distance-m cannot be smaller than --max-distance-m")
-    if args.min_overlap_years < 1 or args.min_records_per_year < 1:
-        parser.error("Overlap and per-year record requirements must be at least 1")
+    for attr in ("daily_file", "monthly_file", "annual_file"):
+        value = Path(MATRIX_FILENAMES[attr.replace("_file", "")]).expanduser()
+        setattr(
+            args,
+            attr,
+            value.resolve()
+            if value.is_absolute()
+            else (args.release_dir / value).resolve(),
+        )
+
     return args
 
 
-def output_paths(out_dir: Path) -> Dict[str, Path]:
-    return {
-        "funnel": out_dir / "s13_match_funnel.csv",
-        "candidates": out_dir / "s13_spatial_candidates.csv",
-        "matches": out_dir / "s13_selected_station_matches.csv",
-        "source_pairs": out_dir / "s13_source_specific_pair_values.csv",
-        "resolution_pairs": out_dir / "s13_resolution_pair_values.csv",
-        "primary_pairs": out_dir / "s13_primary_pair_values.csv",
-        "metrics": out_dir / "s13_summary_metrics.csv",
-        "plot_png": out_dir / "s13_scatter_main_climatology.png",
-        "plot_pdf": out_dir / "s13_scatter_main_climatology.pdf",
-        "report": out_dir / "s13_main_climatology_report.md",
-    }
+def resolved_cluster_filter(lower: MatrixReader, higher: MatrixReader, uid: str) -> bool:
+    lower_status = clean_text(lower.metadata(uid).basin_status).lower()
+    higher_status = clean_text(higher.metadata(uid).basin_status).lower()
+    if not lower_status and not higher_status:
+        return True
+    return lower_status == "resolved" and higher_status == "resolved"
 
 
-def guard_outputs(paths: Mapping[str, Path], overwrite: bool, no_plots: bool) -> None:
-    relevant = [path for key, path in paths.items() if not (no_plots and key.startswith("plot_"))]
-    existing = [path for path in relevant if path.exists()]
-    if existing and not overwrite:
-        sample = "\n".join(f"  - {path}" for path in existing[:10])
-        raise FileExistsError(f"Output files already exist; use --overwrite to replace them:\n{sample}")
+def matrix_inventory(readers: Mapping[str, MatrixReader]) -> pd.DataFrame:
+    sets = {resolution: set(reader.cluster_uids) for resolution, reader in readers.items()}
+    rows = []
+    for resolution in ("daily", "monthly", "annual"):
+        rows.append(
+            {
+                "inventory_type": "matrix",
+                "comparison": resolution,
+                "cluster_count": len(sets[resolution]),
+                "time_start": str(readers[resolution].time.min().date()),
+                "time_end": str(readers[resolution].time.max().date()),
+                "time_steps": len(readers[resolution].time),
+            }
+        )
+    for comparison, lower_resolution, higher_resolution in COMPARISON_SPECS:
+        common = sets[lower_resolution].intersection(sets[higher_resolution])
+        rows.append(
+            {
+                "inventory_type": "pairwise_overlap",
+                "comparison": comparison,
+                "cluster_count": len(common),
+                "time_start": "",
+                "time_end": "",
+                "time_steps": np.nan,
+            }
+        )
+    triple = sets["daily"].intersection(sets["monthly"]).intersection(sets["annual"])
+    rows.append(
+        {
+            "inventory_type": "three_way_overlap",
+            "comparison": "daily_monthly_annual",
+            "cluster_count": len(triple),
+            "time_start": "",
+            "time_end": "",
+            "time_steps": np.nan,
+        }
+    )
+    return pd.DataFrame(rows)
 
 
-def write_dataframe(df: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
-    log(f"Wrote {path} ({len(df)} rows)")
+def run_comparison(
+    comparison: str,
+    lower: MatrixReader,
+    higher: MatrixReader,
+    resolver: SourceCatalogResolver,
+    args,
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[Dict[str, object]]]:
+    common_uids = sorted(set(lower.cluster_uids).intersection(higher.cluster_uids))
+    if args.resolved_only:
+        common_uids = [uid for uid in common_uids if resolved_cluster_filter(lower, higher, uid)]
+    log(
+        f"{comparison}: common clusters={len(common_uids):,} "
+        f"({lower.resolution}={len(lower.cluster_uids):,}, {higher.resolution}={len(higher.cluster_uids):,})"
+    )
+
+    structural = structural_consistency_rows(
+        comparison=comparison,
+        lower=lower,
+        higher=higher,
+        common_uids=common_uids,
+        coordinate_tolerance_m=args.coordinate_tolerance_m,
+        basin_area_tolerance=args.basin_area_tolerance,
+    )
+
+    pair_parts = []
+    funnel_rows: List[Dict[str, object]] = [
+        {
+            "stage": "common_clusters",
+            "comparison": comparison,
+            "variable": "all",
+            "flag_mode": "all",
+            "count": len(common_uids),
+            "notes": "cluster_uid present in both matrices after optional resolved-only filter",
+        }
+    ]
+    methods = source_aggregation_methods(
+        lower.resolution,
+        higher.resolution,
+        args.monthly_weighting,
+    )
+
+    for position, uid in enumerate(common_uids, start=1):
+        if position == 1 or position % 50 == 0 or position == len(common_uids):
+            log(f"{comparison}: processing cluster {position:,}/{len(common_uids):,}")
+        lower_row = lower.read_cluster_rows(uid)
+        higher_row = higher.read_cluster_rows(uid)
+        for flag_mode in args.flag_modes:
+            allowed = FLAG_MODES[flag_mode]
+            for variable in VARIABLES:
+                higher_aggregate = aggregate_matrix_row(
+                    row_data=higher_row,
+                    matrix_resolution=higher.resolution,
+                    target_resolution=higher.resolution,
+                    variable=variable,
+                    allowed_flags=allowed,
+                    aggregation_method="arithmetic_mean",
+                    resolver=resolver,
+                    moderate_support_fraction=args.moderate_support_fraction,
+                    high_support_fraction=args.high_support_fraction,
+                )
+                if higher_aggregate.empty:
+                    continue
+                for method in methods:
+                    lower_aggregate = aggregate_matrix_row(
+                        row_data=lower_row,
+                        matrix_resolution=lower.resolution,
+                        target_resolution=higher.resolution,
+                        variable=variable,
+                        allowed_flags=allowed,
+                        aggregation_method=method,
+                        resolver=resolver,
+                        moderate_support_fraction=args.moderate_support_fraction,
+                        high_support_fraction=args.high_support_fraction,
+                    )
+                    paired = pair_aggregates(
+                        comparison=comparison,
+                        cluster_uid=uid,
+                        lower_resolution=lower.resolution,
+                        higher_resolution=higher.resolution,
+                        variable=variable,
+                        flag_mode=flag_mode,
+                        aggregation_method=method,
+                        lower=lower_aggregate,
+                        higher=higher_aggregate,
+                    )
+                    if not paired.empty:
+                        pair_parts.append(paired)
+
+    pairs = pd.concat(pair_parts, ignore_index=True) if pair_parts else pd.DataFrame()
+    if not pairs.empty:
+        for (variable, flag_mode, method), group in pairs.groupby(
+            ["variable", "flag_mode", "aggregation_method"], sort=True
+        ):
+            funnel_rows.extend(
+                [
+                    {
+                        "stage": "paired_periods",
+                        "comparison": comparison,
+                        "variable": variable,
+                        "flag_mode": flag_mode,
+                        "count": len(group),
+                        "notes": method,
+                    },
+                    {
+                        "stage": "paired_clusters",
+                        "comparison": comparison,
+                        "variable": variable,
+                        "flag_mode": flag_mode,
+                        "count": group["cluster_uid"].nunique(),
+                        "notes": method,
+                    },
+                    {
+                        "stage": "different_source_period_pairs",
+                        "comparison": comparison,
+                        "variable": variable,
+                        "flag_mode": flag_mode,
+                        "count": int(
+                            group["provenance_class"].eq("different_source_dataset").sum()
+                        ),
+                        "notes": method,
+                    },
+                    {
+                        "stage": "different_source_clusters",
+                        "comparison": comparison,
+                        "variable": variable,
+                        "flag_mode": flag_mode,
+                        "count": group.loc[
+                            group["provenance_class"].eq("different_source_dataset"),
+                            "cluster_uid",
+                        ].nunique(),
+                        "notes": method,
+                    },
+                ]
+            )
+    return pairs, structural, funnel_rows
 
 
-def main(argv=None) -> int:
+def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    require_netcdf()
-    paths = output_paths(args.out_dir)
-    guard_outputs(paths, args.overwrite, args.no_plots)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-
-    existing_matrices = {key: value for key, value in args.matrix_paths.items() if value.is_file()}
-    if not existing_matrices:
-        raise FileNotFoundError(
-            "None of the daily, monthly, or annual matrix files exist under the configured paths"
+    if nc4 is None:
+        raise SystemExit(
+            "Error: netCDF4 is required for this validation script. "
+            "Install it with `pip install netCDF4`."
         )
 
-    input_paths = {"climatology": args.climatology_file, **existing_matrices}
-    for label, path in input_paths.items():
-        log(f"Input {label}: {path}")
-
-    main_stations = load_main_station_catalog(existing_matrices)
-    climatology_stations, climatology_records = load_climatology_records(args.climatology_file)
-
-    candidates = build_spatial_candidates(
-        climatology_stations=climatology_stations,
-        main_stations=main_stations,
-        exact_distance_m=args.exact_distance_m,
-        max_distance_m=args.max_distance_m,
-        sensitivity_distance_m=args.sensitivity_distance_m,
-        name_similarity_threshold=args.name_similarity_threshold,
-    )
-    selected_matches = select_spatial_matches(
-        climatology_stations=climatology_stations,
-        candidates=candidates,
-        exact_distance_m=args.exact_distance_m,
-        max_distance_m=args.max_distance_m,
-        ambiguity_distance_gap_m=args.ambiguity_distance_gap_m,
-        ambiguity_distance_ratio=args.ambiguity_distance_ratio,
-        require_name_support_for_near=args.require_name_support_for_near,
-        resolved_main_only=args.resolved_main_only,
-    )
-
-    selected_only = selected_matches[selected_matches["match_status"] == "selected"].copy()
-    anchor_columns = [
-        "climatology_station_uid",
-        "match_status",
-        "selected_main_station_uid",
-        "selected_distance_m",
-        "selected_spatial_match_class",
-        "selected_main_station_name",
-        "selected_main_river_name",
-        "selected_main_basin_status",
-        "selected_available_resolutions",
-        "selected_daily_index",
-        "selected_monthly_index",
-        "selected_annual_index",
-        "selected_station_name_similarity",
-        "selected_river_name_similarity",
-        "selection_reason",
+    output_paths = [
+        args.out_dir / "s18_cross_resolution_funnel.csv",
+        args.out_dir / "s18_cross_resolution_cluster_overlap_summary.csv",
+        args.out_dir / "s18_cross_resolution_structural_consistency.csv",
+        args.out_dir / "s18_cross_resolution_pair_values_daily_monthly.csv",
+        args.out_dir / "s18_cross_resolution_pair_values_daily_annual.csv",
+        args.out_dir / "s18_cross_resolution_pair_values_monthly_annual.csv",
+        args.out_dir / "s18_cross_resolution_all_pair_values.csv",
+        args.out_dir / "s18_cross_resolution_summary_metrics.csv",
+        args.out_dir / "s18_cross_resolution_cluster_balanced_metrics.csv",
+        args.out_dir / "s18_cross_resolution_source_pair_summary.csv",
+        args.out_dir / "s18_cross_resolution_scatter.png",
+        args.out_dir / "s18_cross_resolution_scatter.pdf",
+        args.out_dir / "s18_cross_resolution_support_sensitivity.png",
+        args.out_dir / "s18_cross_resolution_report.md",
+        args.out_dir / "s18_cross_resolution_run_config.json",
     ]
-    anchors = climatology_records.merge(
-        selected_only[anchor_columns],
-        on="climatology_station_uid",
-        how="inner",
-        validate="many_to_one",
-    )
+    ensure_writable_outputs(output_paths, args.overwrite)
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    source_specific_pairs = build_source_specific_pairs(
-        anchors=anchors,
-        matrix_paths=existing_matrices,
-        allowed_flags=args.allowed_flags,
-        climatology_allowed_flags=args.climatology_allowed_flags,
-        min_overlap_years=args.min_overlap_years,
-        min_records_per_year=args.min_records_per_year,
-        allow_unknown_coverage=args.allow_unknown_coverage,
-    )
-    resolution_pairs = select_resolution_pairs(source_specific_pairs)
-    primary_pairs = select_primary_pairs(resolution_pairs)
-    metrics = compute_summary_metrics(primary_pairs)
-    funnel = build_funnel(
-        climatology_stations=climatology_stations,
-        climatology_records=climatology_records,
-        candidates=candidates,
-        selected_matches=selected_matches,
-        anchors=anchors,
-        source_specific_pairs=source_specific_pairs,
-        primary_pairs=primary_pairs,
-        exact_distance_m=args.exact_distance_m,
-        max_distance_m=args.max_distance_m,
-    )
+    log(f"Release directory: {args.release_dir}")
+    log(f"Output directory:  {args.out_dir}")
+    log(f"Flag modes:        {','.join(args.flag_modes)}")
+    log(f"Monthly weighting: {args.monthly_weighting}")
 
-    write_dataframe(funnel, paths["funnel"])
-    write_dataframe(candidates, paths["candidates"])
-    write_dataframe(selected_matches, paths["matches"])
-    write_dataframe(source_specific_pairs, paths["source_pairs"])
-    write_dataframe(resolution_pairs, paths["resolution_pairs"])
-    write_dataframe(primary_pairs, paths["primary_pairs"])
-    write_dataframe(metrics, paths["metrics"])
+    resolver = SourceCatalogResolver(args.source_station_catalog)
+    readers: Dict[str, MatrixReader] = {}
+    pair_tables: Dict[str, pd.DataFrame] = {}
+    structural_parts = []
+    funnel_rows = []
 
-    if not args.no_plots:
-        plot_pairs(primary_pairs, paths["plot_png"], paths["plot_pdf"])
-        if paths["plot_png"].exists():
-            log(f"Wrote {paths['plot_png']}")
-        if paths["plot_pdf"].exists():
-            log(f"Wrote {paths['plot_pdf']}")
+    try:
+        readers["daily"] = MatrixReader(args.daily_file, "daily")
+        readers["monthly"] = MatrixReader(args.monthly_file, "monthly")
+        readers["annual"] = MatrixReader(args.annual_file, "annual")
+        overlap_summary = matrix_inventory(readers)
+        overlap_summary.to_csv(
+            args.out_dir / "s18_cross_resolution_cluster_overlap_summary.csv", index=False
+        )
 
-    write_markdown_report(paths["report"], args, input_paths, funnel, metrics)
-    log(f"Wrote {paths['report']}")
-    log("Main matrix - climatology validation completed")
-    return 0
+        for comparison, lower_resolution, higher_resolution in COMPARISON_SPECS:
+            pairs, structural, comparison_funnel = run_comparison(
+                comparison=comparison,
+                lower=readers[lower_resolution],
+                higher=readers[higher_resolution],
+                resolver=resolver,
+                args=args,
+            )
+            pair_tables[comparison] = pairs
+            structural_parts.append(structural)
+            funnel_rows.extend(comparison_funnel)
+            pair_path = args.out_dir / f"s18_cross_resolution_pair_values_{comparison}.csv"
+            pairs.to_csv(pair_path, index=False)
+            log(f"Wrote {pair_path.name}: {len(pairs):,} rows")
+
+        structural_all = (
+            pd.concat(structural_parts, ignore_index=True)
+            if structural_parts
+            else pd.DataFrame()
+        )
+        structural_all.to_csv(
+            args.out_dir / "s18_cross_resolution_structural_consistency.csv", index=False
+        )
+        funnel = pd.DataFrame(funnel_rows)
+        funnel.to_csv(args.out_dir / "s18_cross_resolution_funnel.csv", index=False)
+
+        all_pairs = (
+            pd.concat(
+                [frame for frame in pair_tables.values() if not frame.empty],
+                ignore_index=True,
+            )
+            if any(not frame.empty for frame in pair_tables.values())
+            else pd.DataFrame()
+        )
+        all_pairs.to_csv(args.out_dir / "s18_cross_resolution_all_pair_values.csv", index=False)
+
+        summary = build_summary_metrics(all_pairs)
+        summary.to_csv(args.out_dir / "s18_cross_resolution_summary_metrics.csv", index=False)
+        cluster_summary = build_cluster_balanced_metrics(
+            all_pairs,
+            bootstrap_reps=args.bootstrap_reps,
+            random_seed=args.random_seed,
+        )
+        cluster_summary.to_csv(
+            args.out_dir / "s18_cross_resolution_cluster_balanced_metrics.csv", index=False
+        )
+        source_pairs = build_source_pair_summary(all_pairs)
+        source_pairs.to_csv(
+            args.out_dir / "s18_cross_resolution_source_pair_summary.csv", index=False
+        )
+
+        if not args.skip_plots and not all_pairs.empty:
+            plot_mode = "analysis_ready" if "analysis_ready" in args.flag_modes else args.flag_modes[0]
+            plot_cross_resolution_scatter(
+                all_pairs,
+                out_png=args.out_dir / "s18_cross_resolution_scatter.png",
+                out_pdf=args.out_dir / "s18_cross_resolution_scatter.pdf",
+                flag_mode=plot_mode,
+                max_points=args.max_plot_points,
+                random_seed=args.random_seed,
+            )
+            plot_support_sensitivity(
+                all_pairs,
+                out_png=args.out_dir / "s18_cross_resolution_support_sensitivity.png",
+                flag_mode=plot_mode,
+                max_points=args.max_plot_points,
+                random_seed=args.random_seed,
+            )
+
+        write_report(
+            args.out_dir / "s18_cross_resolution_report.md",
+            args=args,
+            overlap_summary=overlap_summary,
+            structural=structural_all,
+            funnel=funnel,
+            summary=summary,
+            source_pairs=source_pairs,
+        )
+
+        config = {
+            "release_dir": str(args.release_dir),
+            "daily_file": str(args.daily_file),
+            "monthly_file": str(args.monthly_file),
+            "annual_file": str(args.annual_file),
+            "source_station_catalog": str(args.source_station_catalog),
+            "out_dir": str(args.out_dir),
+            "flag_modes": list(args.flag_modes),
+            "monthly_weighting": args.monthly_weighting,
+            "moderate_support_fraction": args.moderate_support_fraction,
+            "high_support_fraction": args.high_support_fraction,
+            "coordinate_tolerance_m": args.coordinate_tolerance_m,
+            "basin_area_tolerance": args.basin_area_tolerance,
+            "resolved_only": args.resolved_only,
+            "bootstrap_reps": args.bootstrap_reps,
+            "random_seed": args.random_seed,
+            "matrix_cluster_counts": {
+                resolution: len(reader.cluster_uids)
+                for resolution, reader in readers.items()
+            },
+            "pair_row_counts": {
+                comparison: len(frame) for comparison, frame in pair_tables.items()
+            },
+        }
+        (args.out_dir / "s18_cross_resolution_run_config.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+        log("Cross-resolution validation completed")
+        log(f"All pair rows: {len(all_pairs):,}")
+        log(f"Report: {args.out_dir / 's18_cross_resolution_report.md'}")
+        return 0
+    finally:
+        for reader in readers.values():
+            reader.close()
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        raise
+    except (ValidationError, FileNotFoundError, FileExistsError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
