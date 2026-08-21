@@ -63,7 +63,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_FIGURE_ID = "fig_combined_source_contribution_direct_release"
+DEFAULT_FIGURE_ID = "fig5_combined_source_contribution_direct_release"
 SOURCE_NAME_MAP = {
     "USGS": "USGS NWIS",
     "RiverSed": "RivSed",
@@ -1121,6 +1121,12 @@ def _generate_section_4_2_narrative(result: Dict[str, object]) -> str:
 
     # Build narrative
     paras = []
+    eused_clause = ""
+    if row(main_df, "EUSEDcollab"):
+        eused_clause = (
+            f"EUSEDcollab provides a substantial contribution of "
+            f"{stations(main_df, 'EUSEDcollab')} stations and {sci(main_df, 'EUSEDcollab')} records. "
+        )
     paras.append(
         f"Source-level contributions and temporal coverage to the three released components are summarized in Fig. 5. "
         f"The main station-reference matrices integrate {main_stations} stations and {main_records} records "
@@ -1132,8 +1138,8 @@ def _generate_section_4_2_narrative(result: Dict[str, object]) -> str:
         f"but much larger numbers of time-resolved records (approximately {sci(main_df, 'USGS')} and {sci(main_df, 'HYDAT')}), "
         f"reflecting their dense daily monitoring archives. "
         f"Bayern similarly contributes only {stations(main_df, 'Bayern')} stations but approximately {sci(main_df, 'Bayern')} records. "
-        f"EUSEDcollab provides a substantial contribution of {stations(main_df, 'EUSEDcollab')} stations and {sci(main_df, 'EUSEDcollab')} records, "
-        f"while smaller regional and basin-specific datasets contribute fewer stations but broaden geographic and temporal coverage, "
+        f"{eused_clause}"
+        f"Smaller regional and basin-specific datasets contribute fewer stations but broaden geographic and temporal coverage, "
         f"including early records from the Eurasian River and Chao Phraya River datasets."
     )
 
@@ -1143,7 +1149,7 @@ def _generate_section_4_2_narrative(result: Dict[str, object]) -> str:
         f"The Chao Phraya River dataset provides the earliest coverage, beginning in {yr(main_df, 'Chao_Phraya_River', 'first_year')}, "
         f"followed by the Eurasian River dataset in {yr(main_df, 'Eurasian_River', 'first_year')} "
         f"and HYDAT in {yr(main_df, 'HYDAT', 'first_year')}. "
-        f"Bayern, GloRiSe, USGS NWIS, and EUSEDcollab expand coverage from the 1950s onwards, "
+        f"Bayern, GloRiSe, and USGS NWIS expand coverage from the 1950s onwards, "
         f"while Bayern, USGS NWIS, HYBAM, and several recent basin-specific datasets extend the observational record into the 2020s. "
         f"Overall, the early part of the record is supported by a limited number of historical and national sources, "
         f"whereas the period after approximately 1980 is represented by a broader mixture of agency monitoring networks, "
