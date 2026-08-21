@@ -1183,7 +1183,7 @@ def default_config() -> Config:
         s4_csv=output_r_root / S4_UPSTREAM_CSV,
         s5_csv=output_r_root / S5_BASIN_CLUSTERED_CSV,
         s5_report_csv=output_r_root / S5_BASIN_REPORT_CSV,
-        out_dir=REPO_ROOT / "validate" / "output" / "hydrological_clustering",
+        out_dir=REPO_ROOT / "validate" / "output" / "s13_validate_hydrological_clustering",
     )
 
 

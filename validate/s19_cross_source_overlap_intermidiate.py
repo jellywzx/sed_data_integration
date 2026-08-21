@@ -34,30 +34,30 @@ are not treated as value-comparison pairs.
 The script is read-only with respect to pipeline inputs and release products.
 By default, outputs are written under:
 
-    validate/output/cross_source_overlap/
+    validate/output/s19_cross_source_overlap/
 
 Suggested repository path:
 
-    validate/s13_cross_source_overlap_inventory.py
+    validate/s19_cross_source_overlap_intermidiate.py
 
 Examples
 --------
 Full high-recall inventory::
 
-    python validate/s13_cross_source_overlap_inventory.py
+    python validate/s19_cross_source_overlap_intermidiate.py
 
 Use analysis-ready flags only and disable nearby-coordinate candidates::
 
-    python validate/s13_cross_source_overlap_inventory.py \
+    python validate/s19_cross_source_overlap_intermidiate.py \
         --allowed-flags 0,1 --skip-nearby
 
 Fast metadata-only spatial inventory::
 
-    python validate/s13_cross_source_overlap_inventory.py --skip-temporal
+    python validate/s19_cross_source_overlap_intermidiate.py --skip-temporal
 
 Restrict to the reviewer-priority sources::
 
-    python validate/s13_cross_source_overlap_inventory.py \
+    python validate/s19_cross_source_overlap_intermidiate.py \
         --include-sources GFQA_v2,USGS_NWIS,HYDAT,Bayern,GloRiSe,EUSEDcollab,Rhine,NERC,HYBAM
 """
 
@@ -1514,13 +1514,13 @@ def run(cfg: Config) -> Dict[str, object]:
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     paths = {
-        "inventory": cfg.out_dir / "cross_source_overlap_inventory.csv.gz",
-        "review_queue": cfg.out_dir / "cross_source_overlap_review_queue.csv",
-        "source_pair_summary": cfg.out_dir / "cross_source_overlap_source_pair_summary.csv",
-        "station_read_summary": cfg.out_dir / "cross_source_overlap_station_read_summary.csv",
-        "run_summary": cfg.out_dir / "cross_source_overlap_run_summary.csv",
-        "errors": cfg.out_dir / "cross_source_overlap_errors.csv",
-        "report": cfg.out_dir / "cross_source_overlap_report.md",
+        "inventory": cfg.out_dir / "s19_cross_source_overlap_inventory.csv.gz",
+        "review_queue": cfg.out_dir / "s19_cross_source_overlap_review_queue.csv",
+        "source_pair_summary": cfg.out_dir / "s19_cross_source_overlap_source_pair_summary.csv",
+        "station_read_summary": cfg.out_dir / "s19_cross_source_overlap_station_read_summary.csv",
+        "run_summary": cfg.out_dir / "s19_cross_source_overlap_run_summary.csv",
+        "errors": cfg.out_dir / "s19_cross_source_overlap_errors.csv",
+        "report": cfg.out_dir / "s19_cross_source_overlap_report.md",
     }
     inventory.to_csv(paths["inventory"], index=False, compression="gzip")
     review_queue.to_csv(paths["review_queue"], index=False)
@@ -1559,7 +1559,7 @@ def default_config() -> Config:
         s5_csv=(output_r_root / S5_BASIN_CLUSTERED_CSV).resolve(),
         source_root=source_root,
         merit_dir=default_merit,
-        out_dir=(REPO_ROOT / "validate" / "output" / "cross_source_overlap").resolve(),
+        out_dir=(REPO_ROOT / "validate" / "output" / "s19_cross_source_overlap").resolve(),
         source_families={"in_situ"},
         include_sources=set(),
         exclude_sources=set(),
