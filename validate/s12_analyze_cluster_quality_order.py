@@ -10,7 +10,9 @@ tables under output/validate/cluster_quality_order/.
 Analyses performed
 -------------------
 1.  Cluster inventory — total clusters, size distribution,
-    single- vs multi-candidate breakdown.
+    single- vs multi-candidate breakdown, restricted to publishable
+    clusters (n_publish_rows > 0, i.e. at least one SSC/SSL record);
+    Q-only clusters are excluded to align with sed_reference_release.
 2.  Within-cluster time-overlap classification — for every
     multi-candidate cluster, read each candidate NC file's time
     coordinates and classify pairwise overlap as fully overlapping,
@@ -46,6 +48,20 @@ from pipeline_paths import (  # noqa: E402
     RELEASE_MASTER_NC,
     get_output_r_root,
 )
+
+
+def _publish_rows(row: Dict[str, Any]) -> int:
+    """Return a candidate row's publishable (SSC/SSL) record count.
+
+    The s6 quality order CSV records ``n_publish_rows`` per candidate.
+    A value of 0 means the candidate contributes only Q (no SSC/SSL)
+    and is therefore excluded from the released sediment dataset.
+    Missing/unparsable values are treated as 0 (not publishable).
+    """
+    try:
+        return int(row.get("n_publish_rows") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 # ── NC time helpers ─────────────────────────────────────────────────
@@ -621,6 +637,8 @@ def write_markdown_report(
     report_lines.append("")
     report_lines.append(f"- **Total clusters**: {inv['n_total']:,}")
     report_lines.append(f"- **Total station candidates entering S6**: {inv['n_stations']:,}")
+    report_lines.append(f"- **Q-only clusters excluded (no SSC/SSL)**: "
+                        f"{inv['n_qonly_clusters_excluded']:,}")
     report_lines.append(f"- **Single-candidate**: {inv['n_single']:,} "
                         f"({_fmt_pct(inv['n_single'], inv['n_total'])})")
     report_lines.append(f"- **Multi-candidate (>=2)**: {inv['n_multi']:,} "
@@ -1011,7 +1029,7 @@ def main() -> int:
         project_root / RELEASE_MASTER_NC)
 
     out_dir = Path(args.out_dir) if args.out_dir else (
-        REPO_ROOT / "validate" / "output" / "cluster_quality_order")
+        REPO_ROOT / "validate" / "output" / "s12_analyze_cluster_quality_order")
 
     if not csv_path.is_file():
         print(f"ERROR: {csv_path} not found", file=sys.stderr)
@@ -1027,8 +1045,21 @@ def main() -> int:
         rows = list(reader)
     print(f"\nRead {len(rows)} rows from {csv_path.name}")
 
+    # ── Publishability filter (align with sed_reference_release) ──
+    rows_all = rows
+    rows = [r for r in rows_all if _publish_rows(r) > 0]
+    all_clusters = {r["cluster_uid"] for r in rows_all}
+    kept_clusters = {r["cluster_uid"] for r in rows}
+    n_qonly_rows = len(rows_all) - len(rows)
+    n_qonly_clusters = len(all_clusters - kept_clusters)
+    print(f"Filtered n_publish_rows>0: removed {n_qonly_rows} Q-only candidate rows "
+          f"({n_qonly_clusters} clusters dropped entirely — no SSC/SSL); "
+          f"kept {len(rows)} rows / {len(kept_clusters)} clusters.")
+
     # ── 1. Inventory ──
     inv = analyze_cluster_inventory(rows)
+    inv["n_qonly_rows_excluded"] = n_qonly_rows
+    inv["n_qonly_clusters_excluded"] = n_qonly_clusters
 
     # ── 2. Overlap classification ──
     overlap = classify_time_overlap(inv["groups"])
