@@ -77,6 +77,7 @@ LINK_COLUMNS = [
     "link_confidence",
     "linked_cluster_id",
     "linked_cluster_uid",
+    "linked_resolution",
     "linked_station_id",
     "linked_source",
     "linked_comid",
@@ -544,6 +545,7 @@ def base_link_row(sat):
         "link_confidence": "low",
         "linked_cluster_id": pd.NA,
         "linked_cluster_uid": "",
+        "linked_resolution": "",
         "linked_station_id": pd.NA,
         "linked_source": "",
         "linked_comid": pd.NA,
@@ -578,7 +580,7 @@ def candidate_row_template(sat, cluster):
         "area_rel_error": symmetric_rel_error(sat["uparea_merit"], cluster["uparea_merit"]),
         "satellite_point_to_insitu_reach_m": math.nan,
         "insitu_point_to_satellite_reach_m": math.nan,
-        "passes_resolution": sat["resolution"] == cluster["resolution"],
+        "passes_resolution": True,
         "passes_reach_or_topology": False,
         "passes_area": False,
         "passes_distance": False,
@@ -597,6 +599,7 @@ def fill_link_from_candidate(base, sat, candidate, row, status, method, confiden
             "link_confidence": confidence,
             "linked_cluster_id": candidate["cluster_id"],
             "linked_cluster_uid": candidate["cluster_uid"],
+            "linked_resolution": candidate["resolution"],
             "linked_station_id": candidate["station_id"],
             "linked_source": candidate["source"],
             "linked_comid": candidate["comid"],
@@ -647,8 +650,6 @@ def candidates_ambiguous(left, right, max_distance_delta_m, max_area_delta):
 
 
 def rejection_reason_for_rule2(row):
-    if not row["passes_resolution"]:
-        return "resolution_mismatch"
     if not row["same_pfaf_region"]:
         return "different_pfaf_region"
     if row["topology_relation"] == "unknown":
@@ -710,12 +711,11 @@ def evaluate_candidate(sat, cluster, network, args, topology=None, compute_dista
     )
     if row["same_reach"]:
         row["passes_reach_or_topology"] = True
-        row["accepted"] = row["passes_resolution"]
-        row["rejection_reason"] = "" if row["accepted"] else "resolution_mismatch"
+        row["accepted"] = True
+        row["rejection_reason"] = ""
     else:
         row["accepted"] = (
-            row["passes_resolution"]
-            and row["same_pfaf_region"]
+            row["same_pfaf_region"]
             and row["passes_reach_or_topology"]
             and row["passes_area"]
             and row["passes_distance"]
@@ -725,10 +725,10 @@ def evaluate_candidate(sat, cluster, network, args, topology=None, compute_dista
 
 
 
-def _sorted_clusters_by_reach(clusters_by_reach, resolution, reachable):
+def _sorted_clusters_by_reach(clusters_by_reach, reachable):
     clusters = []
     for comid in sorted(reachable):
-        clusters.extend(clusters_by_reach.get((resolution, int(comid)), []))
+        clusters.extend(clusters_by_reach.get(int(comid), []))
     return sorted(clusters, key=lambda item: (int(item["cluster_id"]), int(item["comid"])))
 
 
@@ -774,7 +774,7 @@ def _process_satellite_rows(
             links.append(base)
             continue
 
-        same_clusters = same_reach_index.get((sat["resolution"], int(sat["comid"])), [])
+        same_clusters = same_reach_index.get(int(sat["comid"]), [])
         evaluated_same = [evaluate_candidate(sat, cluster, network, args_dict) for cluster in same_clusters]
         stats["candidate_pairs_considered"] += len(evaluated_same)
         stats["distance_evaluations"] += 2 * len(evaluated_same)
@@ -803,12 +803,12 @@ def _process_satellite_rows(
 
         pfaf_key = reach_file_code_from_pfaf_or_comid(sat["pfaf_code"], sat["comid"])
         candidate_clusters = [
-            cluster for cluster in pfaf_index.get((sat["resolution"], pfaf_key), [])
+            cluster for cluster in pfaf_index.get(pfaf_key, [])
             if cluster["comid"] != sat["comid"]
         ]
         candidate_lookup = {int(cluster["cluster_id"]): cluster for cluster in candidate_clusters}
-        if not candidate_clusters and not clusters_by_resolution.get(sat["resolution"], []):
-            base["rejection_reason"] = "no_same_resolution_main_coverage"
+        if not candidate_clusters and not clusters_by_resolution:
+            base["rejection_reason"] = "no_main_cluster_coverage"
             links.append(base)
             continue
 
@@ -823,7 +823,7 @@ def _process_satellite_rows(
             )
             reachable_comids = set(connected)
             pre_candidates = [
-                cluster for cluster in _sorted_clusters_by_reach(clusters_by_reach, sat["resolution"], reachable_comids)
+                cluster for cluster in _sorted_clusters_by_reach(clusters_by_reach, reachable_comids)
                 if cluster["comid"] != sat["comid"] and same_pfaf_region(sat["pfaf_code"], cluster["pfaf_code"])
             ]
             for cluster in pre_candidates:
@@ -896,7 +896,7 @@ def _process_satellite_rows(
         base["n_connected_candidates"] = len(valid)
         if not valid:
             reasons = [clean_text(row["rejection_reason"]) for row in evaluated if clean_text(row["rejection_reason"])]
-            base["rejection_reason"] = Counter(reasons).most_common(1)[0][0] if reasons else "no_same_resolution_main_coverage"
+            base["rejection_reason"] = Counter(reasons).most_common(1)[0][0] if reasons else "no_main_cluster_coverage"
             links.append(base)
             continue
 
@@ -1095,10 +1095,10 @@ def link_satellite_to_main_clusters_v2(
     clusters_by_reach = {}
     for cluster in clusters:
         clusters_by_resolution.setdefault(cluster["resolution"], []).append(cluster)
-        same_reach_index.setdefault((cluster["resolution"], cluster["comid"]), []).append(cluster)
-        clusters_by_reach.setdefault((cluster["resolution"], cluster["comid"]), []).append(cluster)
+        same_reach_index.setdefault(cluster["comid"], []).append(cluster)
+        clusters_by_reach.setdefault(cluster["comid"], []).append(cluster)
         pfaf_key = reach_file_code_from_pfaf_or_comid(cluster["pfaf_code"], cluster["comid"])
-        pfaf_index.setdefault((cluster["resolution"], pfaf_key), []).append(cluster)
+        pfaf_index.setdefault(pfaf_key, []).append(cluster)
 
     work = stations.copy()
     work["_is_satellite"] = work.apply(is_satellite_row, axis=1)
