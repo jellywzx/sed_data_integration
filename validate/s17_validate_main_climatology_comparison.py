@@ -21,16 +21,16 @@ Default inputs under --release-dir:
   sed_reference_climatology.nc
 
 Default outputs under --out-dir:
-  s13_match_funnel.csv
-  s13_spatial_candidates.csv
-  s13_selected_station_matches.csv
-  s13_source_specific_pair_values.csv
-  s13_resolution_pair_values.csv
-  s13_primary_pair_values.csv
-  s13_summary_metrics.csv
-  s13_scatter_main_climatology.png
-  s13_scatter_main_climatology.pdf
-  s13_main_climatology_report.md
+  s17_main_climatology_match_funnel.csv
+  s17_main_climatology_spatial_candidates.csv
+  s17_main_climatology_selected_station_matches.csv
+  s17_main_climatology_source_specific_pair_values.csv
+  s17_main_climatology_resolution_pair_values.csv
+  s17_main_climatology_primary_pair_values.csv
+  s17_main_climatology_summary_metrics.csv
+  s17_main_climatology_scatter.png
+  s17_main_climatology_scatter.pdf
+  s17_main_climatology_report.md
 """
 
 
@@ -64,7 +64,7 @@ else:
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
-DEFAULT_OUT_DIR = PROJECT_DIR / "validate" / "output" / "main_climatology"
+DEFAULT_OUT_DIR = PROJECT_DIR / "validate" / "output" / "s17_main_climatology"
 
 MATRIX_FILENAMES = {
     "daily": "sed_reference_timeseries_daily.nc",
@@ -368,8 +368,16 @@ def load_main_station_catalog(matrix_paths: Mapping[str, Path]) -> pd.DataFrame:
             elif "station_reference_id" in ds.variables:
                 ids = read_int(ds.variables["station_reference_id"], fill_value=-1).reshape(-1)
                 uids = [f"SED{int(value):06d}" if value >= 0 else "" for value in ids]
+            elif "cluster_uid" in ds.variables:
+                uids = pad_list(read_text(ds.variables["cluster_uid"]), n_stations)
+            elif "cluster_id" in ds.variables:
+                ids = read_int(ds.variables["cluster_id"], fill_value=-1).reshape(-1)
+                uids = [f"SED{int(value):06d}" if value >= 0 else "" for value in ids]
             else:
-                raise ValidationError(f"{path} contains neither station_uid nor station_reference_id")
+                raise ValidationError(
+                    f"{path} contains neither station_uid, station_reference_id, "
+                    "cluster_uid nor cluster_id"
+                )
 
             lat = pad_array(read_numeric(ds.variables["lat"]), n_stations)
             lon = pad_array(read_numeric(ds.variables["lon"]), n_stations)
@@ -799,13 +807,23 @@ def aggregate_one_anchor_variable(
     if climate_flag not in climatology_allowed_flags:
         return []
 
-    start_year_raw = anchor.get("coverage_start_year")
-    end_year_raw = anchor.get("coverage_end_year")
-    start_year = int(start_year_raw) if pd.notna(start_year_raw) else None
-    end_year = int(end_year_raw) if pd.notna(end_year_raw) else None
-    coverage, period_status, effective_start, effective_end = _coverage_mask(
-        years, start_year, end_year, allow_unknown_coverage
-    )
+    climate_source_canonical = canonical_source(anchor.get("climatology_source", ""))
+    milliman_all_years = climate_source_canonical == "milliman"
+    if milliman_all_years:
+        coverage = years >= 0
+        period_status = "milliman_used_all_main_years"
+        effective_start = None
+        effective_end = None
+        required_overlap_years = 1
+    else:
+        start_year_raw = anchor.get("coverage_start_year")
+        end_year_raw = anchor.get("coverage_end_year")
+        start_year = int(start_year_raw) if pd.notna(start_year_raw) else None
+        end_year = int(end_year_raw) if pd.notna(end_year_raw) else None
+        coverage, period_status, effective_start, effective_end = _coverage_mask(
+            years, start_year, end_year, allow_unknown_coverage
+        )
+        required_overlap_years = int(min_overlap_years)
 
     base_valid = (
         coverage
@@ -816,7 +834,6 @@ def aggregate_one_anchor_variable(
     if not np.any(base_valid):
         return []
 
-    climate_source_canonical = canonical_source(anchor.get("climatology_source", ""))
     valid_positions = np.where(base_valid)[0]
     rows = []
     for pos in valid_positions:
@@ -853,12 +870,21 @@ def aggregate_one_anchor_variable(
             )
         )
         annual = annual[annual["records_in_year"] >= int(min_records_per_year)].copy()
-        if len(annual) < int(min_overlap_years):
+        if len(annual) < required_overlap_years:
             continue
 
         n_records = int(source_df[source_df["year"].isin(annual["year"])].shape[0])
-        if effective_start is not None and effective_end is not None and effective_end >= effective_start:
-            denominator = effective_end - effective_start + 1
+        output_effective_start = effective_start
+        output_effective_end = effective_end
+        if milliman_all_years:
+            output_effective_start = int(annual["year"].min())
+            output_effective_end = int(annual["year"].max())
+        if (
+            output_effective_start is not None
+            and output_effective_end is not None
+            and output_effective_end >= output_effective_start
+        ):
+            denominator = output_effective_end - output_effective_start + 1
             overlap_fraction = float(len(annual) / denominator) if denominator > 0 else np.nan
         else:
             overlap_fraction = np.nan
@@ -888,8 +914,8 @@ def aggregate_one_anchor_variable(
                 "median_records_per_year": float(annual["records_in_year"].median()),
                 "overlap_fraction": overlap_fraction,
                 "period_match_status": period_status,
-                "effective_period_start_year": effective_start,
-                "effective_period_end_year": effective_end,
+                "effective_period_start_year": output_effective_start,
+                "effective_period_end_year": output_effective_end,
                 "main_flag_class": main_flag_class,
                 "comparison_derivation_class": derivation_class,
                 "same_source_records_excluded": True,
@@ -1189,6 +1215,8 @@ def write_markdown_report(
         "",
         "Climatology time coordinates are not used as exact observation dates. The script uses source coverage years when available, first averages main-matrix observations within each calendar year, and then averages the resulting annual means across overlapping years.",
         "",
+        "Milliman coverage years are treated as unavailable placeholders; Milliman comparisons use all valid years from the matched main-matrix station.",
+        "",
         "## Inputs",
         "",
     ]
@@ -1252,6 +1280,7 @@ def write_markdown_report(
             "- A selected pair indicates spatial coincidence or proximity, not proof that both products represent the identical physical gauge or cross-section.",
             "- Each primary point uses one independent main-matrix source. Records whose selected source canonicalizes to the climatology source are excluded before aggregation.",
             "- Daily, monthly, and annual matrices are processed separately. The primary table selects one resolution after source-specific aggregation; all retained alternatives remain in the resolution-level table.",
+            "- Milliman comparisons are marked with `period_match_status=milliman_used_all_main_years` because the Milliman coverage fields are not used as a real time window.",
             "- SSL remains in the release unit of t d-1. Daily SSL is averaged within year rather than summed, preserving comparability with standardized climatology SSL.",
             "- Scatter plots and ratio metrics use positive finite values only. Zero values remain in the pair tables and raw-unit metrics.",
             "",
@@ -1397,16 +1426,16 @@ def parse_args(argv=None):
 
 def output_paths(out_dir: Path) -> Dict[str, Path]:
     return {
-        "funnel": out_dir / "s13_match_funnel.csv",
-        "candidates": out_dir / "s13_spatial_candidates.csv",
-        "matches": out_dir / "s13_selected_station_matches.csv",
-        "source_pairs": out_dir / "s13_source_specific_pair_values.csv",
-        "resolution_pairs": out_dir / "s13_resolution_pair_values.csv",
-        "primary_pairs": out_dir / "s13_primary_pair_values.csv",
-        "metrics": out_dir / "s13_summary_metrics.csv",
-        "plot_png": out_dir / "s13_scatter_main_climatology.png",
-        "plot_pdf": out_dir / "s13_scatter_main_climatology.pdf",
-        "report": out_dir / "s13_main_climatology_report.md",
+        "funnel": out_dir / "s17_main_climatology_match_funnel.csv",
+        "candidates": out_dir / "s17_main_climatology_spatial_candidates.csv",
+        "matches": out_dir / "s17_main_climatology_selected_station_matches.csv",
+        "source_pairs": out_dir / "s17_main_climatology_source_specific_pair_values.csv",
+        "resolution_pairs": out_dir / "s17_main_climatology_resolution_pair_values.csv",
+        "primary_pairs": out_dir / "s17_main_climatology_primary_pair_values.csv",
+        "metrics": out_dir / "s17_main_climatology_summary_metrics.csv",
+        "plot_png": out_dir / "s17_main_climatology_scatter.png",
+        "plot_pdf": out_dir / "s17_main_climatology_scatter.pdf",
+        "report": out_dir / "s17_main_climatology_report.md",
     }
 
 
