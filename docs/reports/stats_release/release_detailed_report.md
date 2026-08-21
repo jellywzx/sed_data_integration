@@ -4,60 +4,61 @@
 
 - Release package: `output/sed_reference_release`
 - Stats output: `output_other/stats_release`
-- Run started UTC: `2026-08-01T17:10:53+00:00`
-- Run finished UTC: `2026-08-01T17:12:14+00:00`
+- Run started UTC: `2026-08-14T06:56:04+00:00`
+- Run finished UTC: `2026-08-14T06:58:58+00:00`
 - Clean output before run: `True`
-- Release fingerprint: `a86853e582e3c6ea155a99453a00243ef2f889b4c58b2a4eeda089fa2b9e1107`
-- Stats script fingerprint: `004f9adaf6ed337361fbb3f9ca413dacc9fb7266f22756a659561e62a052ed9b`
+- Release fingerprint: `63bddc765563716ca24c5db2bb64b355045b54d168c978bf4f214b3e16adcc8a`
+- Stats script fingerprint: `be515599bc9eca0951715d6cec9c25d0bec2e1048481e5aeb288d5d6d50c41d8`
 
 ## Run Status
 
 - Modules requested: 8
 - Module failures: 0
-- Missing release-capable parity outputs: 0
+- Missing release-capable parity outputs: 3
 - Unsupported release-only parity outputs: 7
 
 | module | return code | started utc | finished utc |
 |---|---|---|---|
-| inventory | 0 | 2026-08-01T17:10:54+00:00 | 2026-08-01T17:11:03+00:00 |
-| spatial | 0 | 2026-08-01T17:11:03+00:00 | 2026-08-01T17:11:20+00:00 |
-| temporal | 0 | 2026-08-01T17:11:20+00:00 | 2026-08-01T17:11:37+00:00 |
-| source_dataset_layers | 0 | 2026-08-01T17:11:37+00:00 | 2026-08-01T17:11:42+00:00 |
-| source_contribution | 0 | 2026-08-01T17:11:42+00:00 | 2026-08-01T17:11:51+00:00 |
-| basin_diagnostics | 0 | 2026-08-01T17:11:51+00:00 | 2026-08-01T17:11:54+00:00 |
-| variable_summary | 0 | 2026-08-01T17:11:54+00:00 | 2026-08-01T17:12:08+00:00 |
-| qc_flags | 0 | 2026-08-01T17:12:08+00:00 | 2026-08-01T17:12:14+00:00 |
+| inventory | 0 | 2026-08-14T06:56:04+00:00 | 2026-08-14T06:56:10+00:00 |
+| spatial | 0 | 2026-08-14T06:56:10+00:00 | 2026-08-14T06:56:38+00:00 |
+| temporal | 0 | 2026-08-14T06:56:38+00:00 | 2026-08-14T06:57:06+00:00 |
+| source_dataset_layers | 0 | 2026-08-14T06:57:06+00:00 | 2026-08-14T06:57:12+00:00 |
+| source_contribution | 0 | 2026-08-14T06:57:12+00:00 | 2026-08-14T06:57:21+00:00 |
+| basin_diagnostics | 0 | 2026-08-14T06:57:21+00:00 | 2026-08-14T06:57:25+00:00 |
+| variable_summary | 0 | 2026-08-14T06:57:25+00:00 | 2026-08-14T06:57:48+00:00 |
+| qc_flags | 0 | 2026-08-14T06:57:48+00:00 | 2026-08-14T06:58:58+00:00 |
 
 ## Parity Manifest Summary
 
 | status | count |
 |---|---|
-| generated | 253 |
+| generated | 250 |
 | unsupported_release_only | 7 |
+| missing_release_capable | 3 |
 
 ## Detailed Module Reports
 
 | module | report | exists | size bytes | description |
 |---|---|---|---|---|
-| inventory | inventory/reports/release_inventory_stats.md | 1 | 7,696 | Release inventory and health report |
-| spatial | spatial/reports/spatial_coverage_stats.md | 1 | 10,602 | Spatial coverage report |
-| spatial | spatial/article_spatial_coverage_summary.md | 1 | 7,202 | Article spatial coverage summary |
-| temporal | temporal/reports/temporal_coverage_stats.md | 1 | 8,973 | Temporal coverage report |
-| temporal | temporal/article_temporal_coverage_report.md | 1 | 9,024 | Article temporal coverage report |
-| source_dataset_layers | source_dataset_layers/reports/source_dataset_layers.md | 1 | 5,805 | Source dataset layer report |
-| source_contribution | source_contribution/reports/source_contribution_report.md | 1 | 21,735 | Source contribution report |
-| basin_diagnostics | basin_diagnostics/spatial_match_error_detailed_report.md | 1 | 14,976 | Basin matching detailed report |
-| variable_summary | variable_summary/variable_coverage_results_report_ESSD.md | 1 | 13,622 | Variable coverage report |
-| qc_flags | qc_flags/article_qc_flag_report.md | 1 | 24,537 | QC flag report |
+| inventory | inventory/reports/release_inventory_stats.md | 1 | 7,142 | Release inventory and health report |
+| spatial | spatial/reports/spatial_coverage_stats.md | 1 | 10,483 | Spatial coverage report |
+| spatial | spatial/article_spatial_coverage_summary.md | 1 | 7,121 | Article spatial coverage summary |
+| temporal | temporal/reports/temporal_coverage_stats.md | 1 | 8,847 | Temporal coverage report |
+| temporal | temporal/article_temporal_coverage_report.md | 1 | 8,972 | Article temporal coverage report |
+| source_dataset_layers | source_dataset_layers/reports/source_dataset_layers.md | 1 | 5,733 | Source dataset layer report |
+| source_contribution | source_contribution/reports/source_contribution_report.md | 1 | 19,787 | Source contribution report |
+| basin_diagnostics | basin_diagnostics/spatial_match_error_detailed_report.md | 1 | 14,941 | Basin matching detailed report |
+| variable_summary | variable_summary/variable_coverage_results_report_ESSD.md | 1 | 29,527 | Variable coverage report |
+| qc_flags | qc_flags/article_qc_flag_report.md | 1 | 32,903 | QC flag report |
 
 ## Release Risks and QA Signals
 
-- Inventory path-leak fields with host-local paths: 5
+- Inventory path-leak fields with host-local paths: 2
 - NetCDF metadata dimensions with inactive entries: 0
 - Validation/file-existence contradictions: 0
-- Unresolved basin rows: 793
-- Records affected by unresolved basin rows: 790,303
-- Resolved basin point-flag anomalies: 102
+- Unresolved basin rows: 1,605
+- Records affected by unresolved basin rows: 758,512
+- Resolved basin point-flag anomalies: 168
 - Satellite source-variable rows with less than 1% present values: 4
 - Sparse time axes: annual, daily, monthly
 
@@ -67,38 +68,32 @@ Raw examples stay in `inventory/tables/path_leaks.csv`; this report does not ech
 
 | product | layer | field | n values | absolute path count | local path count |
 |---|---|---|---|---|---|
-| satellite_catalog | csv | resolved_candidate_path | 38,550 | 38,550 | 38,550 |
-| satellite_validation_catalog | csv | resolved_candidate_path | 38,550 | 38,550 | 38,550 |
-| satellite_nc | netcdf | resolved_candidate_path | 38,550 | 38,550 | 38,550 |
-| source_station_catalog | csv | source_station_paths | 3,913 | 3,913 | 3,913 |
-| master_nc | netcdf | source_station_paths | 3,913 | 3,913 | 3,913 |
-| satellite_catalog | csv | candidate_path | 38,550 | 0 | 0 |
-| satellite_validation_catalog | csv | candidate_path | 38,550 | 0 | 0 |
-| satellite_nc | netcdf | candidate_path | 38,550 | 0 | 0 |
+| source_station_catalog | csv | source_station_paths | 7,469 | 7,469 | 7,469 |
+| master_nc | netcdf | source_station_paths | 7,469 | 7,469 | 7,469 |
 
 ## Inactive Metadata Consistency
 
 | entity | nc dimension | nc unique | catalog rows | catalog unique | used unique | inactive nc entries |
 |---|---|---|---|---|---|---|
-| cluster_uid | 3,762 | 3,762 | 3,771 | 3,762 | 3,762 | 0 |
-| source_station_uid | 3,913 | 3,913 | 3,913 | 3,913 | 3,913 | 0 |
+| cluster_uid | 7,135 | 7,135 | 7,135 | 7,135 | 7,135 | 0 |
+| source_station_uid | 7,469 | 7,469 | 7,469 | 7,469 | 7,469 | 0 |
 
 ## Top Unresolved Basin Sources
 
 | source name | rows | unresolved rows | records | unresolved records | unresolved row percent | unresolved record percent |
 |---|---|---|---|---|---|---|
-| USGS | 887 | 297 | 1,662,326 | 540,624 | 33.48% | 32.52% |
-| HYDAT | 505 | 119 | 671,068 | 182,149 | 23.56% | 27.14% |
-| EUSEDcollab | 244 | 134 | 66,637 | 54,289 | 54.92% | 81.47% |
-| GFQA_v2 | 1,910 | 217 | 56,457 | 5,431 | 11.36% | 9.62% |
+| USGS | 889 | 295 | 1,690,433 | 543,790 | 33.18% | 32.17% |
+| HYDAT | 543 | 124 | 676,024 | 182,255 | 22.84% | 26.96% |
+| GFQA_v2 | 5,499 | 1,160 | 235,600 | 24,906 | 21.09% | 10.57% |
 | Robotham | 3 | 3 | 3,432 | 3,432 | 100% | 100% |
-| HYBAM | 12 | 4 | 11,826 | 2,675 | 33.33% | 22.62% |
-| Eurasian_River | 17 | 6 | 3,204 | 1,205 | 35.29% | 37.61% |
+| HYBAM | 12 | 4 | 9,404 | 2,392 | 33.33% | 25.44% |
+| Eurasian_River | 17 | 6 | 3,263 | 1,239 | 35.29% | 37.97% |
 | NERC | 4 | 3 | 624 | 465 | 75% | 74.52% |
 | Chao_Phraya_River | 7 | 1 | 348 | 23 | 14.29% | 6.61% |
-| GloRiSe | 77 | 8 | 103 | 9 | 10.39% | 8.74% |
+| GloRiSe | 77 | 8 | 649 | 9 | 10.39% | 1.39% |
+| Yajiang | 23 | 1 | 23 | 1 | 4.35% | 4.35% |
 
-_Showing first 10 of 18 rows._
+_Showing first 10 of 17 rows._
 
 ## Satellite Variable Coverage Watchlist
 

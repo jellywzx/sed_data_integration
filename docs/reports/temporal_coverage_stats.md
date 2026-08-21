@@ -8,7 +8,7 @@
 
 ## Headline
 
-- Matrix records with any Q/SSC/SSL value: 2,873,420
+- Matrix records with any Q/SSC/SSL value: 2,997,121
 - Matrix resolutions: daily, monthly, annual
 - Sparse time axes detected: annual, daily, monthly
 
@@ -16,33 +16,33 @@
 
 | product | resolution | station rows | cluster count | record count catalog | record count nc | time start | time end |
 |---|---|---|---|---|---|---|---|
-| matrix | daily | 1,596 | 1,596 | 2,746,665 | 2,746,665 | 1948-05-25 | 2025-10-21 |
-| matrix | monthly | 2,117 | 2,117 | 126,136 | 126,136 | 1938-01-15 | 2021-12-24 |
-| matrix | annual | 58 | 58 | 619 | 619 | 1912-01-01 | 2021-09-28 |
-| climatology | climatology | 1,322 | 0 | 1,322 | 1,322 | 1912-07-01 | 2010-07-01 |
+| matrix | daily | 7,087 | 7,087 | 2,993,390 | 2,993,390 | 1948-05-25 | 2025-10-21 |
+| matrix | monthly | 17 | 17 | 3,263 | 3,263 | 1938-01-15 | 2000-10-15 |
+| matrix | annual | 31 | 31 | 468 | 468 | 1912-01-01 | 2020-01-01 |
+| climatology | climatology | 1,361 | 0 | 1,361 | 1,361 | 1912-07-01 | 2010-07-01 |
 | satellite | all | 38,550 | 38,550 | 16,478,276 | 16,478,276 | 1984-01-15 | 2020-12-15 |
 
 ## Matrix Coverage by Resolution
 
 | resolution | first date | last date | time steps | active units | active clusters | record count any | record count Q | record count SSC | record count SSL | median record length steps | max record length steps |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| daily | 1948-05-25 | 2025-10-21 | 25,775 | 1,596 | 1,596 | 2,746,665 | 2,729,764 | 2,736,267 | 2,740,162 | 638 | 21,909 |
-| monthly | 1938-01-15 | 2021-12-24 | 11,533 | 2,117 | 2,117 | 126,136 | 126,093 | 125,972 | 123,000 | 34 | 9,557 |
-| annual | 1912-01-01 | 2021-09-28 | 239 | 58 | 58 | 619 | 499 | 619 | 499 | 5 | 109 |
+| daily | 1948-05-25 | 2025-10-21 | 25,775 | 7,087 | 7,087 | 2,993,390 | 2,781,406 | 2,982,992 | 2,791,804 | 37 | 21,909 |
+| monthly | 1938-01-15 | 2000-10-15 | 690 | 17 | 17 | 3,263 | 3,204 | 3,193 | 3,263 | 142 | 528 |
+| annual | 1912-01-01 | 2020-01-01 | 114 | 31 | 31 | 468 | 348 | 468 | 348 | 5 | 109 |
 
 ## Variable Coverage by Resolution
 
 | resolution | variable | active units | record count | first year | last year |
 |---|---|---|---|---|---|
-| daily | SSL | 1,558 | 2,740,162 | 1,948 | 2,025 |
-| daily | SSC | 1,596 | 2,736,267 | 1,948 | 2,025 |
-| daily | Q | 1,558 | 2,729,764 | 1,948 | 2,025 |
-| monthly | Q | 2,117 | 126,093 | 1,938 | 2,021 |
-| monthly | SSC | 2,117 | 125,972 | 1,938 | 2,021 |
-| monthly | SSL | 2,117 | 123,000 | 1,938 | 2,021 |
-| annual | SSC | 58 | 619 | 1,912 | 2,021 |
-| annual | Q | 34 | 499 | 1,912 | 2,021 |
-| annual | SSL | 34 | 499 | 1,912 | 2,021 |
+| daily | SSC | 7,087 | 2,982,992 | 1,948 | 2,025 |
+| daily | SSL | 3,427 | 2,791,804 | 1,948 | 2,025 |
+| daily | Q | 3,427 | 2,781,406 | 1,948 | 2,025 |
+| monthly | SSL | 17 | 3,263 | 1,938 | 2,000 |
+| monthly | Q | 17 | 3,204 | 1,938 | 2,000 |
+| monthly | SSC | 17 | 3,193 | 1,938 | 2,000 |
+| annual | SSC | 31 | 468 | 1,912 | 2,020 |
+| annual | Q | 7 | 348 | 1,912 | 2,020 |
+| annual | SSL | 7 | 348 | 1,912 | 2,020 |
 
 ## Time-Axis Diagnostics
 
@@ -51,29 +51,29 @@ Sparse axes mean the release matrix stores observation dates, not a dense regula
 | resolution | file name | n time | time start | time end | unique years | unique year months | expected regular periods | duplicate periods | axis interpretation |
 |---|---|---|---|---|---|---|---|---|---|
 | daily | sed_reference_timeseries_daily.nc | 25,775 | 1948-05-25 | 2025-10-21 | 77 | 857 | 28,274 | 0 | sparse_observation_date_axis |
-| monthly | sed_reference_timeseries_monthly.nc | 11,533 | 1938-01-15 | 2021-12-24 | 84 | 992 | 1,008 | 10,541 | sparse_observation_date_axis |
-| annual | sed_reference_timeseries_annual.nc | 239 | 1912-01-01 | 2021-09-28 | 110 | 164 | 110 | 129 | sparse_observation_date_axis |
+| monthly | sed_reference_timeseries_monthly.nc | 690 | 1938-01-15 | 2000-10-15 | 62 | 690 | 754 | 0 | sparse_observation_date_axis |
+| annual | sed_reference_timeseries_annual.nc | 114 | 1912-01-01 | 2020-01-01 | 109 | 114 | 109 | 5 | sparse_observation_date_axis |
 
 ## Record-Length Distribution
 
 | resolution | record length bin | unit count |
 |---|---|---|
 | annual | 0 | 0 |
-| annual | 1-10 | 50 |
-| annual | 11-30 | 5 |
+| annual | 1-10 | 26 |
+| annual | 11-30 | 2 |
 | annual | 31-100 | 2 |
 | annual | 101-365 | 1 |
 | annual | 366-3650 | 0 |
 | annual | >3650 | 0 |
 | daily | 0 | 0 |
-| daily | 1-10 | 245 |
-| daily | 11-30 | 59 |
-| daily | 31-100 | 103 |
-| daily | 101-365 | 226 |
-| daily | 366-3650 | 728 |
-| daily | >3650 | 235 |
+| daily | 1-10 | 1,332 |
+| daily | 11-30 | 1,846 |
+| daily | 31-100 | 2,497 |
+| daily | 101-365 | 432 |
+| daily | 366-3650 | 737 |
+| daily | >3650 | 243 |
 | monthly | 0 | 0 |
-| monthly | 1-10 | 97 |
+| monthly | 1-10 | 0 |
 
 _Showing first 16 of 21 rows._
 
@@ -81,32 +81,31 @@ _Showing first 16 of 21 rows._
 
 | resolution | n gt 10 years | n gt 20 years | n gt 30 years | n gt 50 years | n gt 100 years |
 |---|---|---|---|---|---|
-| daily | 1,351 | 1,309 | 1,292 | 1,262 | 1,189 |
-| monthly | 2,020 | 1,730 | 1,324 | 220 | 78 |
-| annual | 8 | 4 | 3 | 3 | 1 |
+| daily | 5,755 | 4,658 | 3,909 | 1,949 | 1,412 |
+| monthly | 17 | 17 | 16 | 16 | 16 |
+| annual | 5 | 4 | 3 | 3 | 1 |
 
 ## Top Source Temporal Coverage
 
 | source name | active units | first year | last year |
 |---|---|---|---|
-| USGS | 887 | 1,956 | 2,024 |
-| HYDAT | 505 | 1,948 | 1,997 |
-| Bayern | 34 | 1,965 | 2,025 |
-| EUSEDcollab | 244 | 1,987 | 2,021 |
-| GFQA_v2 | 1,901 | 1,995 | 2,021 |
+| USGS | 889 | 1,956 | 2,024 |
+| HYDAT | 543 | 1,948 | 2,019 |
+| Bayern | 37 | 1,965 | 2,025 |
+| GFQA_v2 | 5,499 | 1,965 | 2,023 |
+| Mekong_Delta | 4 | 2,005 | 2,017 |
 | HYBAM | 12 | 1,994 | 2,024 |
-| Mekong_Delta | 4 | 2,005 | 2,012 |
 | Robotham | 3 | 2,016 | 2,021 |
 | Eurasian_River | 17 | 1,938 | 2,000 |
 | Fukushima | 2 | 2,012 | 2,018 |
+| GloRiSe | 77 | 1,979 | 2,015 |
 | NERC | 4 | 2,013 | 2,014 |
 | Chao_Phraya_River | 7 | 1,912 | 2,020 |
 | Rhine | 12 | 1,990 | 2,011 |
 | Shashi_Jianli | 2 | 2,016 | 2,023 |
 | Huanghe | 24 | 2,015 | 2,019 |
-| GloRiSe | 77 | 1,979 | 2,012 |
 | Yajiang | 23 | 2,019 | 2,020 |
-| Myanmar | 6 | 2,017 | 2,019 |
+| Myanmar | 5 | 2,017 | 2,019 |
 
 ## Region by Resolution
 
@@ -115,23 +114,23 @@ _Showing first 16 of 21 rows._
 | North America | daily |
 | North America | daily |
 | Europe, Central Europe | daily |
-| North America | monthly |
-| Europe | monthly |
-| Europe | monthly |
-| Europe | monthly |
-| Asia, Southeast Asia | daily |
 | North America | daily |
+| Europe | daily |
+|  | daily |
+| Asia, Southeast Asia | daily |
+| Europe | daily |
+| North America | daily |
+| North America | daily |
+| Asia, South Asia | daily |
 | South America | daily |
+| Europe | daily |
+| Europe | daily |
 | Europe, Western Europe | daily |
-| Europe | monthly |
+| Europe | daily |
+| Europe | daily |
 | Europe, Eastern Europe | monthly |
-| South America | daily |
-| Asia, East Asia | daily |
-| Europe | monthly |
-| South America | daily |
-| Europe | monthly |
 
-_Showing first 18 of 34 rows._
+_Showing first 18 of 50 rows._
 
 ## Climatology Temporal Summary
 
