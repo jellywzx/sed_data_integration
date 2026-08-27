@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot in-situ/climatology and satellite source-dataset station locations.
+"""Plot released daily/monthly/annual source-dataset station locations.
 
 Output artifact names are derived from this script filename after removing
 the leading ``plot_`` prefix.
@@ -47,7 +47,7 @@ except Exception:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent.parent
-DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
+DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
 DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
 
 
@@ -64,10 +64,13 @@ FONT_SIZE_AXIS_LABEL = 13
 FONT_SIZE_LEGEND = 11
 FONT_SIZE_PANEL_LABEL = 18
 
-SOURCE_STATION_CSV = "source_station_catalog.csv"
-SOURCE_DATASET_CSV = "source_dataset_catalog.csv"
+STATION_CATALOG_CSV = "station_catalog.csv"
+RESOLUTION_NC_FILES = {
+    "daily": "sed_reference_timeseries_daily.nc",
+    "monthly": "sed_reference_timeseries_monthly.nc",
+    "annual": "sed_reference_timeseries_annual.nc",
+}
 # SATELLITE_CSV = "satellite_catalog.csv"
-CLIMATOLOGY_NC = "sed_reference_climatology.nc"
 
 UNKNOWN_DATASET_LABEL = "unknown dataset"
 SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
@@ -258,11 +261,11 @@ def write_checklist(
         "- PDF size check command: `pdfinfo {}`".format(pdf_path),
         "- Colorblind-safe status: Okabe-Ito extended + marker shapes + dark edges for dual encoding",
         "- Coblis/equivalent review: requires manual Coblis/equivalent review after export",
-        "- Legend completeness: colors, marker shapes, dark edges, transparency, and station counts explained",
-        "- Panel labels: `(a)` in-situ/climatology source datasets; `(b)` satellite source datasets",
-        "- Units and ranges: station counts use comma-separated integers; lat/lon in degrees",
+        "- Legend completeness: colors, marker shapes, dark edges, transparency, and source-point counts explained",
+        "- Panel labels: `(a)` released daily/monthly/annual source datasets",
+        "- Units and ranges: source-point counts use comma-separated integers; lat/lon in degrees",
         "- Map projection: Robinson (global map)",
-        "- Data filtering: panel (a) excludes satellite sources; panel (b) includes RiverSed, GSED, and Dethier satellite sources",
+        "- Data filtering: uses released daily/monthly/annual NetCDF files joined to station_catalog.csv; excludes climatology and satellite products",
         "- Plotting script: `{}`".format(script_copy_path.name),
         "- Plotting-data availability: {} CSV files".format(len(data_paths)),
     ]
@@ -287,11 +290,11 @@ def write_plotting_data(
     category_counts: Dict[str, int],
 ) -> List[Path]:
     outputs = [
-        _write_csv(points[["lat", "lon", "source_name", "category", "input_file"]],
+        _write_csv(points[["cluster_uid", "resolution", "lat", "lon", "source_name", "category", "input_file"]],
                     data_dir / "{}_panel_a_source_points.csv".format(figure_id)),
         _write_csv(catalog[catalog["source_name"].isin(top_sources)],
                     data_dir / "{}_panel_a_top_sources.csv".format(figure_id)),
-        _write_csv(pd.DataFrame(list(category_counts.items()), columns=["category", "n_stations"]),
+        _write_csv(pd.DataFrame(list(category_counts.items()), columns=["category", "n_source_points"]),
                     data_dir / "{}_panel_a_category_counts.csv".format(figure_id)),
         # _write_csv(satellite_points[["lat", "lon", "source", "input_file"]],
         #             data_dir / "{}_panel_b_satellite_points.csv".format(figure_id)),
@@ -307,7 +310,7 @@ def write_plotting_data(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot global source-station distributions for in-situ/climatology and satellite source datasets."
+        description="Plot global source distributions from released daily/monthly/annual station products."
     )
     parser.add_argument("--release-dir", type=Path, default=DEFAULT_RELEASE_DIR)
     parser.add_argument("--figures-root", type=Path, default=DEFAULT_FIGURES_ROOT,
@@ -377,35 +380,47 @@ def canonical_source_name(name: object, catalog_names: Iterable[str]) -> str:
     return text
 
 
-def read_dataset_catalog(release_dir: Path) -> pd.DataFrame:
-    path = require_file(release_dir / SOURCE_DATASET_CSV)
+def split_sources(value: object) -> list[str]:
+    sources = []
+    for part in clean_text(value).replace(",", "|").split("|"):
+        source = canonical_source_name(part, [])
+        if source and source not in sources:
+            sources.append(source)
+    return sources
+
+
+def read_station_catalog(release_dir: Path) -> pd.DataFrame:
+    path = require_file(release_dir / STATION_CATALOG_CSV)
     catalog = pd.read_csv(path)
-    required = {"source_name", "n_source_stations"}
+    required = {"cluster_uid", "resolution", "sources_used"}
     missing = sorted(required.difference(catalog.columns))
     if missing:
         raise ValueError("{} is missing columns: {}".format(path, ", ".join(missing)))
-    catalog["source_name"] = catalog["source_name"].map(clean_text)
-    catalog["n_source_stations"] = pd.to_numeric(catalog["n_source_stations"], errors="coerce").fillna(0).astype(int)
-    return catalog[catalog["source_name"].ne("")].copy()
 
+    out = catalog[["cluster_uid", "resolution", "sources_used"]].copy()
+    out["cluster_uid"] = out["cluster_uid"].map(clean_text)
+    out["resolution"] = out["resolution"].map(clean_text)
+    out["sources_used"] = out["sources_used"].map(clean_text)
+    out = out[out["cluster_uid"].ne("") & out["resolution"].ne("")].copy()
 
-def read_source_station_catalog(release_dir: Path, catalog_names: Iterable[str]) -> pd.DataFrame:
-    path = require_file(release_dir / SOURCE_STATION_CSV)
-    frame = pd.read_csv(path)
-    required = {"source_name", "source_station_lat", "source_station_lon"}
-    missing = sorted(required.difference(frame.columns))
-    if missing:
-        raise ValueError("{} is missing columns: {}".format(path, ", ".join(missing)))
-
-    out = pd.DataFrame(
-        {
-            "source_name": frame["source_name"].map(lambda x: canonical_source_name(x, catalog_names)),
-            "lat": pd.to_numeric(frame["source_station_lat"], errors="coerce"),
-            "lon": pd.to_numeric(frame["source_station_lon"], errors="coerce"),
-            "input_file": SOURCE_STATION_CSV,
-        }
-    )
-    return out[out["source_name"].ne("")].copy()
+    duplicate_keys = out.duplicated(["cluster_uid", "resolution"], keep=False)
+    if duplicate_keys.any():
+        examples = out.loc[duplicate_keys, ["cluster_uid", "resolution"]].drop_duplicates().head(10)
+        raise ValueError(
+            "{} has duplicate cluster_uid + resolution rows:\n{}".format(
+                path,
+                examples.to_string(index=False),
+            )
+        )
+    if out["sources_used"].eq("").any():
+        examples = out.loc[out["sources_used"].eq(""), ["cluster_uid", "resolution"]].head(10)
+        raise ValueError(
+            "{} has rows with empty sources_used:\n{}".format(
+                path,
+                examples.to_string(index=False),
+            )
+        )
+    return out
 
 
 # def read_satellite_catalog(release_dir: Path) -> pd.DataFrame:
@@ -429,55 +444,95 @@ def read_source_station_catalog(release_dir: Path, catalog_names: Iterable[str])
 #     return out.reset_index(drop=True)
 
 
-def read_nc_source_points(release_dir: Path, file_name: str, catalog_names: Iterable[str]) -> pd.DataFrame:
+def read_release_nc_points(release_dir: Path, resolution: str, file_name: str) -> pd.DataFrame:
     path = require_file(release_dir / file_name)
     with nc4.Dataset(str(path), "r") as ds:
-        for var_name in ["lat", "lon", "source", "station_index"]:
+        for var_name in ["cluster_uid", "lat", "lon"]:
             if var_name not in ds.variables:
                 raise ValueError("{} is missing variable: {}".format(path, var_name))
 
+        cluster_uids = [clean_text(value) for value in ds.variables["cluster_uid"][:]]
         lat = np.asarray(ds.variables["lat"][:], dtype="float64")
         lon = np.asarray(ds.variables["lon"][:], dtype="float64")
-        station_index = np.asarray(ds.variables["station_index"][:], dtype="int32")
-        raw_sources = ds.variables["source"][:]
 
-    n_stations = len(lat)
-    if not (len(lon) == n_stations):
-        raise ValueError("{} has inconsistent lat/lon lengths".format(path))
+    n_stations = len(cluster_uids)
+    if not (len(lat) == len(lon) == n_stations):
+        raise ValueError("{} has inconsistent cluster_uid/lat/lon lengths".format(path))
 
-    # Build per-station source labels by mapping records -> stations via station_index.
-    # Each record has a source name string and a station_index pointing to the station
-    # it belongs to. The first record that maps to a given station determines its source.
-    source_labels = np.array([""] * n_stations, dtype=object)
-    for i in range(len(station_index)):
-        sidx = station_index[i]
-        if 0 <= sidx < n_stations and source_labels[sidx] == "":
-            source_labels[sidx] = canonical_source_name(raw_sources[i], catalog_names)
-
-    out = pd.DataFrame(
+    return pd.DataFrame(
         {
-            "source_name": source_labels,
+            "cluster_uid": cluster_uids,
+            "resolution": resolution,
             "lat": lat,
             "lon": lon,
             "input_file": file_name,
         }
     )
-    return out[out["source_name"].ne("")].copy()
 
 
-def load_all_points(release_dir: Path, catalog: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-    catalog_names = catalog["source_name"].tolist()
-    frames = [
-        read_source_station_catalog(release_dir, catalog_names),
-        read_nc_source_points(release_dir, CLIMATOLOGY_NC, catalog_names),
-        # Satellite NC intentionally excluded — only in-situ data
-    ]
-    input_counts = pd.concat(frames, ignore_index=True).groupby("input_file").size()
-    points = pd.concat(frames, ignore_index=True)
+def explode_sources(frame: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in frame.iterrows():
+        for source_name in split_sources(row["sources_used"]):
+            rows.append(
+                {
+                    "cluster_uid": row["cluster_uid"],
+                    "resolution": row["resolution"],
+                    "lat": row["lat"],
+                    "lon": row["lon"],
+                    "source_name": source_name,
+                    "input_file": row["input_file"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_source_catalog(points: pd.DataFrame) -> pd.DataFrame:
+    if points.empty:
+        return pd.DataFrame(columns=["source_name", "n_source_points"])
+    return (
+        points.groupby("source_name", dropna=False)
+        .size()
+        .rename("n_source_points")
+        .reset_index()
+        .sort_values(["n_source_points", "source_name"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+
+def load_all_points(release_dir: Path) -> Tuple[pd.DataFrame, pd.Series]:
+    station_catalog = read_station_catalog(release_dir)
+    input_counts = {STATION_CATALOG_CSV: len(station_catalog)}
+    frames = []
+
+    for resolution, file_name in RESOLUTION_NC_FILES.items():
+        nc_points = read_release_nc_points(release_dir, resolution, file_name)
+        input_counts[file_name] = len(nc_points)
+        merged = nc_points.merge(
+            station_catalog,
+            on=["cluster_uid", "resolution"],
+            how="left",
+            validate="one_to_one",
+            indicator=True,
+        )
+        missing = merged["_merge"].ne("both")
+        if missing.any():
+            examples = merged.loc[missing, ["cluster_uid", "resolution"]].head(10)
+            raise ValueError(
+                "{} stations are missing from {} for {}:\n{}".format(
+                    int(missing.sum()),
+                    STATION_CATALOG_CSV,
+                    file_name,
+                    examples.to_string(index=False),
+                )
+            )
+        frames.append(explode_sources(merged.drop(columns=["_merge"])))
+
+    points = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     points = points[valid_latlon(points)].copy()
     points["lat"] = pd.to_numeric(points["lat"], errors="coerce")
     points["lon"] = pd.to_numeric(points["lon"], errors="coerce")
-    return points.reset_index(drop=True), input_counts
+    return points.reset_index(drop=True), pd.Series(input_counts, dtype="int64")
 
 
 def select_top_sources(catalog: pd.DataFrame, top_n: int, exclude_names: set[str] = None) -> List[str]:
@@ -486,8 +541,9 @@ def select_top_sources(catalog: pd.DataFrame, top_n: int, exclude_names: set[str
     filtered = catalog.copy()
     if exclude_names:
         filtered = filtered[~filtered["source_name"].isin(exclude_names)]
+    count_col = "n_source_points" if "n_source_points" in filtered.columns else "n_source_stations"
     return (
-        filtered.sort_values(["n_source_stations", "source_name"], ascending=[False, True])
+        filtered.sort_values([count_col, "source_name"], ascending=[False, True])
         .head(top_n)["source_name"]
         .tolist()
     )
@@ -503,10 +559,11 @@ def add_categories(points: pd.DataFrame, top_sources: List[str]) -> pd.DataFrame
 
 def validate_counts(points: pd.DataFrame, catalog: pd.DataFrame) -> pd.DataFrame:
     extracted = points.groupby("source_name").size().rename("extracted_n").reset_index()
-    check = catalog[["source_name", "n_source_stations"]].merge(extracted, on="source_name", how="outer")
-    check["n_source_stations"] = check["n_source_stations"].fillna(0).astype(int)
+    count_col = "n_source_points" if "n_source_points" in catalog.columns else "n_source_stations"
+    check = catalog[["source_name", count_col]].merge(extracted, on="source_name", how="outer")
+    check[count_col] = check[count_col].fillna(0).astype(int)
     check["extracted_n"] = check["extracted_n"].fillna(0).astype(int)
-    check["diff"] = check["extracted_n"] - check["n_source_stations"]
+    check["diff"] = check["extracted_n"] - check[count_col]
     return check.sort_values(["diff", "source_name"]).reset_index(drop=True)
 
 
@@ -826,23 +883,24 @@ def print_summary(
     top_sources: List[str],
 ) -> None:
     category_counts = points.groupby("category").size().to_dict()
-    catalog_counts = catalog.set_index("source_name")["n_source_stations"].to_dict()
+    count_col = "n_source_points" if "n_source_points" in catalog.columns else "n_source_stations"
+    catalog_counts = catalog.set_index("source_name")[count_col].to_dict()
     top_set = set(top_sources)
 
-    print("Input station rows:")
+    print("Input rows:")
     for name, count in input_counts.sort_index().items():
         print("  {}: {:,}".format(name, int(count)))
 
-    print("\nTop source datasets by n_source_stations (in-situ only):")
+    print("\nTop source datasets by released cluster-resolution points:")
     for source in top_sources:
         print("  {}: {:,}".format(source, int(catalog_counts.get(source, 0))))
     other_counts = {name: count for name, count in category_counts.items() if name not in top_set}
     if other_counts:
-        print("\nOther in-situ source datasets (shown separately):")
+        print("\nOther released source datasets (shown separately):")
         for source, count in sorted(other_counts.items()):
             print("  {}: {:,}".format(source, int(count)))
     print("\nFinal valid lat/lon points: {:,}".format(len(points)))
-    print("\nPanel (a) excludes satellite sources.")
+    print("\nInputs exclude climatology and satellite products.")
     # print("\nPanel (b) satellite source datasets:")
     # for source in SATELLITE_SOURCE_ORDER:
     #     print("  {}: {:,}".format(source, int(satellite_counts.get(source, 0))))
@@ -862,8 +920,8 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
     script_copy_path = figure_dirs["scripts"] / "plot_{}.py".format(figure_id)
     checklist_path = figure_dirs["checklists"] / "{}_checklist.md".format(figure_id)
 
-    catalog = read_dataset_catalog(release_dir)
-    points, input_counts = load_all_points(release_dir, catalog)
+    points, input_counts = load_all_points(release_dir)
+    catalog = build_source_catalog(points)
     # satellite_points = read_satellite_catalog(release_dir)
     top_sources = select_top_sources(catalog, top_n, exclude_names=SATELLITE_DATASETS)
     points = add_categories(points, top_sources)
@@ -871,9 +929,9 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
     count_check = validate_counts(points, catalog)
     mismatches = count_check[count_check["diff"].ne(0)]
     if mismatches.empty:
-        print("Source station count check: OK")
+        print("Release source point count check: OK")
     else:
-        print("Warning: source station count mismatches:")
+        print("Warning: release source point count mismatches:")
         print(mismatches.to_string(index=False))
 
     category_counts = points.groupby("category").size().to_dict()
