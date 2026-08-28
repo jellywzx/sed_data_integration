@@ -7,7 +7,7 @@ Falls back to s5_basin_clustered_stations.csv if a file is unreadable.
 
 Usage:
     cd scripts_basin_test
-    /share/home/dq134/.conda/envs/wzx/bin/python3 tools/patch_quality_order_observation_type.py
+    python3 tools/patch_quality_order_observation_type.py
 """
 
 from __future__ import annotations

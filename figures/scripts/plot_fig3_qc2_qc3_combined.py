@@ -30,10 +30,10 @@ from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 # ============================================================
-# Absolute paths
+# Default paths
 # ============================================================
 
-PROJECT_ROOT = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 HYDAT_QC_DIR = (
     PROJECT_ROOT

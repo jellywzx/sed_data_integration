@@ -11,9 +11,10 @@ import pandas as pd
 import re, sys
 from pathlib import Path
 
-# Paths — absolute
-CSV_PATH = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal/source_dataset_catalog.csv")
-XLSX_PATH = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/manuscript_source_table_cleaned_minimal_filled_organized.xlsx")
+# Paths
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+CSV_PATH = PROJECT_DIR / "output" / "sed_reference_release_minimal" / "source_dataset_catalog.csv"
+XLSX_PATH = PROJECT_DIR / "docs" / "manuscript_source_table_cleaned_minimal_filled_organized.xlsx"
 
 
 def normalize(name):

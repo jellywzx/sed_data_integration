@@ -20,10 +20,12 @@ import pandas as pd
 # CONFIG：在这里改路径和列名
 # =========================
 
-INPUT_CSV = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/s5_basin_clustered_stations.csv")
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
-OUT_LONG_CSV = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/s5_basin_status_dataset_summary_long.csv")
-OUT_PIVOT_CSV = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/s5_basin_status_dataset_summary_pivot.csv")
+INPUT_CSV = PROJECT_DIR / "output" / "s5_basin_clustered_stations.csv"
+
+OUT_LONG_CSV = PROJECT_DIR / "output" / "s5_basin_status_dataset_summary_long.csv"
+OUT_PIVOT_CSV = PROJECT_DIR / "output" / "s5_basin_status_dataset_summary_pivot.csv"
 
 DATASET_COL = "source"
 STATUS_COL = "basin_status"

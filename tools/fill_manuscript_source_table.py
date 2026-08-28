@@ -35,7 +35,7 @@ MINIMAL_SOURCE_STATION_CATALOG = "source_station_catalog.csv"
 MINIMAL_SOURCE_DATASET_CATALOG = "source_dataset_catalog.csv"
 
 MANUSCRIPT_TABLE_CANDIDATES = [
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/manuscript_source_table_cleaned.csv",
+    str(Path(__file__).resolve().parents[1] / "docs" / "manuscript_source_table_cleaned.csv"),
 ]
 
 # If None, the script writes <input_stem>_minimal_filled.csv beside the input table.

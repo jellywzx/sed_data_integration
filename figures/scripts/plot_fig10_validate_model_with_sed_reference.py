@@ -16,6 +16,7 @@ station-level compare_*.csv files) and produces a 4-panel figure:
 Edit the DEFAULT_* constants at the top of this file to configure before running.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -51,8 +52,9 @@ VARIABLES = {
 # ============================================================
 # Default configuration (hardcoded, edit before running)
 # ============================================================
-DEFAULT_INPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/validate_model_with_sed_reference"
-DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/"
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_INPUT_DIR = str(PROJECT_DIR / "output_other" / "validate_model_with_sed_reference")
+DEFAULT_OUTPUT_DIR = str(PROJECT_DIR)
 DEFAULT_VARIABLE = "SSC"
 DEFAULT_RESOLUTION = "daily"
 DEFAULT_EXAMPLE_CLUSTER_UID = "SED000107"
@@ -65,10 +67,10 @@ DEFAULT_REGION_LAT_MIN = -20
 DEFAULT_REGION_LAT_MAX = 5
 DEFAULT_REGION_LON_MIN = -80
 DEFAULT_REGION_LON_MAX = -45
-DEFAULT_MERIT_HYDRO_DIR = "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
+DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1")
 
 # --- Extract station data directory for Porto Velho Q & SSL panels ---
-DEFAULT_EXTRACT_DIR = "/share/home/dq134/wzx/sediment/CaMa-Flood_v4-sed_1125/out/GRFR_0p05_3h_1222/extractStation"
+DEFAULT_EXTRACT_DIR = os.environ.get("MODEL_EXTRACT_DIR", "/path/to/model/extractStation")
 
 # --- Font size configuration ---
 FONT_TITLE = 18
@@ -700,7 +702,7 @@ def plot_panel_d_SSL(ax, extract_dir: str) -> None:
 
 _LAND_POLYGONS_CACHE_DOMAIN: list = None
 _LAND_POLYGON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_land.geojson"
-_LAND_POLYGON_PATH = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/plot/ne_110m_land.geojson")
+_LAND_POLYGON_PATH = PROJECT_DIR / "plot" / "ne_110m_land.geojson"
 
 
 def _to_lon180_domain(lon):

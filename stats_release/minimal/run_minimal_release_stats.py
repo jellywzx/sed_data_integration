@@ -21,7 +21,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-_SCRIPTS_BASIN = Path('/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test')
+_SCRIPTS_BASIN = Path(__file__).resolve().parents[2]
 if __package__ in {None, ""}:
     sys.path.insert(0, str(_SCRIPTS_BASIN))
 

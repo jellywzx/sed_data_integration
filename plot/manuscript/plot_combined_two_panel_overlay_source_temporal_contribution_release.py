@@ -15,9 +15,13 @@ import sys
 from pathlib import Path
 from typing import Tuple
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
-os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
-ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
+if CONDA_LIB and os.path.isdir(CONDA_LIB):
+    os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import numpy as np
 import pandas as pd

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Plot one distance-only MERIT basin matching example.
 
-The script intentionally uses absolute default paths because the release
-catalog, MERIT Hydro files, and project source tree live in different places.
+The script uses project-relative defaults and reads MERIT_DIR from the
+environment when local MERIT Hydro files live outside the repository.
 It reuses basin_tracer.UpstreamBasinTracer so candidate reach distances match
 the production S4 basin-matching logic.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
@@ -29,10 +30,8 @@ from shapely.geometry import Point
 from shapely.ops import nearest_points, transform
 
 
-SCRIPT_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
-)
-MERIT_DIR = Path("/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1")
+SCRIPT_ROOT = Path(__file__).resolve().parents[2]
+MERIT_DIR = Path(os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"))
 RELEASE_DIR = SCRIPT_ROOT / "output" / "sed_reference_release"
 STATION_CATALOG = RELEASE_DIR / "station_catalog.csv"
 OUT_DIR = RELEASE_DIR / "figures" / "distance_only_matching"

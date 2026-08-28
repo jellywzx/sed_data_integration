@@ -9,8 +9,9 @@ Usage:
 # ---- Library path setup: MUST happen before any extension-module imports ----
 import os as _os
 import ctypes as _ctypes
+from pathlib import Path
 from pathlib import Path as _Path
-_conda_lib = "/share/home/dq134/.conda/envs/wzx/lib"
+_conda_lib = _os.environ.get("SED_CONDA_LIB", "")
 if _os.path.isdir(_conda_lib):
     _os.environ["LD_LIBRARY_PATH"] = _conda_lib + _os.pathsep + _os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -49,9 +50,10 @@ from stats_release.release_io import read_numeric_var, read_text_var
 
 
 
-# ---- Absolute default paths for minimal release ----
-_DEFAULT_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
-_DEFAULT_OUT_DIR     = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/stats_release_minimal")
+# ---- Default paths for minimal release ----
+_SCRIPTS_BASIN = Path(__file__).resolve().parents[2]
+_DEFAULT_RELEASE_DIR = _SCRIPTS_BASIN / "output" / "sed_reference_release_minimal"
+_DEFAULT_OUT_DIR     = _SCRIPTS_BASIN / "output_other" / "stats_release_minimal"
 # ----------------------------------------------------------------
 
 def scan_by_year(ctx, resolution: str, file_name: str, row_chunk_size: int = 128) -> pd.DataFrame:

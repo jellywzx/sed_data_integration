@@ -2,8 +2,8 @@
 """Build S8 release-level spatial coverage statistics for the ESSD manuscript.
 
 This script is intentionally fixed-configuration and release-product oriented.
-Run it on node113 only; it reads the S8 release package and writes statistics
-under output_other/spatial_coverage_stats/tables.
+It reads the S8 release package and writes statistics under
+output_other/spatial_coverage_stats/tables.
 """
 
 import math
@@ -20,14 +20,8 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 
-RELEASE_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output/sed_reference_release"
-)
-OUTPUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output_other/spatial_coverage_stats"
-)
+RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
+OUTPUT_DIR = PROJECT_DIR / "output_other" / "spatial_coverage_stats"
 TABLES_DIR = OUTPUT_DIR / "tables"
 FIGURES_DIR = OUTPUT_DIR / "figures"
 
@@ -37,15 +31,9 @@ SATELLITE_CATALOG = RELEASE_DIR / "satellite_catalog.csv"
 CLUSTER_POINTS_GPKG = RELEASE_DIR / "sed_reference_cluster_points.gpkg"
 CLUSTER_BASINS_GPKG = RELEASE_DIR / "sed_reference_cluster_basins.gpkg"
 
-REQUIRED_HOST = "node111"
-PYTHON = "/share/home/dq134/.conda/envs/wzx/bin/python3"
-RUN_HINT = (
-    "ssh node111 'cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-    "Output_r/scripts_basin_test && {py} stats/spatial_coverage_stats.py && "
-    "{py} stats/plot_spatial_coverage_stats.py'"
-).format(
-    py=PYTHON
-)
+REQUIRED_HOST = ""
+PYTHON = "python3"
+RUN_HINT = "{py} stats/spatial_coverage_stats.py && {py} plot/plot_spatial_coverage_stats.py".format(py=PYTHON)
 
 AREA_COLUMN = "basin_area"
 RESOLUTION_ORDER = ("daily", "monthly", "annual")
@@ -66,11 +54,14 @@ METRIC_COLUMNS = ("section", "metric", "value", "unit", "source_file", "notes")
 
 
 def require_node113() -> None:
+    required_host = REQUIRED_HOST or ""
+    if not required_host:
+        return
     host = socket.gethostname().split(".")[0]
-    if host != REQUIRED_HOST:
+    if host != required_host:
         raise SystemExit(
-            "This spatial coverage script must run on node113, not {}.\n"
-            "Use:\n  {}".format(host, RUN_HINT)
+            "This spatial coverage script must run on {}, not {}.\n"
+            "Use:\n  {}".format(required_host, host, RUN_HINT)
         )
 
 
@@ -1198,7 +1189,7 @@ def main() -> int:
     # =============================================================================
     # Copy markdown report to docs/reports only
     # =============================================================================
-    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir = PROJECT_DIR / "docs" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     md_report = OUTPUT_DIR / "article_spatial_coverage_summary.md"
     if md_report.is_file():

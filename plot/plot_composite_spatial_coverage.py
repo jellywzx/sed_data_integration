@@ -14,9 +14,13 @@ import ctypes
 from pathlib import Path
 from typing import Tuple
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
-os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
-ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
+if CONDA_LIB and os.path.isdir(CONDA_LIB):
+    os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import numpy as np
 import pandas as pd
@@ -49,10 +53,8 @@ OUTPUT_DIR = PROJECT_DIR / "output_other/spatial_coverage_stats"
 TABLES_DIR = OUTPUT_DIR / "tables"
 FIGURES_DIR = OUTPUT_DIR / "figures"
 
-WORLD_BOUNDARIES = Path(
-    "/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/"
-    "pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"
-)
+_world_boundaries = os.environ.get("NATURALEARTH_LOWRES_SHP", "")
+WORLD_BOUNDARIES = Path(_world_boundaries) if _world_boundaries else None
 COASTLINE_GEOJSON = SCRIPT_DIR / "ne_110m_coastline.geojson"
 
 CLIMATOLOGY_NC = RELEASE_DIR / "sed_reference_climatology.nc"

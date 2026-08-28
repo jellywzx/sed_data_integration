@@ -12,6 +12,7 @@ s0：审计所有 QC NC 文件的全局属性结构。
 """
 
 import csv
+import os
 import sys
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
@@ -22,7 +23,7 @@ from pathlib import Path
 # =============================================================================
 
 # QC 数据根目录（包含各数据集子文件夹，其下含 qc/*.nc）
-ROOT_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r")
+ROOT_DIR = Path(os.environ.get("OUTPUT_R_ROOT", str(Path(__file__).resolve().parents[2])))
 
 # 并行进程数（None = 自动使用全部 CPU 核数）
 WORKERS = 32
@@ -180,4 +181,3 @@ def run_audit():
 
 if __name__ == "__main__":
     run_audit()
-

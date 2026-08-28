@@ -14,9 +14,13 @@ from typing import Dict, List, Tuple
 import ctypes
 import os
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
-os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
-ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
+if CONDA_LIB and os.path.isdir(CONDA_LIB):
+    os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import numpy as np
 import pandas as pd
@@ -35,7 +39,7 @@ DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
 OVERLAY_OUTPUT_STEM = "fig_source_spatial_temporal_contribution_overlay_release"
 OTHER_PRODUCTS_OUTPUT_STEM = "fig_other_products_source_contribution_overlay_release"
 
-DEFAULT_OUTPUT_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "figures"
 
 OVERLAY_FIGSIZE = (10.8, 7.0)
 DPI = 300

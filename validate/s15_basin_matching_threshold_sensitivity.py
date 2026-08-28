@@ -1240,7 +1240,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable release-aligned cluster filtering (report all re-clustered clusters).",
     )
-    parser.add_argument("--merit-dir", type=Path, default=Path("/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"))
+    parser.add_argument("--merit-dir", type=Path, default=DEFAULT_MERIT_DIR)
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument(
         "--scope",
@@ -1534,4 +1534,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

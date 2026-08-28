@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
+SCRIPT_DIR="${SCRIPT_DIR:-${LS_SUBCWD:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 cd "${SCRIPT_DIR}"
 
 mkdir -p output/logs/s4_lsf output/s4_shards

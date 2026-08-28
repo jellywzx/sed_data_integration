@@ -2779,8 +2779,6 @@ def _default_geo_boundary_file():
     candidates = [
         _package_fixture_boundary_path("pyogrio"),
         _package_fixture_boundary_path("geopandas"),
-        Path("/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"),
-        Path("/share/home/dq134/.local/share/mamba/envs/delineator310/lib/python3.10/site-packages/geopandas/datasets/naturalearth_lowres/naturalearth_lowres.shp"),
     ]
     for path in candidates:
         if path and path.is_file():

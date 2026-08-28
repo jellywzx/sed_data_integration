@@ -13,6 +13,7 @@ assembled into a dict inside main(). Edit the default values before running.
 """
 
 import math
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -67,7 +68,9 @@ VARIABLES = {
 # ──────────────────────────────────────────────
 
 # --- 模型 NetCDF ---
-DEFAULT_MODEL_NC = "/share/home/dq134/wzx/CoLM/cases/sed_test_tune2/history"                           # 模型 NetCDF 文件路径（必填）
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+DEFAULT_MODEL_NC = os.environ.get("MODEL_NC", "/path/to/model.nc")  # 模型 NetCDF 文件路径（必填）
 DEFAULT_MODEL_TIME_NAME = "time"                # 模型时间坐标名
 DEFAULT_MODEL_LAT_NAME = "lat"                  # 模型纬度变量/坐标名
 DEFAULT_MODEL_LON_NAME = "lon"                  # 模型经度变量/坐标名
@@ -83,7 +86,7 @@ DEFAULT_MODEL_SSC_FACTOR = 2650000.0            # → mg/L
 DEFAULT_MODEL_SSL_FACTOR = 228960.0             # → ton/day
 
 # --- 参考数据 ---
-DEFAULT_REFERENCE_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release"
+DEFAULT_REFERENCE_DIR = str(PROJECT_DIR / "output" / "sed_reference_release")
 DEFAULT_RESOLUTION = "daily"                    # 参考时间分辨率：daily / monthly / annual
 DEFAULT_ALLOWED_FLAGS = "0,1,2"                 # 保留的参考数据质量标记（逗号分隔）
 
@@ -97,7 +100,7 @@ DEFAULT_START_DATE = "1995-01-01"               # 验证起始日期（空 = 不
 DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不限制）
 
 # --- 其他 ---
-DEFAULT_OUTPUT_DIR = "./validation_results"     # 输出目录路径（必填）
+DEFAULT_OUTPUT_DIR = str(PROJECT_DIR / "output_other" / "validate_model_with_sed_reference")
 DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
 DEFAULT_MAKE_PLOTS = False                      # 是否输出逐对比 PNG 图
 
@@ -425,31 +428,29 @@ def maybe_plot_compare(compare_df: pd.DataFrame, title: str, ylabel: str, out_pn
 
 
 def main() -> None:
-    # ── Assemble configuration ─────────────────┐
-    cfg = {                                       │
-        "model_nc": DEFAULT_MODEL_NC,             │
-        "model_time_name": DEFAULT_MODEL_TIME_NAME,│
-        "model_lat_name": DEFAULT_MODEL_LAT_NAME, │
-        "model_lon_name": DEFAULT_MODEL_LON_NAME, │
-        "model_q_var": DEFAULT_MODEL_Q_VAR,       │
-        "model_ssc_var": DEFAULT_MODEL_SSC_VAR,   │
-        "model_ssl_var": DEFAULT_MODEL_SSL_VAR,   │
-        "model_q_factor": DEFAULT_MODEL_Q_FACTOR, │
-        "model_ssc_factor": DEFAULT_MODEL_SSC_FACTOR,│
-        "model_ssl_factor": DEFAULT_MODEL_SSL_FACTOR,│
-        "reference_dir": DEFAULT_REFERENCE_DIR,   │
-        "resolution": DEFAULT_RESOLUTION,         │
-        "allowed_flags": DEFAULT_ALLOWED_FLAGS,   │
-        "min_reference_points": DEFAULT_MIN_REFERENCE_POINTS,│
-        "min_paired_points": DEFAULT_MIN_PAIRED_POINTS,│
-        "max_grid_distance_km": DEFAULT_MAX_GRID_DISTANCE_KM,│
-        "start_date": DEFAULT_START_DATE,         │
-        "end_date": DEFAULT_END_DATE,             │
-        "output_dir": DEFAULT_OUTPUT_DIR,         │
-        "max_stations": DEFAULT_MAX_STATIONS,     │
-        "make_plots": DEFAULT_MAKE_PLOTS,         │
-    }                                              │
-    # ────────────────────────────────────────────┘
+    cfg = {
+        "model_nc": DEFAULT_MODEL_NC,
+        "model_time_name": DEFAULT_MODEL_TIME_NAME,
+        "model_lat_name": DEFAULT_MODEL_LAT_NAME,
+        "model_lon_name": DEFAULT_MODEL_LON_NAME,
+        "model_q_var": DEFAULT_MODEL_Q_VAR,
+        "model_ssc_var": DEFAULT_MODEL_SSC_VAR,
+        "model_ssl_var": DEFAULT_MODEL_SSL_VAR,
+        "model_q_factor": DEFAULT_MODEL_Q_FACTOR,
+        "model_ssc_factor": DEFAULT_MODEL_SSC_FACTOR,
+        "model_ssl_factor": DEFAULT_MODEL_SSL_FACTOR,
+        "reference_dir": DEFAULT_REFERENCE_DIR,
+        "resolution": DEFAULT_RESOLUTION,
+        "allowed_flags": DEFAULT_ALLOWED_FLAGS,
+        "min_reference_points": DEFAULT_MIN_REFERENCE_POINTS,
+        "min_paired_points": DEFAULT_MIN_PAIRED_POINTS,
+        "max_grid_distance_km": DEFAULT_MAX_GRID_DISTANCE_KM,
+        "start_date": DEFAULT_START_DATE,
+        "end_date": DEFAULT_END_DATE,
+        "output_dir": DEFAULT_OUTPUT_DIR,
+        "max_stations": DEFAULT_MAX_STATIONS,
+        "make_plots": DEFAULT_MAKE_PLOTS,
+    }
 
     # ── 基本校验 ────────────────────────────
     if not cfg["model_nc"]:

@@ -36,7 +36,11 @@ from stats_release.reporting import (
 )
 
 
-LOCAL_PATH_MARKERS = ("/share/home/", "/home/", "/Users/")
+LOCAL_PATH_MARKERS = (
+    "/" + "share/home" + "/",
+    "/" + "home" + "/",
+    "/" + "Users" + "/",
+)
 OPTIONAL_MISSING_RELEASE_FILES = {
     "application_sed_reference_release.md",
     "sed_reference_satellite_candidates.csv.gz",

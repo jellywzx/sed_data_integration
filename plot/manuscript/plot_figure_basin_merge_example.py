@@ -33,9 +33,7 @@ import pandas as pd
 # Paths
 # ---------------------------------------------------------------------------
 
-SCRIPT_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
-)
+SCRIPT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = SCRIPT_ROOT / "output"
 OUTPUT_OTHER = SCRIPT_ROOT / "output_other"
 

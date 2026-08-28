@@ -68,8 +68,9 @@ except Exception:  # pragma: no cover - plotting is optional
 # =============================================================================
 # USER CONFIGURATION
 # =============================================================================
-INPUT_CSV_PATH = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release/station_catalog.csv"
-OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/explain_s8_basin_matching_error"
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+INPUT_CSV_PATH = str(PROJECT_DIR / "output" / "sed_reference_release" / "station_catalog.csv")
+OUTPUT_DIR = str(PROJECT_DIR / "output_other" / "explain_s8_basin_matching_error")
 
 # Number of rows exported in each manual-review queue.
 TOP_N_MANUAL_REVIEW = 100
@@ -2200,7 +2201,7 @@ def main() -> int:
     # =============================================================================
     # Copy markdown-format outputs to the docs/reports directory
     # =============================================================================
-    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir = PROJECT_DIR / "docs" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     md_extensions = {".md", ".txt", ".csv"}
     md_files = [

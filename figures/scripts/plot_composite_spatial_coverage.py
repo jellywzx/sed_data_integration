@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     try:

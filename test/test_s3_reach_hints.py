@@ -39,8 +39,7 @@ def _write_sample_nc(path):
             "reach_geometry_source": "fixture.shp",
         }
         for name, value in text_values.items():
-            var = ds.createVariable(name, str)
-            var.assignValue(value)
+            setattr(ds, name, value)
         ds.station_id = "fixture"
 
 

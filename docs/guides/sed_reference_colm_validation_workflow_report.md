@@ -18,10 +18,10 @@
 
 ### 2.1 CoLM 模型输出
 
-脚本默认读取以下目录中的 CoLM 历史输出：
+脚本默认读取用户指定的 CoLM 历史输出目录，例如：
 
 ```text
-/share/home/dq134/wzx/CoLM/cases/sed_test_tune2/history
+$MODEL_HISTORY_DIR
 ```
 
 匹配文件模式为：
@@ -46,7 +46,7 @@
 脚本默认参考数据目录为：
 
 ```text
-/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release
+../output/sed_reference_release
 ```
 
 验证流程主要使用：
@@ -311,11 +311,11 @@ compare_SSL_daily.png
 
 ## 6. 运行方式
 
-脚本没有命令行参数，运行前需要直接编辑 `DEFAULT_*` 常量。推荐从脚本所在目录运行，以便相对输出目录更容易解释：
+脚本没有命令行参数，运行前需要直接编辑 `DEFAULT_*` 常量，或通过环境变量设置模型与 MERIT Hydro 输入路径。推荐从仓库根目录运行：
 
 ```bash
-cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/validate
-/share/home/dq134/.conda/envs/wzx/bin/python3 validate_model_with_sed_reference.py
+cd /path/to/scripts_basin_test
+MODEL_NC=/path/to/model.nc MERIT_DIR=/path/to/MERIT_Hydro python validate/validate_model_with_sed_reference.py
 ```
 
 如果从其他目录运行，`DEFAULT_OUTPUT_DIR` 的相对路径会相对于当前工作目录解析。

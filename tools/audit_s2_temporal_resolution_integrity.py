@@ -20,12 +20,8 @@ import xarray as xr
 from pandas.errors import EmptyDataError
 
 
-DEFAULT_REPO = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
-)
-DEFAULT_ORGANIZED = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/output_resolution_organized"
-)
+DEFAULT_REPO = Path(__file__).resolve().parents[1]
+DEFAULT_ORGANIZED = Path(os.environ.get("OUTPUT_RESOLUTION_ORGANIZED", str(DEFAULT_REPO.parents[1] / "output_resolution_organized")))
 DEFAULT_OUTDIR = DEFAULT_REPO / "output" / "s2_temporal_resolution_integrity_audit"
 DEFAULT_CLASSIFICATION = DEFAULT_REPO / "output" / "s2_resolution_classification_details.csv"
 

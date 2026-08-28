@@ -2403,7 +2403,7 @@ def main() -> int:
     # =============================================================================
     # Copy outputs to the docs/reports directory
     # =============================================================================
-    reports_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs/reports")
+    reports_dir = REPO_SCRIPT_DIR / "docs" / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy CSV tables

@@ -294,7 +294,7 @@ def parse_args():
     )
     parser.add_argument(
         "root_dir",
-        help="Root directory to scan, e.g. /share/home/dq134/wzx/sed_data/sediment_wzx_1111/output_resolution_organized/daily",
+        help="Root directory to scan, e.g. /path/to/output_resolution_organized/daily",
     )
     parser.add_argument(
         "--out-csv",
@@ -333,4 +333,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

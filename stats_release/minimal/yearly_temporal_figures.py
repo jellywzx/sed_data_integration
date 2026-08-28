@@ -6,7 +6,7 @@ import os as _os
 import ctypes as _ctypes
 from pathlib import Path as _Path
 
-_conda_lib = "/share/home/dq134/.conda/envs/wzx/lib"
+_conda_lib = _os.environ.get("SED_CONDA_LIB", "")
 if _os.path.isdir(_conda_lib):
     _os.environ["LD_LIBRARY_PATH"] = _conda_lib + _os.pathsep + _os.environ.get("LD_LIBRARY_PATH", "")
     try:

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -42,9 +42,7 @@ from stats_release.release_paths import DEFAULT_RELEASE_DIR, PRODUCT_FILES  # no
 
 
 DEFAULT_OUT_DIR = PROJECT_DIR / "output_other" / "s8_release_composite_spatial_coverage"
-DEFAULT_FIGURES_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures"
-)
+DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
 S5B_LINKS_CSV = PROJECT_DIR / 'output' / 's5b_satellite_main_cluster_links_v2.csv'
 DPI = 300
 FIGSIZE = (12, 14)

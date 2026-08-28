@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Organize the manuscript source table into minimal and side-release sheets."""
 
+import os
 import re
 import importlib.util
 from pathlib import Path
@@ -20,11 +21,12 @@ from fill_manuscript_source_table import (
 )
 
 
-BASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output")
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+BASE_DIR = PROJECT_DIR / "output"
 MINIMAL_DIR = BASE_DIR / "sed_reference_release_minimal"
 CLIMATOLOGY_DIR = BASE_DIR / "sed_reference_release_climatology"
 SATELLITE_DIR = BASE_DIR / "sed_reference_release_satellite"
-DOCS_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/docs")
+DOCS_DIR = PROJECT_DIR / "docs"
 
 RAW_MANUSCRIPT_CSV = DOCS_DIR / "manuscript_source_table_cleaned.csv"
 SOURCE_STATION_CSV = MINIMAL_DIR / "source_station_catalog.csv"
@@ -99,7 +101,7 @@ OUTPUT_COLUMNS = [
 ]
 
 
-SOURCE_FOLDER = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Source")
+SOURCE_FOLDER = Path(os.environ.get("SED_SOURCE_ROOT", str(PROJECT_DIR.parents[1] / "Source")))
 
 SOURCE_FOLDER_MAP = {
     "GFQA_v2": "GFQA_v2",

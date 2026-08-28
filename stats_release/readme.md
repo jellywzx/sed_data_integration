@@ -160,7 +160,7 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
 
 #### (4) 发布包健康检查
 - **release_inventory_mismatches**: 对比 `release_inventory.csv` 清单和磁盘上的实际文件，检测两者差异（磁盘有但清单无 / 清单有但磁盘无）
-- **path_leaks**: 检查 CSV 和 NetCDF 中的路径字段是否包含本地绝对路径（`/share/home/`、`/home/` 等），这些信息不应出现在发布包中
+- **path_leaks**: 检查 CSV 和 NetCDF 中的路径字段是否包含本地绝对路径；这些信息不应出现在发布包中
 - **active_metadata_consistency**: 检查 master NetCDF 中的 `cluster_uid`/`source_station_uid` 是否在对应 CSV 目录中有对应记录，以及未使用的（inactive）条目情况
 - **validation_contradictions**: 检查 `release_validation_report.csv` 中标记为"not generated"或"not found"的文件是否实际存在于发布包中
 

@@ -43,15 +43,9 @@ except ImportError as exc:
 # Built-in settings
 # ============================================================
 
-RELEASE_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output/sed_reference_release_minimal"
-)
-
-OUTPUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/figures"
-)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
+OUTPUT_DIR = PROJECT_DIR / "figures"
 
 
 def script_output_stem() -> str:

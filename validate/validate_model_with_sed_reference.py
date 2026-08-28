@@ -78,7 +78,9 @@ UNITCAT_GRAIN_VARS = {
 # 
 
 # --- 模型 NetCDF ---
-DEFAULT_MODEL_NC = "/share/home/dq134/wzx/CoLM/cases/sed_test_tune2/history"                           # 模型 NetCDF 文件路径（必填）
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+DEFAULT_MODEL_NC = os.environ.get("MODEL_NC", "/path/to/model.nc")  # 模型 NetCDF 文件路径（必填）
 DEFAULT_MODEL_NC_PATTERN = "*_hist_unitcat_*.nc"        # 模型 NC 文件 glob 匹配模式
 DEFAULT_MODEL_TIME_NAME = "time"                # 模型时间坐标名
 DEFAULT_MODEL_LAT_NAME = "lat_ucat"                  # 模型纬度变量/坐标名
@@ -95,7 +97,7 @@ DEFAULT_MODEL_SSC_FACTOR = 2650000.0            # → mg/L
 DEFAULT_MODEL_SSL_FACTOR = 228960.0             # → ton/day
 
 # --- 参考数据 ---
-DEFAULT_REFERENCE_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release"
+DEFAULT_REFERENCE_DIR = str(PROJECT_DIR / "output" / "sed_reference_release")
 DEFAULT_RESOLUTION = "daily"                    # 参考时间分辨率：daily / monthly / annual
 DEFAULT_ALLOWED_FLAGS = "0,1,2"                 # 保留的参考数据质量标记（逗号分隔）
 
@@ -115,14 +117,14 @@ DEFAULT_START_DATE = "1995-01-01"               # 验证起始日期（空 = 不
 DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不限制）
 
 # --- 其他 ---
-DEFAULT_OUTPUT_DIR = "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/validate_model_with_sed_reference"     # 输出目录路径（必填）
+DEFAULT_OUTPUT_DIR = str(PROJECT_DIR / "output_other" / "validate_model_with_sed_reference")  # 输出目录路径（必填）
 DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
 DEFAULT_MAKE_PLOTS = True                      # 是否输出逐对比 PNG 图
 DEFAULT_PLOT_ONLY = False                     # 仅重绘出图，跳过计算
 DEFAULT_MAP_ONLY = True                     # 仅绘制概览图和空间分布图，跳过站点验证计算
 DEFAULT_NUM_WORKERS = 8                        # 并行进程数（0 = 自动选 CPU 核心数的一半）
 
-DEFAULT_MERIT_HYDRO_DIR = "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"  # MERIT Hydro 河网数据目录（区域图使用）
+DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1")  # MERIT Hydro 河网数据目录（区域图使用）
 
 
 def parse_allowed_flags(text: str) -> Tuple[int, ...]:

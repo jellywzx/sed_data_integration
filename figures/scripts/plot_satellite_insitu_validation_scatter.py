@@ -24,22 +24,17 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+
 # ============================================================================
 #  HARDCODED CONFIGURATION  (edit these to change paths / parameters)
 # ============================================================================
 
 PATHS = {
     # Input — validation pairs CSV (output from s11 validation pipeline)
-    "pairs_csv": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/output_other/"
-        "validation_results/validation_satellite_insitu_pairs.csv"
-    ),
+    "pairs_csv": PROJECT_DIR / "output_other" / "validation_results" / "validation_satellite_insitu_pairs.csv",
     # ESSD figure root (must contain final/ data/ scripts/ checklists/ subdirs)
-    "figures_root": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/figures"
-    ),
+    "figures_root": PROJECT_DIR / "figures",
 }
 
 PARAMS = {

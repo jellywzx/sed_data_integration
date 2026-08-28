@@ -1,19 +1,39 @@
+# Generated tabular, log, and report outputs
 *.csv
 *.xlsx
 *.txt
+!requirements.txt
 *.log
 *_log.txt
-*.png
 *.html
 *.geojson
-/test
-/output
-/output_other
-/output/logs/
-/check_output
-/scratch
+
+# Generated figures and geospatial/data products
+*.png
+*.nc
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+
+# Local run directories
+/test/
+/output/
+/output_other/
+/check_output/
+/scratch/
+/tmp/
+/validate/output/
+/stats_release_to_manu/docs/
+
+# Python caches and local build/test state
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# Local backup files
 *.bak
 *.bak.*
 *.bak*
@@ -23,7 +43,9 @@ figures/data/
 figures/final/
 figures/test/
 docs/reports/
-tmp/
 bak/
-validate/output
-stats_release_to_manu/docs/
+stats_release_to_manu/
+stats/
+docs/reports/
+__pycache__/
+*.pyc

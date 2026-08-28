@@ -48,9 +48,7 @@ except Exception:  # pragma: no cover
 # =============================================================================
 # USER CONFIGURATION
 # =============================================================================
-OUTPUT_R_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r"
-)
+OUTPUT_R_ROOT = Path(__file__).resolve().parents[2]
 
 S3_COLLECTED_CSV = OUTPUT_R_ROOT / "scripts_basin_test/output/s3_collected_stations.csv"
 S4_UPSTREAM_CSV = OUTPUT_R_ROOT / "scripts_basin_test/output/s4_upstream_basins.csv"

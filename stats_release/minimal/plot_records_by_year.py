@@ -17,8 +17,8 @@ from pathlib import Path
 import pandas as pd
 
 
-# ---- Default paths for sed_reference_release_minimal (absolute) ----------
-_SCRIPTS_BASIN = Path('/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test')
+# ---- Default paths for sed_reference_release_minimal ----------
+_SCRIPTS_BASIN = Path(__file__).resolve().parents[2]
 DEFAULT_RELEASE_DIR = _SCRIPTS_BASIN / "output" / "sed_reference_release_minimal"
 DEFAULT_STATS_DIR   = _SCRIPTS_BASIN / "output_other" / "stats_release_minimal"
 DEFAULT_INPUT_CSV   = DEFAULT_STATS_DIR / "tables" / "table_active_units_by_year.csv"

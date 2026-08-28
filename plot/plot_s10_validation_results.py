@@ -41,26 +41,12 @@ import matplotlib.pyplot as plt
 
 
 # ============================================================
-# 只需要修改这里：必须写绝对路径
+# Default paths
 # ============================================================
 
-ABS_VALIDATION_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/validation_results"
-)
-
-ABS_OUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/validation_results/figures_presentation"
-)
-
-# 如果你的结果在 scripts_basin_test 里面，可以改成类似：
-#
-# ABS_VALIDATION_DIR = Path(
-#     "/Users/你的用户名/你的项目路径/scripts_basin_test/output/validation_results"
-# )
-#
-# ABS_OUT_DIR = Path(
-#     "/Users/你的用户名/你的项目路径/scripts_basin_test/output/validation_results/figures_presentation"
-# )
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+ABS_VALIDATION_DIR = PROJECT_DIR / "output" / "validation_results"
+ABS_OUT_DIR = ABS_VALIDATION_DIR / "figures_presentation"
 
 
 VARIABLE_ORDER = {

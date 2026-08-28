@@ -38,8 +38,8 @@ If Figure 5 was rendered to a non-repository directory, point directly to its
       --figure-data-dir /path/to/figures/data \
       --output-dir docs/reports/section_4_2_from_products
 
-Run with conda env wzxx
-/share/home/dq134/.conda/envs/wzxx/bin/python3.9 extract_Sec4.2_from_product.py
+Run with the project environment:
+python extract_Sec4.2_from_product.py
 
 Outputs
 -------
@@ -1239,27 +1239,28 @@ def write_outputs(
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    default_repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(
         description="Read Section 4.2 source-contribution values from stats_release/Figure 5 products without NetCDF."
     )
     parser.add_argument(
         "--repo-root",
-        default="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test",
+        default=str(default_repo_root),
         help="sed_data_integration repository root. Default: current directory.",
     )
     parser.add_argument(
         "--release-dir",
-        default="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal",
+        default=str(default_repo_root / "output" / "sed_reference_release_minimal"),
         help="Release CSV directory used by Figure 5. Default: <repo>/output/sed_reference_release_minimal.",
     )
     parser.add_argument(
         "--stats-root",
-        default="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/stats_release",
+        default=str(default_repo_root / "output_other" / "stats_release"),
         help="stats_release output root.",
     )
     parser.add_argument(
         "--figure-data-dir",
-        default="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures/data",
+        default=str(default_repo_root / "figures" / "data"),
         help="Directory containing Figure 5 plotting-data CSVs written by write_plotting_data().",
     )
     parser.add_argument(
@@ -1314,4 +1315,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

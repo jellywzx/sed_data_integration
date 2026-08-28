@@ -55,7 +55,6 @@ def resolve_python(value):
     candidates = [
         value,
         os.environ.get("PYTHON_BIN", "").strip(),
-        "/share/home/dq134/.conda/envs/wzx/bin/python3",
         sys.executable,
         shutil.which("python3"),
         shutil.which("python"),

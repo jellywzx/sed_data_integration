@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Sediment Reference Dataset Basin Pipeline"
+type: software
+authors:
+  - name: "Sediment Reference Dataset contributors"
+version: "0.1.0"
+date-released: "2026-08-22"
+repository-code: "https://github.com/jellywzx/sed_data_integration"
+license: MIT
+keywords:
+  - sediment
+  - river basin
+  - hydrology
+  - reference dataset
+  - ESSD
+abstract: >-
+  Python workflow for building a basin-based sediment reference dataset from
+  multi-source river sediment observations, including temporal resolution
+  classification, upstream basin tracing, station clustering, NetCDF export,
+  geospatial sidecars, and publication audit checks.

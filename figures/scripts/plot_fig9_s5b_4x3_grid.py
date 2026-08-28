@@ -18,21 +18,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+
 # ============================================================================
 #  HARDCODED CONFIGURATION  (edit these to change paths / parameters)
 # ============================================================================
 
 PATHS = {
-    "pairs_csv": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/validate/output/s11_satellite_insitu/"
-        "validation_satellite_insitu_pairs.csv"
-    ),
-    "figures_root": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/"
-        "figures"
-    ),
+    "pairs_csv": PROJECT_DIR / "validate" / "output" / "s11_satellite_insitu" / "validation_satellite_insitu_pairs.csv",
+    "figures_root": PROJECT_DIR / "figures",
 }
 
 

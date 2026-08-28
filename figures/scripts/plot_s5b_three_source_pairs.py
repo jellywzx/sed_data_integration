@@ -19,10 +19,8 @@ import numpy as np
 import pandas as pd
 
 # -- Add the existing plot-script directory to sys.path -----------------------
-_PLOT_SCRIPTS_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-    "Output_r/scripts_basin_test/figures/scripts"
-)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+_PLOT_SCRIPTS_DIR = PROJECT_DIR / "figures" / "scripts"
 sys.path.insert(0, str(_PLOT_SCRIPTS_DIR))
 
 import plot_satellite_insitu_validation_scatter as _plot  # noqa: E402
@@ -32,16 +30,8 @@ import plot_satellite_insitu_validation_scatter as _plot  # noqa: E402
 # ============================================================================
 
 PATHS = {
-    "pairs_csv": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/validate/output/validation_results_s5b/"
-        "validation_satellite_insitu_pairs.csv"
-    ),
-    "figures_root": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/"
-        "figures"
-    ),
+    "pairs_csv": PROJECT_DIR / "validate" / "output" / "validation_results_s5b" / "validation_satellite_insitu_pairs.csv",
+    "figures_root": PROJECT_DIR / "figures",
 }
 
 PARAMS = {

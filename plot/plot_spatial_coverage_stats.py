@@ -2,7 +2,7 @@
 """Plot S8 release-level spatial coverage figures from precomputed tables.
 
 This script is intentionally fixed-configuration. Run spatial_coverage_stats.py
-first, then run this script on node113 to write figures under
+first, then run this script to write figures under
 output_other/spatial_coverage_stats/figures.
 """
 
@@ -15,9 +15,13 @@ import ctypes
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
-os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
-ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
+if CONDA_LIB and os.path.isdir(CONDA_LIB):
+    os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import numpy as np
 import pandas as pd
@@ -48,20 +52,11 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 
-RELEASE_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output/sed_reference_release"
-)
-OUTPUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output_other/spatial_coverage_stats"
-)
+RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
+OUTPUT_DIR = PROJECT_DIR / "output_other" / "spatial_coverage_stats"
 TABLES_DIR = OUTPUT_DIR / "tables"
 FIGURES_DIR = OUTPUT_DIR / "figures"
-WORLD_BOUNDARIES = (
-    "/share/home/dq134/.conda/envs/wzx/lib/python3.9/site-packages/"
-    "pyogrio/tests/fixtures/naturalearth_lowres/naturalearth_lowres.shp"
-)
+WORLD_BOUNDARIES = os.environ.get("NATURALEARTH_LOWRES_SHP", "")
 
 SATELLITE_CATALOG = RELEASE_DIR / "satellite_catalog.csv"
 CLUSTER_BASINS_GPKG = RELEASE_DIR / "sed_reference_cluster_basins.gpkg"
@@ -81,15 +76,9 @@ RESOLUTION_MAP_COLORS = {
     "other": "#777777",
 }
 
-REQUIRED_HOST = "node113"
-PYTHON = "/share/home/dq134/.conda/envs/wzx/bin/python3"
-RUN_HINT = (
-    "ssh node113 'cd /share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-    "Output_r/scripts_basin_test && {py} stats/spatial_coverage_stats.py && "
-    "{py} stats/plot_spatial_coverage_stats.py'"
-).format(
-    py=PYTHON
-)
+REQUIRED_HOST = os.environ.get("REQUIRED_SPATIAL_HOST", "").strip()
+PYTHON = os.environ.get("PYTHON_BIN", "python3")
+RUN_HINT = "{py} stats/spatial_coverage_stats.py && {py} plot/plot_spatial_coverage_stats.py".format(py=PYTHON)
 
 RESOLUTION_ORDER = ("daily", "monthly", "annual")
 STATUS_COLORS = {
@@ -114,11 +103,13 @@ RESOLUTION_COLORS = {
 
 
 def require_node113() -> None:
+    if not REQUIRED_HOST:
+        return
     host = socket.gethostname().split(".")[0]
     if host != REQUIRED_HOST:
         raise SystemExit(
-            "This spatial plotting script must run on node113, not {}.\n"
-            "Use:\n  {}".format(host, RUN_HINT)
+            "This spatial plotting script must run on {}, not {}.\n"
+            "Use:\n  {}".format(REQUIRED_HOST, host, RUN_HINT)
         )
 
 

@@ -75,10 +75,7 @@ def _stats_text(n_total, n_resolved, n_unresolved):
 
 
 def main():
-    root = Path(
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-        "scripts_basin_test/output_other/spatial_coverage_stats"
-    )
+    root = Path(__file__).resolve().parents[1] / "output_other" / "spatial_coverage_stats"
     csv_path = root / "tables" / "table_cluster_spatial_attributes.csv"
     out_dir  = root / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)

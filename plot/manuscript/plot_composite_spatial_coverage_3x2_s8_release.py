@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -27,8 +27,8 @@ import cartopy.feature as cfeature
 import numpy as np
 import pandas as pd
 
-PROJECT_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test")
-DEFAULT_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release")
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
@@ -42,7 +42,7 @@ from stats_release.release_io import (  # noqa: E402
 from stats_release.release_paths import PRODUCT_FILES  # noqa: E402
 
 
-DEFAULT_OUT_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/s8_release_composite_spatial_coverage")
+DEFAULT_OUT_DIR = PROJECT_DIR / "output_other" / "s8_release_composite_spatial_coverage"
 FIGURE_STEM = "composite_spatial_coverage"
 FIGSIZE = (12, 14)
 

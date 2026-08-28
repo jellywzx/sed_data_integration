@@ -1,4 +1,4 @@
-# ============================================================i
+# ============================================================
 # Pipeline configuration file for run_s1_s8_basin_pipeline.py
 # ============================================================
 #
@@ -30,7 +30,8 @@ cli:
 
   # 运行解释器和总日志
   python: ""   # 留空=自动选择可用的 Python 3
-  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
+  # Keep this path relative or generic before publishing the repository.
+  log_file: "scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
 
   # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
@@ -56,8 +57,8 @@ cli:
   s4_no_resume: true      # 关闭 resume（重新跑所有 shard）
   s4_no_gpkg: false        # 关闭 GPKG 几何输出
 
-  # MERIT Hydro 数据集路径
-  merit_dir: "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
+  # MERIT Hydro 数据集路径；本地运行时改为自己的数据目录，或通过 MERIT_DIR 环境变量覆盖。
+  merit_dir: "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"
 
   # s6: NetCDF 导出
   s6_workers: 24               # merge worker 数，推荐 8-40

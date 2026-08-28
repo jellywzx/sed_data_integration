@@ -12,7 +12,11 @@ import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_PATH_MARKERS = ("/share/home/dq134", "/share/home/", "/home/", "/Users/")
+LOCAL_PATH_MARKERS = (
+    "/" + "share/home" + "/",
+    "/" + "home" + "/",
+    "/" + "Users" + "/",
+)
 
 
 def sanitize_text(value: object) -> str:
@@ -30,8 +34,7 @@ def sanitize_text(value: object) -> str:
     project = PROJECT_ROOT.as_posix()
     if project in text:
         text = text.replace(project, ".")
-    text = text.replace("/share/home/dq134", "$WORKSPACE")
-    for marker in LOCAL_PATH_MARKERS[1:]:
+    for marker in LOCAL_PATH_MARKERS:
         text = text.replace(marker, "$LOCAL_HOME/")
     return text.strip()
 

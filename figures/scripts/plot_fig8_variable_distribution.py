@@ -10,7 +10,7 @@ import os as _os
 import ctypes as _ctypes
 from pathlib import Path as _Path
 
-_conda_lib = "/share/home/dq134/.conda/envs/wzx/lib"
+_conda_lib = _os.environ.get("SED_CONDA_LIB", "")
 if _os.path.isdir(_conda_lib):
     _os.environ["LD_LIBRARY_PATH"] = _conda_lib + _os.pathsep + _os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -30,9 +30,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ── Absolute paths ──────────────────────────────────────────────────────────
-PROJECT_SRC = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test")
-PROJECT_ROOT = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/stats_release")
+# ── Project paths ───────────────────────────────────────────────────────────
+PROJECT_SRC = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = PROJECT_SRC / "stats_release"
 if __package__ in {None, ""}:
     sys.path.insert(0, str(PROJECT_SRC))
 
@@ -55,10 +55,10 @@ from stats_release.reporting import (
     sorted_markdown_table,
 )
 
-# ── Output directories (absolute) ───────────────────────────────────────────
-DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
+# ── Output directories ──────────────────────────────────────────────────────
+DEFAULT_MINIMAL_RELEASE_DIR = PROJECT_SRC / "output" / "sed_reference_release_minimal"
 DEFAULT_OUT_DIR          = Path(__file__).resolve().parents[2] / "output_other" / "stats_release_minimal" / "variable_summary"
-DEFAULT_FIGURES_DIR      = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
+DEFAULT_FIGURES_DIR      = PROJECT_SRC / "figures"
 
 
 def script_output_stem() -> str:

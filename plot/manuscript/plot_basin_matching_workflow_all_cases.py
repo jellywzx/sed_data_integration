@@ -62,7 +62,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = (
         CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
@@ -90,19 +90,15 @@ from shapely.ops import nearest_points, transform
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test"
-)
-MERIT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
-)
+SCRIPT_ROOT = Path(__file__).resolve().parents[2]
+MERIT_DIR = Path(os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"))
 RELEASE_DIR = SCRIPT_ROOT / "output" / "sed_reference_release"
 STATION_CATALOG = RELEASE_DIR / "station_catalog.csv"
 S4_LOCAL_CATCHMENTS = SCRIPT_ROOT / "output" / "s4_local_catchments.gpkg"
 RELEASE_CLUSTER_BASINS = RELEASE_DIR / "sed_reference_cluster_basins.gpkg"
 S4_UPSTREAM_BASINS = SCRIPT_ROOT / "output" / "s4_upstream_basins.csv"
 S4_UPSTREAM_BASINS_GPKG = SCRIPT_ROOT / "output" / "s4_upstream_basins.gpkg"
-DEFAULT_OUT_DIR ="/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output_other/basin_matching_workflow"
+DEFAULT_OUT_DIR = str(SCRIPT_ROOT / "output_other" / "basin_matching_workflow")
 LAND_POLYGONS_PATH = SCRIPT_ROOT / "validate" / "ne_110m_land.geojson"
 
 if str(SCRIPT_ROOT) not in sys.path:

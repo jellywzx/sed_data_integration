@@ -9,7 +9,7 @@ import os as _os
 import ctypes as _ctypes
 from pathlib import Path as _Path
 
-_conda_lib = "/share/home/dq134/.conda/envs/wzx/lib"
+_conda_lib = _os.environ.get("SED_CONDA_LIB", "")
 if _os.path.isdir(_conda_lib):
     _os.environ["LD_LIBRARY_PATH"] = _conda_lib + _os.pathsep + _os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -19,11 +19,11 @@ if _os.path.isdir(_conda_lib):
 del _os, _ctypes, _Path, _conda_lib
 # ---------------------------------------------------------------------------
 
-# ---- Package path setup: absolute path to the project root ----
+# ---- Package path setup: project root ----
 import sys as _sys
 from pathlib import Path
 
-_PACKAGE_ROOT = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test")
+_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 if str(_PACKAGE_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_PACKAGE_ROOT))
 del _PACKAGE_ROOT, _sys
@@ -48,8 +48,9 @@ from stats_release.release_io import (
 from stats_release.release_paths import MATRIX_PRODUCTS
 
 
-DEFAULT_FIGURES_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
-DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_FIGURES_DIR = PROJECT_DIR / "figures"
+DEFAULT_MINIMAL_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
 
 
 def script_output_stem() -> str:

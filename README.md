@@ -831,6 +831,19 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 
 ## 16. 依赖说明
 
+推荐使用 `environment.yml` 创建 Conda 环境：
+
+```bash
+conda env create -f environment.yml
+conda activate sed-reference-basin
+```
+
+如果使用已有 Python 环境，也可以安装 `requirements.txt`：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 常见 Python 依赖包括：
 
 ```text
@@ -839,9 +852,17 @@ numpy
 xarray
 netCDF4
 h5netcdf
+h5py
 geopandas
+fiona
+pyogrio
+pyproj
+shapely
 pyshp
 matplotlib
+cartopy
+scipy
+PyYAML
 ```
 
 部分脚本的额外说明：
@@ -853,7 +874,25 @@ matplotlib
 
 ---
 
-## 17. 代码导航
+## 17. 公开发布与引用
+
+本仓库面向 ESSD/Zenodo 公开时建议只跟踪代码、文档、测试、配置模板和小型静态资源。大型中间产物、NetCDF、GPKG、日志、报告输出和图件应通过 Zenodo 或其他数据仓库发布，并在论文和发布包 README 中给出 DOI。
+
+发布前建议检查：
+
+```bash
+git status --short
+python -m py_compile *.py
+pytest test
+```
+
+另请按所在机构的本地目录前缀和凭据关键词扫描公开文件，确认没有暴露个人工作区或访问凭据。
+
+代码引用信息见 `CITATION.cff`。源码默认使用 MIT 许可证；发布数据、图件和文档建议继续使用 CC BY 4.0，并与 NetCDF 全局属性中的 license 说明保持一致。
+
+---
+
+## 18. 代码导航
 
 | 文件 | 作用 |
 |---|---|
@@ -882,7 +921,7 @@ matplotlib
 
 ---
 
-## 18. 非主线脚本说明
+## 19. 非主线脚本说明
 
 当前目录下仍保留一些历史脚本、兼容脚本或辅助脚本，例如：
 
@@ -898,6 +937,6 @@ s6_summarize_matrix_ncs.py
 
 ---
 
-## 19. 一句话总结
+## 20. 一句话总结
 
 当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出为独立发布产品，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；主线与 climatology 发布记录必须至少包含 `SSC` 或 `SSL`，不发布 Q-only 时间步；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。

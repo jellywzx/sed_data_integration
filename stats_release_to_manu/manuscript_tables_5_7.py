@@ -350,7 +350,7 @@ def main(argv=None) -> int:
     table6 = build_table6(variable_coverage, flag01_summary)
     table7 = build_table7(qc_stats)
 
-    docs_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/stats_release_to_manu/docs")
+    docs_dir = Path(__file__).resolve().parent / "docs"
     tables_dir = docs_dir / "tables"
     reports_dir = docs_dir / "reports"
     table5_path = tables_dir / "table_manuscript_table5.csv"

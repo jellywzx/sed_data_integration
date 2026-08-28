@@ -10,7 +10,7 @@
 - Pfafstetter 编码（pfaf）：MERIT-Basins 按层级划分的区域码；level_01 为更粗的河网区，
   level_02 的 catchment 文件名与 COMID 前两位数字对应的分区一致。
 
-数据来源说明：由 /Volumes/Data01/HII/HII/scripts/upstream_basin_tracer.py 移植。
+数据来源说明：由早期 upstream basin tracer 脚本整理迁移。
 """
 
 import logging
@@ -18,8 +18,6 @@ import os
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-
-os.environ.setdefault("PROJ_LIB", "/root/miniconda3/envs/wzx/share/proj")
 
 import geopandas as gpd
 import numpy as np
@@ -694,17 +692,19 @@ class UpstreamBasinTracer:
         return result_gdf
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
 # 命令行直接运行脚本时使用的内置路径与列名（可按本地环境改写或通过其他入口传入）
 BUILTIN_CONFIG = {
-    "merit_dir": "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1",
-    "stations_csv": "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts/output/s6_overlap_for_manual_choice.csv",
+    "merit_dir": os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"),
+    "stations_csv": str(SCRIPT_DIR / "output" / "s3_collected_stations.csv"),
     "lon_col": "lon",
     "lat_col": "lat",
     "area_col": None,
     "station_id_col": "cluster_id",
     "dedup_by_station": True,
-    "out_gpkg": "/share/home/dq134/wzx/sed_data/basin_results/s6_upstream_basins.gpkg",
-    "out_csv": "/share/home/dq134/wzx/sed_data/basin_results/s6_upstream_basins.csv",
+    "out_gpkg": str(SCRIPT_DIR / "output" / "s4_upstream_basins.gpkg"),
+    "out_csv": str(SCRIPT_DIR / "output" / "s4_upstream_basins.csv"),
     "log_level": "INFO",
 }
 
