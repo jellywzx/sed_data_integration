@@ -15,17 +15,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 
 PATHS = {
-    "pairs_csv": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/validate/output/s11_satellite_insitu/"
-        "validation_satellite_insitu_pairs.csv"
-    ),
-    "figures_root": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/figures"
-    ),
+    "pairs_csv": PROJECT_DIR / "validate" / "output" / "s11_satellite_insitu" / "validation_satellite_insitu_pairs.csv",
+    "figures_root": PROJECT_DIR / "figures",
 }
 
 
@@ -43,7 +37,7 @@ PARAMS = {
 }
 
 STYLE = {
-    "font_family": "DejaVu Sans",
+    "font_family": "Times New Roman",
     "panel_label_size": 16,
     "axis_label_size": 15,
     "tick_label_size": 14,

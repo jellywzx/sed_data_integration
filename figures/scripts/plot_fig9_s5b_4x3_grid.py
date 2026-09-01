@@ -18,21 +18,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+
 # ============================================================================
 #  HARDCODED CONFIGURATION  (edit these to change paths / parameters)
 # ============================================================================
 
 PATHS = {
-    "pairs_csv": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/validate/output/s11_satellite_insitu/"
-        "validation_satellite_insitu_pairs.csv"
-    ),
-    "figures_root": (
-        "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/"
-        "Output_r/scripts_basin_test/"
-        "figures"
-    ),
+    "pairs_csv": PROJECT_DIR / "validate" / "output" / "s11_satellite_insitu" / "validation_satellite_insitu_pairs.csv",
+    "figures_root": PROJECT_DIR / "figures",
 }
 
 
@@ -52,8 +46,8 @@ PARAMS = {
 # All font-size and visual-style parameters are managed here — a single place
 # to adjust text sizes, marker sizes, and grid appearance.
 STYLE = {
-    # Font family (ESSD: single sans-serif)
-    "font_family": "DejaVu Sans",
+    # Font family (ESSD: single serif)
+    "font_family": "Times New Roman",
     # Font sizes (ESSD §6: all visible text >= 7 pt)
     "panel_label_size": 16,
     "axis_label_size": 15,
@@ -387,6 +381,7 @@ def _setup_matplotlib():
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update({
         "font.family": STYLE["font_family"],
+        "mathtext.fontset": "stix",
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
         "axes.labelsize": STYLE["axis_label_size"],
@@ -505,10 +500,10 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
             # axis labels: only on last row (x) and left column (y)
             if row_idx == n_rows - 1 and col_idx == 1:
-                ax.set_xlabel("Station-reference {} (mg L⁻¹)".format(variable),
+                ax.set_xlabel("Station-reference {} (mg L$^{{-1}}$)".format(variable),
                               fontsize=STYLE["axis_label_size"])
             if row_idx == 1 and col_idx == 0:
-                ax.set_ylabel("Satellite-derived {} (mg L⁻¹)".format(variable),
+                ax.set_ylabel("Satellite-derived {} (mg L$^{{-1}}$)".format(variable),
                               fontsize=STYLE["axis_label_size"])
 
             ax.grid(True, alpha=STYLE["grid_alpha"])
@@ -707,6 +702,7 @@ def main(argv: Optional[Sequence[str]] = None):
     configure_matplotlib(plt)
     plt.rcParams.update({
         "font.family": STYLE["font_family"],
+        "mathtext.fontset": "stix",
         "axes.labelsize": STYLE["axis_label_size"],
         "axes.titlesize": STYLE["title_size"],
         "xtick.labelsize": STYLE["tick_label_size"],

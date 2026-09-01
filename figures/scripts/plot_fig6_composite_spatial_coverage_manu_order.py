@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -42,9 +42,7 @@ from stats_release.release_paths import DEFAULT_RELEASE_DIR, PRODUCT_FILES  # no
 
 
 DEFAULT_OUT_DIR = PROJECT_DIR / "output_other" / "s8_release_composite_spatial_coverage"
-DEFAULT_FIGURES_ROOT = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures"
-)
+DEFAULT_FIGURES_ROOT = PROJECT_DIR / "figures"
 S5B_LINKS_CSV = PROJECT_DIR / 'output' / 's5b_satellite_main_cluster_links_v2.csv'
 DPI = 300
 FIGSIZE = (12, 14)
@@ -160,7 +158,7 @@ def _require_columns(frame: pd.DataFrame, required: Iterable[str], source_name: 
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -780,9 +778,9 @@ def write_checklist(
         "- Intended size: {:.1f} x {:.1f} cm ({:.1f} x {:.1f} in)".format(width_cm, height_cm, figsize[0], figsize[1]),
         "- PDF page size: {}".format(pdf_page_size(pdfinfo_output) if pdfinfo_ok else "not checked ({})".format(pdfinfo_output)),
         "- Width >= 8 cm: yes",
-        "- Font family: DejaVu Sans",
+        "- Font family: Times New Roman",
         "- Minimum visible font size: {} pt".format(MIN_VISIBLE_FONT_SIZE),
-        "- Font consistency: one sans-serif family set in Matplotlib rcParams",
+        "- Font consistency: one serif family set in Matplotlib rcParams",
         "- Font embedding status: {}".format(font_embedding_status(pdffonts_output) if pdffonts_ok else "not checked ({})".format(pdffonts_output)),
         "- PDF font check command: `pdffonts {}`".format(pdf_path),
         "- PDF size check command: `pdfinfo {}`".format(pdf_path),

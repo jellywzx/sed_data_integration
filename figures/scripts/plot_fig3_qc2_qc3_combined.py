@@ -30,10 +30,10 @@ from matplotlib.ticker import FixedLocator, FuncFormatter
 
 
 # ============================================================
-# Absolute paths
+# Default paths
 # ============================================================
 
-PROJECT_ROOT = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 HYDAT_QC_DIR = (
     PROJECT_ROOT
@@ -75,10 +75,11 @@ MIN_SAMPLES = 5  # Minimum samples for QC2/QC3 fitting
 
 
 # ============================================================
-# ESSD-style Matplotlib settings (DejaVu Sans)
+# ESSD-style Matplotlib settings (Times New Roman)
 # ============================================================
 
-mpl.rcParams["font.family"] = "DejaVu Sans"
+mpl.rcParams["font.family"] = "Times New Roman"
+mpl.rcParams["mathtext.fontset"] = "stix"
 mpl.rcParams["pdf.fonttype"] = 42
 mpl.rcParams["ps.fonttype"] = 42
 mpl.rcParams["svg.fonttype"] = "none"
@@ -564,7 +565,7 @@ def write_combined_checklist(
 
 ## Fonts
 
-- Font family: DejaVu Sans
+- Font family: Times New Roman
 - Minimum visible font size: 11 pt
 - Single font family used: yes
 - PDF font embedding setting: pdf.fonttype = 42
@@ -779,7 +780,7 @@ def main():
         values=Q,
         qc2_suspect_mask=q_qc2_suspect,
         variable_label="Q",
-        unit_label="m³ s⁻¹",
+        unit_label="m$^3$ s$^{-1}$",
         lower_bound=Q_qc2_lower,
         upper_bound=Q_qc2_upper,
         show_legend=False,
@@ -801,7 +802,7 @@ def main():
         values=SSC,
         qc2_suspect_mask=ssc_qc2_suspect,
         variable_label="SSC",
-        unit_label="mg L⁻¹",
+        unit_label="mg L$^{-1}$",
         show_legend=False,
         lower_bound=SSC_qc2_lower,
         upper_bound=SSC_qc2_upper,
@@ -889,8 +890,8 @@ def main():
         -0.10, 1, "(c)",
         transform=ax_c.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
     )
-    ax_c.set_xlabel("log10(Q) [m³ s⁻¹]")
-    ax_c.set_ylabel("log10(SSC) [mg L⁻¹]")
+    ax_c.set_xlabel("log10(Q) (m$^3$ s$^{-1}$)")
+    ax_c.set_ylabel("log10(SSC) (mg L$^{-1}$)")
     # ax_c.set_title(f"SSC-Q diagnostic for {station_name} ({station_id})")
 
     # ------------------------------------------------------------------

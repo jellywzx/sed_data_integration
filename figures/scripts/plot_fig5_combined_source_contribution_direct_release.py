@@ -22,9 +22,13 @@ from typing import Dict, List, Set, Tuple
 
 # Ensure the project environment's libstdc++ is globally visible before importing
 # numerical libraries, matching the previous companion helper behavior.
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
-os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
-ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
+if CONDA_LIB and os.path.isdir(CONDA_LIB):
+    os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
+    try:
+        ctypes.CDLL(str(Path(CONDA_LIB) / "libstdc++.so.6"), mode=ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
 import matplotlib
 
@@ -42,9 +46,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent.parent
 DEFAULT_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
 DEFAULT_NC_RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release"
-DEFAULT_OUTPUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures"
-)
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "figures"
 
 
 def script_output_stem() -> str:
@@ -116,7 +118,7 @@ HSPACE_SUB = 0.7
 def configure_matplotlib() -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -890,7 +892,7 @@ def write_combined_checklist(
 - Panel labels: (a), (b)
 
 ## Fonts
-- Font family: DejaVu Sans
+- Font family: Times New Roman
 - Minimum visible font size: {} pt
 - Single font family used: yes
 - Font embedding setting: pdf.fonttype = 42

@@ -43,15 +43,9 @@ except ImportError as exc:
 # Built-in settings
 # ============================================================
 
-RELEASE_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/output/sed_reference_release_minimal"
-)
-
-OUTPUT_DIR = Path(
-    "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/"
-    "scripts_basin_test/figures"
-)
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+RELEASE_DIR = PROJECT_DIR / "output" / "sed_reference_release_minimal"
+OUTPUT_DIR = PROJECT_DIR / "figures"
 
 
 def script_output_stem() -> str:
@@ -138,7 +132,7 @@ MIN_VISIBLE_FONT_SIZE = 15
 def configure_matplotlib() -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
             "font.size": FONT_SIZE,
             "axes.labelsize": AXES_LABEL_SIZE,
             "axes.titlesize": AXES_TITLE_SIZE,
@@ -932,7 +926,7 @@ def write_checklist(
 - Panel labels: (a), (b), (c)
 
 ## Fonts
-- Font family: DejaVu Sans
+- Font family: Times New Roman
 - Minimum visible font size: {} pt
 - Font embedding setting: pdf.fonttype = 42
 - Font embedding check: {}

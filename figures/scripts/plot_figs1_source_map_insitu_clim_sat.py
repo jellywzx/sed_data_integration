@@ -18,7 +18,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
-CONDA_LIB = "/share/home/dq134/.conda/envs/wzx/lib"
+CONDA_LIB = os.environ.get("SED_CONDA_LIB", "")
 if os.path.isdir(CONDA_LIB):
     os.environ["LD_LIBRARY_PATH"] = CONDA_LIB + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -71,6 +71,7 @@ RESOLUTION_NC_FILES = {
     "annual": "sed_reference_timeseries_annual.nc",
 }
 # SATELLITE_CSV = "satellite_catalog.csv"
+CLIMATOLOGY_NC = "sed_reference_climatology.nc"
 
 UNKNOWN_DATASET_LABEL = "unknown dataset"
 SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
@@ -176,7 +177,7 @@ PREFERRED_LEGEND_LABEL_ORDER = [
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -254,18 +255,18 @@ def write_checklist(
         "- Intended size: {:.1f} x {:.1f} cm ({:.1f} x {:.1f} in)".format(width_cm, height_cm, figsize[0], figsize[1]),
         "- PDF page size: {}".format(pdf_page_size(pdfinfo_output) if pdfinfo_ok else "not checked ({})".format(pdfinfo_output)),
         "- Width >= 8 cm: yes",
-        "- Font family: DejaVu Sans",
-        "- Font consistency: one sans-serif family set in Matplotlib rcParams",
+        "- Font family: Times New Roman",
+        "- Font consistency: one serif family set in Matplotlib rcParams",
         "- Font embedding status: {}".format(font_embedding_status(pdffonts_output) if pdffonts_ok else "not checked ({})".format(pdffonts_output)),
         "- PDF font check command: `pdffonts {}`".format(pdf_path),
         "- PDF size check command: `pdfinfo {}`".format(pdf_path),
         "- Colorblind-safe status: Okabe-Ito extended + marker shapes + dark edges for dual encoding",
         "- Coblis/equivalent review: requires manual Coblis/equivalent review after export",
         "- Legend completeness: colors, marker shapes, dark edges, transparency, and source-point counts explained",
-        "- Panel labels: `(a)` released daily/monthly/annual source datasets",
+        "- Panel labels: `(a)` released daily/monthly/annual and climatology source datasets",
         "- Units and ranges: source-point counts use comma-separated integers; lat/lon in degrees",
         "- Map projection: Robinson (global map)",
-        "- Data filtering: uses released daily/monthly/annual NetCDF files joined to station_catalog.csv; excludes climatology and satellite products",
+        "- Data filtering: uses released daily/monthly/annual NetCDF files joined to station_catalog.csv plus sed_reference_climatology.nc; excludes satellite products",
         "- Plotting script: `{}`".format(script_copy_path.name),
         "- Plotting-data availability: {} CSV files".format(len(data_paths)),
     ]
@@ -470,6 +471,41 @@ def read_release_nc_points(release_dir: Path, resolution: str, file_name: str) -
     )
 
 
+def read_climatology_points(release_dir: Path) -> pd.DataFrame:
+    path = require_file(release_dir / CLIMATOLOGY_NC)
+    with nc4.Dataset(str(path), "r") as ds:
+        for var_name in ["lat", "lon", "source", "station_index"]:
+            if var_name not in ds.variables:
+                raise ValueError("{} is missing variable: {}".format(path, var_name))
+
+        lat = np.asarray(ds.variables["lat"][:], dtype="float64")
+        lon = np.asarray(ds.variables["lon"][:], dtype="float64")
+        station_index = np.asarray(ds.variables["station_index"][:], dtype="int32")
+        raw_sources = ds.variables["source"][:]
+
+    n_stations = len(lat)
+    if not (len(lon) == n_stations):
+        raise ValueError("{} has inconsistent lat/lon lengths".format(path))
+
+    source_labels = np.array([""] * n_stations, dtype=object)
+    for i in range(len(station_index)):
+        sidx = station_index[i]
+        if 0 <= sidx < n_stations and source_labels[sidx] == "":
+            source_labels[sidx] = canonical_source_name(raw_sources[i], [])
+
+    out = pd.DataFrame(
+        {
+            "cluster_uid": "",
+            "resolution": "climatology",
+            "lat": lat,
+            "lon": lon,
+            "source_name": source_labels,
+            "input_file": CLIMATOLOGY_NC,
+        }
+    )
+    return out[out["source_name"].ne("")].copy()
+
+
 def explode_sources(frame: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, row in frame.iterrows():
@@ -527,6 +563,10 @@ def load_all_points(release_dir: Path) -> Tuple[pd.DataFrame, pd.Series]:
                 )
             )
         frames.append(explode_sources(merged.drop(columns=["_merge"])))
+
+    climatology_points = read_climatology_points(release_dir)
+    input_counts[CLIMATOLOGY_NC] = len(climatology_points)
+    frames.append(climatology_points)
 
     points = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     points = points[valid_latlon(points)].copy()
@@ -861,7 +901,7 @@ def plot_map(
         fig, axes = plt.subplots(1, 1, figsize=FIGSIZE)
 
     draw_top_sources_panel(axes, points, top_sources, counts, legend_user_order)
-    add_panel_label(axes, "(a)")
+    # add_panel_label(axes, "(a)")
 
     # draw_satellite_panel(axes[1], satellite_points, satellite_counts)
     # add_panel_label(axes[1], "(b)")
@@ -900,7 +940,7 @@ def print_summary(
         for source, count in sorted(other_counts.items()):
             print("  {}: {:,}".format(source, int(count)))
     print("\nFinal valid lat/lon points: {:,}".format(len(points)))
-    print("\nInputs exclude climatology and satellite products.")
+    print("\nInputs include climatology and exclude satellite products.")
     # print("\nPanel (b) satellite source datasets:")
     # for source in SATELLITE_SOURCE_ORDER:
     #     print("  {}: {:,}".format(source, int(satellite_counts.get(source, 0))))

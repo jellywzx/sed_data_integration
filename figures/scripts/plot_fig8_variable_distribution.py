@@ -10,7 +10,7 @@ import os as _os
 import ctypes as _ctypes
 from pathlib import Path as _Path
 
-_conda_lib = "/share/home/dq134/.conda/envs/wzx/lib"
+_conda_lib = _os.environ.get("SED_CONDA_LIB", "")
 if _os.path.isdir(_conda_lib):
     _os.environ["LD_LIBRARY_PATH"] = _conda_lib + _os.pathsep + _os.environ.get("LD_LIBRARY_PATH", "")
     try:
@@ -30,9 +30,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# ── Absolute paths ──────────────────────────────────────────────────────────
-PROJECT_SRC = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test")
-PROJECT_ROOT = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/stats_release")
+# ── Project paths ───────────────────────────────────────────────────────────
+PROJECT_SRC = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = PROJECT_SRC / "stats_release"
 if __package__ in {None, ""}:
     sys.path.insert(0, str(PROJECT_SRC))
 
@@ -55,10 +55,10 @@ from stats_release.reporting import (
     sorted_markdown_table,
 )
 
-# ── Output directories (absolute) ───────────────────────────────────────────
-DEFAULT_MINIMAL_RELEASE_DIR = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/sed_reference_release_minimal")
+# ── Output directories ──────────────────────────────────────────────────────
+DEFAULT_MINIMAL_RELEASE_DIR = PROJECT_SRC / "output" / "sed_reference_release_minimal"
 DEFAULT_OUT_DIR          = Path(__file__).resolve().parents[2] / "output_other" / "stats_release_minimal" / "variable_summary"
-DEFAULT_FIGURES_DIR      = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/figures")
+DEFAULT_FIGURES_DIR      = PROJECT_SRC / "figures"
 
 
 def script_output_stem() -> str:
@@ -93,7 +93,7 @@ PRODUCT_COLORS = {
 }
 
 # ── Font size constants (ESSD: min 7 pt for all text) ────────────────────────
-FONT_FAMILY = "DejaVu Sans"
+FONT_FAMILY = "Times New Roman"
 FONT_SIZE_LEGEND = 13
 FONT_SIZE_TICK = 14
 FONT_SIZE_LABEL = 15
@@ -590,6 +590,7 @@ def write_figure_and_artifacts(
 
     # ── ESSD-compliant rcParams ────────────────────────────────────────────
     mpl.rcParams["font.family"] = FONT_FAMILY
+    mpl.rcParams["mathtext.fontset"] = "stix"
     mpl.rcParams["pdf.fonttype"] = 42
     mpl.rcParams["ps.fonttype"] = 42
     mpl.rcParams["svg.fonttype"] = "none"
@@ -606,7 +607,7 @@ def write_figure_and_artifacts(
     annual_draw_boxplot = True
     N_BINS = 55
 
-    xlabels = {"Q": "Q (m³ s⁻¹)", "SSC": "SSC (mg L⁻¹)", "SSL": "SSL (t d⁻¹)"}
+    xlabels = {"Q": "Q (m³ s$^{-1}$)", "SSC": "SSC (mg L$^{-1}$)", "SSL": "SSL (t d$^{-1}$)"}
 
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 9.0), sharex=False)
     plotting_rows = []
@@ -932,8 +933,8 @@ def write_figure_and_artifacts(
         "",
         "## Font and text",
         "",
-        "- Single font family used: DejaVu Sans",
-        "- Font family: DejaVu Sans",
+        "- Single font family used: Times New Roman",
+        "- Font family: Times New Roman",
         "- Fonts embedded in vector file: Yes (pdf.fonttype=42)",
         "- No unnecessary bold/italic variants: Yes",
         "- No hidden text boxes or extra layers: Yes",
