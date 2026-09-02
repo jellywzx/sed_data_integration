@@ -29,7 +29,7 @@ import pandas as pd
 # ============================================================
 VARIABLES = {
     "Q": {
-        "unit": "m³ s$^{-1}$",
+        "unit": "m$^3$ s$^{-1}$",
         "metric_name": "Q_m3_s-1",
         "ref_col": "Q_reference_m3_s-1",
         "model_col": "Q_model_m3_s-1",
@@ -67,10 +67,16 @@ DEFAULT_REGION_LAT_MIN = -20
 DEFAULT_REGION_LAT_MAX = 5
 DEFAULT_REGION_LON_MIN = -80
 DEFAULT_REGION_LON_MAX = -45
-DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1")
+DEFAULT_MERIT_HYDRO_DIR = os.environ.get(
+    "MERIT_DIR",
+    "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1",
+)
 
 # --- Extract station data directory for Porto Velho Q & SSL panels ---
-DEFAULT_EXTRACT_DIR = os.environ.get("MODEL_EXTRACT_DIR", "/path/to/model/extractStation")
+DEFAULT_EXTRACT_DIR = os.environ.get(
+    "MODEL_EXTRACT_DIR",
+    "/share/home/dq134/wzx/sediment/CaMa-Flood_v4-sed_1125/out/GRFR_0p05_3h_1222/extractStation",
+)
 
 # --- Font size configuration ---
 FONT_TITLE = 18
@@ -593,7 +599,7 @@ def plot_panel_c_Q(ax, extract_dir: str) -> None:
             label="Observed Q", alpha=0.85)
 
     ax.set_xlabel("Time", fontsize=FONT_LABEL)
-    ax.set_ylabel("Q (m³ s$^{-1}$)", fontsize=FONT_LABEL)
+    ax.set_ylabel("Q (m$^3$ s$^{-1}$)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
     ax.legend(fontsize=FONT_LEGEND, loc="upper right", framealpha=0.8, edgecolor="gray")
@@ -661,22 +667,22 @@ def plot_panel_d_SSL(ax, extract_dir: str) -> None:
         sed_df["sediment_flux (10³ t/day)"],
         mdl_df["sedout (10³ t/day)"]
     ], axis=1, join="inner").dropna()
-    merged.columns = ["Observed (10³ t/day)", "Model (10³ t/day)"]
+    merged.columns = ["observed_ssl_10e3_t_day", "model_ssl_10e3_t_day"]
 
     if merged.empty:
         ax.text(0.5, 0.5, "No overlapping SSL data",
                 transform=ax.transAxes, ha="center", va="center", fontsize=FONT_FALLBACK, style="italic")
         return
 
-    r_pearson = merged["Observed (10³ t/day)"].corr(merged["Model (10³ t/day)"], method="pearson")
+    r_pearson = merged["observed_ssl_10e3_t_day"].corr(merged["model_ssl_10e3_t_day"], method="pearson")
 
-    ax.scatter(merged.index, merged["Observed (10³ t/day)"],
+    ax.scatter(merged.index, merged["observed_ssl_10e3_t_day"],
                color="tab:red", s=15, alpha=0.6, zorder=3, label="Observed SSL")
-    ax.plot(merged.index, merged["Model (10³ t/day)"],
+    ax.plot(merged.index, merged["model_ssl_10e3_t_day"],
             color="tab:blue", linewidth=1.5, label="Model SSL", alpha=0.85)
 
     ax.set_xlabel("Time", fontsize=FONT_LABEL)
-    ax.set_ylabel("SSL (10³ t d$^{-1}$)", fontsize=FONT_LABEL)
+    ax.set_ylabel("SSL (10$^3$ t d$^{-1}$)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
     ax.legend(fontsize=FONT_LEGEND, loc="upper right", framealpha=0.8, edgecolor="gray")

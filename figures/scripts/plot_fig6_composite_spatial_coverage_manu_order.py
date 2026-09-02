@@ -159,6 +159,7 @@ def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
             "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -466,7 +467,7 @@ def draw_area_hist(ax, area_dist: pd.DataFrame, color: str) -> None:
     ax.set_yticks(np.linspace(0, y_max, 3))
     ax.tick_params(axis="both", labelsize=FONT_SIZES["inset_axis"], direction="in", pad=1)
     ax.set_ylabel("Count", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
-    ax.set_xlabel("Basin area (km²)", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
+    ax.set_xlabel("Basin area (km$^2$)", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
     ax.grid(axis="y", linewidth=0.3, alpha=0.55)
     ax.yaxis.set_label_position("right")
     ax.yaxis.tick_right()
@@ -518,7 +519,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
         legend_ax.text(0.17, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.13
     legend_ax.text(0.08, y - 0.03, "Total stations: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
-    legend_ax.text(0.08, y - 0.15, "Point size: basin area (km²)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, y - 0.15, "Point size: basin area (km$^2$)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     sample_y = y - 0.29
     for area_value, x_dot in ((100, 0.14), (10000, 0.39), (100000, 0.67)):
         legend_ax.scatter(
@@ -788,7 +789,7 @@ def write_checklist(
         "- Coblis/equivalent review: requires manual Coblis/equivalent review after export",
         "- Legend completeness: colors, marker shapes, point-size meaning, and transparency meaning are explained in figure legends",
         "- Panel labels: lowercase labels with parentheses, `(a)`, `(b)`, `(c)`",
-        "- Units and bins: basin area uses km²; histogram x-axis labels use single scientific-notation bin upper bounds",
+        "- Units and bins: basin area uses km$^2$; histogram x-axis labels use single scientific-notation bin upper bounds",
         "- Plotting script: `{}`".format(script_copy_path.name),
         "- Plotting-data availability: {} CSV files".format(len(data_paths)),
     ]

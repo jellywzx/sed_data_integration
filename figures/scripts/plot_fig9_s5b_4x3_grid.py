@@ -512,9 +512,9 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
             # Scientific notation for first row axes
             if row_idx == 0:
-                ax.ticklabel_format(style='scientific', scilimits=(0, 0), axis='both')
-                ax.yaxis.get_offset_text().set_position((-0.14, 1.02))   # 调整 y轴 1e4 的位置
-                ax.xaxis.get_offset_text().set_position((1.11,0))    # 调整 x轴 1e4 的位置
+                ax.ticklabel_format(style='scientific', scilimits=(0, 0), axis='both', useMathText=True)
+                ax.yaxis.get_offset_text().set_position((-0.14, 1.02))   # 调整 y轴 10^4 的位置
+                ax.xaxis.get_offset_text().set_position((1.11,0))    # 调整 x轴 10^4 的位置
                 
 
             # panel label (a)-(l)
@@ -540,7 +540,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 "n_clusters = {}".format(n_clusters),
                 "r = {:.3f}".format(r_pearson) if np.isfinite(r_pearson) else "r = NaN",
                 "ρ = {:.3f}".format(r_spearman) if np.isfinite(r_spearman) else "ρ = NaN",
-                "R² = {:.3f}".format(r2) if np.isfinite(r2) else "R² = NaN",
+                "R$^2$ = {:.3f}".format(r2) if np.isfinite(r2) else "R$^2$ = NaN",
             ]
             ax.text(
                 0.98, 0.02, "\n".join(corr_lines),
@@ -645,8 +645,8 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
         "- Panel labels use `(a)`, `(b)`, etc.: Yes",
         "- Ranges use en dash with no spaces: N/A",
         "- Coordinates use degree symbol and direction spacing: N/A",
-        "- Numbers and units have a space: Yes (e.g. \"mg L⁻¹\")",
-        "- Units use exponent format: Yes (e.g. mg L⁻¹)",
+        "- Numbers and units have a space: Yes (e.g. \"mg L$^{-1}$\")",
+        "- Units use exponent format: Yes (e.g. mg L$^{-1}$)",
         "- h, km, and m abbreviations used correctly: N/A",
         "",
         "## Reproducibility",

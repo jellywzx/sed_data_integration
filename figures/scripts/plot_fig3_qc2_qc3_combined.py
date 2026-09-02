@@ -790,7 +790,7 @@ def main():
     axes['q'].set_ylim(bottom=0, top=10)
     # set_q_y_ticks(axes['q'], top=10)
     axes['q'].set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 10])
-    axes['q'].yaxis.set_major_formatter(plt.ScalarFormatter())
+    axes['q'].yaxis.set_major_formatter(plt.ScalarFormatter(useMathText=True))
     axes['q'].tick_params(which='minor', length=4, width=0.5, color='gray')
 
     # ------------------------------------------------------------------

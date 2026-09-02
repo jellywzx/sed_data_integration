@@ -133,6 +133,7 @@ def configure_matplotlib() -> None:
     plt.rcParams.update(
         {
             "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "font.size": FONT_SIZE,
             "axes.labelsize": AXES_LABEL_SIZE,
             "axes.titlesize": AXES_TITLE_SIZE,

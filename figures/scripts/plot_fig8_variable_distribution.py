@@ -607,7 +607,7 @@ def write_figure_and_artifacts(
     annual_draw_boxplot = True
     N_BINS = 55
 
-    xlabels = {"Q": "Q (m³ s$^{-1}$)", "SSC": "SSC (mg L$^{-1}$)", "SSL": "SSL (t d$^{-1}$)"}
+    xlabels = {"Q": "Q (m$^3$ s$^{-1}$)", "SSC": "SSC (mg L$^{-1}$)", "SSL": "SSL (t d$^{-1}$)"}
 
     fig, axes = plt.subplots(3, 1, figsize=(7.2, 9.0), sharex=False)
     plotting_rows = []
@@ -956,7 +956,7 @@ def write_figure_and_artifacts(
         "- Ranges use en dash with no spaces: N/A",
         "- Coordinates use degree symbol and direction spacing: N/A",
         "- Numbers and units have a space: Yes",
-        "- Units use exponent format: Yes (m³ s⁻¹, mg L⁻¹, t d⁻¹)",
+        "- Units use exponent format: Yes (m$^3$ s$^{-1}$, mg L$^{-1}$, t d$^{-1}$)",
         "- h, km, and m abbreviations used correctly: N/A",
         "",
         "## Reproducibility",

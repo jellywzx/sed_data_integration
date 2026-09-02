@@ -178,6 +178,7 @@ def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
             "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",

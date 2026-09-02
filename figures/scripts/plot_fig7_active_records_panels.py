@@ -224,6 +224,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
     """Plot three-panel active-records figure and save companion artifacts."""
     plt = setup_matplotlib()
     plt.rcParams["font.family"] = STYLE["font_family"]
+    plt.rcParams["mathtext.fontset"] = "stix"
     plt.rcParams["pdf.fonttype"] = 42
     plt.rcParams["ps.fonttype"] = 42
     plt.rcParams["axes.labelsize"] = STYLE["axis_label_size"]

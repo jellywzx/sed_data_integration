@@ -44,7 +44,7 @@ STYLE = {
     "legend_text_size": 13,
     "title_size": 14,
     "panel_width_cm": 8.5,
-    "panel_height_cm": 7.0,
+    "panel_height_cm": 8,
     "scatter_marker_size": 10,
     "scatter_alpha": 0.65,
     "grid_alpha": 0.25,
@@ -445,6 +445,7 @@ def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
             "font.family": STYLE["font_family"],
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "axes.labelsize": STYLE["axis_label_size"],
@@ -476,7 +477,7 @@ def _apply_scientific_ticks(ax) -> None:
     from matplotlib.ticker import ScalarFormatter
 
     for axis in (ax.xaxis, ax.yaxis):
-        formatter = ScalarFormatter(useMathText=False, useOffset=False)
+        formatter = ScalarFormatter(useMathText=True, useOffset=False)
         formatter.set_scientific(True)
         formatter.set_powerlimits((-6, 2))
         axis.set_major_formatter(formatter)
