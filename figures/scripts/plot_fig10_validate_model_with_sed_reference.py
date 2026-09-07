@@ -89,6 +89,19 @@ FONT_ANNOTATION_SMALL = 14
 FONT_FALLBACK = 16            # fallback "data not available" text
 
 
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
+
 # ============================================================
 # Helper functions
 # ============================================================
@@ -238,11 +251,10 @@ def add_panel_label(ax, label: str) -> None:
     ax.text(
         -0.07, 1.02, label,
         transform=ax.transAxes,
-        fontsize=FONT_TITLE,
         ha="left",
         va="bottom",
         clip_on=False,
-        fontweight="bold",
+        fontproperties=bold_font(FONT_TITLE),
     )
 
 

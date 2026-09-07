@@ -50,6 +50,19 @@ STYLE = {
     "grid_alpha": 0.25,
 }
 
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
 CM_PER_INCH = 2.54
 WINDOW_EXCLUSIVE = False
 METHOD_NOTES_BASE = (
@@ -583,8 +596,7 @@ def make_temporal_grid(plt, pair_records: pd.DataFrame, variable: str = "SSC"):
                 1.1,
                 "({})".format(chr(97 + panel_idx)),
                 transform=ax.transAxes,
-                fontsize=STYLE["panel_label_size"],
-                fontweight="bold",
+                fontproperties=bold_font(STYLE["panel_label_size"]),
                 va="top",
                 ha="left",
                 clip_on=False,

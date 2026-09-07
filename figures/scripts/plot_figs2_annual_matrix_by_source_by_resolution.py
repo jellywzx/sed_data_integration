@@ -107,7 +107,7 @@ PLOT_KIND = "bar"
 # Set to False to hide the inset and its red axvspan highlight.
 DRAW_MONTHLY_INSET = False
 
-CHUNK_TIME = 366
+CHUNK_STATIONS = 512
 DPI = 300
 
 WIDTH_CM = 30.0
@@ -128,6 +128,19 @@ MIN_VISIBLE_FONT_SIZE = 15
 # ============================================================
 # Utility functions
 # ============================================================
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
 
 def configure_matplotlib() -> None:
     plt.rcParams.update(
@@ -331,9 +344,9 @@ def valid_uid_mask(uid_array: np.ndarray) -> np.ndarray:
     return ~invalid
 
 
-def slice_variable_by_time(var, time_dim_index: int, start: int, stop: int):
+def slice_variable_by_axis(var, axis_index: int, start: int, stop: int):
     slicer = [slice(None)] * len(var.dimensions)
-    slicer[time_dim_index] = slice(start, stop)
+    slicer[axis_index] = slice(start, stop)
     return var[tuple(slicer)]
 
 
@@ -374,13 +387,29 @@ def count_resolution_records(
                 )
             )
 
-        raw_time_axis = list(uid_var.dimensions).index("time")
-        n_time = len(years)
+        active_uid_dims = list(uid_var.dimensions)
+        raw_time_axis = active_uid_dims.index("time")
+        station_dims = [dim for dim in active_uid_dims if dim != "time"]
+        if not station_dims:
+            raise ValueError(
+                "{} variable selected_source_station_uid does not contain a station dimension.".format(
+                    nc_path.name
+                )
+            )
+        station_dim = station_dims[0]
+        raw_station_axis = active_uid_dims.index(station_dim)
+        n_stations = len(ds.dimensions[station_dim])
 
-        for start in range(0, n_time, CHUNK_TIME):
-            stop = min(start + CHUNK_TIME, n_time)
+        for start in range(0, n_stations, CHUNK_STATIONS):
+            stop = min(start + CHUNK_STATIONS, n_stations)
+            print(
+                "  {} stations {}-{} of {}".format(
+                    resolution, start + 1, stop, n_stations
+                ),
+                flush=True,
+            )
 
-            raw_values = slice_variable_by_time(uid_var, raw_time_axis, start, stop)
+            raw_values = slice_variable_by_axis(uid_var, raw_station_axis, start, stop)
             uid_values, active_dims = decode_uid_values(uid_var, raw_values)
 
             if "time" not in active_dims:
@@ -388,66 +417,75 @@ def count_resolution_records(
                     "Could not locate active time dimension after decoding "
                     "selected_source_station_uid."
                 )
-
-            time_axis = active_dims.index("time")
-            uid_values = np.moveaxis(uid_values, time_axis, 0)
-
-            years_chunk = years[start:stop]
-
-            if uid_values.shape[0] != len(years_chunk):
+            if station_dim not in active_dims:
                 raise ValueError(
-                    "Decoded selected_source_station_uid shape does not match time chunk "
+                    "Could not locate active station dimension after decoding "
+                    "selected_source_station_uid."
+                )
+
+            station_axis = active_dims.index(station_dim)
+            time_axis = active_dims.index("time")
+            uid_values = np.moveaxis(uid_values, (station_axis, time_axis), (0, 1))
+
+            if uid_values.shape[1] != len(years):
+                raise ValueError(
+                    "Decoded selected_source_station_uid shape does not match time dimension "
                     "in {} for {}:{}.".format(nc_path.name, start, stop)
                 )
 
-            uid_flat = uid_values.reshape((uid_values.shape[0], -1))
-            mask = valid_uid_mask(uid_flat)
+            # Read flag variables for the same station slice.
+            q_flag_dims = list(q_flag_var.dimensions)
+            q_station_axis = q_flag_dims.index(station_dim)
+            q_time_axis = q_flag_dims.index("time")
+            qf_chunk = slice_variable_by_axis(q_flag_var, q_station_axis, start, stop)
+            sf_chunk = slice_variable_by_axis(ssc_flag_var, q_station_axis, start, stop)
+            lf_chunk = slice_variable_by_axis(ssl_flag_var, q_station_axis, start, stop)
 
-            # Read flag variables for the same time slice
-            qf_chunk = slice_variable_by_time(q_flag_var, raw_time_axis, start, stop)
-            sf_chunk = slice_variable_by_time(ssc_flag_var, raw_time_axis, start, stop)
-            lf_chunk = slice_variable_by_time(ssl_flag_var, raw_time_axis, start, stop)
+            qf_moved = np.moveaxis(np.asarray(qf_chunk), (q_station_axis, q_time_axis), (0, 1))
+            sf_moved = np.moveaxis(np.asarray(sf_chunk), (q_station_axis, q_time_axis), (0, 1))
+            lf_moved = np.moveaxis(np.asarray(lf_chunk), (q_station_axis, q_time_axis), (0, 1))
 
-            # Move time axis to position 0 (same transformation as uid_values)
-            qf_moved = np.moveaxis(np.asarray(qf_chunk), raw_time_axis, 0)
-            sf_moved = np.moveaxis(np.asarray(sf_chunk), raw_time_axis, 0)
-            lf_moved = np.moveaxis(np.asarray(lf_chunk), raw_time_axis, 0)
-
-            # Reshape to (n_time, n_clusters) to match uid_flat
-            qf_flat = qf_moved.reshape((qf_moved.shape[0], -1))
-            sf_flat = sf_moved.reshape((sf_moved.shape[0], -1))
-            lf_flat = lf_moved.reshape((lf_moved.shape[0], -1))
+            if qf_moved.shape != uid_values.shape:
+                raise ValueError(
+                    "Flag variable shape does not match selected_source_station_uid "
+                    "for {} station slice {}:{}.".format(nc_path.name, start, stop)
+                )
 
             # At least one of Q, SSC, SSL must have non-missing data (flag != 9)
-            has_data = (qf_flat != 9) | (sf_flat != 9) | (lf_flat != 9)
+            has_data = (qf_moved != 9) | (sf_moved != 9) | (lf_moved != 9)
 
-            # Combine: valid UID AND at least one non-missing flag
-            effective_mask = mask & has_data
-
-            if not effective_mask.any():
+            if not has_data.any():
                 continue
 
-            year_flat = np.repeat(years_chunk, uid_flat.shape[1])[effective_mask.ravel()]
-            selected_uids = uid_flat[effective_mask]
+            _, time_indices = np.nonzero(has_data)
+            selected_uids = np.char.strip(uid_values[has_data].astype(str))
+            valid = valid_uid_mask(selected_uids)
 
-            source_names = [
-                source_lookup.get(str(uid).strip(), "Unknown source")
-                for uid in selected_uids
-            ]
+            if not valid.any():
+                continue
 
             chunk_df = pd.DataFrame(
                 {
-                    "resolution": resolution,
-                    "year": year_flat.astype(np.int32),
-                    "source_name": source_names,
+                    "year": years[time_indices[valid]].astype(np.int32),
+                    "source_station_uid": selected_uids[valid],
                 }
             )
 
-            grouped = (
-                chunk_df.groupby(["resolution", "year", "source_name"], as_index=False)
+            uid_grouped = (
+                chunk_df.groupby(["year", "source_station_uid"], as_index=False)
                 .size()
+            )
+            uid_grouped["source_name"] = (
+                uid_grouped["source_station_uid"]
+                .map(source_lookup)
+                .fillna("Unknown source")
+            )
+            grouped = (
+                uid_grouped.groupby(["year", "source_name"], as_index=False)["size"]
+                .sum()
                 .rename(columns={"size": "n_matrix_records"})
             )
+            grouped.insert(0, "resolution", resolution)
             rows.append(grouped)
 
     if not rows:
@@ -603,7 +641,7 @@ def draw_resolution_panel(
             ha="center",
             va="center",
         )
-        ax.set_title(PANEL_TITLES[resolution], loc="left", weight="bold")
+        ax.set_title(PANEL_TITLES[resolution], loc="left", fontproperties=bold_font(AXES_TITLE_SIZE))
         return None
 
     pivot = (
@@ -650,7 +688,7 @@ def draw_resolution_panel(
         zorder=5,
     )
 
-    ax.set_title(PANEL_TITLES[resolution], loc="left", weight="bold")
+    ax.set_title(PANEL_TITLES[resolution], loc="left", fontproperties=bold_font(AXES_TITLE_SIZE))
     ax.set_ylabel("Records per year" if resolution == "monthly" else "")
     ax.yaxis.set_major_formatter(FuncFormatter(compact_count))
     ax.grid(axis="y", linewidth=0.35, alpha=0.5)

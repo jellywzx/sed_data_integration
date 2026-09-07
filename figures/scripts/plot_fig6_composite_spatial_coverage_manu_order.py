@@ -48,12 +48,12 @@ DPI = 300
 FIGSIZE = (12, 14)
 FIGURE_ID = "fig6_composite_spatial_coverage_manu_order"
 FONT_SIZES = {
-    "map_tick": 9,
-    "panel_label": 15,
-    "empty_message": 10,
-    "inset_axis": 10,
-    "legend_title": 11,
-    "legend_text": 10,
+    "map_tick": 12,
+    "panel_label": 18,
+    "empty_message": 13,
+    "inset_axis": 13,
+    "legend_title": 14,
+    "legend_text": 13,
 }
 MIN_VISIBLE_FONT_SIZE = min(FONT_SIZES["inset_axis"], FONT_SIZES["legend_text"])
 LEGEND_FIRST_ROW_Y = {
@@ -61,6 +61,19 @@ LEGEND_FIRST_ROW_Y = {
     "panel_b": 0.70,
     "panel_c": 0.70,
 }
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 OKABE_ITO = {
     "black": "#000000",
@@ -427,8 +440,7 @@ def add_panel_label(ax, label: str) -> None:
         0.97,
         label,
         transform=ax.transAxes,
-        fontsize=FONT_SIZES["panel_label"],
-        fontweight="bold",
+        fontproperties=bold_font(FONT_SIZES["panel_label"]),
         va="top",
         ha="left",
         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85),
@@ -497,7 +509,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
 
     legend_ax = add_inset_axes(ax, [0.60, 0.01, 0.39, 0.38])
     legend_ax.axis("off")
-    legend_ax.text(0.08, 0.92, "Basin status", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, 0.92, "Basin status", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     total = len(df)
     y = 0.76
     for status in ("resolved", "unresolved", "unknown"):
@@ -565,9 +577,9 @@ def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame
             zorder=3,
         )
 
-    legend_ax = add_inset_axes(ax, [0.63, 0.00, 0.30, 0.28])
+    legend_ax = add_inset_axes(ax, [0.63, 0.05, 0.30, 0.28])
     legend_ax.axis("off")
-    legend_ax.text(0.08, 0.92, "Data source", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, 0.92, "Data source", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     y = LEGEND_FIRST_ROW_Y["panel_b"]
     for source, group in df.groupby("source", dropna=False):
         color = SOURCE_COLORS.get(source, SOURCE_COLORS["Unknown"])
@@ -631,7 +643,7 @@ def draw_climatology_timeseries_map(ax, climatology: pd.DataFrame, timeseries: d
 
     legend_ax = add_inset_axes(ax, [0.01, 0.0, 0.32, 0.34])
     legend_ax.axis("off")
-    legend_ax.text(0.06, 0.92, "Data resolution", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.06, 0.92, "Data resolution", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     items = []
     for label in ("Daily", "Monthly", "Annual"):
         frame = timeseries[label]

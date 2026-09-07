@@ -64,6 +64,19 @@ STYLE = {
     "grid_alpha": 0.25,
 }
 
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
 CM_PER_INCH = 2.54
 WINDOW_EXCLUSIVE = False
 RESOLUTION_CODE = {0: "daily", 1: "monthly", 2: "annual", 3: "climatology"}
@@ -522,8 +535,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 0.0, 1.1,
                 "({})".format(chr(97 + panel_idx)),
                 transform=ax.transAxes,
-                fontsize=STYLE["panel_label_size"],
-                fontweight="bold",
+                fontproperties=bold_font(STYLE["panel_label_size"]),
                 va="top", ha="left",
             )
 
@@ -562,8 +574,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
             0.98, 0.93,
             label,
             transform=ax.transAxes,
-            fontsize=STYLE["legend_text_size"],
-            fontweight="bold",
+            fontproperties=bold_font(STYLE["legend_text_size"]),
             va="top", ha="right",
             color=sp_color,
         )

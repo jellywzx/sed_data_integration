@@ -100,6 +100,19 @@ FONT_SIZE_LABEL = 15
 FONT_SIZE_PANEL = 16
 
 
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
+
 def ensure_figure_dirs(figures_root: Path) -> dict:
     """Create and return the AGENTS.md figure output directory structure."""
     root = Path(figures_root).resolve()
@@ -120,7 +133,7 @@ def parse_args(argv=None):
     parser.add_argument("--release-dir", default=str(DEFAULT_MINIMAL_RELEASE_DIR), help="Path to sed_reference_release_minimal.")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Output directory for this module.")
     parser.add_argument("--figures-dir", default=str(DEFAULT_FIGURES_DIR), help="Root figures directory (AGENTS.md structure).")
-    parser.add_argument("--matrix-row-chunk-size", type=int, default=64, help="Station-row chunk size for matrix scans.")
+    parser.add_argument("--matrix-row-chunk-size", type=int, default=512, help="Station-row chunk size for matrix scans.")
     parser.add_argument("--record-chunk-size", type=int, default=500000, help="Record chunk size for extension scans.")
     parser.add_argument("--skip-figures", action="store_true", help="Skip figure creation.")
     parser.add_argument("--figures-only", action="store_true", help="Skip stats and report; only generate the figure.")
@@ -142,22 +155,16 @@ def _flag_array(ds, var_name: str, key, shape) -> np.ndarray:
     return np.ma.asarray(ds.variables[flag_name][key]).filled(9).astype("int16")
 
 
-def _matrix_combo_name(q_present: np.ndarray, ssc_present: np.ndarray, ssl_present: np.ndarray) -> np.ndarray:
-    code = q_present.astype("int8") + 2 * ssc_present.astype("int8") + 4 * ssl_present.astype("int8")
-    labels = np.asarray(
-        [
-            "none",
-            "Q only",
-            "SSC only",
-            "Q+SSC",
-            "SSL only",
-            "Q+SSL",
-            "SSC+SSL",
-            "Q+SSC+SSL",
-        ],
-        dtype=object,
-    )
-    return labels[code]
+MATRIX_COMBO_LABELS = (
+    "none",
+    "Q only",
+    "SSC only",
+    "Q+SSC",
+    "SSL only",
+    "Q+SSL",
+    "SSC+SSL",
+    "Q+SSC+SSL",
+)
 
 
 def _record_dimension_name(ds) -> str:
@@ -216,6 +223,12 @@ def scan_matrix_product(ctx: ReleaseContext, resolution: str, file_name: str, ro
 
         for start in range(0, n_stations, row_chunk_size):
             stop = min(start + row_chunk_size, n_stations)
+            print(
+                "Scanning {} matrix rows {}-{} of {}".format(
+                    resolution, start + 1, stop, n_stations
+                ),
+                flush=True,
+            )
             key = (slice(start, stop), slice(None))
             present_masks = {}
             for var in VARIABLES:
@@ -252,14 +265,20 @@ def scan_matrix_product(ctx: ReleaseContext, resolution: str, file_name: str, ro
                             }
                         )
 
-            combos = _matrix_combo_name(present_masks["Q"], present_masks["SSC"], present_masks["SSL"])
-            for combo in np.unique(combos):
-                combo_text = str(combo)
-                if combo_text == "none":
+            combo_codes = (
+                present_masks["Q"].astype("uint8")
+                + 2 * present_masks["SSC"].astype("uint8")
+                + 4 * present_masks["SSL"].astype("uint8")
+            )
+            counts = np.bincount(combo_codes.ravel(), minlength=len(MATRIX_COMBO_LABELS))
+            for code, count in enumerate(counts):
+                if code == 0 or count == 0:
                     continue
-                mask = combos == combo
-                colocation_counts[combo_text] += int(np.count_nonzero(mask))
-                colocation_station_counts[combo_text] += int(np.count_nonzero(np.any(mask, axis=1)))
+                combo_text = MATRIX_COMBO_LABELS[code]
+                colocation_counts[combo_text] += int(count)
+                colocation_station_counts[combo_text] += int(
+                    np.count_nonzero(np.any(combo_codes == code, axis=1))
+                )
 
         n_nonempty_cells = int(sum(colocation_counts.values()))
         resolution_row = {
@@ -533,34 +552,58 @@ def trim_extremes(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _read_values_for_figure(ctx: ReleaseContext, product: str, file_name: str, var_name: str, matrix_rows: int, record_rows: int) -> dict:
-    value_pieces = []
-    flag_pieces = []
+def _empty_figure_product_data() -> dict:
+    return {
+        var: {"values": [], "flags": []}
+        for var in VARIABLES
+    }
+
+
+def _finalize_figure_product_data(data: dict) -> dict:
+    return {
+        var: {
+            "values": _concat_values(data[var]["values"]),
+            "flags": _concat_values(data[var]["flags"]).astype("int16"),
+        }
+        for var in VARIABLES
+    }
+
+
+def _read_product_values_for_figure(
+    ctx: ReleaseContext,
+    product: str,
+    file_name: str,
+    matrix_rows: int,
+    record_rows: int,
+) -> dict:
+    data = _empty_figure_product_data()
     with ctx.open_dataset(file_name, required=True) as ds:
         if product in MATRIX_PRODUCTS:
             n_stations = int(len(ds.dimensions.get("n_stations", [])))
             for start in range(0, n_stations, matrix_rows):
                 stop = min(start + matrix_rows, n_stations)
                 key = (slice(start, stop), slice(None))
-                values = read_numeric_var(ds, var_name, key=key)
-                flags = _flag_array(ds, var_name, key, values.shape)
-                valid = np.isfinite(values) & np.isin(flags, [0, 1])
-                if np.any(valid):
-                    value_pieces.append(values[valid])
-                    flag_pieces.append(flags[valid])
+                for var_name in VARIABLES:
+                    values = read_numeric_var(ds, var_name, key=key)
+                    flags = _flag_array(ds, var_name, key, values.shape)
+                    valid = np.isfinite(values) & np.isin(flags, [0, 1])
+                    if np.any(valid):
+                        data[var_name]["values"].append(values[valid])
+                        data[var_name]["flags"].append(flags[valid])
         else:
             record_dim = _record_dimension_name(ds)
             n_records = int(len(ds.dimensions[record_dim])) if record_dim else 0
             for start in range(0, n_records, record_rows):
                 stop = min(start + record_rows, n_records)
                 key = slice(start, stop)
-                values = read_numeric_var(ds, var_name, key=key)
-                flags = _flag_array(ds, var_name, key, values.shape)
-                valid = np.isfinite(values) & np.isin(flags, [0, 1])
-                if np.any(valid):
-                    value_pieces.append(values[valid])
-                    flag_pieces.append(flags[valid])
-    return {"values": _concat_values(value_pieces), "flags": _concat_values(flag_pieces).astype("int16")}
+                for var_name in VARIABLES:
+                    values = read_numeric_var(ds, var_name, key=key)
+                    flags = _flag_array(ds, var_name, key, values.shape)
+                    valid = np.isfinite(values) & np.isin(flags, [0, 1])
+                    if np.any(valid):
+                        data[var_name]["values"].append(values[valid])
+                        data[var_name]["flags"].append(flags[valid])
+    return _finalize_figure_product_data(data)
 
 
 def _plot_axis_limits(values: np.ndarray) -> tuple[float, float]:
@@ -601,6 +644,14 @@ def write_figure_and_artifacts(
         ("monthly", MATRIX_PRODUCTS["monthly"]),
         ("annual", MATRIX_PRODUCTS["annual"]),
     ]
+    figure_values = {}
+    for product, file_name in products:
+        if ctx.require_input(ctx.release_file(file_name), required=False) is None:
+            continue
+        print("Reading figure distributions from {}".format(file_name), flush=True)
+        figure_values[product] = _read_product_values_for_figure(
+            ctx, product, file_name, matrix_rows, record_rows
+        )
 
     use_log = {"Q": True, "SSC": True, "SSL": True}
     variable_labels = {"Q": "Q", "SSC": "SSC", "SSL": "SSL"}
@@ -617,10 +668,10 @@ def write_figure_and_artifacts(
         product_data = {}
         combined_values = []
 
-        for product, file_name in products:
-            if ctx.require_input(ctx.release_file(file_name), required=False) is None:
+        for product, _file_name in products:
+            if product not in figure_values:
                 continue
-            data = _read_values_for_figure(ctx, product, file_name, var_name, matrix_rows, record_rows)
+            data = figure_values[product][var_name]
             values = data["values"]
             flags = data["flags"]
             if values.size == 0:
@@ -866,8 +917,8 @@ def write_figure_and_artifacts(
 
         # Panel label
         ax.text(0.01, 0.97, "({})".format(chr(97 + idx)),
-                transform=ax.transAxes, fontsize=FONT_SIZE_PANEL,
-                fontweight="bold", va="top", ha="left",
+                transform=ax.transAxes, fontproperties=bold_font(FONT_SIZE_PANEL),
+                va="top", ha="left",
                 bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85))
 
     fig.tight_layout()

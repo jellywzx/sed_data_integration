@@ -83,20 +83,33 @@ mpl.rcParams["mathtext.fontset"] = "stix"
 mpl.rcParams["pdf.fonttype"] = 42
 mpl.rcParams["ps.fonttype"] = 42
 mpl.rcParams["svg.fonttype"] = "none"
-mpl.rcParams["font.size"] = 15
-mpl.rcParams["axes.labelsize"] = 16
-mpl.rcParams["axes.titlesize"] = 17
-mpl.rcParams["xtick.labelsize"] = 14
-mpl.rcParams["ytick.labelsize"] = 14
-mpl.rcParams["legend.fontsize"] = 14
+mpl.rcParams["font.size"] = 18
+mpl.rcParams["axes.labelsize"] = 19
+mpl.rcParams["axes.titlesize"] = 20
+mpl.rcParams["xtick.labelsize"] = 17
+mpl.rcParams["ytick.labelsize"] = 17
+mpl.rcParams["legend.fontsize"] = 17
 
 # ============================================================
 # Centralized font size configuration
 # ============================================================
 
-PANEL_LABEL_FONTSIZE = 18
-LEGEND_FONTSIZE = 14
-TITLE_FONTSIZE = 16
+PANEL_LABEL_FONTSIZE = 21
+LEGEND_FONTSIZE = 17
+TITLE_FONTSIZE = 18
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 
 # ============================================================
@@ -812,7 +825,7 @@ def main():
     axes['ssc'].text(
         -0.12, 1.02, "(b)",
         transform=axes['ssc'].transAxes,
-        ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
     # Restrict SSC y-axis to data range +5% margin
     ssc_valid = SSC[np.isfinite(SSC)]
@@ -888,7 +901,7 @@ def main():
 
     ax_c.text(
         -0.10, 1, "(c)",
-        transform=ax_c.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        transform=ax_c.transAxes, ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
     ax_c.set_xlabel("log10(Q) (m$^3$ s$^{-1}$)")
     ax_c.set_ylabel("log10(SSC) (mg L$^{-1}$)")
@@ -936,7 +949,7 @@ def main():
 
     ax_d.text(
         -0.10, 1, "(d)",
-        transform=ax_d.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold"
+        transform=ax_d.transAxes, ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE)
     )
     ax_d.set_ylabel("Residual\n(log SSC)")
     ax_d.set_xlabel("Time")
@@ -948,7 +961,7 @@ def main():
     axes['q'].text(
         -0.12, 1.02, "(a)",
         transform=axes['q'].transAxes,
-        ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
 
 
@@ -959,12 +972,12 @@ def main():
     fig.text(
         0.36, 1, "QC2: log-IQR",
         ha="center", va="top",
-        fontsize=TITLE_FONTSIZE, fontweight="bold",
+        fontproperties=bold_font(TITLE_FONTSIZE),
     )
     fig.text(
         0.755, 1, "QC3: SSC-Q consistency",
         ha="center", va="top",
-        fontsize=TITLE_FONTSIZE, fontweight="bold",
+        fontproperties=bold_font(TITLE_FONTSIZE),
     )
 
     # ------------------------------------------------------------------

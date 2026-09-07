@@ -78,6 +78,19 @@ SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
 # SATELLITE_SOURCE_ORDER = ["RiverSed", "GSED", "Dethier"]
 MIN_LAT = -60  # southern extent bound, excluding Antarctica
 
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
+
 SOURCE_NAME_ALIASES = {
     "ALi_De_Boer": "Ali and De Boer",
     "HMA": "HMA",
@@ -707,8 +720,7 @@ def add_panel_label(ax, label: str) -> None:
         0.965,
         label,
         transform=ax.transAxes,
-        fontsize=FONT_SIZE_PANEL_LABEL,
-        fontweight="bold",
+        fontproperties=bold_font(FONT_SIZE_PANEL_LABEL),
         va="top",
         ha="left",
         bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="none", alpha=0.85),
@@ -803,7 +815,7 @@ def draw_top_sources_panel(
         title="In situ",
         title_fontsize=FONT_SIZE_LEGEND,
     )
-    leg_insitu.get_title().set_fontweight("bold")
+    leg_insitu.get_title().set_fontproperties(bold_font(FONT_SIZE_LEGEND))
     leg_insitu._legend_box.align = "left"
     ax.add_artist(leg_insitu)
 
@@ -821,7 +833,7 @@ def draw_top_sources_panel(
             title="Climatology",
             title_fontsize=FONT_SIZE_LEGEND,
         )
-        leg_clim.get_title().set_fontweight("bold")
+        leg_clim.get_title().set_fontproperties(bold_font(FONT_SIZE_LEGEND))
         leg_clim._legend_box.align = "left"
     
 
