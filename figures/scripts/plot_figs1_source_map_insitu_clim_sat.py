@@ -59,10 +59,10 @@ def script_output_stem() -> str:
 OUTPUT_STEM = script_output_stem()
 FIGSIZE = (12.5, 12.8)
 
-FONT_SIZE_TITLE = 15
-FONT_SIZE_AXIS_LABEL = 13
-FONT_SIZE_LEGEND = 11
-FONT_SIZE_PANEL_LABEL = 18
+FONT_SIZE_TITLE = 17
+FONT_SIZE_AXIS_LABEL = 15
+FONT_SIZE_LEGEND = 11.5
+FONT_SIZE_PANEL_LABEL = 20
 
 SOURCE_STATION_CATALOG_CSV = "source_station_catalog.csv"
 RESOLUTION_NC_FILES = {
@@ -790,7 +790,7 @@ def draw_top_sources_panel(
         fontsize=FONT_SIZE_LEGEND,
         columnspacing=1.2,
         handletextpad=0.35,
-        title="In situ",
+        title="Main",
         title_fontsize=FONT_SIZE_LEGEND,
     )
     leg_insitu.get_title().set_fontproperties(bold_font(FONT_SIZE_LEGEND))
