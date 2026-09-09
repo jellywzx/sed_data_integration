@@ -615,6 +615,23 @@ def _plot_axis_limits(values: np.ndarray) -> tuple[float, float]:
     return float(low - pad), float(high + pad)
 
 
+def _apply_ssc_publication_xaxis(ax, mpl) -> None:
+    major_values = np.asarray([1, 10, 100, 1000, 10000], dtype="float64")
+    minor_values = []
+    for exponent in range(-1, 5):
+        for multiplier in (2, 5):
+            value = multiplier * (10 ** exponent)
+            if 0.5 <= value <= 10000:
+                minor_values.append(value)
+
+    ax.set_xlim(np.log10(0.5), np.log10(10000.0))
+    ax.xaxis.set_major_locator(mpl.ticker.FixedLocator(np.log10(major_values)))
+    ax.xaxis.set_major_formatter(mpl.ticker.FixedFormatter(["1", "10", "100", "1000", "10000"]))
+    ax.xaxis.set_minor_locator(mpl.ticker.FixedLocator(np.log10(np.asarray(minor_values, dtype="float64"))))
+    ax.xaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+    ax.tick_params(axis="x", which="minor", length=3.0, width=0.6, labelbottom=False)
+
+
 def write_figure_and_artifacts(
     ctx: ReleaseContext,
     figure_dirs: dict,
@@ -844,8 +861,11 @@ def write_figure_and_artifacts(
                     "n_estimated": int(sum(item["n_estimated"] for item in product_data.values())),
                 })
 
-            ax.set_xlim(x_min, x_max)
-            ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{10**v:g}"))
+            if var_name == "SSC":
+                _apply_ssc_publication_xaxis(ax, mpl)
+            else:
+                ax.set_xlim(x_min, x_max)
+                ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{10**v:g}"))
 
             if "annual" in product_data:
                 ylim = ax.get_ylim()
@@ -914,6 +934,8 @@ def write_figure_and_artifacts(
             ax.set_xlabel(xlabels[var_name], fontsize=FONT_SIZE_LABEL)
             ax.tick_params(labelsize=FONT_SIZE_TICK)
             ax.grid(True, alpha=0.3)
+            if var_name == "SSC":
+                ax.grid(False, which="minor", axis="x")
 
         # Panel label
         ax.text(0.01, 0.97, "({})".format(chr(97 + idx)),

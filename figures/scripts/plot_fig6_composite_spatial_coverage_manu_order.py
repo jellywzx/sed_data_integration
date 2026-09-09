@@ -57,9 +57,9 @@ FONT_SIZES = {
 }
 MIN_VISIBLE_FONT_SIZE = min(FONT_SIZES["inset_axis"], FONT_SIZES["legend_text"])
 LEGEND_FIRST_ROW_Y = {
-    "panel_a": 0.70,
-    "panel_b": 0.70,
-    "panel_c": 0.70,
+    "panel_a": 0.68,
+    "panel_b": 0.68,
+    "panel_c": 0.76,
 }
 
 
@@ -511,7 +511,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
     legend_ax.axis("off")
     legend_ax.text(0.08, 0.92, "Basin status", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     total = len(df)
-    y = 0.76
+    y = LEGEND_FIRST_ROW_Y["panel_c"]
     for status in ("resolved", "unresolved", "unknown"):
         count = int(df["basin_status"].eq(status).sum())
         if count == 0 and status == "unknown":
@@ -529,7 +529,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
             clip_on=False,
         )
         legend_ax.text(0.17, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
-        y -= 0.13
+        y -= 0.15
     legend_ax.text(0.08, y - 0.03, "Total stations: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     legend_ax.text(0.08, y - 0.15, "Point size: basin area (km$^2$)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     sample_y = y - 0.29
@@ -597,9 +597,9 @@ def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame
             clip_on=False,
         )
         legend_ax.text(0.20, y, "{} ({})".format(source, len(group)), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
-        y -= 0.18
+        y -= 0.19
 
-    legend_ax.text(0.08, y - 0.03, "Total stations: {:,}".format(len(df)),
+    legend_ax.text(0.08, y - 0.01, "Total stations: {:,}".format(len(df)),
                    fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     # hist_ax = add_inset_axes(ax, [0.01, 0.17, 0.20, 0.22])
     # draw_area_hist(hist_ax, satellite_area, OKABE_ITO["reddish_purple"])
@@ -657,7 +657,7 @@ def draw_climatology_timeseries_map(ax, climatology: pd.DataFrame, timeseries: d
         col = idx // items_per_col
         row = idx % items_per_col
         x_dot = 0.06 + col * 0.43
-        y = LEGEND_FIRST_ROW_Y["panel_a"] - row * 0.13
+        y = LEGEND_FIRST_ROW_Y["panel_a"] - row * 0.15
         legend_ax.scatter(
             x_dot,
             y,
