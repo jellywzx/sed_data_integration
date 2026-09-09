@@ -73,14 +73,14 @@ DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_
 DEFAULT_EXTRACT_DIR = os.environ.get("MODEL_EXTRACT_DIR", "/path/to/model/extractStation")
 
 # --- Font size configuration ---
-FONT_TITLE = 18
-FONT_LABEL = 16
-FONT_LABEL_MAP = 15          # map panel axis labels (tighter space)
-FONT_LEGEND = 14
-FONT_TICK = 14
-FONT_ANNOTATION = 15
-FONT_ANNOTATION_SMALL = 14
-FONT_FALLBACK = 16            # fallback "data not available" text
+FONT_TITLE = 22
+FONT_LABEL = 20
+FONT_LABEL_MAP = 18          # map panel axis labels (tighter space)
+FONT_LEGEND = 17
+FONT_TICK = 18
+FONT_ANNOTATION = 18
+FONT_ANNOTATION_SMALL = 16
+FONT_FALLBACK = 18            # fallback "data not available" text
 
 
 # ============================================================
@@ -225,6 +225,17 @@ OKABE_ITO = {
 def apply_axis_font_sizes(ax) -> None:
     """Apply the script-level tick font setting to both axes."""
     ax.tick_params(axis="both", which="both", labelsize=FONT_TICK)
+
+
+def apply_scientific_y_axis(ax) -> None:
+    """Format a linear y-axis in scientific notation with the script tick size."""
+    from matplotlib.ticker import ScalarFormatter
+
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((0, 0))
+    ax.yaxis.set_major_formatter(formatter)
+    ax.yaxis.get_offset_text().set_fontsize(FONT_TICK)
 
 
 def add_panel_label(ax, label: str) -> None:
@@ -596,6 +607,7 @@ def plot_panel_c_Q(ax, extract_dir: str) -> None:
     ax.set_ylabel("Q (m³ s⁻¹)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
+    apply_scientific_y_axis(ax)
     ax.legend(fontsize=FONT_LEGEND, loc="upper right", framealpha=0.8, edgecolor="gray")
     ax.grid(True, alpha=0.3)
 
@@ -679,6 +691,7 @@ def plot_panel_d_SSL(ax, extract_dir: str) -> None:
     ax.set_ylabel("SSL (10³ t d⁻¹)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
+    apply_scientific_y_axis(ax)
     ax.legend(fontsize=FONT_LEGEND, loc="upper right", framealpha=0.8, edgecolor="gray")
     ax.grid(True, alpha=0.3)
 
