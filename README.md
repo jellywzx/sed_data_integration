@@ -1,986 +1,611 @@
-# Sediment Reference Dataset Basin Pipeline
+# Sediment Reference Dataset Public Station Package
 
-> This document describes the main `scripts_basin_test` pipeline.
->
-> The pipeline turns multi-source sediment observations into a basin-based
-> sediment reference dataset keyed by `cluster_uid + resolution`, then publishes
-> it under `scripts_basin_test/output/sed_reference_release/`.
-
----
-
-## 1. Project Overview
-
-This repository builds a sediment-observation reference dataset. The workflow
-standardizes quality-controlled NetCDF inputs from many sources, detects their
-temporal resolution, traces upstream basins, merges stations with basin rules,
-and produces a release package for model validation, nearest-station lookup, and
-provenance tracing.
-
-The final release package is written to:
+This repository builds the sediment reference dataset and prepares the
+station-facing public package used for publication. The public package described
+here is the final output of:
 
 ```text
-scripts_basin_test/output/sed_reference_release/
+s9_public_station_names.py
 ```
 
-The primary release join key is:
+The default S9 input directory is:
 
 ```text
-cluster_uid + resolution
+scripts_basin_test/output/sed_reference_release_minimal/
 ```
 
-A `cluster` is not always a single physical station. It is a station group
-formed by the basin merge rules. A cluster can contain multiple source stations,
-and the release keeps traceability back to source stations and original file
-paths.
+The default S9 final output directory is:
 
----
+```text
+scripts_basin_test/output/sed_reference_release_minimal_final/
+```
 
-## 2. Release Contents
+S9 converts the public minimal release to station-facing schema names, copies
+the minimal example workflow, writes a conversion report, and optionally fails
+in strict mode if old public schema names remain.
 
-The release package mainly contains:
+## Quick Start
 
-| Type | Standard files |
-|---|---|
-| Master NetCDF | `sed_reference_master.nc` |
-| Matrix NetCDF | `sed_reference_timeseries_daily.nc`, `sed_reference_timeseries_monthly.nc`, `sed_reference_timeseries_annual.nc` |
-| Climatology NetCDF | `sed_reference_climatology.nc` |
-| Satellite NetCDF | `sed_reference_satellite.nc` |
-| Catalogs | `station_catalog.csv`, `source_station_catalog.csv`, `source_dataset_catalog.csv`, `satellite_catalog.csv` |
-| Overlap provenance | `sed_reference_overlap_candidates.csv.gz` |
-| GIS sidecars | `sed_reference_cluster_points.gpkg`, `sed_reference_source_stations.gpkg`, optional `sed_reference_cluster_basins.gpkg` |
-| Release validation | `release_validation_report.csv`, `release_inventory.csv`, release `README.md` |
-
-The release can be understood as five layers:
-
-1. `master`: based on `s6_basin_merged_all.nc`, preserving record-level provenance.
-2. `matrix`: daily, monthly, and annual matrix NetCDF files for nearest-station lookup, time-series extraction, and model comparison.
-3. `climatology`: based on `s6_climatology_only.nc`, published independently and excluded from the basin mainline merge.
-4. `satellite`: based on the satellite source family, published as `sed_reference_satellite.nc` for satellite-vs-station validation, spatial diagnostics, and downstream comparison. It is excluded from the main station-reference merge by default.
-5. `release`: a standard external package assembled by `s8_publish_reference_dataset.py`.
-
-Notes:
-
-1. Legacy names such as `sed_reference_satellite_validation.nc` and `satellite_validation_catalog.csv` are compatibility aliases if present. Prefer `sed_reference_satellite.nc` and `satellite_catalog.csv`.
-2. `s8_publish_reference_dataset.py` requires the release-level satellite NetCDF and catalog to exist together. If either is missing, release generation should fail.
-3. Satellite-only clusters may be absent from the main station catalog. Release validation checks that their `cluster_uid / cluster_id` values are self-consistent and reports how many can be linked to the main catalog.
-
----
-
-## 3. Quick Start
-
-### 3.1 Run The Main Pipeline
-
-Use the unified entrypoint to run `s1 -> s8`:
+Run the main processing pipeline through S8:
 
 ```bash
-python run_s1_s8_basin_pipeline.py --help
 python run_s1_s8_basin_pipeline.py
 ```
 
-Common examples:
+Build the final station-facing public package:
 
 ```bash
-# Run a continuous stage range.
-python run_s1_s8_basin_pipeline.py --start-at s3 --end-at s6
-
-# Run selected stages. --steps takes precedence over --start-at/--end-at.
-python run_s1_s8_basin_pipeline.py --steps s4,s5,s8
-
-# Print commands without executing them.
-python run_s1_s8_basin_pipeline.py --steps s6,s7 --dry-run
+python s9_public_station_names.py --strict
 ```
 
-### 3.2 Common Arguments
-
-| Argument | Purpose |
-|---|---|
-| `--python` | Python 3 interpreter path |
-| `--log-file` | Pipeline log file path |
-| `--start-at` / `--end-at` | Run one continuous stage range |
-| `--steps` | Run a comma-separated list of non-contiguous stages |
-| `--dry-run` | Print commands without executing them |
-| `--strict-s1` | Treat nonzero s1 exit status as fatal |
-| `--s2-workers` | s2 worker count |
-| `--s2-clear` | Pass `--clear-all` to s2 |
-| `--s3-workers` | s3 worker count |
-| `--s3-exclude-resolutions` | Exclude resolutions from the basin mainline, default `climatology` |
-| `--s4-workers` | s4 basin-tracing worker count |
-| `--s4-batch-size` | s4 batch size |
-| `--s4-no-resume` | Disable s4 resume mode |
-| `--s4-no-gpkg` | Disable s4 GPKG output |
-| `--merit-dir` | MERIT Hydro data directory |
-| `--s6-workers` | s6 master merge worker count |
-| `--matrix-workers` | Total matrix-export worker budget |
-| `--matrix-resolution-workers` | Per-resolution matrix worker setting |
-| `--s6-include-climatology` | Include climatology in the s6 main merge |
-| `--skip-climatology-export` | Skip independent climatology export |
-| `--include-local-basins` | Also generate local-basin sidecars |
-| `--s8-link-mode` | Release materialization mode: `hardlink`, `symlink`, or `copy` |
-| `--s8-skip-gpkg` | Skip release-level GPKG files |
-| `--s8-no-basin-polygons` | Do not publish the basin-polygon sidecar |
-| `--s8-skip-validation` | Skip release validation |
-| `--s8-no-force` | Do not overwrite an existing release directory |
-
----
-
-## 4. Path Conventions
-
-The repository is expected to live at:
-
-```text
-Output_r/scripts_basin_test/
-```
-
-The shared output directory is:
-
-```text
-scripts_basin_test/output/
-```
-
-The s2-organized resolution directory is:
-
-```text
-../output_resolution_organized/
-```
-
-The log directory is:
-
-```text
-scripts_basin_test/output/logs/
-```
-
-For cross-machine migration or execution from another directory, set:
+Use custom input and output directories if needed:
 
 ```bash
-export OUTPUT_R_ROOT=/path/to/Output_r
+python s9_public_station_names.py \
+  --release-dir output/sed_reference_release_minimal \
+  --output-dir output/sed_reference_release_minimal_final \
+  --strict
 ```
 
-`s4` requires MERIT Hydro data. The default path is inferred by the scripts, or
-it can be supplied explicitly:
+The public example workflow copied by S9 can then be run from the final package:
 
 ```bash
-python run_s1_s8_basin_pipeline.py \
-  --steps s4 \
-  --merit-dir /path/to/MERIT_Hydro_v07_Basins_v01_bugfix1
-```
-
----
-
-## 5. Main Pipeline
-
-The current mainline is:
-
-```text
-s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
-```
-
-| Stage | Entrypoint | Main purpose | Key outputs |
-|---|---|---|---|
-| s1 | `s1_verify_time_resolution.py` | Verify input NetCDF temporal semantics and write the main classification result, manual review queue, and override template | `s1_verify_time_resolution_results.csv`, `s1_resolution_review_queue.csv`, `s1_resolution_review_overrides.csv` |
-| s2 | `s2_reorganize_qc_by_resolution.py` | Reorganize QC files into standard resolution directories using s1 decisions | `../output_resolution_organized/`, `s2_resolution_classification_details.csv` |
-| s3 | `s3_collect_qc_stations.py` | Scan organized NetCDF files, extract basin-mainline station metadata, and create stable internal `station_key` values | `s3_collected_stations.csv` |
-| s4 | `s4_basin_trace_watch.py` or `submit_s4_lsf.sh` | Run upstream basin tracing for stations by `station_key` and write basin diagnostics | `s4_upstream_basins.csv`, `s4_upstream_basins.gpkg`, `s4_local_catchments.gpkg`, `s4_reported_area_check.csv` |
-| s5 | `s5_basin_merge.py` | Merge s4 basin results by `station_key`, assign `cluster_id`, and write cluster-level station tables | `s5_basin_clustered_stations.csv`, `s5_basin_cluster_report.csv` |
-| s6 | `submit_s6_fast.sh` or the s6 scripts | Build master, matrix, climatology, and satellite NetCDF products | `s6_basin_merged_all.nc`, `s6_matrix_by_resolution/*.nc`, `s6_climatology_only.nc`, `s6_satellite_validation_only.nc` |
-| s7 | `s7_export_cluster_shp.py`, `s7_export_source_station_shp.py`, `s7_export_cluster_basin_shp.py` | Export cluster, source-station, and basin spatial sidecars and catalogs | `s7_cluster_points.gpkg`, `s7_source_stations.gpkg`, `s7_cluster_basins.gpkg`, related catalogs |
-| s8 | `s8_publish_reference_dataset.py` | Assemble s6/s7 outputs into the standard release package and run release validation | `sed_reference_release/` |
-
----
-
-## 6. Satellite Release Rules
-
-Satellite data are a required part of a complete release:
-
-```text
-sed_reference_satellite.nc
-satellite_catalog.csv
-```
-
-Design rules:
-
-1. Select records from s5 candidates where `source_family == satellite`.
-2. Keep only standard temporal resolutions: `daily / monthly / annual`.
-3. Link to the main basin clusters through `cluster_uid / cluster_id`.
-4. Do not include satellite records in `sed_reference_master.nc`.
-5. Do not include satellite records in `sed_reference_timeseries_daily.nc`, `sed_reference_timeseries_monthly.nc`, or `sed_reference_timeseries_annual.nc`.
-6. Use satellite data for satellite-vs-station validation, spatial diagnostics, and downstream comparison.
-7. Do not treat the satellite NetCDF as a complete Q/SSC/SSL time-series product. Variable coverage differs by satellite source:
-   - Dethier: Q/SSC/SSL are complete.
-   - GSED: SSC only, with partial coverage; Q and SSL are absent or zero.
-   - RiverSed: SSC only, with sparse coverage; Q and SSL are absent or zero.
-   Filter by `source` and variable before using this product.
-8. If the satellite NetCDF or satellite catalog is missing, release generation should fail instead of producing an incomplete release.
-
-Current s6 satellite intermediate products:
-
-```text
-scripts_basin_test/output/s6_satellite_validation_only.nc
-scripts_basin_test/output/s6_satellite_validation_catalog.csv
-```
-
-Expected s8 release outputs:
-
-```text
-scripts_basin_test/output/sed_reference_release/sed_reference_satellite.nc
-scripts_basin_test/output/sed_reference_release/satellite_catalog.csv
-```
-
-Main satellite NetCDF dimensions:
-
-```text
-n_satellite_stations
-n_satellite_records
-n_sources
-```
-
-Common station-level fields:
-
-```text
-satellite_station_uid
-cluster_uid
-cluster_id_station
-source
-source_family
-source_station_native_id
-station_name
-river_name
-station_resolution
-lat
-lon
-candidate_path
-resolved_candidate_path
-merge_policy
-validation_only
-```
-
-Common record-level fields:
-
-```text
-satellite_station_index
-cluster_id
-time
-date
-resolution
-Q
-SSC
-SSL
-Q_flag
-SSC_flag
-SSL_flag
-```
-
-Main satellite catalog fields:
-
-```text
-satellite_station_uid
-cluster_uid
-cluster_id
-source
-source_family
-resolution
-lat
-lon
-station_name
-river_name
-source_station_native_id
-candidate_path
-resolved_candidate_path
-n_records
-time_start
-time_end
-validation_only
-merge_policy
-```
-
----
-
-## 7. Climatology Release Rules
-
-Climatology is an independent reference layer in the release. It must be
-published separately as:
-
-```text
-sed_reference_climatology.nc
-```
-
-Design rules:
-
-1. Scan and export climatology files separately from `output_resolution_organized/climatology/`.
-2. Do not include climatology records in basin tracing.
-3. Do not include climatology records in basin cluster merging.
-4. Do not include climatology records in `sed_reference_master.nc`.
-5. Do not include climatology records in the daily, monthly, or annual matrix NetCDF products.
-6. Do not use `cluster_uid + resolution` as the primary climatology index.
-7. Use the climatology product's internal `station_uid` as the stable station key.
-8. Use this layer for long-term means, climatological values, or records without clear daily, monthly, or annual time-series semantics.
-9. Keep climatology analysis separate from daily, monthly, and annual matrix files unless the statistical meaning is explicitly aligned.
-
-Current s6 climatology intermediate products:
-
-```text
-scripts_basin_test/output/s6_climatology_only.nc
-scripts_basin_test/output/s6_climatology_stations.shp
-```
-
-Expected s8 release output:
-
-```text
-scripts_basin_test/output/sed_reference_release/sed_reference_climatology.nc
-```
-
-Release constraints:
-
-1. `sed_reference_climatology.nc` is one of the core release NetCDF products.
-2. Records in the file should correspond only to `climatology` resolution semantics.
-3. Release validation should check climatology record counts, time coverage, and resolution-code consistency.
-4. A complete release should fail if the climatology file is missing.
-5. If the climatology file contains non-climatology resolution codes, treat it as a mixed run or upstream classification error and rerun from an earlier stage.
-
-Common climatology NetCDF fields:
-
-```text
-station_uid
-source_station_path
-time
-temporal_span
-resolution
-Q
-SSC
-SSL
-Q_flag
-SSC_flag
-SSL_flag
-lat
-lon
-source
-```
-
-Recommended usage:
-
-1. Read `sed_reference_climatology.nc` directly.
-2. Use `station_uid` to locate a climatology station.
-3. Use `source_station_path` to trace back to the original file.
-4. Before model or station-matrix comparison, define the climatology statistic and the matching model-output window.
-5. Do not automatically treat climatology as an observation at a daily, monthly, or annual time step.
-
----
-
-## 8. Core Rules
-
-### 8.1 Temporal-Resolution Rules
-
-The final main categories are:
-
-```text
-daily / monthly / annual / climatology / other
-```
-
-Current mapping:
-
-| Raw decision | Final category |
-|---|---|
-| `hourly` | `daily` |
-| `daily` | `daily` |
-| `single_point` | `daily` or `climatology` |
-| `monthly` | `monthly` |
-| `quarterly` | `monthly` |
-| `annual` | `annual` or `climatology` |
-| unclear cases | `other` |
-
-Additional notes:
-
-1. A `single_point` record is classified as `climatology` if metadata indicates a long-term mean or climatological statistic.
-2. An `annual` record is classified as `climatology` if metadata indicates a long-term mean or climatological statistic.
-3. `climatology` is kept separately after s2 and is excluded from the basin mainline by default.
-4. The basin mainline processes non-climatology stations by default.
-5. s2 does not trust the input directory name directly; it uses `temporal_semantics` from s1.
-
-### 8.2 Cluster Rules
-
-1. One `cluster` may contain multiple source stations.
-2. The final mainline product must keep cluster, source-station, and record layers.
-3. Final records must be traceable to `source_station_uid` and the original file path.
-4. The release-level standard join key is `cluster_uid + resolution`.
-
-### 8.3 Provenance Rules
-
-The final data should support these tracebacks:
-
-1. Which source stations are in each `cluster`.
-2. Which source dataset each source station came from.
-3. Which `source_station_uid` produced each final record.
-4. Which original file path produced each final record.
-5. When multiple sources compete, which candidates existed and which source won.
-
-Main provenance files:
-
-```text
-source_station_catalog.csv
-source_dataset_catalog.csv
-sed_reference_overlap_candidates.csv.gz
-```
-
-### 8.4 Multi-Source Overlap Rules
-
-When multiple sources exist for the same `cluster`, `resolution`, and time step:
-
-1. Multiple sources may enter the candidate pool.
-2. The final record layer keeps only one winning record.
-3. Winners are selected by quality-score ordering.
-4. `is_overlap = 1` means the record came from a multi-source competition.
-5. The master and matrix NetCDF products store only winning records.
-6. Use `sed_reference_overlap_candidates.csv.gz` for true source-pair overlap analysis.
-
-### 8.5 Basin Release Policy
-
-The current basin release policy is conservative:
-
-1. The release layer only distinguishes `resolved` and `unresolved`.
-2. `unresolved` records may remain in the main data.
-3. Inclusion in the basin-polygon sidecar is an s7/s8 release-layer rule, not an s5 merge rule.
-4. Only records with `basin_status=resolved` and valid basin polygons enter the basin-polygon sidecar.
-
-Key basin diagnostic fields:
-
-```text
-distance_m
-match_quality
-point_in_local
-point_in_basin
-basin_status
-basin_flag
-```
-
-Geometry and policy responsibilities:
-
-1. `basin_tracer.py` computes geometry diagnostics and writes `point_in_local` and `point_in_basin`.
-2. `basin_policy.py` reads diagnostics and returns the final `resolved / unresolved` decision.
-3. Geometry checks use original station coordinates directly.
-4. The pipeline does not snap or modify original latitude and longitude values.
-5. Point-in-polygon checks use `covers()` rather than `contains()`, so boundary points count as inside.
-6. `s4 / s5 / s6 / s7` pass through and write these diagnostics instead of recomputing them.
-
-### 8.6 Basin Cluster Merge Rules
-
-High-impact rules in `s5_basin_merge.py`:
-
-1. Only stations with `basin_status=resolved` and valid `basin_id` values can participate in basin cluster merging.
-2. Within the same `basin_id`, two candidate clusters merge only when all cross-cluster station pairs satisfy both the distance threshold and the `uparea_merit` relative-error threshold.
-3. The merge style is `complete-linkage`.
-4. Stations that fail the merge criteria remain singletons with `cluster_id=station_id`.
-5. `s5` merges basin metadata back into the station table and masks selected release-facing basin fields for `unresolved` rows.
-
----
-
-## 9. Data Structure
-
-### 9.1 Cluster Layer
-
-Common key fields:
-
-```text
-cluster_uid
-cluster_id
-lat
-lon
-basin_area
-pfaf_code
-basin_status
-basin_flag
-basin_distance_m
-point_in_local
-point_in_basin
-n_source_stations_in_cluster
-```
-
-### 9.2 Source-Station Layer
-
-Common key fields:
-
-```text
-source_station_uid
-source_station_native_id
-source_station_name
-source_station_river_name
-source_station_lat
-source_station_lon
-source_station_paths
-source_station_resolutions
-```
-
-### 9.3 Observation-Record Layer
-
-Common key fields:
-
-```text
-station_index
-source_station_index
-time
-resolution
-Q
-SSC
-SSL
-source
-is_overlap
-```
-
----
-
-## 10. Production Runs For s4 And s6
-
-### 10.1 s4: Basin Tracing
-
-Use the LSF submitter for production runs:
-
-```bash
-bash submit_s4_lsf.sh
-bash submit_s4_lsf.sh 16
-```
-
-`submit_s4_lsf.sh` is a compatibility entrypoint. It calls
-`submit_s4_lsf.py` and submits a three-stage LSF workflow:
-
-1. Run `s4_trace[1-N]` array shards.
-2. Submit the finalize job that merges all shard outputs.
-3. Submit the summary job after finalize completes.
-
-Common environment variables:
-
-```text
-S4_QUEUE
-S4_NCORES
-S4_MEM
-S4_PTILE
-PYTHON_BIN
-```
-
-Log directory:
-
-```text
-scripts_basin_test/output/logs/s4_lsf/
-```
-
-Shard intermediate directory:
-
-```text
-scripts_basin_test/output/s4_shards/
-```
-
-s4 shard resume is protected by an input-fingerprint manifest. Each shard writes
-`s4_shard_XXX.meta.json`, recording the s3 CSV SHA256, s3 row count,
-`shard_count`, `shard_index`, `MERIT_DIR`, the s4 script SHA256, and key runtime
-settings. With `S4_RESUME=1`, existing work/shard files must match the manifest
-exactly. Legacy shards without a manifest are rejected. Use `S4_RESUME=0` to
-recompute the current shard; s4 only removes that shard's work CSV, completed
-CSV, and manifest.
-
-For local debugging:
-
-```bash
-python s4_basin_trace_watch.py
-```
-
-Or run through the unified entrypoint:
-
-```bash
-python run_s1_s8_basin_pipeline.py --steps s4
-```
-
-The unified entrypoint calls `submit_s4_lsf.py --wait` by default, submits S4 to
-LSF, and waits for the summary job before the next stage. Use local execution
-when needed:
-
-```bash
-python run_s1_s8_basin_pipeline.py --steps s4 --local-s4
-```
-
-### 10.2 s6: NetCDF Export
-
-Recommended production command:
-
-```bash
-python submit_s6_fast.py --wait
-```
-
-`bash submit_s6_fast.sh` remains as a compatibility entrypoint and calls the
-Python submitter. `s6` is a set of parallel jobs rather than a single script.
-`submit_s6_fast.py` currently submits:
-
-| Subtask | Script | Products |
-|---|---|---|
-| merge | `s6_basin_merge_to_nc.py` | `s6_basin_merged_all.nc`, `s6_cluster_quality_order.csv` |
-| daily | `s6_export_daily_matrix_nc.py` | `s6_basin_matrix_daily.nc` |
-| monthly | `s6_export_monthly_matrix_nc.py` | `s6_basin_matrix_monthly.nc` |
-| annual | `s6_export_annual_matrix_nc.py` | `s6_basin_matrix_annual.nc` |
-| clim | `s6_export_climatology_to_nc.py` | `s6_climatology_only.nc` |
-| satellite | `s6_export_satellite_validation_to_nc.py` | `s6_satellite_validation_only.nc`, `s6_satellite_validation_catalog.csv` |
-
-The submitter also submits a dependent `summary` job to check required outputs.
-The unified entrypoint calls `submit_s6_fast.py --wait` by default and waits for
-S6 cluster tasks before entering S7. Use `--local-s6` for local sequential runs.
-
-Common environment variables:
-
-```text
-RUN_ONLY
-DRY_RUN
-LSF_QUEUE
-LSF_PROJECT
-LSF_EXTRA
-MERGE_N
-MERGE_WORKERS
-MERGE_METADATA_WORKERS
-DAILY_N
-DAILY_WORKERS
-MONTHLY_N
-MONTHLY_WORKERS
-ANNUAL_N
-ANNUAL_WORKERS
-CLIM_N
-SATVAL_N
-```
-
----
-
-## 11. Spatial Files
-
-The current mainline uses `GPKG` for spatial products. Standard release spatial
-files are produced by `s8_publish_reference_dataset.py`.
-
-### 11.1 Cluster Point Files
-
-Files:
-
-```text
-s7_cluster_points.gpkg
-sed_reference_release/sed_reference_cluster_points.gpkg
-```
-
-Purpose:
-
-1. Provide `cluster_summary / cluster_daily / cluster_monthly / cluster_annual` layers.
-2. Connect NetCDF, catalog, and spatial data across resolutions.
-3. Use `cluster_uid + resolution` as the standard join key.
-
-### 11.2 Source-Station Point Files
-
-Files:
-
-```text
-s7_source_stations.gpkg
-sed_reference_release/sed_reference_source_stations.gpkg
-```
-
-Purpose:
-
-1. Show source stations participating in a `cluster_uid + resolution`.
-2. Use `source_station_uid + resolution` as the standard join key.
-
-### 11.3 Cluster-Level Basin Polygon Files
-
-Files:
-
-```text
-s7_cluster_basins.gpkg
-sed_reference_release/sed_reference_cluster_basins.gpkg
-```
-
-Purpose:
-
-1. Show the final basin polygon for each `cluster_uid + resolution`.
-2. Link spatially with cluster point files and release catalogs through the compound key.
-3. Export basin polygons only for `basin_status=resolved` records.
-4. Keep `unresolved` records in the main data while excluding them from the basin-polygon sidecar.
-
----
-
-## 12. Release Package Layout
-
-Example complete release directory:
-
-```text
-scripts_basin_test/output/sed_reference_release/
-|-- sed_reference_master.nc
-|-- sed_reference_timeseries_daily.nc
-|-- sed_reference_timeseries_monthly.nc
-|-- sed_reference_timeseries_annual.nc
-|-- sed_reference_climatology.nc
-|-- sed_reference_satellite.nc
-|-- station_catalog.csv
-|-- source_station_catalog.csv
-|-- source_dataset_catalog.csv
-|-- satellite_catalog.csv
-|-- sed_reference_overlap_candidates.csv.gz
-|-- sed_reference_cluster_points.gpkg
-|-- sed_reference_source_stations.gpkg
-|-- sed_reference_cluster_basins.gpkg
-|-- release_validation_report.csv
-|-- release_inventory.csv
-`-- README.md
-```
-
-File roles:
-
-1. `sed_reference_master.nc` preserves record-level provenance for auditing and traceback.
-2. `sed_reference_timeseries_*.nc` are `station x time` matrices for nearest-station lookup, time-series extraction, and model comparison.
-3. `sed_reference_climatology.nc` is published independently and excluded from the basin mainline merge.
-4. `sed_reference_satellite.nc` is a required release-level satellite dataset, excluded from the main station-reference merge.
-5. `station_catalog.csv` is the release main index, one row per `cluster_uid + resolution`.
-6. `source_station_catalog.csv` supports source-station traceback.
-7. `source_dataset_catalog.csv` supports source-dataset metadata lookup.
-8. `satellite_catalog.csv` supports satellite station, source, time range, and original-path traceback.
-9. `sed_reference_overlap_candidates.csv.gz` supports source-pair overlap-candidate analysis.
-10. `sed_reference_cluster_points.gpkg` provides cluster point layers.
-11. `sed_reference_source_stations.gpkg` provides source-station point layers.
-12. `sed_reference_cluster_basins.gpkg` provides the resolved basin-polygon sidecar.
-13. `release_validation_report.csv` and `release_inventory.csv` support release checks.
-
----
-
-## 13. Standard Release Usage
-
-Recommended downstream workflow:
-
-1. Choose the target temporal resolution from model output or analysis goals: `daily / monthly / annual`.
-2. Read the matching matrix NetCDF:
-   - `sed_reference_timeseries_daily.nc`
-   - `sed_reference_timeseries_monthly.nc`
-   - `sed_reference_timeseries_annual.nc`
-3. Read `station_catalog.csv` and filter to the target `resolution`.
-4. Use filtered `lat/lon` values or `sed_reference_cluster_points.gpkg` to find the nearest `cluster_uid`.
-5. Extract the `Q / SSC / SSL` time series for that `cluster_uid` from the matrix NetCDF.
-6. Align the reference time series with model output by time.
-7. Query `sed_reference_master.nc` when full record-level provenance is needed.
-8. Query `source_station_catalog.csv` when source stations and original paths are needed.
-9. Read `sed_reference_climatology.nc` separately for climatology values, and do not mix it automatically into matrix time series.
-10. Read `sed_reference_satellite.nc` and `satellite_catalog.csv` for satellite-vs-station validation or spatial diagnostics.
-11. Use `sed_reference_overlap_candidates.csv.gz` for true source-pair overlap metrics.
-
-Example reference workflow:
-
-```bash
-python tools/example_reference_workflow.py \
-  --release-dir /path/to/sed_reference_release \
+python output/sed_reference_release_minimal_final/example_reference_workflow.py \
+  --release-dir output/sed_reference_release_minimal_final \
   --resolution monthly \
   --lat 30.5 \
   --lon 114.3 \
   --variable SSC
 ```
 
-Optional model comparison:
+## Final Package Contents
 
-```bash
-python tools/example_reference_workflow.py \
-  --release-dir /path/to/sed_reference_release \
-  --resolution monthly \
-  --lat 30.5 \
-  --lon 114.3 \
-  --variable SSC \
-  --model-nc /path/to/model.nc \
-  --model-var sediment \
-  --out-csv /tmp/aligned_timeseries.csv
-```
-
----
-
-## 14. Recommended Run Order
-
-For a full rerun:
+The S9 final package contains these release-facing files:
 
 ```text
-s1_verify_time_resolution.py
-s2_reorganize_qc_by_resolution.py
-s3_collect_qc_stations.py
-submit_s4_lsf.sh
-submit_s4_lsf.py
-s5_basin_merge.py
-submit_s6_fast.sh
-submit_s6_fast.py
-s7_export_cluster_shp.py
-s7_export_source_station_shp.py
-s7_export_cluster_basin_shp.py
-s8_publish_reference_dataset.py
+README.md
+example_reference_workflow.py
+public_station_names_report.csv
+release_inventory.csv
+release_validation_report.csv
+station_catalog.csv
+source_station_catalog.csv
+source_dataset_catalog.csv
+climatology_catalog.csv
+satellite_catalog.csv
+sed_reference_timeseries_daily.nc
+sed_reference_timeseries_monthly.nc
+sed_reference_timeseries_annual.nc
+sed_reference_climatology.nc
+sed_reference_satellite.nc
 ```
 
-For debugging or single-step execution:
+This final minimal package does not publish the internal master NetCDF, overlap
+candidate table, or spatial sidecar files. Those products may exist in internal
+S8 outputs, but they are outside the S9 final public field contract described
+below.
+
+## Primary Public Keys
+
+The public package uses station-facing identifiers:
+
+- `station_uid`: released station identifier used by the main matrix products,
+  `station_catalog.csv`, climatology products, and linked satellite products.
+- `resolution`: temporal support class, normally `daily`, `monthly`, or
+  `annual` for the main matrix products.
+- `source_station_uid`: source-station identifier used for provenance lookup.
+- `satellite_station_uid`: satellite-derived station identifier used inside the
+  satellite auxiliary product.
+- `linked_station_uid`: linked main-component station identifier for satellite
+  records when a spatial link is available.
+
+For the main station-reference component, the practical catalog key is:
 
 ```text
-s4_basin_trace_watch.py
-s5_basin_merge.py
-s6_basin_merge_to_nc.py
-s6_export_daily_matrix_nc.py
-s6_export_monthly_matrix_nc.py
-s6_export_annual_matrix_nc.py
-s6_export_climatology_to_nc.py
-s6_export_satellite_validation_to_nc.py
-s7_export_cluster_shp.py
-s7_export_source_station_shp.py
-s7_export_cluster_basin_shp.py
-s8_publish_reference_dataset.py
+station_uid + resolution
 ```
 
-The unified entrypoint is preferred:
-
-```bash
-python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
-```
-
----
-
-## 15. When To Rerun
-
-| Change | Suggested rerun range | Reason |
-|---|---|---|
-| Temporal-resolution rules change | From s2 | s2 changes organized directories; later station tables, `station_key`, and run-local `station_id` values may change |
-| `single_point / quarterly / annual / climatology` classification logic changes | From s2 | Files entering each resolution directory may change |
-| Basin tracing or `basin_status` rules change | From s4 | s4 regenerates basin diagnostics used by all later stages |
-| Cluster merge rules change | From s5 | `cluster_id / cluster_uid` values may change |
-| s6 output fields or release contract changes | At least s6 -> s8 | Master, matrix, climatology, satellite, and release outputs must stay consistent |
-| Climatology classification rules or schema change | At least s6 -> s8; from s2 if needed | The independent climatology product depends on s2 classification and s6 export |
-| Satellite source-family or satellite schema changes | At least s6 -> s8 | Satellite NetCDF and catalog are required release products |
-| Only release naming, link mode, or GPKG toggles change | Usually s8 only | s8 handles release materialization and validation |
-
-Notes:
-
-1. `s2` changes the organized file directory.
-2. `s3` rebuilds the station list.
-3. `s3` creates stable internal `station_key` values from normalized `source`, `resolution`, and relative `path`.
-4. `station_id` is only the reproducible integer index in the current s3 output; s4/s5 do not recreate it from row numbers.
-5. s4 shards can resume only when the s3 fingerprint, `MERIT_DIR`, s4 script fingerprint, and key runtime settings match.
-
-When in doubt about upstream changes, rerun from the earlier stage.
-
----
-
-## 16. Dependencies
-
-Create the Conda environment with:
-
-```bash
-conda env create -f environment.yml
-conda activate sed-reference-basin
-```
-
-Or install into an existing Python environment:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Common Python dependencies:
+For source-station provenance, join:
 
 ```text
-pandas
-numpy
-xarray
-netCDF4
-h5netcdf
-h5py
-geopandas
-fiona
-pyogrio
-pyproj
-shapely
-pyshp
-matplotlib
-cartopy
-scipy
-PyYAML
+selected_source_station_uid -> source_station_catalog.csv:source_station_uid
 ```
 
-Additional notes:
+For source-dataset provenance, join:
 
-1. `s7_export_cluster_shp.py` needs `pyshp + geopandas`.
-2. `s7_export_source_station_shp.py` and `s7_export_cluster_basin_shp.py` need `geopandas`.
-3. `s8_publish_reference_dataset.py` needs `geopandas` when publishing GPKG sidecars.
-4. Example workflows need `netCDF4`; model comparison usually needs `xarray`; plotting needs `matplotlib`.
-
----
-
-## 17. Public Release And Citation
-
-For ESSD/Zenodo publication, this repository should track code, documentation,
-tests, configuration templates, and small static resources. Large intermediate
-outputs, NetCDF files, GPKG files, logs, generated reports, and figures should
-be published through Zenodo or another data repository, with the DOI cited in
-the manuscript and release README.
-
-Suggested pre-release checks:
-
-```bash
-git status --short
-python -m py_compile *.py
-pytest test
+```text
+source_station_catalog.csv:source_name -> source_dataset_catalog.csv:source_name
 ```
 
-Also scan public files for local directory prefixes and credential keywords
-required by your institution, and confirm that personal workspace paths or
-credentials are not exposed.
+## Core Variables And Flags
 
-Code citation metadata is in `CITATION.cff`. Source code uses the MIT license by
-default. Released data, figures, and documentation should continue to use CC BY
-4.0 and remain consistent with the license text in NetCDF global attributes.
+The physical variables are:
 
----
+| Variable | Meaning | Release unit |
+| --- | --- | --- |
+| `Q` | River discharge | m3 s-1 |
+| `SSC` | Suspended sediment concentration | mg L-1 |
+| `SSL` | Suspended sediment load | t d-1 |
 
-## 18. Code Navigation
+Each variable has a matching quality flag:
+
+```text
+Q_flag
+SSC_flag
+SSL_flag
+```
+
+The public flag meanings are:
+
+| Flag | Meaning | Suggested use |
+| ---: | --- | --- |
+| 0 | Good | Analysis-ready reported value |
+| 1 | Derived | Analysis-ready derived value |
+| 2 | Suspect | Retain only for sensitivity checks |
+| 3 | Bad | Exclude from normal analysis |
+| 9 | Missing | No value available |
+
+Flags `0` and `1` are the default analysis-ready set.
+
+## CSV Catalog Fields
+
+The following field lists are read from the S9 final output package.
+
+### `station_catalog.csv`
+
+One row per released station and temporal resolution.
+
+```text
+station_uid
+resolution
+lat
+lon
+country
+time_start
+time_end
+record_count
+n_valid_time_steps
+basin_area
+pfaf_code
+n_upstream_reaches
+station_name
+river_name
+```
+
+Recommended use:
+
+- Filter by `resolution`.
+- Use `lat` and `lon` for nearest-station search.
+- Use `station_uid` to extract the matching NetCDF row.
+- Use `basin_area`, `pfaf_code`, and `n_upstream_reaches` only when basin
+  assignment is resolved and values are present.
+
+### `source_station_catalog.csv`
+
+Source-station provenance table.
+
+```text
+source_station_uid
+source_name
+source_station_native_id
+source_station_name
+source_station_river_name
+source_station_lat
+source_station_lon
+station_uid
+resolution
+n_records
+time_start
+time_end
+```
+
+Recommended use:
+
+- Join matrix variable `selected_source_station_uid` to `source_station_uid`.
+- Use `source_name` to join `source_dataset_catalog.csv`.
+- Use native IDs and source coordinates for source-level traceback.
+
+### `source_dataset_catalog.csv`
+
+Source dataset metadata table.
+
+```text
+source_name
+reference
+source_url
+n_source_stations
+n_records
+```
+
+Recommended use:
+
+- Join from `source_station_catalog.csv` or `satellite_catalog.csv` by
+  `source_name` or `source`.
+- Use `reference` and `source_url` for data-source acknowledgement and
+  provenance review.
+
+### `climatology_catalog.csv`
+
+Query catalog for the climatology auxiliary component.
+
+```text
+station_uid
+time
+time_raw
+time_start
+time_end
+resolution
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+station_name
+river_name
+lat
+lon
+geographic_coverage
+source_name
+```
+
+Recommended use:
+
+- Treat climatology records separately from daily, monthly, and annual matrix
+  records.
+- Use `station_uid`, `lat`, `lon`, and `geographic_coverage` for spatial
+  lookup.
+- Use `time_raw`, `time_start`, and `time_end` to interpret the climatological
+  support period.
+
+### `satellite_catalog.csv`
+
+Query catalog for the satellite-derived auxiliary component.
+
+```text
+satellite_station_uid
+station_name
+river_name
+source
+resolution
+time_start
+time_end
+n_records
+lat
+lon
+geographic_coverage
+station_uid
+linked_station_uid
+unlinked_reason
+link_distance_m
+```
+
+Recommended use:
+
+- Use `satellite_station_uid` as the satellite product station key.
+- Use `linked_station_uid` when a satellite location is linked to a main
+  station-reference location.
+- Use `unlinked_reason` to separate unlinked satellite records.
+- Use `link_distance_m` to screen satellite-to-station spatial matches.
+
+### `release_inventory.csv`
+
+Package inventory written during release assembly.
+
+```text
+package
+file
+source_path
+source_exists
+status
+source_release_version
+source_release_date_created
+source_release_date_modified
+packaging_script
+schema_path
+package_created_at
+```
+
+### `release_validation_report.csv`
+
+Structural validation summary.
+
+```text
+check
+status
+message
+evidence
+```
+
+### `public_station_names_report.csv`
+
+S9 conversion and audit report.
+
+```text
+file
+product_type
+action
+status
+old_name
+new_name
+details
+```
+
+Review this report after every S9 run. In strict production runs, any residual
+old public schema name should be treated as a release-blocking failure.
+
+## NetCDF Product Fields
+
+### `sed_reference_timeseries_daily.nc`
+
+Dimensions:
+
+```text
+n_stations
+time
+```
+
+Variables:
+
+```text
+lat
+lon
+station_uid
+time
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+n_valid_time_steps
+selected_source_station_uid
+basin_area
+station_name
+river_name
+```
+
+The daily product currently contains 7,087 stations and 25,775 time steps in
+the generated S9 final package inspected for this README.
+
+### `sed_reference_timeseries_monthly.nc`
+
+Dimensions:
+
+```text
+n_stations
+time
+```
+
+Variables:
+
+```text
+lat
+lon
+station_uid
+time
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+n_valid_time_steps
+selected_source_station_uid
+basin_area
+station_name
+river_name
+```
+
+The monthly product currently contains 17 stations and 690 time steps in the
+generated S9 final package inspected for this README.
+
+### `sed_reference_timeseries_annual.nc`
+
+Dimensions:
+
+```text
+n_stations
+time
+```
+
+Variables:
+
+```text
+lat
+lon
+station_uid
+time
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+n_valid_time_steps
+selected_source_station_uid
+basin_area
+station_name
+river_name
+```
+
+The annual product currently contains 31 stations and 114 time steps in the
+generated S9 final package inspected for this README.
+
+### `sed_reference_climatology.nc`
+
+Dimensions:
+
+```text
+n_stations
+n_records
+```
+
+Variables:
+
+```text
+lat
+lon
+station_uid
+station_name
+river_name
+geographic_coverage
+station_index
+time
+time_coverage_start
+time_coverage_end
+resolution
+Q
+Q_flag
+SSC
+SSC_flag
+SSL
+SSL_flag
+source
+```
+
+The climatology product currently contains 1,361 stations and 1,361 records in
+the generated S9 final package inspected for this README.
+
+### `sed_reference_satellite.nc`
+
+Dimensions:
+
+```text
+n_satellite_stations
+n_satellite_records
+```
+
+Variables:
+
+```text
+satellite_station_uid
+station_uid
+linked_station_uid
+unlinked_reason
+source
+station_name
+river_name
+station_resolution
+link_distance_m
+lat
+lon
+satellite_station_index
+time
+Q
+SSC
+SSL
+Q_flag
+SSC_flag
+SSL_flag
+```
+
+The satellite product currently contains 38,550 satellite stations and
+16,478,276 records in the generated S9 final package inspected for this README.
+
+## Component Notes
+
+### Main Station-Reference Component
+
+The main component is distributed as daily, monthly, and annual station-by-time
+NetCDF matrix products. These products are intended for station-level time
+series extraction, model comparison, and source-traceable benchmarking.
+
+Do not combine daily, monthly, and annual records without first accounting for
+their different temporal support.
+
+### Climatology Auxiliary Component
+
+The climatology component is published separately from the time-resolved matrix
+products. Use it for long-term or climatological context. Do not treat
+climatology records as direct replacements for daily, monthly, or annual
+observations.
+
+### Satellite-Derived Auxiliary Component
+
+The satellite-derived component is published separately from the main
+station-reference component. Use it for satellite-to-station comparison, spatial
+coverage diagnostics, and complementary sediment context.
+
+Satellite records may have no linked main station. Use `linked_station_uid`,
+`unlinked_reason`, and `link_distance_m` before performing station comparisons.
+
+## Recommended Downstream Workflow
+
+1. Choose a target `resolution`: `daily`, `monthly`, or `annual`.
+2. Open the matching `sed_reference_timeseries_*.nc` product.
+3. Read `station_catalog.csv` and filter to the same `resolution`.
+4. Find candidate stations with `lat`, `lon`, `station_name`, `river_name`, and
+   any basin fields needed by the analysis.
+5. Select a `station_uid`.
+6. Extract `Q`, `SSC`, `SSL`, and their flags from the NetCDF row with the same
+   `station_uid`.
+7. Use `selected_source_station_uid` to join `source_station_catalog.csv` when
+   record-level source provenance is needed.
+8. Use `source_dataset_catalog.csv` for source references and URLs.
+9. Read `sed_reference_climatology.nc` and `climatology_catalog.csv` separately
+   for climatology context.
+10. Read `sed_reference_satellite.nc` and `satellite_catalog.csv` separately for
+   satellite-derived comparison.
+
+## Pipeline Summary
+
+The processing pipeline before S9 performs temporal-resolution classification,
+QC-file organization, station metadata collection, basin tracing, basin-based
+station consolidation, NetCDF export, optional spatial export, and release
+assembly.
+
+The public station-facing package is produced after these steps by S9. S9 is the
+schema boundary for public users, so public documentation should use the field
+names listed in this README.
+
+## Main Entrypoints
 
 | File | Purpose |
-|---|---|
-| `run_s1_s8_basin_pipeline.py` | Unified s1-s8 entrypoint with range runs, selected-stage runs, and dry-run support |
-| `pipeline_paths.py` | Central output, release-package, and log-path constants |
-| `time_resolution.py` | Temporal-resolution classification logic |
-| `basin_tracer.py` | Upstream basin tracing and point-in-polygon diagnostics |
-| `basin_policy.py` | Release policy mapping basin diagnostics to `resolved / unresolved` |
-| `s1_verify_time_resolution.py` | s1 temporal-resolution verification |
-| `s2_reorganize_qc_by_resolution.py` | s2 input-file reorganization by resolution |
-| `s3_collect_qc_stations.py` | s3 basin-mainline station collection |
-| `s4_basin_trace_watch.py` | s4 basin-tracing main script |
-| `submit_s4_lsf.py` | Python LSF submitter for S4 array/finalize/summary jobs |
-| `s5_basin_merge.py` | s5 basin cluster merge |
-| `s6_basin_merge_to_nc.py` | s6 master NetCDF export |
-| `s6_export_daily_matrix_nc.py` | s6 daily matrix NetCDF export |
-| `s6_export_monthly_matrix_nc.py` | s6 monthly matrix NetCDF export |
-| `s6_export_annual_matrix_nc.py` | s6 annual matrix NetCDF export |
-| `s6_export_climatology_to_nc.py` | Independent climatology NetCDF export |
-| `s6_export_satellite_validation_to_nc.py` | Satellite-only NetCDF and catalog export |
-| `submit_s6_fast.py` | Python LSF submitter for S6 master/matrix/climatology/satellite/summary jobs |
-| `s7_export_cluster_shp.py` | Cluster point GPKG and catalog export |
-| `s7_export_source_station_shp.py` | Source-station GPKG and catalog export |
-| `s7_export_cluster_basin_shp.py` | Cluster basin polygon GPKG export |
-| `s8_publish_reference_dataset.py` | Standard release package generation, release README, validation, and inventory |
+| --- | --- |
+| `run_s1_s8_basin_pipeline.py` | Unified S1-S8 pipeline runner |
+| `s1_verify_time_resolution.py` | Temporal-resolution verification |
+| `s2_reorganize_qc_by_resolution.py` | QC-file organization by resolution |
+| `s3_collect_qc_stations.py` | Station metadata collection |
+| `s4_basin_trace_watch.py` | Basin tracing |
+| `s5_basin_merge.py` | Basin-based station consolidation |
+| `submit_s4_lsf.py` | S4 LSF submitter |
+| `submit_s6_fast.py` | S6 LSF submitter |
+| `s8_publish_reference_dataset.py` | Internal release package assembly |
+| `s9_public_station_names.py` | Final public station-facing schema conversion |
+| `release_public_station_names.py` | S9 conversion implementation |
+| `tools/example_reference_workflow_minimal.py` | Source for the public example workflow copied by S9 |
 
----
+## Verification Commands
 
-## 19. Non-Mainline Scripts
+Compile Python scripts:
 
-Some legacy, compatibility, or helper scripts remain in this directory, for
-example:
-
-```text
-s4_cluster_qc_stations.py
-s6_merge_timeseries_by_cluster.py
-s7_merge_overlap_by_cluster.py
-s8_merge_qc_csv_to_one_nc.py
-s6_summarize_matrix_ncs.py
+```bash
+python -m py_compile *.py stats_release/*.py tools/*.py
 ```
 
-These scripts are not part of the current `s1 -> s8` mainline build. Manual QA
-and audit scripts are also outside the mainline release contract. Use their
-script-level documentation and related validation notes when needed.
+Run S9 in strict mode:
 
----
+```bash
+python s9_public_station_names.py --strict
+```
 
-## 20. Summary
+Scan public documentation for non-English characters before publication:
 
-The main pipeline builds a basin-based sediment reference dataset with
-`s1 -> s8`. `daily / monthly / annual` records enter the basin mainline,
-`climatology` is exported as an independent release product, and `satellite` is
-published as a required independent release-level NetCDF dataset. Mainline and
-climatology release records must contain at least `SSC` or `SSL`; Q-only time
-steps are not published. Production `s4` and `s6` runs should use
-`submit_s4_lsf.sh` and `submit_s6_fast.sh`. The release layer uses
-`cluster_uid + resolution` as the standard join key and preserves the master
-NetCDF, matrix NetCDF, climatology, satellite, catalogs, spatial sidecars, and
-overlap provenance. Basin polygon sidecars are published only for `resolved`
-results.
+```bash
+rg -n "[\\x{4e00}-\\x{9fff}]|[\\x{3000}-\\x{303F}\\x{FF00}-\\x{FFEF}]" \
+  README.md stats_release/*.md
+```
+
+Check Git whitespace issues:
+
+```bash
+git diff --check
+```
+
+## Citation And License
+
+Code citation metadata is stored in `CITATION.cff`. Source code uses the MIT
+license. Released data, figures, and documentation should remain consistent with
+the dataset release license and the license metadata written into the public
+products.
