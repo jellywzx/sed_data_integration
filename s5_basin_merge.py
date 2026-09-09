@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-"""
-步骤 s4（流域版）：读取 s3 站点列表，基于流域归属为每个站点分配 cluster_id。
-
-与原版 s4（空间聚类）不同，本脚本使用 basin tracer 的输出来定义聚类：
-  - 仅 basin_status=resolved 且 basin_id 一致的站点允许进入合并候选；
-  - observation_type=Satellite 的站点保留为 singleton，不参与合并候选；
-  - 同一 cluster 内任意两站点都必须满足：
-      距离 <= 5 km，且 upstream area 相对误差 <= 10%（默认）；
-  - 采用 complete-linkage 风格，避免链式跨阈值合并；
-  - cluster_id = 该流域中最小的 station_id；
-  - 无流域信息的站点以其 station_id 作为独立的 cluster_id（单独成组）。
-station_key 是 s3-s5 的稳定 one-to-one 关联键；station_id 仅来自当前 s3 输出，
-s5 不会再按 s3 行号重新创建 station_id。
-
-输入：
-  1. s3_collected_stations.csv（s3 步骤输出，列：station_key, station_id, path, source, lat, lon, resolution）
-  2. basin CSV（basin tracer 输出，列：station_key, station_id, basin_id）
-       station_key 对应 s3 CSV 的稳定内部键；station_id 必须与同 key 的 s3 station_id 一致
-
-输出：
-  1. s4_basin_clustered_stations.csv
-       在 s3 基础上增加两列：
-         station_id  —— s3 当前输出中的整数索引，与同 station_key 的 basin CSV station_id 一致
-         cluster_id  —— 流域代表站点的 station_id（同流域取最小值）
-  2. s4_basin_cluster_report.csv
-       每个 cluster 的汇总信息：
-         cluster_id, station_count, sources, resolutions, lat_mean, lon_mean
-
-用法：
-  python s4_basin_merge.py
-  python s4_basin_merge.py --s3-csv /path/to/s3.csv --basin-csv /path/to/basins.csv
-"""
+"""Assign basin-based cluster IDs to s3 stations using basin tracer output."""
 
 import argparse
 import sys
@@ -61,7 +30,7 @@ DEFAULT_UPSTREAM_AREA_COL = "uparea_merit"
 
 
 def _build_cluster_report(df: pd.DataFrame) -> pd.DataFrame:
-    """按 cluster_id 汇总站点信息，生成报告 DataFrame。"""
+    """Summarize station information by cluster_id for the report DataFrame."""
     rows = []
     for cid, grp in df.groupby("cluster_id"):
         rows.append(
@@ -216,37 +185,37 @@ def main():
     )
 
     ap = argparse.ArgumentParser(
-        description="步骤 s4（流域版）：基于 basin tracer 结果为 s3 站点分配 cluster_id"
+        description="Step s4 basin mode: assign cluster_id to s3 stations using basin tracer results"
     )
     ap.add_argument(
         "--s3-csv",
         default=str(_DEFAULT_S3_CSV),
-        help="s3 输出 CSV（列：station_key, station_id, path, source, lat, lon, resolution）。默认: {}".format(_DEFAULT_S3_CSV),
+        help="s3 output CSV (columns: station_key, station_id, path, source, lat, lon, resolution). Default: {}".format(_DEFAULT_S3_CSV),
     )
     ap.add_argument(
         "--basin-csv",
         default=str(_DEFAULT_BASIN_CSV),
         help=(
-            "basin tracer 输出 CSV（列：station_key, station_id, basin_id）。\n"
-            "station_key 须与 s3 CSV 一一对应；station_id 必须与同 key 的 s3 station_id 一致。\n"
-            "默认: {}".format(_DEFAULT_BASIN_CSV)
+            "basin tracer output CSV (columns: station_key, station_id, basin_id).\n"
+            "station_key must map one-to-one with the s3 CSV; station_id must match the s3 station_id for the same key.\n"
+            "Default: {}".format(_DEFAULT_BASIN_CSV)
         ),
     )
     ap.add_argument(
         "--out",
         default=str(_DEFAULT_OUT),
-        help="输出：带 cluster_id 的站点 CSV。默认: {}".format(_DEFAULT_OUT),
+        help="Output station CSV with cluster_id. Default: {}".format(_DEFAULT_OUT),
     )
     ap.add_argument(
         "--report",
         default=str(_DEFAULT_REPORT),
-        help="输出：cluster 汇总报告 CSV。默认: {}".format(_DEFAULT_REPORT),
+        help="Output cluster summary report CSV. Default: {}".format(_DEFAULT_REPORT),
     )
     ap.add_argument(
         "--max-station-distance-m",
         type=float,
         default=DEFAULT_MAX_STATION_DISTANCE_M,
-        help="同一 cluster 内任意两站点最大距离（米）。默认: {}".format(
+        help="Maximum distance between any two stations in the same cluster, in meters. Default: {}".format(
             DEFAULT_MAX_STATION_DISTANCE_M
         ),
     )
@@ -254,14 +223,14 @@ def main():
         "--max-upstream-rel-error",
         type=float,
         default=DEFAULT_MAX_UPSTREAM_REL_ERROR,
-        help="同一 cluster 内任意两站点 upstream area 最大相对误差。默认: {}".format(
+        help="Maximum upstream-area relative error between any two stations in the same cluster. Default: {}".format(
             DEFAULT_MAX_UPSTREAM_REL_ERROR
         ),
     )
     ap.add_argument(
         "--upstream-area-col",
         default=DEFAULT_UPSTREAM_AREA_COL,
-        help="用于 upstream area 相对误差计算的列名。默认: {}".format(
+        help="Column used for upstream-area relative-error calculation. Default: {}".format(
             DEFAULT_UPSTREAM_AREA_COL
         ),
     )
@@ -272,7 +241,6 @@ def main():
     out_path   = Path(args.out)
     report_path = Path(args.report)
 
-    # ── 1. 读取 s3 站点列表 ──
     if not s3_path.is_file():
         print("Error: s3 CSV not found: {}".format(s3_path))
         return 1
@@ -294,12 +262,11 @@ def main():
             return 1
     print("Loaded s3 stations: {} rows".format(len(df)))
 
-    # ── 2. 读取 basin 映射 ──
     if not basin_path.is_file():
         print("Error: basin CSV not found: {}".format(basin_path))
         print(
-            "  请先运行新版 s3 生成 station_key/station_id，\n"
-            "  再以 S4_RESUME=0 运行 basin tracer 生成新版 s4 后执行本脚本。"
+            "  Run the updated s3 first to generate station_key/station_id,\n"
+            "  then rerun basin tracer with S4_RESUME=0 to generate the updated s4 output before this script."
         )
         return 1
 
@@ -334,10 +301,8 @@ def main():
         )
     )
 
-    # ── 3. 分配 cluster_id ──
     df["cluster_id"] = df["station_id"].map(lambda sid: station_to_cluster.get(sid, sid))
 
-    # ── 3b. 合并 basin 元数据（match_quality、basin_area 等）──
     BASIN_META_COLS = [
         "station_key", "basin_id", "basin_area", "match_quality",
         "area_error", "uparea_merit", "pfaf_code", "method", "n_upstream_reaches",
@@ -356,12 +321,10 @@ def main():
         )
     )
 
-    # ── 4. 输出站点 CSV ──
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
     print("Wrote: {}".format(out_path))
 
-    # ── 5. 输出 cluster 报告 ──
     report_df = _build_cluster_report(df)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_df.to_csv(report_path, index=False)

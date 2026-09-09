@@ -155,28 +155,17 @@ SATELLITE_RESOLUTION_SUBSETS = (
     ),
 )
 # ---- s8 built-in runtime policy ----
-# 不想每次命令行输参数，就改这里。
 
-# True  = 不生成 sed_reference_overlap_candidates.csv.gz，s8 会快很多，
-#         但 s10 不能做真正 source-pair overlap validation。
-# False = 生成 sidecar，用于后续严格 overlap validation。
 DEFAULT_SKIP_OVERLAP_CANDIDATES = False
 
-# "overlap-only"：只输出真正多来源 overlap 的 candidate rows，推荐。
-# "all-candidates"：输出所有 candidates，会更慢、更大。
 DEFAULT_OVERLAP_CANDIDATES_MODE = "overlap-only"
 
-# 并行 worker 数。I/O 很重，不建议直接拉满 CPU。
-# 对大量 NetCDF 小文件读取，8 个 worker 通常比 24 个更稳定。
 DEFAULT_OVERLAP_WORKERS = min(8, max(1, os.cpu_count() or 1))
 
-# 每个 worker 最多保留多少 warning，避免日志过大。
 DEFAULT_OVERLAP_WARNING_LIMIT = 8
 
-# 大量小 group 并行时的任务批大小；过小会造成调度开销过高。
 DEFAULT_OVERLAP_CHUNKSIZE = 32
 
-# Worker 进程启动时一次性初始化，避免把大 catalog_lookup 重复塞进每个 payload。
 _OVERLAP_CATALOG_LOOKUP = None
 _OVERLAP_MODE = DEFAULT_OVERLAP_CANDIDATES_MODE
 _OVERLAP_WARNING_LIMIT = DEFAULT_OVERLAP_WARNING_LIMIT
@@ -1349,8 +1338,6 @@ def build_overlap_candidates_sidecar(
 
     catalog_lookup_raw = _source_catalog_lookup(source_station_catalog)
 
-    # pandas Series 跨进程传递比较重，也容易出现 pickle 兼容问题；
-    # 这里转成普通 dict。
     catalog_lookup = {}
     for key, row in catalog_lookup_raw.items():
         if isinstance(row, dict):
@@ -1390,7 +1377,6 @@ def build_overlap_candidates_sidecar(
     for (cluster_id, resolution), group in quality.groupby(group_cols, sort=True):
         n_input_groups += 1
 
-        # overlap-only 模式下，单 candidate group 不可能产生 overlap rows，直接跳过。
         if mode == "overlap-only" and len(group) < 2:
             n_skipped_single_candidate_groups += 1
             continue
@@ -1406,7 +1392,6 @@ def build_overlap_candidates_sidecar(
     n_groups = len(payloads)
     workers = max(1, int(workers or 1))
 
-    # 单进程模式也初始化一次，保证 worker 函数逻辑一致。
     _init_overlap_worker(catalog_lookup, mode, DEFAULT_OVERLAP_WARNING_LIMIT)
 
     if workers == 1 or n_groups <= 1:

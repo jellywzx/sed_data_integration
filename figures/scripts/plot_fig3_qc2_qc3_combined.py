@@ -819,7 +819,6 @@ def main():
         ssc_top = np.nanmax(ssc_valid) * 1.05
         axes['ssc'].set_ylim(bottom=0, top=ssc_top)
         # set_ssc_y_ticks(axes['ssc'], top=ssc_top)
-        # 手动设置 SSC 轴刻度
         axes['ssc'].set_yticks([0, 1, 10, 100, 1000])
         # axes['ssc'].yaxis.set_major_formatter(plt.ScalarFormatter())
     axes['ssc'].tick_params(which='minor', length=4, width=0.5, color='gray')

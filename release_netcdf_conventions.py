@@ -449,7 +449,6 @@ def _apply_acdd_global_attrs(ds, kind, release_context):
         else:
             _set_attr_if_empty(ds, attr_name, "")
 
-    # 发布层权威属性：强制覆盖 s6 源可能残留的旧值
     _set_attr(ds, "references", _context_or_config(release_context, "references"))
     _set_attr(ds, "citation", _context_or_config(release_context, "citation"))
 

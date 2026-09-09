@@ -1,104 +1,5 @@
 #!/usr/bin/env python3
-"""
-对默认输入根目录 Output_r 下所有数据集中的 .nc 文件应用 time_resolution 分类逻辑，
-并检查是否与路径中的分类（daily / monthly / annually_climatology）一致；
-不一致时输出报告。
-
-对 single_point 会进一步查看元数据，识别是否为长时间历史平均（如 1970-2021）。
-
-依赖: numpy, pandas, xarray
-
-用法（在 Output_r 根目录下运行）：
-    python scripts/s1_verify_time_resolution.py
-    python scripts/s1_verify_time_resolution.py --dataset RiverSed
-    python scripts/s1_verify_time_resolution.py --dataset RiverSed --dataset GloRiC
-
-推荐运行顺序：
-  1) 先运行本脚本，生成 s1_verify_time_resolution_results.csv 和人工审核队列。
-  2) 若生成的 s1_resolution_review_queue.csv 非空，先把每条人工确认结果写入
-     s1_resolution_review_overrides.csv，字段为 rel_path,resolved_semantics,review_note。
-  3) 重新运行本脚本，让 overrides 生效并刷新 review queue。
-  4) 确认 s1_resolution_review_queue.csv 为空后，再运行
-     python scripts/s2_reorganize_qc_by_resolution.py。
-
-输入（默认）：
-  - Output_r 下原始 .nc 数据（脚本会递归扫描）
-输出（默认）：
-  - scripts/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV，供 s2 使用）
-
----
-判断过程说明
----
-1) 路径分类（path_resolution）
-   根据文件相对 Output_r 的路径，取第一级目录名作为「路径分类」：
-   - 目录名为 daily          -> path_resolution = "daily"
-   - 目录名为 monthly        -> path_resolution = "monthly"
-   - 目录名含 annually 或 climatology -> path_resolution = "annually_climatology"
-   - 其他或无法解析          -> path_resolution = None（后续不参与一致性判定）
-
-2) 时间频率检测（detected_frequency）
-   打开 .nc，找到时间变量（time / Time / t / datetime / date 之一），读取时间序列：
-   - 若无时间变量或读取异常   -> detected_frequency = "no_time_var" 或 "error:..."
-   - 若时间点个数 < 2         -> detected_frequency = "single_point"
-   - 否则计算相邻时间间隔（小时）的中位数 median_diff，按 time_resolution.classify_frequency 规则：
-     median_diff < 2 小时        -> "hourly"
-     < 36 小时                   -> "daily"
-     < 24*45 小时（约 45 天）    -> "monthly"
-     < 24*120 小时（约 4 个月）  -> "quarterly"
-     < 24*500 小时（约 20 个月） -> "annual"
-     更大或间隔差异大            -> "irregular"
-
-3) single_point 时的元数据解释（single_point_interpretation）
-   仅当 detected_frequency = "single_point" 时执行。从 nc 的全局属性、时间变量属性及 time_bounds 等
-   收集文本，并做以下判断（按顺序，命中即返回）：
-   - 无时间变量               -> "single_point_no_time_var"
-   - 源数据属性 temporal_resolution 为 daily，且 temporal_span 与单时间点一致 -> 视为 daily（detected_frequency 记为 daily）
-   - 源数据属性 temporal_resolution 为 climatology/climatological，且 temporal_span（或 time_coverage）与单时间点一致
-     -> 视为 annual（气候态），detected_frequency 记为 annual，解释为 "single_point_upgraded_to_annual_by_temporal_resolution_climatology"
-   - 在属性中匹配 19xx-20xx 或 20xx-20xx 的年份范围，且文本含 climatology/average/mean/long-term/historical 等
-     -> "long_term_average_起始年_结束年"（视为长时间历史平均）
-   - 有上述关键词但无年份范围  -> "single_point_likely_climatology_year_单点年份"
-   - 仅有年份范围（如 time_coverage_start/end 或 bounds） -> "long_term_average_起始年_结束年"
-   - 否则                    -> "single_point_time_具体时间" 或 "single_point_interpret_error_..."
-
-4) 最终语义判定（final_semantics）
-   对正常的 daily / monthly / annual 时间轴：
-   - 时间轴与 metadata 一致     -> 直接采用时间轴结果（classification_basis: time_axis）
-   - metadata 没写              -> 采用 path_semantics 结果（classification_basis: path_semantics）
-   - 时间轴与 metadata 冲突     -> 暂时仍采用时间轴结果，但进入人工审核队列
-                                   （classification_basis: time_axis_conflict_pending_review）
-
-5) 一致性判断（consistent）
-   仅对路径分类为 daily / monthly / annually_climatology 的文件做一致性判定：
-   - 路径 daily               -> 仅当 final_semantics = "daily" 时 consistent = True
-   - 路径 monthly             -> 仅当 final_semantics = "monthly" 时 consistent = True
-   - 路径 annually_climatology-> 仅当 final_semantics 为 "annual" 或 "climatology" 时 consistent = True
-   - final_semantics 为 "error:..." 或 "no_time_var" 时一律判为不一致（consistent = False）
-   - 路径为其他或 None        -> 不判定，consistent = True（不纳入不一致统计）
-
----
-输出文件说明
----
-默认输出路径：scripts/output/s1_verify_time_resolution_results.csv（步骤 s1 对应输出，无子文件夹）
-
-CSV 列说明：
-  - path                 : 该 .nc 文件的绝对路径
-  - rel_path             : 相对于 Output_r 根目录的路径（便于定位数据集）
-  - path_resolution      : 从路径第一级目录解析出的分类
-                           取值为 daily / monthly / annually_climatology 或 (none)
-  - detected_frequency    : 根据时间轴间隔检测出的频率
-                           取值为 hourly / daily / monthly / quarterly / annual / irregular /
-                           single_point / no_time_var / error:...
-  - temporal_semantics   : 在 detected_frequency 基础上进一步解释出的时间语义
-                           取值为 daily / monthly / annual / climatology / quarterly /
-                           single_point / irregular / no_time_var / error / other
-  - single_point_interpretation : 仅当 detected_frequency 为 single_point 时有内容
-                           可能为 long_term_average_YYYY_YYYY、single_point_time_...、
-                           single_point_likely_climatology_year_YYYY 等，用于判断是否长时间历史平均
-  - consistent            : True 表示路径分类与检测结果一致，False 表示不一致需人工核查
-
-筛选不一致记录：在 Excel 或 pandas 中对 consistent 列筛 False 即可得到需检查的文件列表。
-"""
+"""Verify NetCDF temporal resolution against path categories and write review reports."""
 
 import os
 import re
@@ -129,9 +30,7 @@ from qc_contract import (
     normalize_declared_temporal_resolution,
 )
 
-# 根目录固定为脚本所在目录的上一级（即 Output_r）
 SCRIPT_DIR = Path(__file__).resolve().parent
-# 结果 CSV 路径（相对 ROOT_DIR）；列说明见本文件顶部 docstring；步骤 s1 对应输出
 OUT_CSV = S1_VERIFY_CSV
 REVIEW_QUEUE_CSV = S1_REVIEW_QUEUE_CSV
 REVIEW_OVERRIDES_CSV = S1_REVIEW_OVERRIDES_CSV
@@ -143,7 +42,7 @@ ROOT_DIR = SCRIPT_DIR.parent
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="检查 nc 文件时间分辨率是否与路径分类一致，支持按数据集过滤。"
+        description="Check whether NetCDF temporal resolution matches the path category; supports dataset filters."
     )
     parser.add_argument(
         "--dataset",
@@ -151,8 +50,8 @@ def _parse_args():
         action="append",
         default=[],
         help=(
-            "仅扫描指定数据集，可重复传入多次，例如 "
-            "--dataset RiverSed --dataset GloRiC。"
+            "Scan only selected datasets; may be passed multiple times, for example "
+            "--dataset RiverSed --dataset GloRiC."
         ),
     )
     return parser.parse_args()
@@ -183,7 +82,7 @@ def _match_dataset_filter(rel_parts, dataset_filters):
     return dataset_name in dataset_filters
 
 def get_resolution_from_path(filepath, root_dir):
-    """从相对路径的第一级目录解析：daily, monthly, annually_climatology。"""
+    """Parse the first path component into daily, monthly, or annually_climatology."""
     try:
         root = Path(root_dir).resolve()
         path = Path(filepath).resolve()
@@ -220,11 +119,10 @@ def _year_range_in_text(text):
 
 
 def _parse_span_to_dates(span_str):
-    """从 temporal_span 等字符串解析起止日期，返回 (start_date, end_date) 或 None。"""
+    """Parse start and end dates from temporal_span-like strings."""
     if not span_str or not isinstance(span_str, str):
         return None
     s = span_str.strip()
-    # 支持纯年份范围 "1962-1971" 或 "1962 - 1971"
     m = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
     if m:
         try:
@@ -232,7 +130,6 @@ def _parse_span_to_dates(span_str):
             return (pd.Timestamp(f"{y1}-01-01"), pd.Timestamp(f"{y2}-12-31"))
         except Exception:
             pass
-    # 支持两段 ISO 日期用空格分隔（如 time_coverage_start + time_coverage_end）
     if " " in s and s.count(" ") == 1:
         parts = s.split(" ", 1)
         try:
@@ -240,7 +137,6 @@ def _parse_span_to_dates(span_str):
             return (d1, d2)
         except Exception:
             pass
-    # 支持 "start end" 或 "start/end" 或 "start to end"
     for sep in ["/", " to ", " - ", "\t"]:
         if sep in s:
             parts = re.split(re.escape(sep) if sep != " - " else r"\s*-\s*", s, 1)
@@ -274,7 +170,7 @@ def _first_nonempty_attr(attrs, *keys):
 
 
 def _single_time_matches_span(single_time, attrs):
-    """判断 single_time 是否与 temporal_span / time_coverage 描述相符。"""
+    """Return whether a single timestamp matches temporal_span or time_coverage metadata."""
     span_raw = _first_nonempty_attr(attrs, *TEMPORAL_SPAN_ATTR_KEYS)
     if span_raw is None:
         start = _first_nonempty_attr(attrs, *TIME_COVERAGE_START_ATTR_KEYS)
@@ -366,7 +262,7 @@ def _single_point_declared_resolution(attrs, single_time):
 
 
 def _interpret_sp_from_data(single_time, global_attrs, time_attrs, bounds_data):
-    """纯数据版本：从已提取的 attrs 和 bounds 判断 single_point 元数据，无文件 I/O。"""
+    """Classify single_point metadata from extracted attributes and bounds without file I/O."""
     if single_time is None:
         return "single_point_no_time_var"
 
@@ -438,7 +334,7 @@ def _metadata_semantics_from_attrs(single_time, global_attrs, time_attrs, bounds
 
 
 def interpret_single_point_metadata(filepath):
-    """原接口保留，现在打开文件并调用无 I/O 的内部版本。"""
+    """Preserve the original API by opening a file and calling the no-I/O implementation."""
     try:
         with xr.open_dataset(filepath) as ds:
             time_var = None
@@ -467,7 +363,7 @@ def interpret_single_point_metadata(filepath):
         return f"single_point_interpret_error_{e}"
 
 def detect_frequency_for_nc(filepath):
-    """对单个 nc 检测时间频率和多证据语义。每个文件只打开一次。"""
+    """Detect temporal frequency and multi-evidence semantics for one NetCDF file."""
     try:
         with xr.open_dataset(filepath, decode_times=False) as ds:
             time_var = None
@@ -490,7 +386,6 @@ def detect_frequency_for_nc(filepath):
             time_attrs = dict(t.attrs)
             global_attrs = dict(ds.attrs)
 
-            # 提取 bounds（如有）
             bounds_data = None
             bv = time_attrs.get("bounds")
             if bv and bv in ds.variables:
@@ -499,7 +394,6 @@ def detect_frequency_for_nc(filepath):
                 except Exception:
                     pass
 
-        # 在文件关闭后解码时间（避免持续占用文件句柄）
         try:
             units = time_attrs.get("units", "")
             calendar = time_attrs.get("calendar", "standard")
@@ -608,7 +502,6 @@ def is_consistent(path_resolution, final_semantics):
         return False
     return freq in allowed
 
-# 建议改成
 VALID_OVERRIDE_SEMANTICS = {
     "daily",
     "monthly",
@@ -638,12 +531,12 @@ def _load_manual_overrides(path_obj):
     try:
         df = pd.read_csv(path_obj, keep_default_na=False)
     except Exception as exc:
-        raise RuntimeError("无法读取人工审核 override 文件 {}: {}".format(path_obj, exc))
+        raise RuntimeError("Failed to read manual review override file {}: {}".format(path_obj, exc))
 
     required = ["rel_path", "resolved_semantics", "review_note"]
     for col in required:
         if col not in df.columns:
-            raise RuntimeError("人工审核 override 文件缺少列 '{}'：{}".format(col, path_obj))
+            raise RuntimeError("Manual review override file is missing column '{}': {}".format(col, path_obj))
 
     overrides = {}
     for row in df.to_dict(orient="records"):
@@ -653,7 +546,7 @@ def _load_manual_overrides(path_obj):
         resolved = str(row.get("resolved_semantics", "")).strip().lower()
         if resolved not in VALID_OVERRIDE_SEMANTICS:
             raise RuntimeError(
-                "override 语义非法: {} -> {} (允许: {})".format(
+                "Invalid override semantics: {} -> {} (allowed: {})".format(
                     rel_path, resolved, ", ".join(sorted(VALID_OVERRIDE_SEMANTICS))
                 )
             )
@@ -686,7 +579,6 @@ def _resolve_final_semantics(row, override, path_semantics=""):
                 "review_reason": "time_axis={} conflicts with metadata={}".format(time_axis, metadata),
             }
         if not metadata:
-            # metadata 没写 → 采用 path_semantics 结果
             _PATH_SEMANTICS_TO_FINAL = {
                 "daily": "daily",
                 "monthly": "monthly",
@@ -850,7 +742,7 @@ def main():
     _enable_script_logging()
     root_dir = Path(ROOT_DIR).resolve()
     if not root_dir.is_dir():
-        print(f"错误：根目录不存在: {root_dir}", file=sys.stderr)
+        print(f"Error: root directory does not exist: {root_dir}", file=sys.stderr)
         sys.exit(1)
 
     ensure_stage1_alias_parity()
@@ -870,15 +762,15 @@ def main():
             continue
         nc_files.append(str(p))
 
-    print(f"根目录: {root_dir}")
+    print(f"Root directory: {root_dir}")
     if dataset_filters:
-        print("数据集过滤: {}".format(", ".join(dataset_filters)))
+        print("Dataset filters: {}".format(", ".join(dataset_filters)))
     else:
-        print("数据集过滤: (全部数据集)")
-    print(f"找到 {len(nc_files)} 个 .nc 文件，开始检测时间分辨率并与路径分类比对...")
+        print("Dataset filters: (all datasets)")
+    print(f"Found {len(nc_files)}  .nc files; checking temporal resolution against path categories...")
 
     if not nc_files:
-        print("没有找到 .nc 文件，退出。")
+        print("No .nc files found; exiting.")
         return
     t0 = time.time()
     results = []
@@ -897,7 +789,7 @@ def main():
 
     if forced_daily_files:
         print(
-            "数据源强制 daily，跳过时间轴检测: {} 个文件 ({})".format(
+            "Source forced to daily; skipped time-axis detection for {} files ({})".format(
                 len(forced_daily_files), ", ".join(sorted(FORCED_DAILY_SOURCES))
             )
         )
@@ -907,52 +799,52 @@ def main():
     if files_to_detect:
         with ProcessPoolExecutor(max_workers=WORKERS) as executor:
             futures = {executor.submit(detect_frequency_for_nc, fp): fp for fp in files_to_detect}
-            with tqdm(total=len(files_to_detect), desc="检测时间分辨率", unit="文件") as pbar:
+            with tqdm(total=len(files_to_detect), desc="Checking temporal resolution", unit="files") as pbar:
                 for fut in as_completed(futures):
                     record = fut.result()
                     pbar.update(1)
                     results.append(_build_result_row(record, root_dir, overrides))
     elapsed = time.time() - t0
-    print(f"\n扫描完成，耗时: {elapsed:.1f} 秒 ({elapsed/60:.1f} 分钟)")
+    print(f"\nScan finished in: {elapsed:.1f} seconds ({elapsed/60:.1f} minutes)")
 
     df = pd.DataFrame(results).sort_values(["rel_path", "path"]).reset_index(drop=True)
 
     out_path = root_dir / OUT_CSV
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
-    print(f"\n判断结果已写入: {out_path}")
+    print(f"\nClassification results written to: {out_path}")
 
     review_queue = df[(df["is_qc_path"]) & (df["review_required"])].copy()
     review_queue.to_csv(review_queue_path, index=False)
-    print(f"人工审核队列已写入: {review_queue_path} (共 {len(review_queue)} 条)")
+    print(f"Manual review queue written to: {review_queue_path} ({len(review_queue)} rows)")
 
     inconsistent = df[~df["consistent"]]
     n_inconsistent = len(inconsistent)
 
     if n_inconsistent > 0:
         print("\n" + "=" * 80)
-        print("以下文件的最终语义与路径目录不一致（仅提示，不再直接阻断主流程）：")
+        print("The following files have final semantics that do not match their path category (reported only; pipeline is not blocked):")
         print("=" * 80)
         for _, row in inconsistent.iterrows():
             print(
-                "  路径分类: {}  |  final_semantics: {}  |  basis: {}".format(
+                "  Path category: {}  |  final_semantics: {}  |  basis: {}".format(
                     row["path_resolution"],
                     row["final_semantics"],
                     row["classification_basis"],
                 )
             )
             if row.get("single_point_interpretation"):
-                print(f"    single_point 解释: {row['single_point_interpretation']}")
-            print(f"    文件: {row['rel_path']}")
+                print(f"    single_point interpretation: {row['single_point_interpretation']}")
+            print(f"    File: {row['rel_path']}")
         print("=" * 80)
-        print(f"共 {n_inconsistent} 个文件不一致。")
+        print(f"{n_inconsistent} files are inconsistent.")
     else:
-        print("\n所有文件的时间分辨率与路径分类一致。")
+        print("\nAll files have temporal resolution consistent with their path categories.")
 
     single_point_rows = df[df["detected_frequency"] == "single_point"]
     if len(single_point_rows) > 0:
         print("\n" + "=" * 80)
-        print("single_point 文件的元数据解释（是否长时间历史平均等）：")
+        print("Metadata interpretations for single_point files, including long-term averages:")
         print("=" * 80)
         for _, row in single_point_rows.iterrows():
             interp = row.get("single_point_interpretation") or ""
@@ -960,29 +852,29 @@ def main():
             print(f"    -> {interp}")
         print("=" * 80)
 
-    print("\n=== 路径分类统计 ===")
+    print("\n=== Path Category Counts ===")
     print(df["path_resolution"].value_counts())
-    print("\n=== 检测频率统计 ===")
+    print("\n=== Detected Frequency Counts ===")
     print(df["detected_frequency"].value_counts())
-    print("\n=== 时间轴语义统计 ===")
+    print("\n=== Time-Axis Semantics Counts ===")
     print(df["time_axis_semantics"].value_counts())
-    print("\n=== 元数据语义统计 ===")
+    print("\n=== Metadata Semantics Counts ===")
     print(df["metadata_semantics"].replace("", "(empty)").value_counts())
     if "temporal_semantics" in df.columns:
-        print("\n=== 时间语义统计 ===")
+        print("\n=== Temporal Semantics Counts ===")
         print(df["temporal_semantics"].value_counts())
     if "single_point_interpretation" in df.columns and df["single_point_interpretation"].str.len().gt(0).any():
         interp_counts = df[df["single_point_interpretation"].str.len() > 0]["single_point_interpretation"].value_counts()
-        print("\n=== single_point 解释统计 ===")
+        print("\n=== single_point Interpretation Counts ===")
         print(interp_counts)
     if len(review_queue) > 0:
         print("\n" + "=" * 80)
-        print("存在需要人工审核的 QC 文件，主线应在处理 review queue 后继续。")
-        print("人工 override 文件: {}".format(overrides_path))
+        print("QC files still require manual review; continue the main pipeline after resolving the review queue.")
+        print("Manual override file: {}".format(overrides_path))
         print("=" * 80)
         for _, row in review_queue.iterrows():
             print(
-                "  {} | time_axis={} | metadata={} | 建议={} | reason={}".format(
+                "  {} | time_axis={} | metadata={} | suggested={} | reason={}".format(
                     row["rel_path"],
                     row["time_axis_semantics"],
                     row["metadata_semantics"] or "(empty)",

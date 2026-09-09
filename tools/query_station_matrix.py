@@ -1,58 +1,27 @@
 #!/usr/bin/env python3
-"""
-query_station_matrix.py
-
-按“数据集文件夹名称/来源名 + station_id”查询
-s6_matrix_by_resolution 下所有 matrix NC 中对应 cluster 点的信息。
-
-推荐放置位置：
-  sed_data_integration/query_station_matrix.py
-
-使用方式：
-  1. 修改用户配置区
-  2. 运行：python3 query_station_matrix.py
-
-说明：
-  - DATASET_NAME 可以匹配：
-      1) s5_basin_clustered_stations.csv 里的 source 列
-      2) path 路径中的任意一级文件夹名
-  - STATION_ID 会匹配：
-      1) station_id
-      2) source_station_id
-      3) native_id / source_station_native_id 等常见列名，如果存在
-  - 查询结果会导出为 CSV，并在终端打印摘要。
-"""
+"""Query matrix NetCDF files by dataset/source name plus station_id."""
 
 # ══════════════════════════════════════════════════════════════════════
-# 用户配置区
 # ══════════════════════════════════════════════════════════════════════
 
 from pathlib import Path
 
-DATASET_NAME = "RiverSed"   # 例如 "GRDC" / "HYBAM" / 某个数据集文件夹名
-STATION_ID   = "RiverSed_20035"            # 原始 station_id
+DATASET_NAME = "RiverSed"
+STATION_ID   = "RiverSed_20035"
 
 OUTPUT_ROOT = None
-# None = 自动从脚本位置推导 Output_r 根目录；
-# 也可以手动指定，例如：
 # OUTPUT_ROOT = "/data/Output_r"
 
 RESOLUTION = "all"
-# "all" 或 "daily" / "monthly" / "annual"
 
 VARIABLE = "all"
-# "all" 或 "Q" / "SSC" / "SSL"
 
 ONLY_VALID_ROWS = True
-# True  = 只导出 Q/SSC/SSL 至少一个非空的时间点
-# False = 导出 matrix 里的所有时间点，包括完全缺测行
 
 OUT_CSV = None
-# None = 自动生成：
 #   query_<dataset>_<station_id>_s6_matrix.csv
 
 PREVIEW_ROWS = 20
-# 终端预览行数；0 = 不预览明细
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -78,7 +47,6 @@ try:
         get_output_r_root,
     )
 except Exception:
-    # 如果 pipeline_paths 不可用，使用当前项目里的默认相对路径兜底
     S5_BASIN_CLUSTERED_CSV = "scripts_basin_test/output/s5_basin_clustered_stations.csv"
     S6_MATRIX_DIR = "scripts_basin_test/output/s6_matrix_by_resolution"
 
@@ -92,7 +60,7 @@ CORE_FLAGS = ("Q_flag", "SSC_flag", "SSL_flag")
 
 
 def _txt(value):
-    """NetCDF / pandas 值转干净字符串。"""
+    """Convert NetCDF and pandas values to clean strings."""
     if value is None:
         return ""
     try:
@@ -111,7 +79,7 @@ def _txt_arr(arr):
 
 
 def _norm_id(value):
-    """用于 station_id 宽松匹配：去空格、去常见 .0、统一大小写。"""
+    """Normalize station_id values for loose matching."""
     text = _txt(value)
     if re.fullmatch(r"-?\d+\.0", text):
         text = text[:-2]
@@ -119,12 +87,12 @@ def _norm_id(value):
 
 
 def _norm_name(value):
-    """用于数据集/文件夹名宽松匹配。"""
+    """Normalize dataset or folder names for loose matching."""
     return _txt(value).strip().lower()
 
 
 def _as_float_arr(var, row=None):
-    """读取 NetCDF 变量并把 fill/masked 转成 NaN。"""
+    """Read a NetCDF variable and convert fill or masked values to NaN."""
     if row is None:
         arr = np.ma.asarray(var[:]).astype(float)
     else:
@@ -159,7 +127,7 @@ def _path_parts_lower(path_value):
 
 def _find_station_rows(s5_csv, dataset_name, station_id):
     if not s5_csv.is_file():
-        raise FileNotFoundError(f"找不到 s5 CSV: {s5_csv}")
+        raise FileNotFoundError(f"s5 CSV not found: {s5_csv}")
 
     df = pd.read_csv(s5_csv)
     df = df.copy()
@@ -167,12 +135,11 @@ def _find_station_rows(s5_csv, dataset_name, station_id):
     required = {"cluster_id", "path"}
     missing = sorted(required - set(df.columns))
     if missing:
-        raise ValueError(f"s5 CSV 缺少必要列: {missing}")
+        raise ValueError(f"s5 CSV is missing required columns: {missing}")
 
     dataset_q = _norm_name(dataset_name)
     station_q = _norm_id(station_id)
 
-    # 1) 数据集匹配：source 列或 path 中任意文件夹名
     dataset_mask = pd.Series(False, index=df.index)
 
     if "source" in df.columns:
@@ -182,7 +149,6 @@ def _find_station_rows(s5_csv, dataset_name, station_id):
         lambda p: dataset_q in _path_parts_lower(p)
     )
 
-    # 2) station_id 匹配：尽量覆盖常见列名
     id_cols = [
         "station_id",
         "source_station_id",
@@ -199,8 +165,8 @@ def _find_station_rows(s5_csv, dataset_name, station_id):
 
     if not existing_id_cols:
         raise ValueError(
-            "s5 CSV 中没有可用于 station_id 匹配的列。"
-            f"尝试过这些列名: {id_cols}"
+            "s5 CSV has no columns available for station_id matching."
+            f"Tried these column names: {id_cols}"
         )
 
     station_mask = pd.Series(False, index=df.index)
@@ -211,20 +177,19 @@ def _find_station_rows(s5_csv, dataset_name, station_id):
 
     if len(hit) == 0:
         msg = [
-            "没有在 s5_basin_clustered_stations.csv 中找到匹配行。",
+            "No matching rows found in s5_basin_clustered_stations.csv.",
             f"  DATASET_NAME = {dataset_name}",
             f"  STATION_ID   = {station_id}",
             "",
-            f"已检查 station_id 列: {existing_id_cols}",
+            f"Checked station_id columns: {existing_id_cols}",
         ]
         if "source" in df.columns:
             near_sources = sorted(df["source"].dropna().astype(str).unique().tolist())[:20]
             msg.append("")
-            msg.append("前 20 个 source 示例:")
+            msg.append("First 20 source examples:")
             msg.append("  " + ", ".join(near_sources))
         raise ValueError("\n".join(msg))
 
-    # cluster_uid 标准化
     hit["cluster_id"] = hit["cluster_id"].astype(int)
     hit["cluster_uid"] = hit["cluster_id"].map(lambda x: f"SED{x:06d}")
 
@@ -233,7 +198,7 @@ def _find_station_rows(s5_csv, dataset_name, station_id):
 
 def _matrix_files(matrix_dir, resolution):
     if not matrix_dir.is_dir():
-        raise FileNotFoundError(f"找不到 matrix 目录: {matrix_dir}")
+        raise FileNotFoundError(f"matrix directory not found: {matrix_dir}")
 
     files = sorted(matrix_dir.glob("*.nc"))
     if resolution != "all":
@@ -292,7 +257,6 @@ def _read_matrix_for_uid(nc_path, cluster_uid, variables):
         times = _decode_times(ds)
         resolution = _resolution_from_nc(nc_path, ds)
 
-        # station-level 元数据
         station_meta = {
             "matrix_file": nc_path.name,
             "resolution": resolution,
@@ -366,7 +330,6 @@ def _read_matrix_for_uid(nc_path, cluster_uid, variables):
                 ds.variables["selected_source_station_uid"][row_idx, :]
             )
 
-        # 动态保留逐步 QC 字段，例如 Q_qc1 / SSC_qc2 / SSL_qc3
         for name in ds.variables:
             if name in data:
                 continue
@@ -398,7 +361,7 @@ def _read_matrix_for_uid(nc_path, cluster_uid, variables):
 def _query_all_matrices(hit_rows, matrix_dir, resolution, variables):
     files = _matrix_files(matrix_dir, resolution)
     if not files:
-        raise FileNotFoundError(f"没有找到 matrix NC 文件: {matrix_dir}")
+        raise FileNotFoundError(f"No matrix NetCDF files found: {matrix_dir}")
 
     frames = []
     cluster_uids = sorted(hit_rows["cluster_uid"].unique().tolist())
@@ -416,11 +379,11 @@ def _query_all_matrices(hit_rows, matrix_dir, resolution, variables):
 
 
 def _print_match_summary(hit, id_cols):
-    print("\n匹配到的 s5 行:")
-    print(f"  行数: {len(hit):,}")
-    print(f"  cluster 数: {hit['cluster_uid'].nunique():,}")
+    print("\nMatched s5 rows:")
+    print(f"  Rows: {len(hit):,}")
+    print(f"  Cluster count: {hit['cluster_uid'].nunique():,}")
     print(f"  cluster_uid: {', '.join(sorted(hit['cluster_uid'].unique().tolist()))}")
-    print(f"  station_id 检查列: {', '.join(id_cols)}")
+    print(f"  station_id columns checked: {', '.join(id_cols)}")
 
     cols = [
         c for c in [
@@ -441,22 +404,22 @@ def _print_match_summary(hit, id_cols):
 
 
 def _print_result_summary(df, files):
-    print("\n扫描的 matrix 文件:")
+    print("\nScanned matrix files:")
     for p in files:
         print(f"  - {p.name}")
 
     if df.empty:
-        print("\n没有在 matrix NC 中读到对应点的有效时序。")
+        print("\nNo valid time series for the matched point were read from matrix NetCDF files.")
         return
 
-    print("\n查询结果摘要:")
-    print(f"  输出行数: {len(df):,}")
-    print(f"  分辨率: {', '.join(sorted(df['resolution'].astype(str).unique()))}")
+    print("\nQuery Result Summary:")
+    print(f"  Output rows: {len(df):,}")
+    print(f"  Resolution: {', '.join(sorted(df['resolution'].astype(str).unique()))}")
     print(f"  cluster_uid: {', '.join(sorted(df['cluster_uid'].astype(str).unique()))}")
 
     var_cols = [v for v in CORE_VARS if v in df.columns]
     if var_cols:
-        print("\n变量有效值计数:")
+        print("\nValid value counts by variable:")
         for v in var_cols:
             print(f"  {v}: {int(df[v].notna().sum()):,}")
 
@@ -480,30 +443,30 @@ def _print_result_summary(df, files):
             ]
             if c in df.columns
         ]
-        print(f"\n前 {PREVIEW_ROWS} 行预览:")
+        print(f"\nPreview of first {PREVIEW_ROWS} rows:")
         print(df[show_cols].head(PREVIEW_ROWS).to_string(index=False))
 
 
 def main():
     if nc4 is None:
-        print("错误：需要安装 netCDF4。请运行: pip install netCDF4")
+        print("Error: netCDF4 is required. Run: pip install netCDF4")
         return 1
 
     resolution = str(RESOLUTION).strip().lower()
     if resolution not in {"all", "daily", "monthly", "annual", "climatology"}:
-        print(f"错误：不支持的 RESOLUTION: {RESOLUTION}")
+        print(f"Error: unsupported RESOLUTION: {RESOLUTION}")
         return 1
 
     variable = str(VARIABLE).strip().upper()
     variables = list(CORE_VARS) if variable == "ALL" else [variable]
     bad_vars = [v for v in variables if v not in CORE_VARS]
     if bad_vars:
-        print(f"错误：不支持的 VARIABLE: {bad_vars}; 只能是 all / Q / SSC / SSL")
+        print(f"Error: unsupported VARIABLE: {bad_vars}; must be all / Q / SSC / SSL")
         return 1
 
     root, s5_csv, matrix_dir = _paths()
 
-    print("查询配置:")
+    print("Query configuration:")
     print(f"  OUTPUT_ROOT : {root}")
     print(f"  s5 CSV      : {s5_csv}")
     print(f"  matrix dir  : {matrix_dir}")
@@ -533,10 +496,10 @@ def main():
         out_csv = Path(out_csv)
         out_csv.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(out_csv, index=False)
-        print(f"\n已导出 CSV: {out_csv}")
+        print(f"\nExported CSV: {out_csv}")
 
     except Exception as exc:
-        print(f"\n错误: {exc}")
+        print(f"\nError: {exc}")
         return 1
 
     return 0

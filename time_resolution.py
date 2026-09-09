@@ -1,12 +1,4 @@
-"""
-时间分辨率分类与属性同步工具。
-
-用途：
-1. 根据时间间隔推断 frequency；
-2. 为 s1 / s2 提供统一的时间语义映射；
-3. 为镜像库与 s2 副本提供 temporal_resolution 属性回写工具；
-4. 默认优先使用 Output_r_attr_fixed 作为 s1 / s2 输入根目录。
-"""
+"""Classify temporal resolution and synchronize NetCDF temporal_resolution attributes."""
 
 import os
 from contextlib import contextmanager
@@ -31,13 +23,7 @@ SEDIMENT_VALUE_VAR_NAMES = (
 
 
 def get_preferred_output_root(script_dir):
-    """返回 s1/s2 默认应读取的根目录。
-
-    优先级：
-    1. 环境变量 OUTPUT_R_ROOT；
-    2. 与 Output_r 同级的 Output_r_attr_fixed（若存在）；
-    3. 脚本所在目录上一级 Output_r。
-    """
+    """Return the default root directory that s1 and s2 should read."""
     env_root = os.environ.get("OUTPUT_R_ROOT", "").strip()
     if env_root:
         return Path(env_root).expanduser().resolve()
@@ -52,7 +38,7 @@ def get_preferred_output_root(script_dir):
 
 
 def classify_frequency(time_values):
-    """根据时间间隔推断频率。"""
+    """Infer a frequency label from time-step spacing."""
     if len(time_values) < 2:
         return "single_point"
 
@@ -74,7 +60,7 @@ def classify_frequency(time_values):
 
 
 def infer_temporal_semantics(detected_frequency, single_point_interpretation=""):
-    """将检测到的时间频率进一步解释为更稳定的时间语义。"""
+    """Map detected time frequency to a more stable temporal semantics label."""
     freq = str(detected_frequency or "").strip().lower()
     interp = str(single_point_interpretation or "").strip().lower()
 
@@ -112,7 +98,7 @@ def infer_temporal_semantics(detected_frequency, single_point_interpretation="")
 
 
 def should_treat_irregular_as_daily(nc_path):
-    """对 irregular 文件做二次判定：若时间轴呈离散日值记录，则按 daily 处理。"""
+    """Return whether an irregular file should be treated as daily."""
     try:
         with xr.open_dataset(str(nc_path)) as ds:
             time_var = next((name for name in TIME_VAR_NAMES if name in ds.variables), None)
@@ -136,7 +122,7 @@ def should_treat_irregular_as_daily(nc_path):
 
 
 def should_treat_monthly_as_daily(nc_path):
-    """对 monthly 文件做二次判定：若同一月内有 2+ 个有效沉积物观测日期，则按 daily 处理。"""
+    """Return whether a monthly file contains multiple valid sediment observation days per month."""
     try:
         with xr.open_dataset(str(nc_path)) as ds:
             time_var = next((name for name in TIME_VAR_NAMES if name in ds.variables), None)
@@ -183,7 +169,7 @@ def should_treat_monthly_as_daily(nc_path):
 
 
 def should_treat_annual_as_daily(nc_path):
-    """对 annual 文件做二次判定：若同一年内有 2+ 个有效沉积物观测日期，则按 daily 处理。"""
+    """Return whether an annual file contains multiple valid sediment observation days per year."""
     try:
         with xr.open_dataset(str(nc_path)) as ds:
             time_var = next((name for name in TIME_VAR_NAMES if name in ds.variables), None)
@@ -230,13 +216,7 @@ def should_treat_annual_as_daily(nc_path):
 
 
 def sync_temporal_resolution_attrs(nc_path, target_resolution, stage, reason="", update_legacy_existing_only=True):
-    """将 temporal_resolution 同步到 nc 全局属性中。
-
-    规则：
-    - 总是维护 canonical 键 temporal_resolution；
-    - legacy 键仅在文件原本已存在时同步更新；
-    - 仅当值确实变化时才追加 history。
-    """
+    """Synchronize temporal_resolution into NetCDF global attributes."""
     target = str(target_resolution or "").strip()
     if not target:
         return {

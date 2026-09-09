@@ -1,34 +1,5 @@
 #!/usr/bin/env python3
-"""
-s4：站点流域匹配脚本（并行版）
-
-流程：
-  1. 读取 s3_collected_stations.csv（核心列：station_key, station_id, path, source, lat, lon, resolution；
-     可选列：reported_area）
-  2. 复用 s3 生成的 station_key/station_id；不在 s4 中重新按行号生成身份
-  3. 将站点按经度排序后分块，多进程并行追溯上游流域
-     （按经度分块使同一 worker 内的站点集中在同一 pfaf 区，减少重复 I/O）
-  4. 汇总结果，输出 basin CSV 和可选 GPKG，供 s5_basin_merge.py 使用
-
-输入：
-  scripts_basin_test/output/s3_collected_stations.csv（s3 输出）
-
-输出：
-  scripts_basin_test/output/s4_upstream_basins.csv   ← s5_basin_merge 的默认输入
-  scripts_basin_test/output/s4_upstream_basins.gpkg  ← 可选几何文件
-
-环境变量：
-  OUTPUT_R_ROOT  — 覆盖 Output_r 根目录（跨机器迁移时使用）
-  MERIT_DIR      — MERIT Hydro 数据集根目录
-                   默认为 Output_r/../../MERIT_Hydro_v07_Basins_v01_bugfix1
-                   （即与 sediment_wzx_1111 同级的目录）
-注意：
-  - GSED 在 basin 主线下会先利用 reach geometry 的端点候选推断
-    下游 MERIT reach，然后直接复用该 reach 追溯上游流域。
-  - RiverSed 在 basin 主线下只按 lon/lat 匹配 MERIT，不再使用其源产品内的
-    upstream_area，也不再保留 NHDPlus reach/basin 辅助字段。
-  - s4 shard resume 只能在 s3 输入指纹、MERIT_DIR、s4 脚本指纹和关键配置一致时复用。
-"""
+"""Run parallel S4 station-to-basin matching jobs for the basin pipeline."""
 
 import hashlib
 import logging
@@ -56,7 +27,6 @@ except ImportError:
         def close(self):
             return None
 
-# ── 路径设置 ────────────────────────────────────────────────────────────────
 from basin_policy import classify_basin_result, should_skip_basin_matching
 from pipeline_paths import (
     S3_COLLECTED_CSV,
@@ -69,9 +39,8 @@ from pipeline_paths import (
 
 
 SCRIPT_DIR    = Path(__file__).resolve().parent
-OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)   # Output_r，支持 OUTPUT_R_ROOT 环境变量覆盖
+OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)
 
-# MERIT Hydro 数据目录：优先环境变量，默认为 sediment_wzx_1111 同级目录
 MERIT_DIR  = Path(os.environ.get(
     "MERIT_DIR",
     str(OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1")
@@ -120,7 +89,7 @@ SAVE_GPKG = _env_bool("S4_SAVE_GPKG", True)
 GPKG_EXCLUDE_SATELLITE = _env_bool("S4_GPKG_EXCLUDE_SATELLITE", False)
 RESUME    = _env_bool("S4_RESUME", True)
 N_WORKERS = _env_int("S4_N_WORKERS", 24)
-BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)  # 每个任务处理的站点数（小 batch 让 tracer 及时释放）
+BATCH_SIZE = _env_int("S4_BATCH_SIZE", 50)
 MAX_TASKS_PER_CHILD = _env_int("S4_MAXTASKSPERCHILD", 8)
 SHARD_COUNT = _env_int("S4_SHARD_COUNT", 1)
 SHARD_INDEX = _env_int("S4_SHARD_INDEX", 0)
@@ -578,9 +547,8 @@ def _empty_basin_result():
     }
 
 
-# ── worker 函数（必须在模块顶层，才能被 multiprocessing pickle）────────────
 def _get_memory_info():
-    """获取当前进程及所有子进程的内存使用信息（MB）。"""
+    """Return memory usage for the current process and child processes in MB."""
     proc = psutil.Process(os.getpid())
     main_rss = proc.memory_info().rss / (1024 * 1024)
     children = proc.children(recursive=True)
@@ -589,21 +557,16 @@ def _get_memory_info():
     return main_rss, children_rss, total
 
 
-# 进程间共享计数器，用于精确追踪每个站点的进度
 _shared_counter = None
 
 
 def _init_worker(counter):
-    """worker 初始化函数，设置共享计数器。"""
+    """Initialize a worker process with the shared progress counter."""
     global _shared_counter
     _shared_counter = counter
 
 def _trace_chunk(args):
-    """单个 worker：为一批站点追溯流域，返回 result dict 列表。
-
-    args = (merit_dir_str, basin_tracer_dir_str, chunk)
-    chunk: list of station metadata dicts
-    """
+    """Trace basins for one station chunk and return a list of result dictionaries."""
     import gc
 
     merit_dir_str, basin_tracer_dir_str, chunk = args
@@ -787,8 +750,8 @@ def _chunk_to_partial_df(chunk_results, include_geometry):
         if include_geometry:
             geometry = row.get("geometry")
             out_row["geometry_wkt"] = geometry.wkt if geometry is not None else ""
-            geometry_local = row.get("geometry_local")                                          # ← 新增
-            out_row["geometry_local_wkt"] = geometry_local.wkt if geometry_local is not None else ""  # ← 新增
+            geometry_local = row.get("geometry_local")
+            out_row["geometry_local_wkt"] = geometry_local.wkt if geometry_local is not None else ""
             out_row["_s4_gpkg_include"] = bool(row.get("_s4_gpkg_include", True))
         rows.append(out_row)
     columns = CSV_COLUMNS_WITH_GEOM if include_geometry else CSV_COLUMNS
@@ -1122,7 +1085,6 @@ def main():
         FINALIZE_ONLY,
     )
 
-    # ── 1. 检查路径 ──────────────────────────────────────────────────────────
     if not S3_CSV.is_file():
         logger.error("s3 CSV not found: %s", S3_CSV)
         return 1
@@ -1139,7 +1101,6 @@ def main():
     if not RESUME:
         _remove_current_shard_files(SHARD_INDEX, logger)
 
-    # ── 2. 读取 s3 站点并按 shard 切分 ───────────────────────────────────────
     try:
         stations = _load_s3_stations(S3_CSV)
     except ValueError as exc:
@@ -1197,7 +1158,6 @@ def main():
     if n_pending == 0:
         logger.info("No pending stations to process")
 
-    # ── 3. 按经度排序后分块（同 worker 内站点集中在相近 pfaf 区，提升缓存命中率）
     stations_sorted = stations.sort_values("lon").reset_index(drop=True)
 
     if "reported_area" not in stations_sorted.columns:
@@ -1278,16 +1238,14 @@ def main():
     actual_workers = min(N_WORKERS, len(chunks))
     logger.info("Splitting into %d batches (size=%d) for %d workers", len(chunks), chunk_size, actual_workers)
 
-    # ── 4. 并行追溯 ──────────────────────────────────────────────────────────
     args_list = [(str(MERIT_DIR), str(BASIN_TRACER_DIR), chunk) for chunk in chunks]
 
-    # 共享计数器：跨进程追踪已完成的站点数
     counter = mp.Value("i", 0)
 
     pbar = tqdm(
         total=n_total,
         desc=f"s4-shard-{SHARD_INDEX + 1}/{SHARD_COUNT}",
-        unit="站点",
+        unit="stations",
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
         disable=SHARD_COUNT > 1,
     )
@@ -1347,7 +1305,6 @@ def main():
     pbar.refresh()
     pbar.close()
 
-    # 最终内存报告
     main_mb, children_mb, total_mb = _get_memory_info()
     peak_total_mb = max(peak_total_mb, total_mb)
     done_total = len(completed_station_keys) + n_pending
@@ -1364,7 +1321,6 @@ def main():
         peak_total_mb,
     )
 
-    # ── 5. 生成 shard CSV ───────────────────────────────────────────────────
     if not shard_work_csv.is_file():
         if n_total == 0:
             empty_df = pd.DataFrame(columns=CSV_COLUMNS_WITH_GEOM if SAVE_GPKG else CSV_COLUMNS)

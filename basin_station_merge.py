@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""
-流域合并站点工具：
-读取 basin_tracer 结果（含 station_key, station_id, basin_id），构建
-station_id -> basin-merged cluster_id 映射。
-
-合并规则：
-1) 仅 basin_status=resolved 且 basin_id 有效的站点可参与合并；
-2) observation_type=Satellite 的站点保留为 singleton，不参与合并候选；
-3) 同一 basin 内仅当 cluster 间所有跨组 pair 都满足：
-   - 距离 <= max_station_distance_m
-   - upstream area 对称相对误差 <= max_upstream_rel_error
-   才允许合并（complete-linkage 风格）；
-4) 不满足条件的站点保留 singleton（cluster_id=station_id）。
-
-station_key 是 s3-s5 的稳定内部关联键。普通站点 lat/lon 必须来自 s3；
-s4 的普通 lat/lon 只用于一致性审计，reach_anchor_lat/lon 不参与普通聚类距离。
-"""
+"""Build basin-merged station clusters from basin tracer results."""
 
 import math
 from pathlib import Path
@@ -238,24 +222,7 @@ def load_station_to_basin_cluster_map(
     max_upstream_rel_error=0.10,
     upstream_area_col="uparea_merit",
 ):
-    """
-    读取 basin_tracer 输出（s4_upstream_basins.csv），生成：
-      station_id(cluster_id) -> basin-merged cluster_id 映射。
-
-    返回：
-      mapping: dict[int, int]
-      stats: {
-        "n_station": int,   # 输入中唯一 station 数
-        "n_success": int,   # resolved 且有 basin_id 的 station 数
-        "n_satellite_excluded_from_merge": int,
-        "n_basins": int,    # 唯一 basin 数
-        "n_clusters_from_basins": int,  # basin 侧最终聚类数量
-        "n_changed": int,   # station_id 被重映射数量
-        "max_station_distance_m": float,
-        "max_upstream_rel_error": float,
-        "upstream_area_col": str,
-      }
-    """
+    """Read basin tracer output and return cluster remapping plus summary counts."""
     basin_csv_path = Path(basin_csv_path)
     if not basin_csv_path.is_file():
         raise FileNotFoundError("Basin CSV not found: {}".format(basin_csv_path))

@@ -1,37 +1,5 @@
 #!/usr/bin/env python3
-"""
-步骤 s3：从 s2 重组目录中扫描 .nc 文件，
-读取经纬度、数据源与观测类型，输出 basin 主线使用的站点列表 CSV。
-
-输入（默认）：
-  - {S2_ORGANIZED_DIR}/ 下的 .nc（步骤 s2 输出目录，目录名由 pipeline_paths.S2_ORGANIZED_DIR 指定）
-输出（默认）：
-  - scripts/output/s3_collected_stations.csv（步骤 s3 输出，来自 pipeline_paths.S3_COLLECTED_CSV；
-    列 station_key, station_id, path, source, lat, lon, resolution, observation_type, continent_region, country,
-    station_name, river_name, source_station_id, reported_area）
-resolution 来自路径第一级目录。供步骤 s4/s5 聚类使用。
-station_key 是 s3-s5 的稳定内部关联键；station_id 仅是当前 s3 输出中的可复现整数索引。
-
-当前默认规则：
-  - basin 主线默认不收集 climatology；
-  - climatology 文件保留在 output_resolution_organized/climatology 下，
-    供独立的 climatology NC 导出脚本使用；
-  - RiverSed 在 basin 主线下只提供 lon/lat，不输出 NHDPlus reach/basin 元数据，
-    也不把源文件中的 upstream_area 作为 reported_area 传给 basin tracer。
-
-根目录说明：
-  - 默认根目录由 pipeline_paths.get_output_r_root() 解析；
-  - 可通过环境变量 OUTPUT_R_ROOT 覆盖 Output_r 根目录。
-
-用法（在 Output_r 根目录下运行）：
-  从 s2 重组目录扫描 .nc：
-  python scripts/s3_collect_qc_stations.py [--root .] [--out scripts/output/s3_collected_stations.csv] [-j 32]
-
-  排除指定 source，不让它进入 basin 主线；排除后请从 s4 重新运行：
-  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe
-  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe GloRiSe/SS
-  python scripts/s3_collect_qc_stations.py --exclude-source Huanghe,GloRiSe_SS
-"""
+"""Collect station metadata from s2-organized NetCDF files for the basin pipeline."""
 
 import argparse
 import hashlib
@@ -52,20 +20,18 @@ except ImportError:
     HAS_NC = False
 
 FILL = -9999.0
-# 各数据集中存储上游汇水面积的字段名（NC 变量或全局属性）
-# 优先级：先找 NC 变量，再找全局属性；全局属性按列表顺序匹配
 _AREA_VAR_NAMES = [
-    "upstream_area",   # HYBAM：直接写入 NC 变量
+    "upstream_area",
     "drainage_area",
     "basin_area",
     "catchment_area",
 ]
 _AREA_ATTR_NAMES = [
-    "Drainage area (km2)",  # ALi_De_Boer 原始列名
+    "Drainage area (km2)",
     "drainage_area_km2",
     "drainage_area",
-    "upstream_area",        # HMA 标量元数据
-    "Area",                 # Milliman 原始列名
+    "upstream_area",
+    "Area",
     "area",
     "basin_area",
     "catchment_area",
@@ -91,7 +57,6 @@ STATION_KEY_DIGEST_CHARS = 24
 def _get_scalar(var):
     if var is None:
         return None
-    # 先按 masked 处理，再 asarray，否则 np.asarray(masked) 会变成 0
     if np.ma.isMaskedArray(var):
         v = var.flatten()
         if v.size == 0:
@@ -111,25 +76,17 @@ def _get_scalar(var):
 
 
 def get_reported_area_from_nc(path):
-    """从 NC 文件提取上游汇水面积（km²），失败返回 None。
-
-    检索顺序：
-    1. NC 变量（upstream_area / drainage_area / …）
-    2. 全局属性（Drainage area (km2) / Area / upstream_area / …）
-    3. 全局属性名中含 "area"（兜底）
-    """
+    """Extract upstream drainage area from a NetCDF file, returning None on failure."""
     if not HAS_NC:
         return None
     try:
         with nc4.Dataset(path, "r") as nc:
-            # ── 1. 先找 NC 变量 ──────────────────────────────────────────
             for var_name in _AREA_VAR_NAMES:
                 if var_name in nc.variables:
                     val = _get_scalar(nc.variables[var_name][:])
                     if val is not None and not np.isnan(val) and val > 0:
                         return float(val)
 
-            # ── 2. 再找全局属性（按优先列表） ─────────────────────────────
             for attr_name in _AREA_ATTR_NAMES:
                 raw = getattr(nc, attr_name, None)
                 if raw is not None:
@@ -140,7 +97,6 @@ def get_reported_area_from_nc(path):
                     except (ValueError, TypeError):
                         pass
 
-            # ── 3. 兜底：搜索所有属性名中含 "area" 的条目 ─────────────────
             for attr_name in nc.ncattrs():
                 if "area" in attr_name.lower() and "ratio" not in attr_name.lower():
                     raw = getattr(nc, attr_name, None)
@@ -157,7 +113,7 @@ def get_reported_area_from_nc(path):
 
 
 def get_lat_lon_from_nc(path):
-    """从 nc 文件读取标量 lat, lon。失败返回 (None, None)。"""
+    """Read scalar latitude and longitude from a NetCDF file."""
     if not HAS_NC:
         return None, None
     try:
@@ -172,7 +128,7 @@ def get_lat_lon_from_nc(path):
 
 
 def get_station_meta_from_nc(path):
-    """从 nc 全局属性读取站点级元数据。"""
+    """Read station-level metadata from NetCDF global attributes."""
     if not HAS_NC:
         return {
             "station_name": "",
@@ -302,7 +258,7 @@ def _get_nc_text(nc, name):
 
 
 def get_observation_type_from_nc(path):
-    """从 NC 全局属性 observation_type 读取观测类型；缺失或读取失败返回空字符串。"""
+    """Read observation_type from NetCDF global attributes, returning an empty string if unavailable."""
     if not HAS_NC:
         return ""
     try:
@@ -341,7 +297,7 @@ def get_reach_hints_from_nc(path):
 
 
 def get_resolution_from_path(path, root_dir):
-    """从路径第一级目录解析时间分辨率。"""
+    """Parse temporal resolution from the first path component."""
     try:
         rel = Path(path).relative_to(Path(root_dir))
         parts = rel.parts
@@ -356,7 +312,7 @@ def get_resolution_from_path(path, root_dir):
 
 
 def get_source_from_path(path, root_dir):
-    """从相对路径解析数据源名，如 daily/GloRiSe/SS/qc/xxx.nc -> GloRiSe_SS。"""
+    """Parse a source name from a relative path such as daily/GloRiSe/SS/qc/file.nc."""
     try:
         rel = Path(path).relative_to(Path(root_dir))
         parts = rel.parts
@@ -375,7 +331,7 @@ def get_source_from_path(path, root_dir):
 
 
 def get_source_from_organized_path(path, root_dir):
-    """从 s2 重组目录下的文件名解析数据源。文件名格式：{source}_{resolution}_{stem}.nc。"""
+    """Parse a source name from an s2-organized filename."""
     try:
         rel = Path(path).relative_to(Path(root_dir))
         parts = rel.parts
@@ -416,10 +372,7 @@ def split_source_selectors(values):
 
 
 def _collect_one_nc(path, root_dir):
-    """Worker: 读单个 nc 的 path/source/lat/lon/resolution/observation_type；source 从 s2 重组文件名解析。
-    path 列存储相对于 root_dir（output_resolution_organized/）的相对路径，
-    便于跨机器迁移时无需修改 CSV。
-    """
+    """Read one NetCDF file and return station path, source, coordinates, resolution, and metadata."""
     try:
         lat, lon = get_lat_lon_from_nc(path)
         if lat is None or lon is None:
@@ -434,7 +387,6 @@ def _collect_one_nc(path, root_dir):
         # not by source/NHDPlus upstream-area values.
         if source.strip().lower() in _REACH_HINT_SOURCES:
             reported_area = None
-        # 存相对路径，跨平台可移植
         rel_path = Path(path).relative_to(root_dir).as_posix()
         return {
             "path": rel_path,
@@ -459,7 +411,7 @@ ORGANIZED_DIR = S2_ORGANIZED_DIR
 
 
 def collect_qc_nc_stations(root_dir, workers=1, excluded_resolutions=None, excluded_sources=None):
-    """收集 root/{S2_ORGANIZED_DIR} 下全部 .nc 文件。"""
+    """Collect all NetCDF files under root/S2_ORGANIZED_DIR."""
     root = Path(root_dir).resolve()
     scan_root = root / ORGANIZED_DIR
     excluded = {str(x).strip().lower() for x in (excluded_resolutions or []) if str(x).strip()}
@@ -553,24 +505,23 @@ def _enable_script_logging():
 
 def main():
     _enable_script_logging()
-    # 默认根目录为脚本所在目录的上一级（Output_r），便于在 scripts 下直接运行
     _default_root = str(get_output_r_root(Path(__file__).resolve().parent))
-    ap = argparse.ArgumentParser(description="步骤 s3：收集 nc 站点 (path, source, lat, lon, resolution, observation_type) 输出 s3_collected_stations.csv")
-    ap.add_argument("--root", default=_default_root, help="根目录，默认脚本所在目录的上一级 (Output_r)")
-    ap.add_argument("--out", default=S3_COLLECTED_CSV, help="步骤 s3 输出 CSV 路径")
+    ap = argparse.ArgumentParser(description="Step s3: collect NetCDF stations (path, source, lat, lon, resolution, observation_type) into s3_collected_stations.csv")
+    ap.add_argument("--root", default=_default_root, help="Root directory; default is the parent of this script directory (Output_r)")
+    ap.add_argument("--out", default=S3_COLLECTED_CSV, help="Step s3 output CSV path")
     ap.add_argument("--workers", "-j", type=int, default=0,
                     help="Parallel workers; 0=auto (cpu_count-1, max 32)")
     ap.add_argument(
         "--exclude-resolutions",
         default="climatology",
-        help="逗号分隔的分辨率目录名，默认排除 climatology，使其不进入 basin 主线",
+        help="Comma-separated resolution directory names to exclude; default excludes climatology from the basin pipeline",
     )
     ap.add_argument(
         "--exclude-source",
         "--exclude-sources",
         nargs="+",
         default=[],
-        help="排除指定 source，可传多个，也支持逗号分隔；例如 Huanghe 或 GloRiSe/SS",
+        help="Exclude selected sources; accepts multiple values and comma-separated lists, for example Huanghe or GloRiSe/SS",
     )
     args = ap.parse_args()
 

@@ -77,54 +77,53 @@ UNITCAT_GRAIN_VARS = {
 #  Edit these values before running.
 # 
 
-# --- 模型 NetCDF ---
+# Model NetCDF
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
-DEFAULT_MODEL_NC = os.environ.get("MODEL_NC", "/path/to/model.nc")  # 模型 NetCDF 文件路径（必填）
-DEFAULT_MODEL_NC_PATTERN = "*_hist_unitcat_*.nc"        # 模型 NC 文件 glob 匹配模式
-DEFAULT_MODEL_TIME_NAME = "time"                # 模型时间坐标名
-DEFAULT_MODEL_LAT_NAME = "lat_ucat"                  # 模型纬度变量/坐标名
-DEFAULT_MODEL_LON_NAME = "lon_ucat"                  # 模型经度变量/坐标名
+DEFAULT_MODEL_NC = os.environ.get("MODEL_NC", "/path/to/model.nc")  # Model NetCDF
+DEFAULT_MODEL_NC_PATTERN = "*_hist_unitcat_*.nc"
+DEFAULT_MODEL_TIME_NAME = "time"
+DEFAULT_MODEL_LAT_NAME = "lat_ucat"
+DEFAULT_MODEL_LON_NAME = "lon_ucat"
 
-# --- 模型变量名（至少提供一个） ---
-DEFAULT_MODEL_Q_VAR = "f_discharge"                        # 模型径流 Q 变量名
-DEFAULT_MODEL_SSC_VAR = "f_sedcon"              # 模型悬沙浓度 SSC 变量名
-DEFAULT_MODEL_SSL_VAR = "f_sedout"              # 模型悬沙输沙率 SSL 变量名
+# Model variable names
+DEFAULT_MODEL_Q_VAR = "f_discharge"
+DEFAULT_MODEL_SSC_VAR = "f_sedcon"
+DEFAULT_MODEL_SSL_VAR = "f_sedout"
 
-# --- 单位转换因子（乘数，将模型值转换到标准单位） ---
+# Unit conversion factors
 DEFAULT_MODEL_Q_FACTOR = 1.0                    # → m³/s
 DEFAULT_MODEL_SSC_FACTOR = 2650000.0            # → mg/L
 DEFAULT_MODEL_SSL_FACTOR = 228960.0             # → ton/day
 
-# --- 参考数据 ---
+# Reference data
 DEFAULT_REFERENCE_DIR = str(PROJECT_DIR / "output" / "sed_reference_release")
-DEFAULT_RESOLUTION = "daily"                    # 参考时间分辨率：daily / monthly / annual
-DEFAULT_ALLOWED_FLAGS = "0,1,2"                 # 保留的参考数据质量标记（逗号分隔）
+DEFAULT_RESOLUTION = "daily"
+DEFAULT_ALLOWED_FLAGS = "0,1,2"                 # Reference data
 
-# --- 筛选控制 ---
-DEFAULT_MIN_REFERENCE_POINTS = 10               # 每变量最少有效参考数据点数
-DEFAULT_MIN_PAIRED_POINTS = 10                  # 每指标最少模型-参考匹配数据点数
-DEFAULT_MAX_GRID_DISTANCE_KM = 50.0             # 站点到模型网格单元最大距离（km）
+# Filtering controls
+DEFAULT_MIN_REFERENCE_POINTS = 10               # Reference data
+DEFAULT_MIN_PAIRED_POINTS = 10
+DEFAULT_MAX_GRID_DISTANCE_KM = 50.0
 
-# --- 空间区域筛选（可选；留空不限） ---
-DEFAULT_REGION_LAT_MIN = -20                    # 最小纬度（如 -30.0）
-DEFAULT_REGION_LAT_MAX = 5                    # 最大纬度（如 -10.0）
-DEFAULT_REGION_LON_MIN = -80                    # 最小经度（如 -60.0）
-DEFAULT_REGION_LON_MAX = -45                    # 最大经度（如 -40.0）
+# Optional spatial-region filter
+DEFAULT_REGION_LAT_MIN = -20
+DEFAULT_REGION_LAT_MAX = 5
+DEFAULT_REGION_LON_MIN = -80
+DEFAULT_REGION_LON_MAX = -45
 
-# --- 时间窗口 ---
-DEFAULT_START_DATE = "1995-01-01"               # 验证起始日期（空 = 不限制）
-DEFAULT_END_DATE = "1999-09-30"                 # 验证截止日期（空 = 不限制）
+DEFAULT_START_DATE = "1995-01-01"
+DEFAULT_END_DATE = "1999-09-30"
 
-# --- 其他 ---
-DEFAULT_OUTPUT_DIR = str(PROJECT_DIR / "output_other" / "validate_model_with_sed_reference")  # 输出目录路径（必填）
-DEFAULT_MAX_STATIONS = 0                        # 最大处理站数（0 = 不限制）
-DEFAULT_MAKE_PLOTS = True                      # 是否输出逐对比 PNG 图
-DEFAULT_PLOT_ONLY = False                     # 仅重绘出图，跳过计算
-DEFAULT_MAP_ONLY = True                     # 仅绘制概览图和空间分布图，跳过站点验证计算
-DEFAULT_NUM_WORKERS = 8                        # 并行进程数（0 = 自动选 CPU 核心数的一半）
+# Other settings
+DEFAULT_OUTPUT_DIR = str(PROJECT_DIR / "output_other" / "validate_model_with_sed_reference")
+DEFAULT_MAX_STATIONS = 0
+DEFAULT_MAKE_PLOTS = True
+DEFAULT_PLOT_ONLY = False
+DEFAULT_MAP_ONLY = True
+DEFAULT_NUM_WORKERS = 8
 
-DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1")  # MERIT Hydro 河网数据目录（区域图使用）
+DEFAULT_MERIT_HYDRO_DIR = os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1")
 
 
 def parse_allowed_flags(text: str) -> Tuple[int, ...]:
@@ -1249,7 +1248,7 @@ def main() -> None:
     }                                              
     # 
 
-    #  基本校验 
+    # Basic validation
     if not cfg["model_nc"]:
         raise ValueError("DEFAULT_MODEL_NC must be set.")
     if not cfg["reference_dir"]:
@@ -1328,7 +1327,7 @@ def main() -> None:
             candidate_rows.append(base)
             continue
 
-        # --- 用户自定义区域筛选 ---
+        # User-defined region filter
         region_lat_min = cfg.get("region_lat_min")
         region_lat_max = cfg.get("region_lat_max")
         region_lon_min = cfg.get("region_lon_min")

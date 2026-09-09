@@ -512,8 +512,8 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
             # Scientific notation for first row axes
             if row_idx == 0:
                 ax.ticklabel_format(style='scientific', scilimits=(0, 0), axis='both')
-                ax.yaxis.get_offset_text().set_position((-0.14, 1.02))   # 调整 y轴 1e4 的位置
-                ax.xaxis.get_offset_text().set_position((1.11,0))    # 调整 x轴 1e4 的位置
+                ax.yaxis.get_offset_text().set_position((-0.14, 1.02))
+                ax.xaxis.get_offset_text().set_position((1.11,0))
                 
 
             # panel label (a)-(l)

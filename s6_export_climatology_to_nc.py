@@ -671,7 +671,7 @@ def main():
     print("Wrote climatology NC: {}".format(output_path))
     print("Stations: {}  Records: {}".format(n_stations, len(time_arr)))
 
-    # ── 输出点 SHP ───────────────────────────────────────────────────────────
+    # Export point shapefile
     try:
         import geopandas as gpd
         from shapely.geometry import Point

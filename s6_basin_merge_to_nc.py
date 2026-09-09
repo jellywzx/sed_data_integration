@@ -1,50 +1,5 @@
 #!/usr/bin/env python3
-"""
-s6（流域版）：将 s5_basin_clustered_stations.csv 中各 cluster 的时间序列合并为单个 NetCDF。
-
-基于 s8_merge_qc_csv_to_one_nc.py 改写，直接从 s5 basin 输出读取站点列表，
-无需 s6 报告或 s7 重叠解析。
-
-合并规则：
-  - 同一 cluster_id 的多个站点视为同一虚拟站点；
-  - 同一 (cluster_id, resolution) 下若有多个文件，按质量分数优先选择；
-  - cluster 层与 source-station 层同时保留，避免合并后丢失原始站点信息。
-
-输入：
-  - scripts_basin_test/output/s5_basin_clustered_stations.csv（s5 输出）
-
-当前默认规则：
-  - climatology 不进入 basin 主线；
-  - 若输入 s5 中仍混入 climatology 行，本脚本默认会将其过滤掉；
-  - climatology 应通过独立脚本单独导出为 climatology NC。
-  - satellite / validation-only 数据不进入 basin 主线；
-  - 为避免 satellite 大文件拖慢主 merge，本脚本默认会在读取任何 NetCDF metadata
-    或时间序列之前，先从 s5 表中过滤掉 source_family == satellite 的行；
-  - 如确实需要将 satellite 混入主库，可显式使用 `--include-satellite-in-main-merge`
-    关闭这个预过滤，并允许 satellite 参与主合并。
-  - 默认会校验输入 Q/SSC/SSL 的 units；若缺失或不在白名单中会记 warning，
-    `--strict-units` 下则直接报错停止写出。
-
-输出：
-  - scripts_basin_test/output/s6_basin_merged_all.nc
-  - scripts_basin_test/output/s6_cluster_quality_order.csv
-
-NetCDF 结构：
-  n_stations   维度：唯一 cluster 数（按 cluster_id 排序后的 0-based 索引）
-  n_source_stations 维度：原始站点映射表（一个 cluster 下可有多个 source station）
-  n_records    维度：所有 (cluster, resolution) 时间序列的总记录数
-  lat, lon     代表站点经纬度（station_id == cluster_id 的行）
-  cluster_id   n_stations 维度查找表（第 i 位 = 第 i 个虚拟站点的原始 cluster_id）
-  station_index  0-based 索引（指向 n_stations 维度）
-  source_station_index n_records 维度查找表（指向 n_source_stations）
-  time         days since 1970-01-01
-  resolution   0=daily, 1=monthly, 2=annual, 3=climatology, 4=other
-  Q, SSC, SSL  径流量、悬沙浓度、悬沙通量
-
-用法：
-  python s6_basin_merge_to_nc.py
-  python s6_basin_merge_to_nc.py --input /path/to/s5.csv --output /path/to/out.nc --workers 16
-"""
+"""Merge time series from s5 basin clusters into one NetCDF product."""
 
 import os
 import argparse
@@ -138,7 +93,6 @@ _DEFAULT_QUALITY_ORDER = PROJECT_ROOT / S6_QUALITY_ORDER_CSV
 _DEFAULT_WORKERS = 0
 _DEFAULT_METADATA_WORKERS = 0
 
-# output_resolution_organized/ 根目录，用于将 s3 CSV 中的相对路径还原为绝对路径
 _ORGANIZED_ROOT = (PROJECT_ROOT / S2_ORGANIZED_DIR).resolve()
 
 FILL = -9999.0
@@ -149,8 +103,8 @@ SSL_NAMES     = SSL_VAR_NAMES
 Q_FLAG_NAMES  = FINAL_Q_FLAG_NAMES
 SSC_FLAG_NAMES= FINAL_SSC_FLAG_NAMES
 SSL_FLAG_NAMES= FINAL_SSL_FLAG_NAMES
-FLAG_GOOD     = 0    # flag==0 表示好数据
-FLAG_FILL_BYTE= -127 # NC 中 byte flag 的 _FillValue
+FLAG_GOOD     = 0
+FLAG_FILL_BYTE= -127
 RESOLUTION_CODES = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4}
 STRICT_UNIT_CHECK = False
 UNIT_SUMMARY_MAX_EXAMPLES = 12
@@ -205,10 +159,9 @@ class UnitValidationError(ValueError):
         super(UnitValidationError, self).__init__(message)
 
 
-# ── 内存工具 ───────────────────────────────────────────────────────────────
 _PROC = psutil.Process()
 def _mem_mb() -> float:
-    """返回当前进程 RSS 内存（MB）。"""
+    """Return RSS memory for the current process in MB."""
     return _PROC.memory_info().rss / 1024 / 1024
 
 
@@ -221,15 +174,14 @@ def _mem_available_gb() -> float:
 
 
 def _check_memory(stage: str, warn_gb: float = 1.0):
-    """在关键步骤打印内存状态，可用内存低于 warn_gb 时发出警告。"""
+    """Print memory status at key stages and warn when available memory is low."""
     avail = _mem_available_gb()
-    msg = "[{}] 进程内存: {}  系统可用: {:.1f} GB".format(stage, _mem_str(), avail)
+    msg = "[{}] process memory: {}  system available: {:.1f} GB".format(stage, _mem_str(), avail)
     print(msg)
     if avail < warn_gb:
-        print("  !! 警告：系统可用内存不足 {:.1f} GB，可能引发 OOM".format(warn_gb))
+        print("  !! Warning: available system memory is below {:.1f} GB, which may cause OOM".format(warn_gb))
 
 
-# ── 日志 tee（仅 stdout，避免污染 tqdm 的 stderr 输出）──────────────────────
 _LOG_TEE_ENABLED = False
 
 
@@ -283,9 +235,7 @@ def _enable_script_logging():
 
 
 def _read_station_meta_from_nc(path):
-    """从单个 NC 文件的全局属性读取站点名/河流名/原始站点ID。
-    找不到对应属性时返回空字符串；任何异常都静默处理。
-    """
+    """Read station name, river name, and native station ID from NetCDF global attributes."""
     try:
         with nc4.Dataset(path, "r") as ds:
             meta = read_station_metadata(ds)
@@ -299,9 +249,7 @@ def _read_station_meta_from_nc(path):
 
 
 def _read_source_meta_from_nc(path):
-    """从 NC 文件全局属性读取数据集级元数据：长名、机构、引用文献、数据链接。
-    所有 reference* 属性均被合并（" | " 分隔）；找不到则返回空字符串。
-    """
+    """Read dataset-level metadata from NetCDF global attributes."""
     try:
         with nc4.Dataset(path, "r") as ds:
             meta = read_source_metadata(ds)
@@ -564,11 +512,7 @@ def _summarize_unit_issues(unit_issues, strict_mode=False, label="Unit validatio
 
 
 def _build_source_station_key(row):
-    """为原始站点构建稳定键。
-
-    优先使用 source + source_station_id / station_name / river_name / 坐标；
-    若这些都缺失，则回退到文件名，避免把同源同坐标但无法识别的不同文件错误合并。
-    """
+    """Build a stable key for a source station from source metadata and coordinates."""
     source = _clean_text(row.get("source"))
     cluster_id = _clean_text(row.get("cluster_id"))
     native_id = _clean_text(row.get("source_station_id"))
@@ -582,7 +526,6 @@ def _build_source_station_key(row):
     return key + (Path(str(row.get("path", ""))).name,)
 
 
-# ── NC 读取 ────────────────────────────────────────────────────────────────
 def _get_var(ds, names, default=np.nan):
     for n in names:
         if n in ds.variables:
@@ -591,13 +534,12 @@ def _get_var(ds, names, default=np.nan):
 
 
 def _read_flag_var(nc, names, size):
-    """读取 flag 变量，返回 int8 数组；找不到则返回全 9（missing）。"""
+    """Read a flag variable as int8, returning all 9 values when missing."""
     for n in names:
         if n in nc.variables:
             raw = np.asarray(nc.variables[n][:]).flatten()
             raw = raw[:size] if len(raw) >= size else np.concatenate(
                 [raw, np.full(size - len(raw), FLAG_FILL_BYTE, dtype=np.int8)])
-            # 将 fill_value (-127) 替换为 9（逻辑 missing）
             result = raw.astype(np.int16)
             result[result == FLAG_FILL_BYTE] = 9
             return result.astype(np.int8)
@@ -605,9 +547,7 @@ def _read_flag_var(nc, names, size):
 
 
 def compute_quality_score(df):
-    """计算 DataFrame 的质量分数：flag==0（好数据）占所有有效 flag 的比例。
-    有效 flag 定义为值在 {0,1,2,3} 内（不含 9/missing）。
-    """
+    """Compute a quality score from the share of valid flags with value 0."""
     return compute_quality_metrics(df)["quality_score"]
 
 
@@ -685,7 +625,7 @@ def _write_quality_order_csv(rows, out_path, cluster_to_idx, source_station_uids
 
 
 def load_nc_series(path):
-    """从 NC 读取时间序列，返回 DataFrame：date, Q, SSC, SSL, Q_flag, SSC_flag, SSL_flag。"""
+    """Read a NetCDF time series into columns date, Q, SSC, SSL, and flags."""
     if not HAS_NC:
         return None, []
     try:
@@ -780,22 +720,8 @@ def load_nc_series(path):
         return None, []
 
 
-# ── 时间序列构建（worker 函数，运行在子进程）─────────────────────────────────
 def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=False):
-    """
-    为单个 (cluster_id, resolution) 构建合并时间序列。
-    recs: list of (source, observation_type, path, source_station_index)
-
-    合并规则（相同分辨率内）：
-      - 按文件整体质量分数（flag==0 好数据占比）从高到低排序；
-      - 对每个时间点，优先使用质量最高的文件数据；
-      - 若最高质量文件在该时间点无数据，则依次尝试次优文件。
-
-    返回 (dates_arr, q_arr, ssc_arr, ssl_arr,
-           q_flag_arr, ssc_flag_arr, ssl_flag_arr, is_overlap_arr,
-           source_arr, source_station_idx_arr, quality_rows, quality_log)
-    或 None。
-    """
+    """Build a merged time series for one (cluster_id, resolution) group."""
     scored = []   # list of metadata dict with df
     unit_issues = []
     for source, observation_type, path, source_station_index in recs:
@@ -851,7 +777,6 @@ def build_cluster_series(cid, resolution, recs, include_satellite_in_main_merge=
     if not scored:
         return (None, unit_issues)
 
-    # 按质量分数降序排列（相同分辨率时，好数据比例高的优先）
     scored.sort(key=lambda item: item["quality_score"], reverse=True)
     quality_log = None
     quality_rows = []
@@ -1058,40 +983,40 @@ def main():
     _enable_script_logging()
 
     ap = argparse.ArgumentParser(
-        description="s6：将 s5_basin_clustered_stations.csv 合并为单 NC"
+        description="s6: merge s5_basin_clustered_stations.csv into one NetCDF file"
     )
     ap.add_argument("--input",  "-i", default=str(_DEFAULT_INPUT),
-                    help="s5_basin_clustered_stations.csv 路径。默认: {}".format(_DEFAULT_INPUT))
+                    help="Path to s5_basin_clustered_stations.csv. Default: {}".format(_DEFAULT_INPUT))
     ap.add_argument("--output", "-o", default=str(_DEFAULT_OUTPUT),
-                    help="输出 NC 路径。默认: {}".format(_DEFAULT_OUTPUT))
+                    help="Output NetCDF path. Default: {}".format(_DEFAULT_OUTPUT))
     ap.add_argument(
         "--quality-order-csv",
         default=str(_DEFAULT_QUALITY_ORDER),
-        help="输出每个 cluster/resolution 候选质量排序表。默认: {}".format(_DEFAULT_QUALITY_ORDER),
+        help="Output candidate quality-order table for each cluster/resolution. Default: {}".format(_DEFAULT_QUALITY_ORDER),
     )
     ap.add_argument("--workers", "-w", type=int, default=_DEFAULT_WORKERS,
-                    help="并行进程数（0 = 自动取 CPU 核数）。默认: {}".format(_DEFAULT_WORKERS))
+                    help="Parallel process count (0 = choose CPU count automatically). Default: {}".format(_DEFAULT_WORKERS))
     ap.add_argument(
         "--metadata-workers",
         type=int,
         default=_DEFAULT_METADATA_WORKERS,
-        help="并行读取 source-station explanatory metadata 的进程数。默认: {}；0 = 自动。".format(_DEFAULT_METADATA_WORKERS)
+        help="Process count for reading source-station explanatory metadata in parallel. Default: {}; 0 = automatic.".format(_DEFAULT_METADATA_WORKERS)
     )
 
     ap.add_argument(
         "--include-climatology",
         action="store_true",
-        help="默认会过滤掉 climatology 行；如确实需要将 climatology 混入主库，可显式开启此选项",
+        help="Climatology rows are filtered by default; enable this option only if climatology should enter the main product.",
     )
     ap.add_argument(
         "--strict-units",
         action="store_true",
-        help="对输入 Q/SSC/SSL units 启用严格校验；若缺失或不在白名单中则直接失败并停止写出。",
+        help="Enable strict validation for input Q/SSC/SSL units; fail without writing if units are missing or not allow-listed.",
     )
     ap.add_argument(
         "--include-satellite-in-main-merge",
         action="store_true",
-        help="可选覆盖：默认主合并排除 satellite source_family；开启后允许 satellite 参与主合并。",
+        help="Optional override: the main merge excludes satellite source_family by default; enabling this lets satellite rows enter the main merge.",
     )
     add_geo_boundary_args(ap)
     args = ap.parse_args()
@@ -1112,19 +1037,18 @@ def main():
         return 1
 
     t0 = datetime.now()
-    _check_memory("启动")
+    _check_memory("startup")
 
-    # ── 1. 读取 s5 站点表 ─────────────────────────────────────────────────
     stations = pd.read_csv(inp_path)
     for col in ["path", "source", "lat", "lon", "cluster_id", "station_id", "resolution"]:
         if col not in stations.columns:
-            print("Error: s5 CSV 缺少列 '{}'".format(col))
+            print("Error: s5 CSV is missing column '{}'".format(col))
             return 1
 
     if "observation_type" not in stations.columns:
         print(
-            "Error: s5 CSV 缺少列 'observation_type'. "
-            "请先重新运行 s3_collect_qc_stations.py 和后续 s4/s5，确认每个 NC 全局属性 observation_type 已写入。"
+            "Error: s5 CSV is missing column 'observation_type'. "
+            "Rerun s3_collect_qc_stations.py and the subsequent s4/s5 steps, and confirm that observation_type is written to every NetCDF global attribute."
         )
         return 1
 
@@ -1135,7 +1059,7 @@ def main():
     n_missing_observation_type = int(missing_observation_type.sum())
     if n_missing_observation_type > 0:
         print(
-            "Error: s5 CSV 中有 {} 行 observation_type 为空；s6 不再回退到 source 名称判断 source_family。".format(
+            "Error: s5 CSV has {} rows with empty observation_type; s6 no longer falls back to source names for source_family.".format(
                 n_missing_observation_type
             )
         )
@@ -1145,7 +1069,7 @@ def main():
             if c in stations.columns
         ]
         if sample_cols:
-            print("请检查以下样例行，并回到对应 NC 全局属性补充 observation_type：")
+            print("Inspect the sample rows below and add observation_type to the corresponding NetCDF global attributes:")
             print(
                 stations.loc[missing_observation_type, sample_cols]
                 .head(20)
@@ -1165,20 +1089,9 @@ def main():
             print("Error: no non-climatology rows remain after filtering.")
             return 1
 
-    # ── 1b. 主 merge 预过滤 satellite / validation-only 数据 ───────────────
     #
-    # 注意：原来的主 merge 逻辑已经会在 build_cluster_series() 中排除 satellite，
-    # 但那个排除发生得太晚：每个 satellite NC 文件已经被打开、读取时间序列、
-    # 计算 quality score 之后才被标记为 validation_only。
     #
-    # satellite 数据量很大时，会显著拖慢以下步骤：
-    #   - representative station metadata 读取；
-    #   - source-station explanatory metadata 读取；
-    #   - ProcessPoolExecutor 并行读取 NC series；
-    #   - quality-order 候选排序。
     #
-    # 因此默认在 path resolution 和任何 NetCDF 读取之前就过滤掉 satellite 行。
-    # 若确实需要 satellite 进入主 merge，可显式传：
     #   --include-satellite-in-main-merge
     if not args.include_satellite_in_main_merge:
         source_family = stations.apply(
@@ -1236,16 +1149,12 @@ def main():
             "Satellite pre-filter disabled because --include-satellite-in-main-merge was set."
         )
 
-    # ── 相对路径 → 绝对路径 ───────────────────────────────────────────────────
-    # s3 存储相对于 output_resolution_organized/ 的相对路径（如 daily/xxx.nc）
-    # 若 CSV 中仍为旧机器绝对路径（含 /），则保持不变
     def _resolve_station_path(p):
         path = Path(p)
         if not path.is_absolute():
             return str(_ORGANIZED_ROOT / path)
         if path.is_file():
             return str(path)
-        # 绝对路径不存在（跨机器迁移）：从路径中提取 output_resolution_organized/ 之后的相对部分
         try:
             parts = path.resolve().parts
             marker = "output_resolution_organized"
@@ -1257,16 +1166,14 @@ def main():
                         return str(candidate)
         except Exception:
             pass
-        return str(path)  # fallback（文件不存在时返回原路径，由调用方处理）
+        return str(path)
 
-    # 始终尝试路径解析（处理相对路径 + 跨机器迁移的旧绝对路径）
     stations["path"] = stations["path"].apply(_resolve_station_path)
     n_exist = int(stations["path"].apply(lambda p: Path(p).is_file()).sum())
     print("Path resolution: {}/{} files found under {}".format(
         n_exist, len(stations), _ORGANIZED_ROOT))
-    _check_memory("读取CSV后")
+    _check_memory("after reading CSV")
 
-    # ── 2. 构建 cluster 元数据（代表站点的经纬度）────────────────────────
     rep = (
         stations[stations["station_id"] == stations["cluster_id"]]
         .drop_duplicates(subset=["cluster_id"])
@@ -1278,7 +1185,6 @@ def main():
     cluster_uids    = ["SED{:06d}".format(int(cid)) for cid in all_cluster_ids]
     print("Unique clusters: {}".format(n_stations))
 
-    # 每个 cluster 所涉及的数据源列表（管道分隔，写入 n_stations 变量）
     cluster_sources_used = [""] * n_stations
     for cid, idx in cluster_to_idx.items():
         srcs = sorted(stations[stations["cluster_id"] == cid]["source"].unique())
@@ -1295,7 +1201,6 @@ def main():
             lats[idx] = float(grp["lat"].mean())
             lons[idx] = float(grp["lon"].mean())
 
-    # ── 2b. 提取流域元数据（每个 cluster 代表站点的 basin 属性）────────────
     basin_areas       = np.full(n_stations, FILL,  dtype=np.float32)
     pfaf_codes        = np.full(n_stations, FILL,  dtype=np.float32)
     n_reaches_arr     = np.full(n_stations, -9999, dtype=np.int32)
@@ -1326,10 +1231,8 @@ def main():
             basin_status_arr[idx] = basin_status
             basin_flag_arr[idx] = basin_flag
 
-    # ── 2c. 串行读取代表站点 NC 的全局属性（station_name / river_name / source_station_id）
     # Note: HDF5 is not thread-safe; do NOT use ThreadPoolExecutor here.
 
-    # 构建 cid → 代表站点绝对路径映射
     _rep_paths = {}
     for cid in all_cluster_ids:
         if cid in rep.index:
@@ -1358,13 +1261,11 @@ def main():
         sum(1 for s in source_station_ids if s),
     ))
 
-    # ── 2d. 收集数据集级元数据（机构、引用、URL），写入 n_sources 查找表 ──────────
     unique_sources  = sorted(stations["source"].unique().tolist())
     n_src           = len(unique_sources)
     source_to_idx   = {s: i for i, s in enumerate(unique_sources)}
     print("Unique source datasets: {}".format(n_src))
 
-    # 每个数据源取第一个文件作为代表
     src_rep_paths = {}
     for src in unique_sources:
         sub = stations[stations["source"] == src]
@@ -1382,7 +1283,7 @@ def main():
     for src, path in src_rep_paths.items():
         lname, inst, ref, url = _read_source_meta_from_nc(path)
         _sidx = source_to_idx[src]
-        src_long_names[_sidx]   = lname if lname else src  # 无长名则用短名回退
+        src_long_names[_sidx]   = lname if lname else src
         src_institutions[_sidx] = inst
         src_references[_sidx]   = ref
         src_urls[_sidx]         = url
@@ -1393,7 +1294,6 @@ def main():
         sum(1 for s in src_urls        if s), n_src,
     ))
 
-    # ── 2e. 构建完整的 source-station 映射表（同一 cluster 下可保留多个原始站点）────
     for col in ("station_name", "river_name", "source_station_id"):
         if col not in stations.columns:
             stations[col] = ""
@@ -1404,7 +1304,6 @@ def main():
     row_source_station_index = []
     explanatory_meta_cache = {}
 
-    # ── 并行预读取每个唯一 NetCDF 的 explanatory metadata ─────────────────────
     if getattr(args, "skip_source_station_text_metadata", False):
         print("Skipping source-station explanatory metadata reading.")
     else:
@@ -1583,7 +1482,6 @@ def main():
         n_source_stations, n_stations
     ))
 
-    # ── 3. 按 (cluster_id, resolution) 分组 ── 用 groupby，避免 iterrows ──
     by_cluster_res = defaultdict(list)
     for (cid, res), grp in stations.groupby(["cluster_id", "resolution"], sort=False):
         by_cluster_res[(int(cid), str(res))] = list(
@@ -1601,12 +1499,10 @@ def main():
 
     print("Tasks: {}  Workers: {}  Mode: {}".format(
         n_tasks, n_workers, "parallel" if use_parallel else "serial"))
-    _check_memory("准备任务后")
+    _check_memory("after preparing tasks")
 
-    # ── 4+5. 并行读取 NC + 实时展平为 numpy 数组（边完成边处理）─────────────
     ref = pd.Timestamp("1970-01-01")
 
-    # 用 list of arrays 累积，最后 np.concatenate —— 避免 Python list .extend
     parts_idx      = []  # list of int32 arrays
     parts_time     = []  # list of float64 arrays
     parts_res      = []  # list of int8 arrays
@@ -1626,14 +1522,13 @@ def main():
     n_done     = 0
 
     def _flush_result(pbar, cid, resolution, res, quality_rows, quality_log, unit_issues):
-        """将单个任务结果展平并追加到 parts_* 列表，同时更新进度条。"""
+        """Flatten one worker result into the output array parts and update progress."""
         nonlocal n_empty, n_done
         n_done += 1
         if quality_rows:
             quality_order_rows.extend(quality_rows)
         if unit_issues:
             unit_issue_rows.extend(unit_issues)
-        # 质量排序日志通过 tqdm.write 输出，不破坏进度条
         if quality_log:
             tqdm.write(quality_log)
         if res is None:
@@ -1711,7 +1606,7 @@ def main():
 
     n_series = n_done - n_empty
     print("Series: {}/{} non-empty  ({} empty/missing)".format(n_series, n_tasks, n_empty))
-    _check_memory("时间序列读取完成后")
+    _check_memory("after time-series reads")
 
     _summarize_unit_issues(
         unit_issue_rows,
@@ -1734,7 +1629,6 @@ def main():
         quality_order_path, quality_row_count
     ))
 
-    # ── 5b. 合并 parts → 最终数组 ────────────────────────────────────────
     if not parts_time:
         print("Error: no records collected. Check NC file paths.")
         return 1
@@ -1861,7 +1755,6 @@ def main():
                     _f.write("source_station_uid,{}\n".format(_old_source_uids[_oi]))
         print("Trimmed inactive entries written to {}".format(_trim_path))
 
-    # 释放 parts 列表
     del (parts_idx, parts_time, parts_res, parts_q, parts_ssc, parts_ssl,
          parts_qflag, parts_sscflag, parts_sslflag, parts_overlap, parts_source,
          parts_source_station_idx)
@@ -1875,9 +1768,8 @@ def main():
             )
         )
         return 1
-    _check_memory("数组合并后")
+    _check_memory("after array merge")
 
-    # ── 6. 写 NC ──────────────────────────────────────────────────────────
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print("Writing {} (n_stations={}, n_records={:,}) ...".format(
         out_path, n_stations, n_records))
@@ -1993,7 +1885,6 @@ def main():
             subject="merged cluster station",
         )
 
-        # ── n_source_stations 查找表（原始站点完整映射）───────────────────────
         ss_uid_v = nc.createVariable("source_station_uid", str, ("n_source_stations",))
         ss_uid_v.long_name = "stable source-station identifier used inside the merged reference dataset"
         ss_uid_v.comment = "format: SRC + 6-digit index; use source_station_index in n_records to join"
@@ -2092,7 +1983,6 @@ def main():
             subject="source station",
         )
 
-        # ── n_sources 查找表（每个数据集一行，供引用/机构信息查询）──────────────
         sn_lk = nc.createVariable("source_name", str, ("n_sources",))
         sn_lk.long_name = "short dataset identifier (matches 'source' variable in n_records and 'sources_used' in n_stations)"
         sn_lk[:]        = np.array(unique_sources, dtype=object)
@@ -2244,7 +2134,7 @@ def main():
     apply_cf18_metadata(out_path, "master")
 
     elapsed = (datetime.now() - t0).total_seconds()
-    _check_memory("写入NC后")
+    _check_memory("after writing NetCDF")
     print("Wrote {} in {:.1f}s".format(out_path, elapsed))
     return 0
 

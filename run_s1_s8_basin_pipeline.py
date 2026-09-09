@@ -1021,13 +1021,10 @@ def _confirm_config(args, stages, python_bin):
     if args.s4_array_size != 16:
         s4_env["S4_ARRAY_SIZE"] = str(args.s4_array_size)
 
-    # ── 读取仅能通过 export 设置的环境变量 ──
     def _env(name, default=""):
         return os.environ.get(name, default)
 
-    # s6 任务筛选
     s6_run_only = _env("RUN_ONLY")
-    # LSF 队列设置
     s4_queue = _env("S4_QUEUE", "normal")
     s4_ncores = _env("S4_NCORES", "24")
     s4_mem = _env("S4_MEM", "120G")
@@ -1037,13 +1034,11 @@ def _confirm_config(args, stages, python_bin):
     lsf_project = _env("LSF_PROJECT")
     lsf_extra = _env("LSF_EXTRA")
     job_tag = _env("JOB_TAG", "s6fast")
-    # s6 各子步骤 worker 数
     merge_workers = _env("MERGE_WORKERS", "40")
     merge_metadata_workers = _env("MERGE_METADATA_WORKERS", "32")
     da_workers = _env("DAILY_WORKERS", "40")
     mo_workers = _env("MONTHLY_WORKERS", "20")
     an_workers = _env("ANNUAL_WORKERS", "4")
-    # s6 各子步骤 LSF 资源
     merge_n = _env("MERGE_N", "48")
     merge_mem = _env("MERGE_MEM_MB", "240000")
     clim_n = _env("CLIM_N", "4")
@@ -1053,7 +1048,6 @@ def _confirm_config(args, stages, python_bin):
     satval_n = _env("SATVAL_N", "24")
     satval_mem = _env("SATVAL_MEM_MB", "64000")
 
-    # ── CLI 来源的配置项 ──
     env_lines = [
         ("OUTPUT_R_ROOT", str(OUTPUT_R_ROOT)),
         ("PYTHON_BIN", python_bin),
@@ -1099,7 +1093,6 @@ def _confirm_config(args, stages, python_bin):
         ("Log file", str(args.log_file)),
     ]
 
-    # ── 仅能通过 export 设置的环境变量 ──
     env_only_lines = [
         ("S6: RUN_ONLY", s6_run_only if s6_run_only else "all (no filter)"),
         ("S6: JOB_TAG", job_tag),
@@ -1270,71 +1263,56 @@ def _write_config_template():
 # ============================================================
 
 cli:
-  # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
-  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8, s9
   steps: ""
 
-  # 起始 / 结束阶段（steps 为空时生效）
   start_at: s1
   end_at: s9
 
-  # 试跑模式：只打印命令，不实际执行
   dry_run: false
-  # 跳过交互确认提示（自动继续）
   "yes": false
 
-  # 运行解释器和总日志
-  python: ""   # 留空=自动选择可用的 Python 3
+  python: ""
   log_file: "scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
 
-  # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
   local_s6: false
 
-  # s1 返回非 0 时视为致命错误
   strict_s1: false
 
-  # s2: 按分辨率整理
-  s2_workers: 40            # 并行 worker 数，推荐 4-16
-  s2_clear: false          # 清空旧输出目录重新组织
-  s2_dataset: ""           # 只处理指定数据集；留空=全部。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
+  s2_workers: 40
+  s2_clear: false
+  s2_dataset: ""
 
-  # s3: 收集 basin 主线测站
-  s3_workers: 32           # 并行 worker 数，推荐 8-32
-  s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
-  s3_exclude_source: ""     # 排除的 source；留空=不排除。示例: Huanghe 或 [Huanghe, GloRiSe/SS]
+  s3_workers: 32
+  s3_exclude_resolutions: climatology
+  s3_exclude_source: ""
 
-  # s4: 流域追踪
-  s4_workers: 24           # S4_N_WORKERS，推荐 8-48
-  s4_array_size: 16        # LSF 阵列大小（集群模式），推荐 8-32
-  s4_batch_size: 50        # 每批站点数，推荐 20-100
-  s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
-  s4_no_resume: false      # 关闭 resume（重新跑所有 shard）
-  s4_no_gpkg: false        # 关闭 GPKG 几何输出
+  s4_workers: 24
+  s4_array_size: 16
+  s4_batch_size: 50
+  s4_maxtasksperchild: 10
+  s4_no_resume: false
+  s4_no_gpkg: false
 
-  # MERIT Hydro 数据集路径；本地运行时改为自己的数据目录，或通过 MERIT_DIR 环境变量覆盖。
   merit_dir: "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"
 
-  # s6: NetCDF 导出
-  s6_workers: 24               # merge worker 数，推荐 8-40
-  s5b_workers: 0               # s5b v2 worker 数；0=自动
-  s5b_chunk_size: 0            # 每个 s5b v2 任务处理的 satellite 行数；0=自动
-  s5b_full_candidate_audit: false  # 写完整候选审计；生产默认 false
-  matrix_workers:              # 每个 resolution matrix 导出的总 worker；留空=脚本默认
-  matrix_resolution_workers:   # 每个 resolution 内部 worker；留空=脚本默认
-  s6_include_climatology: false   # 将 climatology 合并到 master NC
-  skip_climatology_export: false   # 跳过独立气候 NC 导出
+  s6_workers: 24
+  s5b_workers: 0
+  s5b_chunk_size: 0
+  s5b_full_candidate_audit: false
+  matrix_workers:
+  matrix_resolution_workers:
+  s6_include_climatology: false
+  skip_climatology_export: false
 
-  # LSF 轮询 / s7 局部流域
-  cluster_poll_seconds: 60   # LSF 轮询间隔秒，推荐 30-120
-  include_local_basins: false   # 生成局部流域 GPKG
+  cluster_poll_seconds: 60
+  include_local_basins: false
 
-  # s8: 发布
-  s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
-  s8_skip_gpkg: false           # 跳过 GPKG 发布
-  s8_skip_validation: false     # 跳过发布校验
-  s8_include_basin_polygons: true  # 包含流域多边形
-  s8_force: true                # 强制覆盖已存在的发布文件
+  s8_link_mode: hardlink
+  s8_skip_gpkg: false
+  s8_skip_validation: false
+  s8_include_basin_polygons: true
+  s8_force: true
   s8_minimal_matrix_workers: 3        # Parallel workers for minimal matrix NetCDF copies
   s8_minimal_compression: 4           # NetCDF compression level (0-9)
   s8_skip_minimal_climatology: false  # Skip climatology extension package
@@ -1346,41 +1324,35 @@ cli:
   s9_copy_example: true    # include example_reference_workflow.py in the minimal package
 
 # ============================================================
-# 环境变量（仅通过 export 设置，非 CLI 参数）
-# 修改这里会自动注入到 os.environ
 # ============================================================
 env:
-  # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
-  # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
   RUN_ONLY: ""
 
-  JOB_TAG: s6fast              # LSF 作业名前缀
-  MERGE_WORKERS: "40"          # merge worker 数，推荐 8-48
-  MERGE_METADATA_WORKERS: "32" # 元数据 worker 数，推荐 8-32
-  DAILY_WORKERS: "40"          # 日矩阵 worker 数，推荐 8-40
-  MONTHLY_WORKERS: "20"        # 月矩阵 worker 数，推荐 4-20
-  ANNUAL_WORKERS: "4"          # 年矩阵 worker 数，推荐 1-8
+  JOB_TAG: s6fast
+  MERGE_WORKERS: "40"
+  MERGE_METADATA_WORKERS: "32"
+  DAILY_WORKERS: "40"
+  MONTHLY_WORKERS: "20"
+  ANNUAL_WORKERS: "4"
 
-  MERGE_N: "48"                # merge 步骤 LSF 核数，推荐 24-64
-  MERGE_MEM_MB: "240000"       # merge 步骤 LSF 内存 MB，推荐 120000-480000
-  S5B_N: "24"                  # s5b v2 LSF 核数，推荐 8-48
-  S5B_MEM_MB: "16000"          # s5b v2 LSF 内存 MB，推荐 16000-64000
-  CLIM_N: "4"                  # 气候导出 LSF 核数，推荐 2-8
-  CLIM_MEM_MB: "16000"         # 气候导出 LSF 内存 MB，推荐 8000-32000
-  SATVAL_N: "24"               # 卫星验证 LSF 核数，推荐 8-32
-  SATVAL_MEM_MB: "64000"       # 卫星验证 LSF 内存 MB，推荐 32000-128000
+  MERGE_N: "48"
+  MERGE_MEM_MB: "240000"
+  S5B_N: "24"
+  S5B_MEM_MB: "16000"
+  CLIM_N: "4"
+  CLIM_MEM_MB: "16000"
+  SATVAL_N: "24"
+  SATVAL_MEM_MB: "64000"
 
-  # s4 LSF 配置
-  S4_QUEUE: normal              # LSF 队列名
-  S4_NCORES: "24"               # 每 job 核数，推荐 8-48
-  S4_MEM: 120G                  # 每 job 内存
-  S4_PTILE: "24"                # 每节点核数
-  S4_GPKG_EXCLUDE_SATELLITE: "1"  # GPKG 排除卫星站点，1=排除
+  S4_QUEUE: normal
+  S4_NCORES: "24"
+  S4_MEM: 120G
+  S4_PTILE: "24"
+  S4_GPKG_EXCLUDE_SATELLITE: "1"
 
-  # s6 LSF 配置
-  LSF_QUEUE: ""                # LSF 队列（留空用默认）
-  LSF_PROJECT: ""              # LSF project 名称
-  LSF_EXTRA: ""                # 附加 bsub 参数
+  LSF_QUEUE: ""
+  LSF_PROJECT: ""
+  LSF_EXTRA: ""
 """
     print(yaml_text)
     sys.exit(0)
@@ -1517,7 +1489,6 @@ def main():
         _print_and_log(log_fp, "strict s1:               {}".format(args.strict_s1))
         _print_and_log(log_fp, "cluster poll seconds:    {}".format(args.cluster_poll_seconds))
         _print_and_log(log_fp, "dry run:                 {}".format(args.dry_run))
-        # ── 仅能通过 export 设置的环境变量 ──
         _print_and_log(log_fp, "--- env-only settings ---")
         _print_and_log(log_fp, "RUN_ONLY:                {}".format(s6_run_only if s6_run_only else "all (no filter)"))
         _print_and_log(log_fp, "JOB_TAG:                 {}".format(_env("JOB_TAG", "s6fast")))

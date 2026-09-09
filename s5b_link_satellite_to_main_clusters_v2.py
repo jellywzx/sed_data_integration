@@ -1228,11 +1228,11 @@ def parse_args(argv=None):
     parser.add_argument("--resolution", nargs="+", default=list(SUPPORTED_RESOLUTIONS))
     # --overwrite is always True by default (safe for test/development)
     parser.add_argument("--workers", "-w", type=int, default=0,
-                help="并行进程数（0=自动取CPU核数）。默认: 0")
+                help="Parallel process count (0 = choose CPU count automatically). Default: 0")
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
-                help="每个并行任务处理的 satellite 行数（0=自动）。默认: 0")
+                help="Satellite rows handled by each parallel task (0 = automatic). Default: 0")
     parser.add_argument("--full-candidate-audit", action="store_true",
-                help="写出所有候选审计行；默认只写必要候选以提升速度。")
+                help="Write all candidate audit rows; default writes only required candidates for speed.")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 

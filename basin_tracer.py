@@ -1,17 +1,4 @@
-"""上游流域追溯（Upstream Basin Tracer）— 基于河网拓扑的完整上游汇水区圈定。
-
-本模块在 MERIT-Basins 数据集上工作，主要流程为：
-1. 根据测站位置（及可选的上游面积）在河段矢量中匹配对应的河网弧段（reach）；
-2. 从该弧段出发，沿拓扑字段（up1–up4）广度优先遍历，收集所有上游 COMID；
-3. 按 COMID 加载二级分区（pfaf_level_02）下的单元汇水面，合并为单个几何。
-
-术语简述：
-- COMID：河段/汇水单元的唯一标识，在 shapefile 属性与索引中一致使用。
-- Pfafstetter 编码（pfaf）：MERIT-Basins 按层级划分的区域码；level_01 为更粗的河网区，
-  level_02 的 catchment 文件名与 COMID 前两位数字对应的分区一致。
-
-数据来源说明：由早期 upstream basin tracer 脚本整理迁移。
-"""
+"""Trace upstream basins from station locations using MERIT-Basins river-network topology."""
 
 import logging
 import os
@@ -41,51 +28,31 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 全局阈值：影响“测站–河段”匹配行为，可按数据尺度调整
 # ---------------------------------------------------------------------------
-# 若提供 reported_area： Merit 栅格汇水面积 uparea 与报告面积之比在此相对误差内视为“面积匹配良好”
-AREA_MATCH_TOLERANCE = 0.5  # 例如 0.5 表示允许约 ±50% 的相对偏差仍标为 area_matched
-# 以测站为中心、在 WGS84 下展平的方形搜索窗口半边长（度），用于空间索引初筛邻近河段
-SEARCH_RADIUS_M = 120000.0   # 120 km，可按需要调整
-SEARCH_RADIUS_DEG = 1.0      # 仅保留给 bbox 初筛用
+AREA_MATCH_TOLERANCE = 0.5
+SEARCH_RADIUS_M = 120000.0
+SEARCH_RADIUS_DEG = 1.0
 
 
 class UpstreamBasinTracer:
-    """基于 MERIT-Basins 河网拓扑，从测站追溯完整上游集水区。
-
-    实例化时会扫描 pfaf_level_01 下所有河网 shp，读取各区的 total_bounds 建立空间索引，
-    后续仅对可能包含测站的区域加载完整河段与汇水面，以控制内存与 I/O。
-    """
+    """Trace complete upstream catchments from stations using MERIT-Basins topology."""
 
     def __init__(self, merit_basins_dir: str):
-        """初始化追溯器。
-
-        Args:
-            merit_basins_dir: MERIT-Basins 根目录路径
-                （例如 .../MERIT_Hydro_v07_Basins_v01_bugfix1/），其下应有
-                pfaf_level_01（河网 riv_*.shp）与 pfaf_level_02（汇水 cat_*.shp）。
-        """
+        """Initialize the tracer with MERIT-Basins river-network and catchment directories."""
         self.merit_basins_dir = Path(merit_basins_dir)
-        # 一级 Pfaf 区：整套河段拓扑（含 up1–up4 等字段）
         self.pfaf_level1_dir = self.merit_basins_dir / "pfaf_level_01"
-        # 二级 Pfaf 区：单元汇水多边形，与 COMID 一一对应；按 COMID 前两位分组加载文件
         self.pfaf_level2_dir = self.merit_basins_dir / "pfaf_level_02"
 
-        # 内存缓存：同一区域只读一次 shp，避免批量站点时重复解析
         self._level1_rivers: Dict[str, gpd.GeoDataFrame] = {}
         self._level2_catchments: Dict[str, gpd.GeoDataFrame] = {}
         self._level1_topology: Dict[str, Dict[int, List[int]]] = {}
-        # pfaf_level_01 区号 -> (minx, miny, maxx, maxy)，用于快速判断点落在哪些一级区内
         self._region_bounds: Dict[str, tuple] = {}
 
         self._build_region_index()
 
 
     def _build_region_index(self):
-        """扫描 pfaf_level_01 下标准命名的河网文件，记录每个一级区的包络矩形。
-
-        不做复杂空间索引；仅用 total_bounds 与点坐标比较，足够将候选区从全局缩到少量文件。
-        """
+        """Scan pfaf_level_01 river-network files and record their bounding boxes."""
         if not self.pfaf_level1_dir.exists():
             logger.warning(f"pfaf_level_01 not found: {self.pfaf_level1_dir}")
             return
@@ -96,11 +63,8 @@ class UpstreamBasinTracer:
         logger.info(f"Found {len(riv_files)} pfaf_level_01 river files")
 
         for riv_file in riv_files:
-            # 文件名形如 riv_pfaf_XX_...，取第三段为该区 Pfaf 码
             pfaf_code = riv_file.stem.split("_")[2]
             try:
-                # 用 _pyogrio_read_info 仅读取元数据中的 total_bounds，
-                # 避免将整个 shapefile（数百 MB）加载到内存，大幅缩短初始化时间
                 info = _pyogrio_read_info(str(riv_file))
                 self._region_bounds[pfaf_code] = info["total_bounds"]
             except Exception as e:
@@ -109,7 +73,7 @@ class UpstreamBasinTracer:
         logger.info(f"Indexed {len(self._region_bounds)} pfaf_level_01 regions")
 
     def _distance_point_to_geoms_m(self, geoms, lon: float, lat: float):
-        """将点和几何投影到局部米制 CRS 后，计算平面距离（米）。"""
+        """Project a point and geometry to a local metric CRS and return planar distance in meters."""
         local_crs = self._get_local_metric_crs(lon, lat)
         transformer = Transformer.from_crs("EPSG:4326", local_crs, always_xy=True)
 
@@ -126,7 +90,7 @@ class UpstreamBasinTracer:
 
 
     def _get_local_metric_crs(self, lon: float, lat: float):
-        """根据站点位置选择局部米制投影。优先 UTM。"""
+        """Select a local metric projection for the station location, preferring UTM."""
         if lat >= 84:
             return CRS.from_epsg(3413)  # Arctic Polar Stereographic
         if lat <= -80:
@@ -140,10 +104,7 @@ class UpstreamBasinTracer:
         return CRS.from_epsg(epsg)
 
     def _get_pfaf_level1_codes(self, lon: float, lat: float) -> List[str]:
-        """根据经纬度返回所有包络框包含该点的一级 Pfaf 区编码列表。
-
-        边界上的点也计入对应区；若数据跨区或边界情况，可能出现多个候选区。
-        """
+        """Return pfaf_level_01 region codes whose bounding boxes contain the given point."""
         candidates = []
         for pfaf_code, bounds in self._region_bounds.items():
             minx, miny, maxx, maxy = bounds
@@ -152,10 +113,7 @@ class UpstreamBasinTracer:
         return candidates
 
     def _load_level1_rivers(self, pfaf_code: str) -> Optional[gpd.GeoDataFrame]:
-        """按需加载指定一级区的河网 GeoDataFrame，并建立 COMID 索引与空间索引（sindex）。
-
-        属性中应含 COMID、uparea（上游累积面积）、以及 up1–up4（直接上游河段 ID，无则为 0）。
-        """
+        """Load a pfaf_level_01 river-network GeoDataFrame and build COMID and spatial indexes."""
         if pfaf_code in self._level1_rivers:
             return self._level1_rivers[pfaf_code]
 
@@ -172,13 +130,10 @@ class UpstreamBasinTracer:
             if gdf.crs is None:
                 gdf = gdf.set_crs("EPSG:4326")
 
-            # 以 COMID 为行索引，便于 O(1) 按 ID 取河段；drop=False 保留 COMID 列
             gdf = gdf.set_index("COMID", drop=False)
-            # 访问 sindex 会构建 R 树，加速后续 intersection 查询
             gdf.sindex  # build spatial index
 
             self._level1_rivers[pfaf_code] = gdf
-            # 新增以下8行：预构建BFS拓扑字典
             up_cols = [c for c in ["up1", "up2", "up3", "up4"] if c in gdf.columns]
             if up_cols:
                 up_data = gdf[up_cols].to_numpy(dtype=float, na_value=0.0)
@@ -196,7 +151,7 @@ class UpstreamBasinTracer:
             return None
 
     def _load_level2_catchments(self, pfaf2_code: str) -> Optional[gpd.GeoDataFrame]:
-        """加载二级 Pfaf 区对应的单元汇水多边形（cat_pfaf_{code}_...shp）。"""
+        """Load pfaf_level_02 catchment polygons for a region code."""
         if pfaf2_code in self._level2_catchments:
             return self._level2_catchments[pfaf2_code]
 
@@ -225,7 +180,7 @@ class UpstreamBasinTracer:
     def _gather_nearby_candidate_reaches(
         self, lon: float, lat: float
     ) -> Optional[gpd.GeoDataFrame]:
-        """在测站周围收集空间索引+距离筛选后的候选河段（与 find_best_reach 第一步一致）。"""
+        """Collect nearby candidate reaches after spatial-index and distance filtering."""
         if pd.isna(lon) or pd.isna(lat):
             return None
 
@@ -253,7 +208,6 @@ class UpstreamBasinTracer:
 
             candidates = riv_gdf.iloc[possible_idx].copy()
 
-            # 先用 degree 的 bbox 做空间索引初筛
             candidates["dist_m"] = self._distance_point_to_geoms_m(
                 candidates.geometry, lon, lat
             )
@@ -277,7 +231,7 @@ class UpstreamBasinTracer:
     def get_nearby_candidate_reaches(
         self, lon: float, lat: float
     ) -> Optional[gpd.GeoDataFrame]:
-        """返回测站附近候选河段 GeoDataFrame，供调试与可视化（列含 dist_m、pfaf_code 等）。"""
+        """Return nearby candidate reaches for debugging and visualization."""
         return self._gather_nearby_candidate_reaches(lon, lat)
 
     def find_best_reach(
@@ -286,24 +240,7 @@ class UpstreamBasinTracer:
         lat: float,
         reported_area: float = None,
     ) -> Dict:
-        """在候选河网中选取与测站最匹配的河段。
-
-        步骤概要：
-        1. 用一级区 bounds 筛出可能含点的区域，加载河网；
-        2. 在测站周围 SEARCH_RADIUS_DEG 的包围盒内用空间索引取候选弧段；
-        3. 将候选弧段与测站点投影到局部米制 CRS，计算点到线的平面距离（米）；
-        4. 若给定 reported_area：综合“面积比的对数偏差”与“归一化距离”得 score，取最小者；
-           否则仅按距离最近选取。
-
-        Args:
-            lon: 测站经度（WGS84）
-            lat: 测站纬度
-            reported_area: 文献/观测给出的上游汇水面积（km²），用于消歧；不传则纯几何最近
-
-        Returns:
-            字典键：COMID, uparea, distance, pfaf_code, match_quality, area_error
-            match_quality 取值：failed | area_matched | area_approximate | area_mismatch | distance_only
-        """
+        """Select the best matching reach for a station from nearby river-network candidates."""
         result = {
             "COMID": None,
             "uparea": np.nan,
@@ -321,12 +258,10 @@ class UpstreamBasinTracer:
             return result
 
         if reported_area is not None and reported_area > 0:
-            # 面积项：用 log10|ratio| 衡量倍数差，避免纯比值在跨数量级时过于极端；clip 防止 log(0)
             candidates["area_ratio"] = candidates["uparea"] / reported_area
             candidates["area_error"] = np.abs(
                 np.log10(candidates["area_ratio"].clip(0.001, 1000))
             )
-            # 距离项：归一化到 [0,1] 量级附近，与面积项相加形成可加性评分
             candidates["dist_score"] = candidates["dist_m"] / SEARCH_RADIUS_M
             candidates["score"] = candidates["area_error"] + candidates["dist_score"]
 
@@ -354,7 +289,6 @@ class UpstreamBasinTracer:
         result["match_quality"] = match_quality
 
         if reported_area is not None and reported_area > 0:
-            # 输出用的相对误差：(Merit − 报告) / 报告，与内部评分用的对数量纲不同
             result["area_error"] = np.log10(best["uparea"] / reported_area)
 
         return result
@@ -364,23 +298,11 @@ class UpstreamBasinTracer:
         start_comid: int,
         pfaf_code: str,
     ) -> Set[int]:
-        """从起始河段 COMID 出发，沿 up1–up4 广度优先遍历所有上游河段。
-
-        MERIT 河网中一条河段最多四个直接上游连接；0 或缺失表示无上游。
-        队列式 BFS：先发现的 COMID 先入队，避免重复展开（已访问集合 upstream_comids）。
-
-        Args:
-            start_comid: 测站匹配到的河段 COMID
-            pfaf_code: 该河段所属 pfaf_level_01 区号（与 find_best_reach 一致）
-
-        Returns:
-            含起点在内的所有上游 COMID 集合；若河网加载失败则仅返回 {start_comid}。
-        """
+        """Traverse upstream COMIDs from a starting reach using breadth-first search."""
         riv_gdf = self._load_level1_rivers(pfaf_code)
         if riv_gdf is None:
             return {start_comid}
 
-        # 在循环外取一次，避免每步都查dict
         topo = self._level1_topology.get(pfaf_code, {})
 
         upstream_comids: Set[int] = set()
@@ -407,21 +329,10 @@ class UpstreamBasinTracer:
 
 
     def get_upstream_basin_polygon(self, upstream_comids: Set[int]):
-        """将所有上游 COMID 对应的单元汇水多边形合并为单一几何（可能为多部件）。
-
-        COMID 在 MERIT 中与二级区文件对应：取 str(comid)[:2] 作为 cat 文件分区键，
-        仅在已追溯到的集合内加载所需分区并提取几何，最后 unary_union 融合边界。
-
-        Args:
-            upstream_comids: trace_upstream_reaches 得到的 COMID 集合
-
-        Returns:
-            合并后的 shapely 几何，若无有效多边形则 None。
-        """
+        """Merge catchment polygons for upstream COMIDs into a single geometry."""
         if not upstream_comids:
             return None
 
-        # 按 COMID 前两位划分到 pfaf_level_02 文件，减少重复扫描
         comids_by_region: Dict[str, list] = {}
         for comid in upstream_comids:
             region = str(comid)[:2]
@@ -433,7 +344,6 @@ class UpstreamBasinTracer:
             if cat_gdf is None:
                 continue
 
-            # 向量化批量索引，替代逐个comid的Python循环
             valid_mask = cat_gdf.index.isin(comids)
             if valid_mask.any():
                 all_geoms.extend(cat_gdf.loc[valid_mask, "geometry"].tolist())
@@ -459,20 +369,7 @@ class UpstreamBasinTracer:
         lat: float,
         reported_area: float = None,
     ) -> Dict:
-        """单站完整流程：匹配河段 → 上游追溯 → 合并汇水面（失败则用面积圆缓冲兜底）。
-
-        这是保留给现有调用方的一体化入口。若上游流程已经确定了
-        MERIT 河段，可直接改用 get_upstream_basin_from_reach()，避免重复
-        执行一次 find_best_reach()。
-
-        Returns:
-            geometry: 流域多边形或缓冲圆
-            basin_area: 匹配河段的 Merit uparea（km²）
-            basin_id: 匹配河段 COMID
-            match_quality / area_error / uparea_merit / pfaf_code: 与 find_best_reach 一致
-            method: upstream_traced（正常）或 area_buffer_fallback（无 cat 几何时）
-            n_upstream_reaches: 上游弧段数量
-        """
+        """Run the full single-station workflow: reach matching, upstream tracing, and catchment merge."""
         reach_info = self.find_best_reach(lon, lat, reported_area)
         return self.get_upstream_basin_from_reach(lon, lat, reach_info)
 
@@ -482,20 +379,7 @@ class UpstreamBasinTracer:
         lat: float,
         reach_info: Dict,
     ) -> Dict:
-        """从已知 MERIT 河段直接追溯上游流域。
-
-        该入口跳过 find_best_reach()，适合那些已经在上游阶段完成了
-        GSED/站点 到 MERIT reach 映射的流程。
-
-        Args:
-            lon: 用于判定 point_in_local / point_in_basin 的锚点经度（WGS84）
-            lat: 用于判定 point_in_local / point_in_basin 的锚点纬度（WGS84）
-            reach_info: 由 find_best_reach() 产生或与之同构的字典，至少包含
-                COMID / uparea / distance / pfaf_code / match_quality / area_error
-
-        Returns:
-            与 get_upstream_basin() 相同结构的结果字典。
-        """
+        """Trace an upstream basin directly from known MERIT reach information."""
         result = {
             "geometry": None,
             "geometry_local": None,
@@ -544,10 +428,8 @@ class UpstreamBasinTracer:
         result["basin_area"] = uparea
         result["distance"] = distance
 
-        # ① 最小单元集水区：只取匹配 COMID 对应的 cat 多边形（来自 cat_pfaf_* 面文件）
         result["geometry_local"] = self.get_upstream_basin_polygon({basin_id})
 
-        # ② 完整上游流域：BFS 遍历所有上游 COMID（原有逻辑，完全保留）
         upstream_comids = self.trace_upstream_reaches(
             basin_id,
             str(pfaf_code),
@@ -587,7 +469,7 @@ class UpstreamBasinTracer:
         return result
 
     def _create_area_buffer(self, lon: float, lat: float, area_km2: float):
-        """在局部米制投影下根据面积生成圆形 buffer，再转回 WGS84。"""
+        """Create an area-equivalent circular buffer in a local metric CRS and return it in WGS84."""
         if area_km2 is None or not np.isfinite(area_km2) or area_km2 <= 0:
             return Point(lon, lat)
 
@@ -604,7 +486,7 @@ class UpstreamBasinTracer:
         return transform(backward.transform, buffer_proj)
 
     def clear_cache(self):
-        """释放已缓存的一级河网与二级汇水 GeoDataFrame，批量任务分段跑时可用。"""
+        """Clear cached river-network and catchment GeoDataFrames."""
         self._level1_rivers.clear()
         self._level1_topology.clear() 
         self._level2_catchments.clear()
@@ -618,18 +500,7 @@ class UpstreamBasinTracer:
         station_id_col: Optional[str] = "cluster_id",
         dedup_by_station: bool = True,
     ) -> gpd.GeoDataFrame:
-        """批量读取 CSV，对每行（或去重后的每站）调用 get_upstream_basin，返回 GeoDataFrame。
-
-        Args:
-            csv_path: 含测站经纬度的 CSV 路径
-            lon_col / lat_col: 经纬度列名
-            area_col: 可选，上游面积列名（km²），会传给 find_best_reach
-            station_id_col: 可选，去重与回写时用；若 dedup 且无此列则按 (lon,lat) 去重
-            dedup_by_station: True 时每个站只保留一行再追溯，避免重复计算
-
-        Returns:
-            EPSG:4326 的 GeoDataFrame，geometry 为流域或兜底圆，并含 basin_id、method 等列
-        """
+        """Read station rows from CSV, trace upstream basins, and return a WGS84 GeoDataFrame."""
         csv_file = Path(csv_path)
         if not csv_file.exists():
             raise FileNotFoundError(f"CSV not found: {csv_file}")
@@ -640,7 +511,6 @@ class UpstreamBasinTracer:
         if missing:
             raise ValueError(f"Missing required columns in CSV: {missing}")
 
-        # 无坐标无法匹配河网，直接丢弃
         stations = stations.dropna(subset=[lon_col, lat_col]).copy()
         if len(stations) == 0:
             return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
@@ -694,7 +564,7 @@ class UpstreamBasinTracer:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# 命令行直接运行脚本时使用的内置路径与列名（可按本地环境改写或通过其他入口传入）
+# Other settings
 BUILTIN_CONFIG = {
     "merit_dir": os.environ.get("MERIT_DIR", "/path/to/MERIT_Hydro_v07_Basins_v01_bugfix1"),
     "stations_csv": str(SCRIPT_DIR / "output" / "s3_collected_stations.csv"),
@@ -710,7 +580,7 @@ BUILTIN_CONFIG = {
 
 
 def main():
-    """脚本入口：读 BUILTIN_CONFIG，批量追溯并写出 GPKG（几何）与 CSV（属性表，无 geometry 列）。"""
+    """Run the built-in CSV-to-GPKG/CSV tracing workflow."""
     cfg = BUILTIN_CONFIG
     logging.basicConfig(
         level=getattr(logging, str(cfg["log_level"]).upper()),

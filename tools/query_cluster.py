@@ -1,34 +1,26 @@
 #!/usr/bin/env python3
-"""
-query_cluster.py — 按 cluster_uid 从 s6 NC 文件中查询所有相关信息。
-
-使用方法：
-  1. 修改下方 ══ 用户配置区 ══ 中的参数
-  2. 直接运行: python3 query_cluster.py
-"""
+"""Query station metadata and time series by cluster_uid from the s6 NetCDF products."""
 
 # ══════════════════════════════════════════════════════════════════════
-#  用户配置区 — 仅需修改这里
 # ══════════════════════════════════════════════════════════════════════
 
 from pathlib import Path
 
-CLUSTER_UID  = "SED000183"   # 要查询的 UID，也可填数字如 "1" 或 "42"
+CLUSTER_UID  = "SED000183"
 
-OUTPUT_ROOT  = None          # Output_r 根目录路径；None = 自动从脚本位置推导
-                             # 例: OUTPUT_ROOT = "/data/Output_r"
+OUTPUT_ROOT  = None
 
-RESOLUTION   = "daily"        # 显示哪种分辨率: "all" | "daily" | "monthly" | "annual"
+RESOLUTION   = "daily"
 
-VARIABLE     = "all"        # 显示哪个变量: "all" | "Q" | "SSC" | "SSL"
+VARIABLE     = "all"
 
-PREVIEW_ROWS = 20           # 时序预览行数（只显示有效数据行）；0 = 显示全部
+PREVIEW_ROWS = 20
 
-OUT_CSV = None              # None = 自动根据 CLUSTER_UID 生成文件名
-OUT_TXT = None              # None = 自动根据 CLUSTER_UID 生成文件名
+OUT_CSV = None
+OUT_TXT = None
 
 
-ENABLE_COLOR = True         # False = 关闭颜色（在不支持 ANSI 的环境中使用）
+ENABLE_COLOR = True
 
 # ══════════════════════════════════════════════════════════════════════
 
@@ -54,7 +46,6 @@ from pipeline_paths import (
     get_output_r_root,
 )
 
-# ── 常量 ──────────────────────────────────────────────────────────────
 FILL = -9999.0
 RESOLUTION_CODES = {"daily": 0, "monthly": 1, "annual": 2, "climatology": 3, "other": 4}
 RESOLUTION_NAMES = {v: k for k, v in RESOLUTION_CODES.items()}
@@ -68,7 +59,6 @@ MATRIX_FILES     = {
 }
 
 
-# ── 颜色工具 ──────────────────────────────────────────────────────────
 class _C:
     BCYAN   = "\033[1;36m"
     CYAN    = "\033[36m"
@@ -104,7 +94,6 @@ def _dash(text=""):
     return _c(text if text else "—", _C.DIM)
 
 
-# ── 文本清理 ──────────────────────────────────────────────────────────
 def _txt(value):
     if value is None:
         return ""
@@ -130,7 +119,6 @@ def _pct_str(n, total):
     return _c(s, _C.RED)
 
 
-# ── cluster_uid 标准化 ────────────────────────────────────────────────
 def _normalize_uid(query):
     q = str(query).strip().upper()
     if q.startswith("SED"):
@@ -143,7 +131,6 @@ def _normalize_uid(query):
         return q
 
 
-# ── 路径解析 ──────────────────────────────────────────────────────────
 def _paths():
     root = Path(OUTPUT_ROOT).expanduser().resolve() if OUTPUT_ROOT else get_output_r_root(SCRIPT_DIR.parent)
     matrix_dir = root / S6_MATRIX_DIR
@@ -153,7 +140,6 @@ def _paths():
     }
 
 
-# ── 读取 master NC：station 元数据 ───────────────────────────────────
 def _read_station_meta(nc_path, uid):
     with nc4.Dataset(str(nc_path), "r") as ds:
         uids = _txt_arr(ds.variables["cluster_uid"][:])
@@ -185,7 +171,6 @@ def _read_station_meta(nc_path, uid):
             "station_idx":         idx,
         }
 
-        # source 查找表
         src_names = _txt_arr(ds.variables["source_name"][:])
         meta["source_lookup"] = {
             n: {
@@ -200,7 +185,6 @@ def _read_station_meta(nc_path, uid):
     return meta, idx, uids
 
 
-# ── 读取 master NC：source stations ─────────────────────────────────
 def _read_source_stations(nc_path, station_idx, source_lookup):
     with nc4.Dataset(str(nc_path), "r") as ds:
         cluster_idx_arr = np.asarray(ds.variables["source_station_cluster_index"][:], dtype=np.int32)
@@ -225,7 +209,6 @@ def _read_source_stations(nc_path, station_idx, source_lookup):
     return rows
 
 
-# ── 读取 matrix NC：时序（按 station 行）───────────────────────────
 def _read_matrix(nc_path, uid, variables):
     with nc4.Dataset(str(nc_path), "r") as ds:
         uids = _txt_arr(ds.variables["cluster_uid"][:])
@@ -264,7 +247,6 @@ def _read_matrix(nc_path, uid, variables):
     return pd.DataFrame(data)
 
 
-# ── 读取 master NC：时序（按块扫描，fallback）──────────────────────
 def _read_master_records(nc_path, station_idx, res_codes, variables, chunk=500_000):
     frames = []
     with nc4.Dataset(str(nc_path), "r") as ds:
@@ -308,7 +290,6 @@ def _read_master_records(nc_path, station_idx, res_codes, variables, chunk=500_0
     return pd.concat(frames, ignore_index=True).sort_values("time").reset_index(drop=True)
 
 
-# ── 可用性统计 ────────────────────────────────────────────────────────
 def _availability(df, variables):
     if df is None or len(df) == 0:
         return None
@@ -326,22 +307,20 @@ def _availability(df, variables):
     return out
 
 
-# ── 时间格式化 ────────────────────────────────────────────────────────
 def _fmt_time(t, res):
     if t is None:
         return "—"
     ts = pd.Timestamp(t)
     if res == "monthly":     return ts.strftime("%Y-%m")
-    if res == "climatology": return "月份{:02d}".format(ts.month)
+    if res == "climatology": return "month {:02d}".format(ts.month)
     return ts.strftime("%Y-%m-%d")
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  打印函数
 # ══════════════════════════════════════════════════════════════════════
 
 def _print_station(meta):
-    _section("站点基础信息  ·  {}".format(_c(meta["cluster_uid"], _C.BCYAN)))
+    _section("Station Summary  ·  {}".format(_c(meta["cluster_uid"], _C.BCYAN)))
 
     _row("cluster_uid",       _c(meta["cluster_uid"], _C.BCYAN))
     _row("cluster_id",        str(meta["cluster_id"]))
@@ -353,55 +332,54 @@ def _print_station(meta):
             abs(lon), "E" if lon >= 0 else "W")
     else:
         coord = _dash()
-    _row("坐标 (lat / lon)",  coord)
+    _row("Coordinates (lat / lon)",  coord)
 
-    _row("站点名称",          meta["station_name"]  or _dash("（未知）"))
-    _row("河流名称",          meta["river_name"]    or _dash("（未知）"))
+    _row("Station name",          meta["station_name"]  or _dash("(unknown)"))
+    _row("River name",          meta["river_name"]    or _dash("(unknown)"))
 
     ba = meta["basin_area"]
-    _row("流域面积",          "{:,.1f} km²".format(ba) if not np.isnan(ba) else _dash())
+    _row("Basin area",          "{:,.1f} km²".format(ba) if not np.isnan(ba) else _dash())
 
     pc = meta["pfaf_code"]
-    _row("Pfafstetter 编码",  str(int(pc)) if not np.isnan(pc) else _dash())
+    _row("Pfafstetter code",  str(int(pc)) if not np.isnan(pc) else _dash())
 
     nr = meta["n_upstream_reaches"]
-    _row("上游河段数",        str(nr) if nr >= 0 else _dash())
+    _row("Upstream reach count",        str(nr) if nr >= 0 else _dash())
 
-    _row("流域匹配质量",      meta["basin_match_quality"])
+    _row("Basin match quality",      meta["basin_match_quality"])
 
     srcs = meta["sources_used"]
-    _row("数据来源",          " | ".join(srcs.split("|")) if srcs else _dash())
-    _row("原始站点数",        str(meta["n_source_stations"]))
+    _row("Data sources",          " | ".join(srcs.split("|")) if srcs else _dash())
+    _row("Source station count",        str(meta["n_source_stations"]))
 
 
 def _print_source_stations(stations):
-    _section("原始站点列表  ({} 个)".format(len(stations)))
+    _section("Source Station List  ({} stations)".format(len(stations)))
     if not stations:
-        print("  " + _dash("（无原始站点信息）"))
+        print("  " + _dash("(no source station information)"))
         return
     for i, s in enumerate(stations, 1):
-        src_lbl = _c(s["source"], _C.YELLOW) if s["source"] else _dash("未知来源")
-        print("  [{}] {}  |  来源: {}".format(i, _c(s["uid"], _C.CYAN), src_lbl))
-        print("      原始ID    : {}".format(s["native_id"] or _dash()))
-        print("      站点名称  : {}".format(s["name"]      or _dash()))
-        print("      河流名称  : {}".format(s["river"]     or _dash()))
+        src_lbl = _c(s["source"], _C.YELLOW) if s["source"] else _dash("unknown source")
+        print("  [{}] {}  |  source: {}".format(i, _c(s["uid"], _C.CYAN), src_lbl))
+        print("      Native ID    : {}".format(s["native_id"] or _dash()))
+        print("      Station name  : {}".format(s["name"]      or _dash()))
+        print("      River name  : {}".format(s["river"]     or _dash()))
         if not (np.isnan(s["lat"]) or np.isnan(s["lon"])):
-            print("      坐标      : {:.6f}°N  /  {:.6f}°E".format(s["lat"], s["lon"]))
-        print("      可用分辨率: {}".format(s["resolutions"] or _dash()))
+            print("      Coordinates: {:.6f} deg N  /  {:.6f} deg E".format(s["lat"], s["lon"]))
+        print("      Available resolutions: {}".format(s["resolutions"] or _dash()))
         print()
 
 
 def _print_availability(avail_map, variables):
-    _section("数据可用性摘要")
+    _section("Data Availability Summary")
 
-    # 表头
     RW, NW, TW = 12, 8, 28
     VW = 10
     hdr = "{:<{}}{}{}".format(
-        "分辨率", RW,
-        "{:<{}}".format("记录数", NW),
-        "{:<{}}".format("时间范围", TW),
-    ) + "".join("{:<{}}".format("{}有效率".format(v), VW) for v in variables)
+        "Resolution", RW,
+        "{:<{}}".format("Records", NW),
+        "{:<{}}".format("Time range", TW),
+    ) + "".join("{:<{}}".format("{} valid rate".format(v), VW) for v in variables)
     print("  " + _c(hdr, _C.BOLD))
     print("  " + _c("─" * (RW + NW + TW + VW * len(variables)), _C.DIM))
 
@@ -421,10 +399,10 @@ def _print_availability(avail_map, variables):
         print("  " + line)
 
     if not found:
-        print("  " + _dash("（所有分辨率均无数据）"))
+        print("  " + _dash("(no data for any resolution)"))
 
     print()
-    print("  " + _c("标记说明: 0=good 1=estimated 2=suspect 3=bad 9=missing", _C.DIM))
+    print("  " + _c("Flag meanings: 0=good 1=estimated 2=suspect 3=bad 9=missing", _C.DIM))
 
 
 def _print_timeseries(df, variables, resolution, max_rows):
@@ -442,19 +420,18 @@ def _print_timeseries(df, variables, resolution, max_rows):
     if not show_all:
         sub = sub.head(max_rows)
 
-    _section("时序数据  ·  {}  (共 {:,} 行，显示 {:,} 行)".format(
+    _section("Time Series Data  ·  {}  ({:,} rows total, showing {:,})".format(
         resolution, n_total, len(sub)))
 
     TW, VW, FW, SW, OW = 13, 12, 10, 14, 5
 
-    # 表头
-    hdr = "{:<{}}".format("时间", TW)
+    hdr = "{:<{}}".format("Time", TW)
     for var in variables:
         hdr += "{:<{}}".format("{}({})".format(var, VAR_UNITS.get(var, "")), VW)
     for var in variables:
-        hdr += "{:<{}}".format("{}_标记".format(var), FW)
-    hdr += "{:<{}}".format("来源", SW)
-    hdr += "{:<{}}".format("竞争", OW)
+        hdr += "{:<{}}".format("{}_flag".format(var), FW)
+    hdr += "{:<{}}".format("Source", SW)
+    hdr += "{:<{}}".format("overlap", OW)
     print("  " + _c(hdr, _C.BOLD))
     print("  " + _c("─" * (TW + VW * len(variables) + FW * len(variables) + SW + OW), _C.DIM))
 
@@ -482,18 +459,18 @@ def _print_timeseries(df, variables, resolution, max_rows):
         line += "{:<{}}".format(src, SW)
 
         ovlp = int(row.get("is_overlap", 0))
-        line += _c("是", _C.YELLOW) if ovlp else _c("否", _C.DIM)
+        line += _c("yes", _C.YELLOW) if ovlp else _c("no", _C.DIM)
         print("  " + line)
 
     if not show_all and n_total > max_rows:
-        print("  " + _c("  … 还有 {:,} 行（设置 PREVIEW_ROWS=0 显示全部）".format(
+        print("  " + _c("  … {:,} more rows (set PREVIEW_ROWS=0 to show all)".format(
             n_total - max_rows), _C.DIM))
 
 
 def _print_source_info(sources_used, source_lookup):
-    _section("数据来源信息")
+    _section("Source Dataset Information")
     if not sources_used:
-        print("  " + _dash("（无来源信息）"))
+        print("  " + _dash("(no source information)"))
         return
     for src in sources_used.split("|"):
         src = src.strip()
@@ -501,28 +478,27 @@ def _print_source_info(sources_used, source_lookup):
             continue
         info = source_lookup.get(src, {})
         print("  " + _c(src, _C.BYELLOW) + "  |  " +
-              (info.get("long_name") or _dash("（无完整名称）")))
+              (info.get("long_name") or _dash("(no full name)")))
         if info.get("institution"):
-            _row("机构", info["institution"])
+            _row("Institution", info["institution"])
         if info.get("reference"):
-            _row("引用", info["reference"][:100])
+            _row("Reference", info["reference"][:100])
         if info.get("url"):
             _row("URL",  info["url"][:100])
         print()
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  主程序
 # ══════════════════════════════════════════════════════════════════════
 
 import re
 
 def _strip_ansi(text):
-    """去掉 ANSI 颜色码，保存纯文本"""
+    """Strip ANSI color codes before saving plain text."""
     return re.sub(r"\033\[[0-9;]*m", "", text)
 
 class _Tee:
-    """同时写到终端和文件"""
+    """Write output to both terminal and file."""
     def __init__(self, file):
         self._file = file
         self._stdout = sys.stdout
@@ -537,7 +513,7 @@ def main():
     global OUT_TXT, OUT_CSV
 
     uid = _normalize_uid(CLUSTER_UID)
-    _ensure_output_names(uid)   # 提前生成默认输出文件名
+    _ensure_output_names(uid)
 
     _txt_file = None
     if OUT_TXT:
@@ -552,7 +528,7 @@ def main():
         if _txt_file:
             sys.stdout = sys.stdout._stdout
             _txt_file.close()
-            print("已保存输出到: {}".format(OUT_TXT))
+            print("Saved output to: {}".format(OUT_TXT))
     return result
 
 def _build_source_summary(stations):
@@ -580,56 +556,49 @@ def _ensure_output_names(uid):
         OUT_TXT = str(SCRIPT_DIR / "{}.txt".format(uid))
 
 
-def _main():   # ← 原来 main() 的内容改名为 _main()
+def _main():
     if not HAS_NC:
 
-        print("错误：需要安装 netCDF4 库。请运行: pip install netCDF4")
+        print("Error: netCDF4 is required. Run: pip install netCDF4")
         return 1
 
     uid   = _normalize_uid(CLUSTER_UID)
     _ensure_output_names(uid)
     paths = _paths()
 
-    print(_c("\n正在查询: {}  (from {})".format(
+    print(_c("\nQuerying: {}  (from {})".format(
         uid, paths["master"].parent.parent.name), _C.BOLD))
 
-    # ── 检查 master NC ──────────────────────────────────────────────
     if not paths["master"].is_file():
-        print(_c("错误：找不到 master NC 文件", _C.RED))
-        print("  期望路径: {}".format(paths["master"]))
-        print("  请检查 OUTPUT_ROOT 配置（当前: {})".format(OUTPUT_ROOT or "自动推导"))
+        print(_c("Error: master NetCDF file not found", _C.RED))
+        print("  Expected path: {}".format(paths["master"]))
+        print("  Check OUTPUT_ROOT configuration (current: {})".format(OUTPUT_ROOT or "auto-derived"))
         return 1
 
-    # ── 读取 station 元数据 ─────────────────────────────────────────
     meta, station_idx, all_uids = _read_station_meta(paths["master"], uid)
     if meta is None:
-        print(_c("错误：找不到 cluster_uid: {}".format(uid), _C.RED))
-        print("  数据集共有 {:,} 个 cluster。".format(len(all_uids)))
-        # 给出相近建议
+        print(_c("Error: cluster_uid not found: {}".format(uid), _C.RED))
+        print("  Dataset contains {:,} clusters.".format(len(all_uids)))
         try:
             num = int(uid[3:])
             cands = sorted(all_uids, key=lambda u: abs(int(u[3:]) - num))[:5]
-            print("  最近的 5 个 UID: {}".format(", ".join(cands)))
+            print("  Nearest 5 UIDs: {}".format(", ".join(cands)))
         except (ValueError, IndexError):
-            print("  前 5 个 UID: {}".format(", ".join(all_uids[:5])))
+            print("  First 5 UIDs: {}".format(", ".join(all_uids[:5])))
         return 1
 
-    # ── 确定查询范围 ────────────────────────────────────────────────
     res_targets = (
         ["daily", "monthly", "annual"]
         if RESOLUTION == "all" else [RESOLUTION]
     )
     var_targets = list(VAR_UNITS.keys()) if VARIABLE == "all" else [VARIABLE]
 
-    # ── 打印 Station 信息 ───────────────────────────────────────────
     _print_station(meta)
 
-    # ── 打印 Source Stations ────────────────────────────────────────
     source_stations = _read_source_stations(paths["master"], station_idx, meta["source_lookup"])
     _print_source_stations(source_stations)
     source_summary = _build_source_summary(source_stations)
 
-    # ── 读取时序 ────────────────────────────────────────────────────
     all_dfs   = {}
     avail_map = {}
     fallback_used = []
@@ -641,7 +610,6 @@ def _main():   # ← 原来 main() 的内容改名为 _main()
         if mp and mp.is_file():
             df = _read_matrix(mp, uid, var_targets)
         else:
-            # fallback: 从 master NC 按块扫描
             fallback_used.append(res)
             df = _read_master_records(
                 paths["master"], station_idx,
@@ -655,20 +623,16 @@ def _main():   # ← 原来 main() 的内容改名为 _main()
             avail_map[res] = _availability(df, var_targets)
 
     if fallback_used:
-        print(_c("  提示：{} 的 matrix NC 不存在，已从 master NC 读取（较慢）".format(
+        print(_c("  Note: matrix NetCDF for {} does not exist; read from master NetCDF instead (slower)".format(
             ", ".join(fallback_used)), _C.DIM))
 
-    # ── 打印可用性摘要 ──────────────────────────────────────────────
     _print_availability(avail_map, var_targets)
 
-    # ── 打印时序预览 ────────────────────────────────────────────────
     for res, df in all_dfs.items():
         _print_timeseries(df, var_targets, res, PREVIEW_ROWS)
 
-    # ── 打印来源信息 ────────────────────────────────────────────────
     _print_source_info(meta["sources_used"], meta["source_lookup"])
 
-    # ── 导出 CSV ────────────────────────────────────────────────────
     if OUT_CSV:
         frames = []
         for res, df in all_dfs.items():
@@ -682,7 +646,7 @@ def _main():   # ← 原来 main() 的内容改名为 _main()
             out_path  = Path(OUT_CSV).expanduser().resolve()
             out_path.parent.mkdir(parents=True, exist_ok=True)
             combined.to_csv(out_path, index=False)
-            print(_c("\n已导出 CSV ({:,} 行): {}".format(len(combined), out_path), _C.GREEN))
+            print(_c("\nExported CSV ({:,} rows): {}".format(len(combined), out_path), _C.GREEN))
 
     print()
     return 0

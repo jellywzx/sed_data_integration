@@ -643,8 +643,6 @@ def write_figure_and_artifacts(
                 continue
 
             if use_log[var_name]:
-                # 零值无法取 log10，单独抽出；直方图只对正值取对数，
-                # 零值在下方作为左侧“0”刻度/柱单独标注，不再压入对数轴。
                 positive = values > 0
                 n_zero = int(np.count_nonzero(~positive))
                 plot_values = np.log10(values[positive]) if np.any(positive) else np.asarray([], dtype="float64")

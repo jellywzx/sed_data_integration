@@ -155,16 +155,12 @@ CREATOR_NAME = "Zixin Wei"
 CREATOR_EMAIL = "weizx6@mail2.sysu.edu.cn"
 CREATOR_INSTITUTION = "Sun Yat-sen University"
 
-# institution 表示主要负责产生该数据集的机构。
 DATA_ORIGINATING_INSTITUTION = CREATOR_INSTITUTION
 
-# 负责分配本数据集 ID 的机构域名倒序形式。
 NAMING_AUTHORITY = "doi.org"
 
-# 数据仓库正式发布后填写。
 PUBLISHER_NAME = "Zenodo"
 
-# 数据集引用信息
 CITATION_TEXT = (
     "Wei, Z., Liu, C., Wei, Z., and Dai, Y. (2026): "
     "A Harmonized Global Station-Reference Dataset of River Discharge, "

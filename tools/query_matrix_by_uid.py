@@ -1,36 +1,19 @@
 #!/usr/bin/env python3
-"""
-query_matrix_by_uid.py
-按 cluster_uid 从不同时间分辨率的 matrix NC 文件中查询并输出结果。
-
-功能：
-- 支持 daily / monthly / annual / all
-- 支持 Q / SSC / SSL / all
-- 输出：
-  1) 终端彩色预览
-  2) TXT 报告
-  3) CSV 时序数据
-
-适用对象：
-- s6_basin_matrix_daily.nc
-- s6_basin_matrix_monthly.nc
-- s6_basin_matrix_annual.nc
-"""
+"""Query matrix NetCDF files by cluster_uid across temporal resolutions."""
 
 # ══════════════════════════════════════════════════════════════════════
-# 用户配置区
 # ══════════════════════════════════════════════════════════════════════
 
 from pathlib import Path
 
-CLUSTER_UID = "SED000183"   # 支持 "SED000183" / "183" / "000183"
-OUTPUT_ROOT = None          # Output_r 根目录；None=自动推导
+CLUSTER_UID = "SED000183"
+OUTPUT_ROOT = None
 RESOLUTION  = "all"         # all | daily | monthly | annual
 VARIABLE    = "all"         # all | Q | SSC | SSL
-PREVIEW_ROWS = 20           # 预览行数；0=显示全部
+PREVIEW_ROWS = 20
 
-OUT_CSV = None              # None=自动命名
-OUT_TXT = None              # None=自动命名
+OUT_CSV = None
+OUT_TXT = None
 
 ENABLE_COLOR = True
 
@@ -58,7 +41,6 @@ from pipeline_paths import (
 )
 
 # ─────────────────────────────────────────────────────────────────────
-# 常量
 # ─────────────────────────────────────────────────────────────────────
 VAR_UNITS   = {"Q": "m³/s", "SSC": "mg/L", "SSL": "ton/day"}
 FLAG_LABELS = {0: "good", 1: "est", 2: "suspect", 3: "bad", 9: "missing"}
@@ -69,7 +51,6 @@ MATRIX_FILES = {
 }
 
 # ─────────────────────────────────────────────────────────────────────
-# 颜色工具
 # ─────────────────────────────────────────────────────────────────────
 class _C:
     BCYAN   = "\033[1;36m"
@@ -102,7 +83,6 @@ def _dash(text=""):
     return _c(text if text else "—", _C.DIM)
 
 # ─────────────────────────────────────────────────────────────────────
-# 文本与 UID 工具
 # ─────────────────────────────────────────────────────────────────────
 def _txt(value):
     if value is None:
@@ -140,7 +120,6 @@ def _pct_str(n, total):
     return _c(s, _C.RED)
 
 # ─────────────────────────────────────────────────────────────────────
-# 路径
 # ─────────────────────────────────────────────────────────────────────
 def _paths():
     root = Path(OUTPUT_ROOT).expanduser().resolve() if OUTPUT_ROOT else get_output_r_root(SCRIPT_DIR.parent)
@@ -152,7 +131,6 @@ def _paths():
     }
 
 # ─────────────────────────────────────────────────────────────────────
-# matrix 文件读取
 # ─────────────────────────────────────────────────────────────────────
 def _find_station_index_and_meta(nc_path, uid):
     with nc4.Dataset(str(nc_path), "r") as ds:
@@ -188,13 +166,11 @@ def _find_station_index_and_meta(nc_path, uid):
             "n_sources_in_resolution": _read_scalar("n_sources_in_resolution", int, -1),
         }
 
-        # 如果文件里包含 source_name，可作为 source 索引映射
         if "source_name" in ds.variables:
             meta["source_names"] = _txt_arr(ds.variables["source_name"][:])
         else:
             meta["source_names"] = []
 
-        # 全局属性
         meta["time_type"] = _txt(getattr(ds, "time_type", ""))
         meta["history"] = _txt(getattr(ds, "history", ""))
 
@@ -209,7 +185,7 @@ def _read_matrix_timeseries(nc_path, uid, variables):
 
         row = uids.index(uid)
 
-        # 时间
+        # Time
         if "time" not in ds.variables:
             return None, None
 
@@ -227,7 +203,6 @@ def _read_matrix_timeseries(nc_path, uid, variables):
 
         data = {"time": pd.to_datetime(list(times))}
 
-        # 主变量与 flag
         for var in variables:
             if var in ds.variables:
                 data[var] = np.ma.asarray(ds.variables[var][row, :]).filled(np.nan)
@@ -260,7 +235,6 @@ def _read_matrix_timeseries(nc_path, uid, variables):
     return pd.DataFrame(data), meta
 
 # ─────────────────────────────────────────────────────────────────────
-# 统计
 # ─────────────────────────────────────────────────────────────────────
 def _availability(df, variables):
     if df is None or len(df) == 0:
@@ -294,14 +268,12 @@ def _fmt_time(t, res):
     return ts.strftime("%Y-%m-%d")
 
 # ─────────────────────────────────────────────────────────────────────
-# 打印
 # ─────────────────────────────────────────────────────────────────────
 def _print_station_summary(uid, all_meta):
-    _section("查询对象信息  ·  {}".format(_c(uid, _C.BCYAN)))
+    _section("Query Target  ·  {}".format(_c(uid, _C.BCYAN)))
 
     _row("cluster_uid", _c(uid, _C.BCYAN))
 
-    # 优先从第一个可用分辨率读基础信息
     sample = None
     for _, m in all_meta.items():
         if m:
@@ -309,7 +281,7 @@ def _print_station_summary(uid, all_meta):
             break
 
     if not sample:
-        _row("说明", _dash("未找到任何分辨率数据"))
+        _row("Note", _dash("No resolution data found"))
         return
 
     lat = sample.get("lat", np.nan)
@@ -324,17 +296,17 @@ def _print_station_summary(uid, all_meta):
     else:
         coord = _dash()
 
-    _row("坐标 (lat/lon)", coord)
-    _row("流域面积", "{:,.1f} km²".format(basin_area) if not np.isnan(basin_area) else _dash())
+    _row("Coordinates (lat/lon)", coord)
+    _row("Basin area", "{:,.1f} km²".format(basin_area) if not np.isnan(basin_area) else _dash())
 
     avail_res = [k for k, v in all_meta.items() if v]
-    _row("可用分辨率", " | ".join(avail_res) if avail_res else _dash())
+    _row("Available resolutions", " | ".join(avail_res) if avail_res else _dash())
 
 def _print_resolution_file_info(res, file_path, meta):
-    _section("分辨率文件信息  ·  {}".format(res))
-    _row("文件", str(file_path))
+    _section("Resolution File Information  ·  {}".format(res))
+    _row("File", str(file_path))
     if not meta:
-        _row("状态", _dash("未找到该 UID"))
+        _row("Status", _dash("UID not found"))
         return
 
     _row("time_type", meta.get("time_type", "") or _dash())
@@ -345,13 +317,13 @@ def _print_resolution_file_info(res, file_path, meta):
     _row("n_sources_in_resolution", meta.get("n_sources_in_resolution", -1))
 
 def _print_availability(avail_map, variables):
-    _section("数据可用性摘要")
+    _section("Data Availability Summary")
 
     RW, NW, TW = 12, 10, 28
     VW = 10
 
-    hdr = "{:<{}}{:<{}}{:<{}}".format("分辨率", RW, "有效记录", NW, "时间范围", TW)
-    hdr += "".join("{:<{}}".format("{}有效率".format(v), VW) for v in variables)
+    hdr = "{:<{}}{:<{}}{:<{}}".format("Resolution", RW, "Valid records", NW, "Time range", TW)
+    hdr += "".join("{:<{}}".format("{} valid rate".format(v), VW) for v in variables)
     print("  " + _c(hdr, _C.BOLD))
     print("  " + _c("─" * (RW + NW + TW + VW * len(variables)), _C.DIM))
 
@@ -368,10 +340,10 @@ def _print_availability(avail_map, variables):
         print("  " + line)
 
     if not found:
-        print("  " + _dash("（所有分辨率均无数据）"))
+        print("  " + _dash("(no data for any resolution)"))
 
     print()
-    print("  " + _c("标记说明: 0=good 1=estimated 2=suspect 3=bad 9=missing", _C.DIM))
+    print("  " + _c("Flag meanings: 0=good 1=estimated 2=suspect 3=bad 9=missing", _C.DIM))
 
 def _print_timeseries(df, variables, resolution, max_rows):
     if df is None or len(df) == 0:
@@ -387,19 +359,19 @@ def _print_timeseries(df, variables, resolution, max_rows):
     if max_rows != 0:
         sub = sub.head(max_rows)
 
-    _section("时序数据  ·  {}  (共 {:,} 行，显示 {:,} 行)".format(
+    _section("Time Series Data  ·  {}  ({:,} rows total, showing {:,})".format(
         resolution, n_total, len(sub)
     ))
 
     TW, VW, FW, SW, OW = 13, 12, 10, 16, 6
 
-    hdr = "{:<{}}".format("时间", TW)
+    hdr = "{:<{}}".format("Time", TW)
     for var in variables:
         hdr += "{:<{}}".format("{}({})".format(var, VAR_UNITS.get(var, "")), VW)
     for var in variables:
-        hdr += "{:<{}}".format("{}_标记".format(var), FW)
-    hdr += "{:<{}}".format("来源", SW)
-    hdr += "{:<{}}".format("竞争", OW)
+        hdr += "{:<{}}".format("{}_flag".format(var), FW)
+    hdr += "{:<{}}".format("Source", SW)
+    hdr += "{:<{}}".format("overlap", OW)
 
     print("  " + _c(hdr, _C.BOLD))
     print("  " + _c("─" * (TW + VW * len(variables) + FW * len(variables) + SW + OW), _C.DIM))
@@ -428,12 +400,12 @@ def _print_timeseries(df, variables, resolution, max_rows):
         line += "{:<{}}".format(src, SW)
 
         ovlp = int(row.get("is_overlap", 0))
-        line += _c("{:<{}}".format("是" if ovlp else "否", OW), _C.YELLOW if ovlp else _C.DIM)
+        line += _c("{:<{}}".format("yes" if ovlp else "no", OW), _C.YELLOW if ovlp else _C.DIM)
 
         print("  " + line)
 
     if max_rows != 0 and n_total > max_rows:
-        print("  " + _c("  … 还有 {:,} 行（设置 PREVIEW_ROWS=0 显示全部）".format(
+        print("  " + _c("  … {:,} more rows (set PREVIEW_ROWS=0 to show all)".format(
             n_total - max_rows
         ), _C.DIM))
 
@@ -441,7 +413,7 @@ def _print_basic_stats(df, variables, resolution):
     if df is None or len(df) == 0:
         return
 
-    _section("统计摘要  ·  {}".format(resolution))
+    _section("Statistics Summary  ·  {}".format(resolution))
 
     for var in variables:
         if var not in df.columns:
@@ -473,7 +445,6 @@ class _Tee:
         self._file.flush()
 
 # ─────────────────────────────────────────────────────────────────────
-# 输出文件命名
 # ─────────────────────────────────────────────────────────────────────
 def _ensure_output_names(uid):
     global OUT_CSV, OUT_TXT
@@ -483,11 +454,10 @@ def _ensure_output_names(uid):
         OUT_TXT = str(SCRIPT_DIR / "{}_matrix_query.txt".format(uid))
 
 # ─────────────────────────────────────────────────────────────────────
-# 主流程
 # ─────────────────────────────────────────────────────────────────────
 def _main():
     if not HAS_NC:
-        print("错误：需要安装 netCDF4。请运行: pip install netCDF4")
+        print("Error: netCDF4 is required. Run: pip install netCDF4")
         return 1
 
     uid = _normalize_uid(CLUSTER_UID)
@@ -496,13 +466,13 @@ def _main():
     paths = _paths()
     matrix_dir = paths["matrix_dir"]
 
-    print(_c("\n正在查询 matrix NC: {}  (from {})".format(
+    print(_c("\nQuerying matrix NC: {}  (from {})".format(
         uid, matrix_dir
     ), _C.BOLD))
 
     if not matrix_dir.is_dir():
-        print(_c("错误：找不到 matrix 目录", _C.RED))
-        print("  期望路径: {}".format(matrix_dir))
+        print(_c("Error: matrix directory not found", _C.RED))
+        print("  Expected path: {}".format(matrix_dir))
         return 1
 
     res_targets = ["daily", "monthly", "annual"] if RESOLUTION == "all" else [RESOLUTION]
@@ -512,7 +482,6 @@ def _main():
     all_dfs = {}
     avail_map = {}
 
-    # 先逐个分辨率查
     for res in res_targets:
         nc_path = paths.get("matrix_" + res)
         if nc_path is None or not nc_path.is_file():
@@ -537,11 +506,9 @@ def _main():
             all_dfs[res] = df
             avail_map[res] = _availability(df, var_targets)
 
-    # 如果所有分辨率都没找到，给出提示
     if not any(v is not None for v in all_meta.values()):
-        print(_c("错误：在目标 matrix 文件中找不到 cluster_uid: {}".format(uid), _C.RED))
+        print(_c("Error: cluster_uid not found in target matrix files: {}".format(uid), _C.RED))
 
-        # 尝试从任意一个存在的文件里拿些 UID 示例
         sample_uids = []
         for res in ["daily", "monthly", "annual"]:
             p = paths.get("matrix_" + res)
@@ -552,20 +519,16 @@ def _main():
                     break
 
         if sample_uids:
-            print("  示例 UID: {}".format(", ".join(sample_uids)))
+            print("  Example UIDs: {}".format(", ".join(sample_uids)))
         return 1
 
-    # 打印基础信息
     _print_station_summary(uid, all_meta)
 
-    # 每个分辨率输出文件信息
     for res in res_targets:
         _print_resolution_file_info(res, paths.get("matrix_" + res), all_meta.get(res))
 
-    # 可用性摘要
     _print_availability(avail_map, var_targets)
 
-    # 每个分辨率详细输出
     for res in res_targets:
         df = all_dfs.get(res)
         if df is None or len(df) == 0:
@@ -573,7 +536,6 @@ def _main():
         _print_basic_stats(df, var_targets, res)
         _print_timeseries(df, var_targets, res, PREVIEW_ROWS)
 
-    # 导出 CSV
     if all_dfs and OUT_CSV:
         frames = []
         for res, df in all_dfs.items():
@@ -590,7 +552,7 @@ def _main():
         out_path = Path(OUT_CSV).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_csv(out_path, index=False)
-        print(_c("\n已导出 CSV ({:,} 行): {}".format(len(combined), out_path), _C.GREEN))
+        print(_c("\nExported CSV ({:,} rows): {}".format(len(combined), out_path), _C.GREEN))
 
     print()
     return 0
@@ -614,7 +576,7 @@ def main():
         if txt_file:
             sys.stdout = sys.stdout._stdout
             txt_file.close()
-            print("已保存输出到: {}".format(OUT_TXT))
+            print("Saved output to: {}".format(OUT_TXT))
 
 if __name__ == "__main__":
     sys.exit(main())
