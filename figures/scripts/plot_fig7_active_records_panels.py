@@ -100,7 +100,7 @@ STYLE = {
     "dpi": 300,
 
     # Font family (ESSD §6)
-    "font_family": "DejaVu Sans",
+    "font_family": "Times New Roman",
 
     # Font sizes (ESSD: min 7 pt — all values below are ≥ 9)
     "panel_label_size": 15,
@@ -114,6 +114,19 @@ STYLE = {
     # Grid
     "grid_alpha": 0.3,
 }
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 
 def ensure_figure_dirs(figures_root: Path) -> dict:
@@ -224,6 +237,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
     """Plot three-panel active-records figure and save companion artifacts."""
     plt = setup_matplotlib()
     plt.rcParams["font.family"] = STYLE["font_family"]
+    plt.rcParams["mathtext.fontset"] = "stix"
     plt.rcParams["pdf.fonttype"] = 42
     plt.rcParams["ps.fonttype"] = 42
     plt.rcParams["axes.labelsize"] = STYLE["axis_label_size"]
@@ -236,7 +250,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
     panels = [
         ("active_clusters", "Active stations", "Active clusters by year"),
         ("record_count_any", "Record count", "Record count by year"),
-        ("complete_triplet_ratio", "Complete Q\u2013SSC\u2013SSL cells (%)", "Complete Q\u2013SSC\u2013SSL triplets / any records"),
+        ("complete_triplet_ratio", "Complete Q\u2013SSC\u2013SSL triplets (%)", "Complete Q\u2013SSC\u2013SSL triplets / any records"),
     ]
 
     for idx, (ax, (value_col, ylabel, title)) in enumerate(zip(axes, panels)):
@@ -272,8 +286,7 @@ def write_figure_and_artifacts(by_year: pd.DataFrame, figure_dirs: dict, figure_
             1.1,
             f"({chr(97 + index)})",
             transform=ax.transAxes,
-            fontsize=STYLE["panel_label_size"],
-            fontweight="bold",
+            fontproperties=bold_font(STYLE["panel_label_size"]),
             va="top",
             ha="left",
         )

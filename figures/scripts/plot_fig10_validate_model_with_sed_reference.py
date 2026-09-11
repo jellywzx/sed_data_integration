@@ -29,19 +29,19 @@ import pandas as pd
 # ============================================================
 VARIABLES = {
     "Q": {
-        "unit": "m³ s⁻¹",
+        "unit": "m$^3$ s$^{-1}$",
         "metric_name": "Q_m3_s-1",
         "ref_col": "Q_reference_m3_s-1",
         "model_col": "Q_model_m3_s-1",
     },
     "SSC": {
-        "unit": "mg L⁻¹",
+        "unit": "mg L$^{-1}$",
         "metric_name": "SSC_mg_L",
         "ref_col": "SSC_reference_mg_L",
         "model_col": "SSC_model_mg_L",
     },
     "SSL": {
-        "unit": "t d⁻¹",
+        "unit": "t d$^{-1}$",
         "metric_name": "SSL_t_day",
         "ref_col": "SSL_reference_t_day",
         "model_col": "SSL_model_t_day",
@@ -81,6 +81,19 @@ FONT_TICK = 18
 FONT_ANNOTATION = 18
 FONT_ANNOTATION_SMALL = 16
 FONT_FALLBACK = 18            # fallback "data not available" text
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 
 # ============================================================
@@ -243,11 +256,10 @@ def add_panel_label(ax, label: str) -> None:
     ax.text(
         -0.07, 1.02, label,
         transform=ax.transAxes,
-        fontsize=FONT_TITLE,
         ha="left",
         va="bottom",
         clip_on=False,
-        fontweight="bold",
+        fontproperties=bold_font(FONT_TITLE),
     )
 
 
@@ -604,7 +616,7 @@ def plot_panel_c_Q(ax, extract_dir: str) -> None:
             label="Observed Q", alpha=0.85)
 
     ax.set_xlabel("Time", fontsize=FONT_LABEL)
-    ax.set_ylabel("Q (m³ s⁻¹)", fontsize=FONT_LABEL)
+    ax.set_ylabel("Q (m$^3$ s$^{-1}$)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
     apply_scientific_y_axis(ax)
@@ -673,22 +685,22 @@ def plot_panel_d_SSL(ax, extract_dir: str) -> None:
         sed_df["sediment_flux (10³ t/day)"],
         mdl_df["sedout (10³ t/day)"]
     ], axis=1, join="inner").dropna()
-    merged.columns = ["Observed (10³ t/day)", "Model (10³ t/day)"]
+    merged.columns = ["observed_ssl_10e3_t_day", "model_ssl_10e3_t_day"]
 
     if merged.empty:
         ax.text(0.5, 0.5, "No overlapping SSL data",
                 transform=ax.transAxes, ha="center", va="center", fontsize=FONT_FALLBACK, style="italic")
         return
 
-    r_pearson = merged["Observed (10³ t/day)"].corr(merged["Model (10³ t/day)"], method="pearson")
+    r_pearson = merged["observed_ssl_10e3_t_day"].corr(merged["model_ssl_10e3_t_day"], method="pearson")
 
-    ax.scatter(merged.index, merged["Observed (10³ t/day)"],
+    ax.scatter(merged.index, merged["observed_ssl_10e3_t_day"],
                color="tab:red", s=15, alpha=0.6, zorder=3, label="Observed SSL")
-    ax.plot(merged.index, merged["Model (10³ t/day)"],
+    ax.plot(merged.index, merged["model_ssl_10e3_t_day"],
             color="tab:blue", linewidth=1.5, label="Model SSL", alpha=0.85)
 
     ax.set_xlabel("Time", fontsize=FONT_LABEL)
-    ax.set_ylabel("SSL (10³ t d⁻¹)", fontsize=FONT_LABEL)
+    ax.set_ylabel("SSL (10$^3$ t d$^{-1}$)", fontsize=FONT_LABEL)
     ax.set_xlim(pd.Timestamp("2001-01-01"), pd.Timestamp("2005-12-31"))
     apply_axis_font_sizes(ax)
     apply_scientific_y_axis(ax)
@@ -898,8 +910,8 @@ def write_figure_checklist(
     head += "\n- Figure remains interpretable under color-vision-deficiency simulation:"
     head += "\n- Categories are distinguished by more than color when needed: Yes (marker shapes + line styles)"
     head += "\n\n## Font and text"
-    head += "\n\n- Single font family used: Yes (DejaVu Sans)"
-    head += "\n- Font family: DejaVu Sans"
+    head += "\n\n- Single font family used: Yes (Times New Roman)"
+    head += "\n- Font family: Times New Roman"
     head += "\n- Fonts embedded in vector file:"
     head += "\n- No unnecessary bold/italic variants: Yes"
     head += "\n- No hidden text boxes or extra layers: Yes"
@@ -966,7 +978,8 @@ def make_paper_figure(
     import matplotlib.pyplot as plt
 
     # --- ESSD-compliant font and vector settings (ESSD §16) ---
-    matplotlib.rcParams["font.family"] = "DejaVu Sans"
+    matplotlib.rcParams["font.family"] = "Times New Roman"
+    matplotlib.rcParams["mathtext.fontset"] = "stix"
     matplotlib.rcParams["pdf.fonttype"] = 42
     matplotlib.rcParams["ps.fonttype"] = 42
     matplotlib.rcParams["axes.unicode_minus"] = False

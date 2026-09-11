@@ -48,12 +48,12 @@ DPI = 300
 FIGSIZE = (12, 14)
 FIGURE_ID = "fig6_composite_spatial_coverage_manu_order"
 FONT_SIZES = {
-    "map_tick": 9,
-    "panel_label": 15,
-    "empty_message": 10,
-    "inset_axis": 10,
-    "legend_title": 11,
-    "legend_text": 10,
+    "map_tick": 12,
+    "panel_label": 18,
+    "empty_message": 13,
+    "inset_axis": 13,
+    "legend_title": 14,
+    "legend_text": 13,
 }
 MIN_VISIBLE_FONT_SIZE = min(FONT_SIZES["inset_axis"], FONT_SIZES["legend_text"])
 LEGEND_FIRST_ROW_Y = {
@@ -61,6 +61,19 @@ LEGEND_FIRST_ROW_Y = {
     "panel_b": 0.68,
     "panel_c": 0.76,
 }
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 OKABE_ITO = {
     "black": "#000000",
@@ -158,7 +171,8 @@ def _require_columns(frame: pd.DataFrame, required: Iterable[str], source_name: 
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -426,8 +440,7 @@ def add_panel_label(ax, label: str) -> None:
         0.97,
         label,
         transform=ax.transAxes,
-        fontsize=FONT_SIZES["panel_label"],
-        fontweight="bold",
+        fontproperties=bold_font(FONT_SIZES["panel_label"]),
         va="top",
         ha="left",
         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.85),
@@ -466,7 +479,7 @@ def draw_area_hist(ax, area_dist: pd.DataFrame, color: str) -> None:
     ax.set_yticks(np.linspace(0, y_max, 3))
     ax.tick_params(axis="both", labelsize=FONT_SIZES["inset_axis"], direction="in", pad=1)
     ax.set_ylabel("Count", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
-    ax.set_xlabel("Basin area (km²)", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
+    ax.set_xlabel("Basin area (km$^2$)", fontsize=FONT_SIZES["inset_axis"], labelpad=0)
     ax.grid(axis="y", linewidth=0.3, alpha=0.55)
     ax.yaxis.set_label_position("right")
     ax.yaxis.tick_right()
@@ -496,7 +509,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
 
     legend_ax = add_inset_axes(ax, [0.60, 0.01, 0.39, 0.38])
     legend_ax.axis("off")
-    legend_ax.text(0.08, 0.92, "Basin status", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, 0.92, "Basin status", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     total = len(df)
     y = LEGEND_FIRST_ROW_Y["panel_c"]
     for status in ("resolved", "unresolved", "unknown"):
@@ -518,7 +531,7 @@ def draw_cluster_map(ax, clusters: pd.DataFrame, area_dist: pd.DataFrame) -> Non
         legend_ax.text(0.17, y, "{} ({})".format(status, count), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.15
     legend_ax.text(0.08, y - 0.03, "Total stations: {}".format(total), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
-    legend_ax.text(0.08, y - 0.15, "Point size: basin area (km²)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, y - 0.15, "Point size: basin area (km$^2$)", fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     sample_y = y - 0.29
     for area_value, x_dot in ((100, 0.14), (10000, 0.39), (100000, 0.67)):
         legend_ax.scatter(
@@ -564,9 +577,9 @@ def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame
             zorder=3,
         )
 
-    legend_ax = add_inset_axes(ax, [0.63, 0.00, 0.30, 0.28])
+    legend_ax = add_inset_axes(ax, [0.63, 0.05, 0.30, 0.28])
     legend_ax.axis("off")
-    legend_ax.text(0.08, 0.92, "Data source", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.08, 0.92, "Data source", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     y = LEGEND_FIRST_ROW_Y["panel_b"]
     for source, group in df.groupby("source", dropna=False):
         color = SOURCE_COLORS.get(source, SOURCE_COLORS["Unknown"])
@@ -630,7 +643,7 @@ def draw_climatology_timeseries_map(ax, climatology: pd.DataFrame, timeseries: d
 
     legend_ax = add_inset_axes(ax, [0.01, 0.0, 0.32, 0.34])
     legend_ax.axis("off")
-    legend_ax.text(0.06, 0.92, "Data resolution", fontsize=FONT_SIZES["legend_title"], fontweight="bold", transform=legend_ax.transAxes, va="top")
+    legend_ax.text(0.06, 0.92, "Data resolution", fontproperties=bold_font(FONT_SIZES["legend_title"]), transform=legend_ax.transAxes, va="top")
     items = []
     for label in ("Daily", "Monthly", "Annual"):
         frame = timeseries[label]
@@ -778,9 +791,9 @@ def write_checklist(
         "- Intended size: {:.1f} x {:.1f} cm ({:.1f} x {:.1f} in)".format(width_cm, height_cm, figsize[0], figsize[1]),
         "- PDF page size: {}".format(pdf_page_size(pdfinfo_output) if pdfinfo_ok else "not checked ({})".format(pdfinfo_output)),
         "- Width >= 8 cm: yes",
-        "- Font family: DejaVu Sans",
+        "- Font family: Times New Roman",
         "- Minimum visible font size: {} pt".format(MIN_VISIBLE_FONT_SIZE),
-        "- Font consistency: one sans-serif family set in Matplotlib rcParams",
+        "- Font consistency: one serif family set in Matplotlib rcParams",
         "- Font embedding status: {}".format(font_embedding_status(pdffonts_output) if pdffonts_ok else "not checked ({})".format(pdffonts_output)),
         "- PDF font check command: `pdffonts {}`".format(pdf_path),
         "- PDF size check command: `pdfinfo {}`".format(pdf_path),
@@ -788,7 +801,7 @@ def write_checklist(
         "- Coblis/equivalent review: requires manual Coblis/equivalent review after export",
         "- Legend completeness: colors, marker shapes, point-size meaning, and transparency meaning are explained in figure legends",
         "- Panel labels: lowercase labels with parentheses, `(a)`, `(b)`, `(c)`",
-        "- Units and bins: basin area uses km²; histogram x-axis labels use single scientific-notation bin upper bounds",
+        "- Units and bins: basin area uses km$^2$; histogram x-axis labels use single scientific-notation bin upper bounds",
         "- Plotting script: `{}`".format(script_copy_path.name),
         "- Plotting-data availability: {} CSV files".format(len(data_paths)),
     ]

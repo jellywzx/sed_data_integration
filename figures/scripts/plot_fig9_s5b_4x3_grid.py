@@ -46,8 +46,8 @@ PARAMS = {
 # All font-size and visual-style parameters are managed here — a single place
 # to adjust text sizes, marker sizes, and grid appearance.
 STYLE = {
-    # Font family (ESSD: single sans-serif)
-    "font_family": "DejaVu Sans",
+    # Font family (ESSD: single serif)
+    "font_family": "Times New Roman",
     # Font sizes (ESSD §6: all visible text >= 7 pt)
     "panel_label_size": 16,
     "axis_label_size": 15,
@@ -63,6 +63,19 @@ STYLE = {
     # Grid
     "grid_alpha": 0.25,
 }
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 CM_PER_INCH = 2.54
 WINDOW_EXCLUSIVE = False
@@ -381,6 +394,7 @@ def _setup_matplotlib():
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update({
         "font.family": STYLE["font_family"],
+        "mathtext.fontset": "stix",
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
         "axes.labelsize": STYLE["axis_label_size"],
@@ -499,10 +513,10 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
             # axis labels: only on last row (x) and left column (y)
             if row_idx == n_rows - 1 and col_idx == 1:
-                ax.set_xlabel("Station-reference {} (mg L⁻¹)".format(variable),
+                ax.set_xlabel("Station-reference {} (mg L$^{{-1}}$)".format(variable),
                               fontsize=STYLE["axis_label_size"])
             if row_idx == 1 and col_idx == 0:
-                ax.set_ylabel("Satellite-derived {} (mg L⁻¹)".format(variable),
+                ax.set_ylabel("Satellite-derived {} (mg L$^{{-1}}$)".format(variable),
                               fontsize=STYLE["axis_label_size"])
 
             ax.grid(True, alpha=STYLE["grid_alpha"])
@@ -511,7 +525,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
 
             # Scientific notation for first row axes
             if row_idx == 0:
-                ax.ticklabel_format(style='scientific', scilimits=(0, 0), axis='both')
+                ax.ticklabel_format(style='scientific', scilimits=(0, 0), axis='both', useMathText=True)
                 ax.yaxis.get_offset_text().set_position((-0.14, 1.02))
                 ax.xaxis.get_offset_text().set_position((1.11,0))
                 
@@ -521,8 +535,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 0.0, 1.1,
                 "({})".format(chr(97 + panel_idx)),
                 transform=ax.transAxes,
-                fontsize=STYLE["panel_label_size"],
-                fontweight="bold",
+                fontproperties=bold_font(STYLE["panel_label_size"]),
                 va="top", ha="left",
             )
 
@@ -539,7 +552,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
                 "n_clusters = {}".format(n_clusters),
                 "r = {:.3f}".format(r_pearson) if np.isfinite(r_pearson) else "r = NaN",
                 "ρ = {:.3f}".format(r_spearman) if np.isfinite(r_spearman) else "ρ = NaN",
-                "R² = {:.3f}".format(r2) if np.isfinite(r2) else "R² = NaN",
+                "R$^2$ = {:.3f}".format(r2) if np.isfinite(r2) else "R$^2$ = NaN",
             ]
             ax.text(
                 0.98, 0.02, "\n".join(corr_lines),
@@ -561,8 +574,7 @@ def make_4x3_grid(plt, pair_records, variable="SSC", figure_id=None):
             0.98, 0.93,
             label,
             transform=ax.transAxes,
-            fontsize=STYLE["legend_text_size"],
-            fontweight="bold",
+            fontproperties=bold_font(STYLE["legend_text_size"]),
             va="top", ha="right",
             color=sp_color,
         )
@@ -644,8 +656,8 @@ def write_checklist(figure_id, fig, windows_used, dpi, checklist_path,
         "- Panel labels use `(a)`, `(b)`, etc.: Yes",
         "- Ranges use en dash with no spaces: N/A",
         "- Coordinates use degree symbol and direction spacing: N/A",
-        "- Numbers and units have a space: Yes (e.g. \"mg L⁻¹\")",
-        "- Units use exponent format: Yes (e.g. mg L⁻¹)",
+        "- Numbers and units have a space: Yes (e.g. \"mg L$^{-1}$\")",
+        "- Units use exponent format: Yes (e.g. mg L$^{-1}$)",
         "- h, km, and m abbreviations used correctly: N/A",
         "",
         "## Reproducibility",
@@ -701,6 +713,7 @@ def main(argv: Optional[Sequence[str]] = None):
     configure_matplotlib(plt)
     plt.rcParams.update({
         "font.family": STYLE["font_family"],
+        "mathtext.fontset": "stix",
         "axes.labelsize": STYLE["axis_label_size"],
         "axes.titlesize": STYLE["title_size"],
         "xtick.labelsize": STYLE["tick_label_size"],

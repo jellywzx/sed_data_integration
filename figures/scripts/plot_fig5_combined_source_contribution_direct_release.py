@@ -34,6 +34,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 from matplotlib.lines import Line2D
 from matplotlib.ticker import AutoMinorLocator
 from matplotlib.patches import Patch
@@ -62,20 +63,18 @@ HEIGHT_CM = 45.0
 DPI = 300
 CM_PER_INCH = 2.54
 
-FONT_SIZE = 18
-AXES_LABEL_SIZE = 18
-AXES_TITLE_SIZE = 16
-TICK_LABEL_SIZE = 16
-LEGEND_FONT_SIZE = 16
-PANEL_LABEL_SIZE = 20
-MIN_VISIBLE_FONT_SIZE = 16
+FONT_SIZE = 21
+AXES_LABEL_SIZE = 21
+AXES_TITLE_SIZE = 20
+TICK_LABEL_SIZE = 20
+LEGEND_FONT_SIZE = 20
+PANEL_LABEL_SIZE = 23
+MIN_VISIBLE_FONT_SIZE = 18
 
 SPATIAL_COLOR = "#0072B2"
 TEMPORAL_LINE_COLOR = "#222222"
-TEMPORAL_POINT_COLOR = "#E69F00"
 TEMPORAL_LINE_WIDTH = 2
 TEMPORAL_LINE_ALPHA = 0.6
-TEMPORAL_POINT_SIZE = 100
 RESOLUTION_COLORS = {
     "daily": "#0072B2",
     "monthly": "#009E73",
@@ -118,7 +117,8 @@ HSPACE_SUB = 0.7
 def configure_matplotlib() -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -613,16 +613,6 @@ def plot_other_product_panel(
                 alpha=TEMPORAL_LINE_ALPHA,
                 zorder=3,
             )
-        ax_year.scatter(
-            time_df["last_year"],
-            time_y,
-            s=TEMPORAL_POINT_SIZE,
-            color=TEMPORAL_POINT_COLOR,
-            alpha=0.82,
-            edgecolor="white",
-            linewidth=0.5,
-            zorder=4,
-        )
         _set_year_limits(ax_year, time_df)
 
     ax_year.set_xlabel("Year", color=TEMPORAL_LINE_COLOR)
@@ -699,16 +689,6 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
                 alpha=TEMPORAL_LINE_ALPHA,
                 zorder=3,
             )
-        ax_year.scatter(
-            time_df["last_year"],
-            time_y,
-            s=TEMPORAL_POINT_SIZE,
-            color=TEMPORAL_POINT_COLOR,
-            alpha=0.82,
-            edgecolor="white",
-            linewidth=0.5,
-            zorder=4,
-        )
         _set_year_limits(ax_year, time_df)
 
     annotate_cluster_counts_on_twin(ax_cluster, ax_year, df, y)
@@ -719,13 +699,20 @@ def draw_main_source_panel(ax_cluster, df: pd.DataFrame) -> None:
 
 
 def add_panel_label(ax, label: str, x: float = -0.12, y: float = 1.25) -> None:
+    bold_font = font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=PANEL_LABEL_SIZE,
+        weight="bold",
+    )
     ax.text(
         x,
         y,
         label,
         transform=ax.transAxes,
-        fontsize=PANEL_LABEL_SIZE,
-        fontweight="bold",
+        fontproperties=bold_font,
         va="top",
         ha="left",
         bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9, "pad": 2.2},
@@ -765,17 +752,6 @@ def legend_handles() -> List[object]:
             color=TEMPORAL_LINE_COLOR,
             linewidth=TEMPORAL_LINE_WIDTH,
             label="temporal span",
-        ),
-
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            linestyle="none",
-            markerfacecolor=TEMPORAL_POINT_COLOR,
-            markeredgecolor="white",
-            markersize=7,
-            label="span end",
         ),
     ]
 
@@ -892,7 +868,7 @@ def write_combined_checklist(
 - Panel labels: (a), (b)
 
 ## Fonts
-- Font family: DejaVu Sans
+- Font family: Times New Roman
 - Minimum visible font size: {} pt
 - Single font family used: yes
 - Font embedding setting: pdf.fonttype = 42

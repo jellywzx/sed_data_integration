@@ -64,7 +64,7 @@ FONT_SIZE_AXIS_LABEL = 15
 FONT_SIZE_LEGEND = 11.5
 FONT_SIZE_PANEL_LABEL = 20
 
-STATION_CATALOG_CSV = "station_catalog.csv"
+SOURCE_STATION_CATALOG_CSV = "source_station_catalog.csv"
 RESOLUTION_NC_FILES = {
     "daily": "sed_reference_timeseries_daily.nc",
     "monthly": "sed_reference_timeseries_monthly.nc",
@@ -77,6 +77,19 @@ UNKNOWN_DATASET_LABEL = "unknown dataset"
 SATELLITE_DATASETS = {"Dethier", "GSED", "RiverSed (USA)"}
 # SATELLITE_SOURCE_ORDER = ["RiverSed", "GSED", "Dethier"]
 MIN_LAT = -60  # southern extent bound, excluding Antarctica
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 SOURCE_NAME_ALIASES = {
     "ALi_De_Boer": "Ali and De Boer",
@@ -93,17 +106,6 @@ SOURCE_NAME_ALIASES = {
     "Yajiang": "Yajiang",
     "Chao_Phraya_River": "Chao Phraya",
     "Mekong_Delta": "Mekong Delta",
-}
-
-CLIMATOLOGY_SOURCE_NAMES = {
-    "Milliman",
-    "Milliman & Farnsworth",
-    "HMA",
-    "High Mountain Asia (HMA)",
-    "Ali and De Boer",
-    "Ali & De Boer (Upper Indus)",
-    "Vanmaercke",
-    "Vanmaercke et al.",
 }
 
 OKABE_ITO = {
@@ -177,7 +179,8 @@ PREFERRED_LEGEND_LABEL_ORDER = [
 def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Sans",
+            "font.family": "Times New Roman",
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "svg.fonttype": "none",
@@ -255,8 +258,8 @@ def write_checklist(
         "- Intended size: {:.1f} x {:.1f} cm ({:.1f} x {:.1f} in)".format(width_cm, height_cm, figsize[0], figsize[1]),
         "- PDF page size: {}".format(pdf_page_size(pdfinfo_output) if pdfinfo_ok else "not checked ({})".format(pdfinfo_output)),
         "- Width >= 8 cm: yes",
-        "- Font family: DejaVu Sans",
-        "- Font consistency: one sans-serif family set in Matplotlib rcParams",
+        "- Font family: Times New Roman",
+        "- Font consistency: one serif family set in Matplotlib rcParams",
         "- Font embedding status: {}".format(font_embedding_status(pdffonts_output) if pdffonts_ok else "not checked ({})".format(pdffonts_output)),
         "- PDF font check command: `pdffonts {}`".format(pdf_path),
         "- PDF size check command: `pdfinfo {}`".format(pdf_path),
@@ -266,7 +269,7 @@ def write_checklist(
         "- Panel labels: `(a)` released daily/monthly/annual and climatology source datasets",
         "- Units and ranges: source-point counts use comma-separated integers; lat/lon in degrees",
         "- Map projection: Robinson (global map)",
-        "- Data filtering: uses released daily/monthly/annual NetCDF files joined to station_catalog.csv plus sed_reference_climatology.nc; excludes satellite products",
+        "- Data filtering: uses released daily/monthly/annual NetCDF files joined to source_station_catalog.csv plus sed_reference_climatology.nc; excludes satellite products",
         "- Plotting script: `{}`".format(script_copy_path.name),
         "- Plotting-data availability: {} CSV files".format(len(data_paths)),
     ]
@@ -289,14 +292,16 @@ def write_plotting_data(
     catalog: pd.DataFrame,
     top_sources: List[str],
     category_counts: Dict[str, int],
+    legend_counts: pd.DataFrame,
 ) -> List[Path]:
     outputs = [
-        _write_csv(points[["cluster_uid", "resolution", "lat", "lon", "source_name", "category", "input_file"]],
+        _write_csv(points[["cluster_uid", "resolution", "lat", "lon", "source_name", "category", "legend_group", "input_file"]],
                     data_dir / "{}_panel_a_source_points.csv".format(figure_id)),
         _write_csv(catalog[catalog["source_name"].isin(top_sources)],
                     data_dir / "{}_panel_a_top_sources.csv".format(figure_id)),
         _write_csv(pd.DataFrame(list(category_counts.items()), columns=["category", "n_source_points"]),
                     data_dir / "{}_panel_a_category_counts.csv".format(figure_id)),
+        _write_csv(legend_counts, data_dir / "{}_panel_a_legend_counts.csv".format(figure_id)),
         # _write_csv(satellite_points[["lat", "lon", "source", "input_file"]],
         #             data_dir / "{}_panel_b_satellite_points.csv".format(figure_id)),
         # _write_csv(pd.DataFrame(list(satellite_counts.items()), columns=["source", "n_stations"]),
@@ -381,47 +386,53 @@ def canonical_source_name(name: object, catalog_names: Iterable[str]) -> str:
     return text
 
 
-def split_sources(value: object) -> list[str]:
-    sources = []
-    for part in clean_text(value).replace(",", "|").split("|"):
-        source = canonical_source_name(part, [])
-        if source and source not in sources:
-            sources.append(source)
-    return sources
-
-
-def read_station_catalog(release_dir: Path) -> pd.DataFrame:
-    path = require_file(release_dir / STATION_CATALOG_CSV)
+def read_source_station_catalog(release_dir: Path) -> pd.DataFrame:
+    path = require_file(release_dir / SOURCE_STATION_CATALOG_CSV)
     catalog = pd.read_csv(path)
-    required = {"cluster_uid", "resolution", "sources_used"}
+    required = {"source_name", "cluster_uid", "resolution"}
     missing = sorted(required.difference(catalog.columns))
     if missing:
         raise ValueError("{} is missing columns: {}".format(path, ", ".join(missing)))
 
-    out = catalog[["cluster_uid", "resolution", "sources_used"]].copy()
+    out = catalog[["source_name", "cluster_uid", "resolution"]].copy()
+    out["source_name"] = out["source_name"].map(clean_text)
     out["cluster_uid"] = out["cluster_uid"].map(clean_text)
     out["resolution"] = out["resolution"].map(clean_text)
-    out["sources_used"] = out["sources_used"].map(clean_text)
-    out = out[out["cluster_uid"].ne("") & out["resolution"].ne("")].copy()
+    out = out[out["source_name"].ne("") & out["cluster_uid"].ne("") & out["resolution"].ne("")].copy()
+    if out.empty:
+        raise ValueError("{} has no usable source station rows".format(path))
 
-    duplicate_keys = out.duplicated(["cluster_uid", "resolution"], keep=False)
+    duplicate_keys = out.duplicated(["source_name", "cluster_uid", "resolution"], keep=False)
     if duplicate_keys.any():
-        examples = out.loc[duplicate_keys, ["cluster_uid", "resolution"]].drop_duplicates().head(10)
+        original_count = len(out)
+        out = out.drop_duplicates(["source_name", "cluster_uid", "resolution"], keep="first")
+        duplicate_count = original_count - len(out)
+        print(
+            "Removed {} duplicate source_station_catalog rows with repeated source_name + cluster_uid + resolution.".format(
+                duplicate_count
+            )
+        )
+    return out.reset_index(drop=True)
+
+
+def merge_source_station_membership(nc_points: pd.DataFrame, source_catalog: pd.DataFrame) -> pd.DataFrame:
+    merged = source_catalog.merge(
+        nc_points,
+        on=["cluster_uid", "resolution"],
+        how="left",
+        validate="many_to_one",
+        indicator=True,
+    )
+    missing = merged["_merge"].ne("both")
+    if missing.any():
+        examples = merged.loc[missing, ["source_name", "cluster_uid", "resolution"]].head(10)
         raise ValueError(
-            "{} has duplicate cluster_uid + resolution rows:\n{}".format(
-                path,
+            "{} source-station rows are missing from released resolution NetCDF points:\n{}".format(
+                int(missing.sum()),
                 examples.to_string(index=False),
             )
         )
-    if out["sources_used"].eq("").any():
-        examples = out.loc[out["sources_used"].eq(""), ["cluster_uid", "resolution"]].head(10)
-        raise ValueError(
-            "{} has rows with empty sources_used:\n{}".format(
-                path,
-                examples.to_string(index=False),
-            )
-        )
-    return out
+    return merged.drop(columns=["_merge"])
 
 
 # def read_satellite_catalog(release_dir: Path) -> pd.DataFrame:
@@ -506,23 +517,6 @@ def read_climatology_points(release_dir: Path) -> pd.DataFrame:
     return out[out["source_name"].ne("")].copy()
 
 
-def explode_sources(frame: pd.DataFrame) -> pd.DataFrame:
-    rows = []
-    for _, row in frame.iterrows():
-        for source_name in split_sources(row["sources_used"]):
-            rows.append(
-                {
-                    "cluster_uid": row["cluster_uid"],
-                    "resolution": row["resolution"],
-                    "lat": row["lat"],
-                    "lon": row["lon"],
-                    "source_name": source_name,
-                    "input_file": row["input_file"],
-                }
-            )
-    return pd.DataFrame(rows)
-
-
 def build_source_catalog(points: pd.DataFrame) -> pd.DataFrame:
     if points.empty:
         return pd.DataFrame(columns=["source_name", "n_source_points"])
@@ -537,32 +531,17 @@ def build_source_catalog(points: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_all_points(release_dir: Path) -> Tuple[pd.DataFrame, pd.Series]:
-    station_catalog = read_station_catalog(release_dir)
-    input_counts = {STATION_CATALOG_CSV: len(station_catalog)}
-    frames = []
+    source_catalog = read_source_station_catalog(release_dir)
+    input_counts = {SOURCE_STATION_CATALOG_CSV: len(source_catalog)}
+    nc_frames = []
 
     for resolution, file_name in RESOLUTION_NC_FILES.items():
         nc_points = read_release_nc_points(release_dir, resolution, file_name)
         input_counts[file_name] = len(nc_points)
-        merged = nc_points.merge(
-            station_catalog,
-            on=["cluster_uid", "resolution"],
-            how="left",
-            validate="one_to_one",
-            indicator=True,
-        )
-        missing = merged["_merge"].ne("both")
-        if missing.any():
-            examples = merged.loc[missing, ["cluster_uid", "resolution"]].head(10)
-            raise ValueError(
-                "{} stations are missing from {} for {}:\n{}".format(
-                    int(missing.sum()),
-                    STATION_CATALOG_CSV,
-                    file_name,
-                    examples.to_string(index=False),
-                )
-            )
-        frames.append(explode_sources(merged.drop(columns=["_merge"])))
+        nc_frames.append(nc_points)
+
+    release_points = pd.concat(nc_frames, ignore_index=True) if nc_frames else pd.DataFrame()
+    frames = [merge_source_station_membership(release_points, source_catalog)]
 
     climatology_points = read_climatology_points(release_dir)
     input_counts[CLIMATOLOGY_NC] = len(climatology_points)
@@ -594,6 +573,7 @@ def add_categories(points: pd.DataFrame, top_sources: List[str]) -> pd.DataFrame
     top_set = set(top_sources)
     out["category"] = out["source_name"].map(lambda value: clean_text(value) or UNKNOWN_DATASET_LABEL)
     out.loc[out["category"].isin(top_set), "category"] = out.loc[out["category"].isin(top_set), "source_name"]
+    out["legend_group"] = np.where(out["resolution"].eq("climatology"), "Climatology", "In situ")
     return out
 
 
@@ -605,6 +585,17 @@ def validate_counts(points: pd.DataFrame, catalog: pd.DataFrame) -> pd.DataFrame
     check["extracted_n"] = check["extracted_n"].fillna(0).astype(int)
     check["diff"] = check["extracted_n"] - check[count_col]
     return check.sort_values(["diff", "source_name"]).reset_index(drop=True)
+
+
+def build_legend_counts(points: pd.DataFrame) -> pd.DataFrame:
+    if points.empty:
+        return pd.DataFrame(columns=["legend_group", "category", "n_source_points"])
+    return (
+        points.groupby(["legend_group", "category"], dropna=False)
+        .size()
+        .rename("n_source_points")
+        .reset_index()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -706,8 +697,7 @@ def add_panel_label(ax, label: str) -> None:
         0.965,
         label,
         transform=ax.transAxes,
-        fontsize=FONT_SIZE_PANEL_LABEL,
-        fontweight="bold",
+        fontproperties=bold_font(FONT_SIZE_PANEL_LABEL),
         va="top",
         ha="left",
         bbox=dict(boxstyle="round,pad=0.18", facecolor="white", edgecolor="none", alpha=0.85),
@@ -756,38 +746,39 @@ def draw_top_sources_panel(
             marker=marker,
         )
 
-    handles = []
-    handle_labels = []
-    for label in legend_order:
-        if counts.get(label, 0) <= 0:
-            continue
-        color, marker = style_map[label]
-        handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker=marker,
-                color="none",
-                markerfacecolor=color,
-                markeredgecolor="#333333",
-                markeredgewidth=0.3,
-                markersize=6,
-                label="{} ({:,})".format(label, counts[label]),
-            )
-        )
-        handle_labels.append(label)
-    handles, _ = order_legend_entries(handles, handle_labels, legend_user_order)
+    legend_counts = build_legend_counts(points)
 
-    # Split legend entries into in situ and climatology groups
-    insitu_handles = []
-    climatology_handles = []
-    for hdl in handles:
-        lbl = hdl.get_label()
-        name_part = lbl.rsplit(" (", 1)[0] if " (" in lbl else lbl
-        if name_part in CLIMATOLOGY_SOURCE_NAMES:
-            climatology_handles.append(hdl)
-        else:
-            insitu_handles.append(hdl)
+    def legend_handles_for_group(group_name: str) -> List[Line2D]:
+        subset = legend_counts[legend_counts["legend_group"].eq(group_name)].copy()
+        if subset.empty:
+            return []
+        count_lookup = dict(zip(subset["category"], subset["n_source_points"]))
+        handles = []
+        handle_labels = []
+        for label in legend_order:
+            count = int(count_lookup.get(label, 0))
+            if count <= 0:
+                continue
+            color, marker = style_map[label]
+            handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker=marker,
+                    color="none",
+                    markerfacecolor=color,
+                    markeredgecolor="#333333",
+                    markeredgewidth=0.3,
+                    markersize=6,
+                    label="{} ({:,})".format(label, count),
+                )
+            )
+            handle_labels.append(label)
+        handles, _ = order_legend_entries(handles, handle_labels, legend_user_order)
+        return handles
+
+    insitu_handles = legend_handles_for_group("In situ")
+    climatology_handles = legend_handles_for_group("Climatology")
 
     # Left legend: in situ sources
     leg_insitu = ax.legend(
@@ -802,7 +793,7 @@ def draw_top_sources_panel(
         title="Main",
         title_fontsize=FONT_SIZE_LEGEND,
     )
-    leg_insitu.get_title().set_fontweight("bold")
+    leg_insitu.get_title().set_fontproperties(bold_font(FONT_SIZE_LEGEND))
     leg_insitu._legend_box.align = "left"
     ax.add_artist(leg_insitu)
 
@@ -820,7 +811,7 @@ def draw_top_sources_panel(
             title="Climatology",
             title_fontsize=FONT_SIZE_LEGEND,
         )
-        leg_clim.get_title().set_fontweight("bold")
+        leg_clim.get_title().set_fontproperties(bold_font(FONT_SIZE_LEGEND))
         leg_clim._legend_box.align = "left"
     
 
@@ -998,6 +989,7 @@ def create_figure(release_dir: Path, figures_root: Path, top_n: int, dpi: int,
         catalog,
         top_sources,
         category_counts,
+        build_legend_counts(points),
     )
     script_src = Path(__file__).resolve()
     if script_src != script_copy_path:

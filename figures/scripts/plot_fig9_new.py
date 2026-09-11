@@ -37,18 +37,31 @@ PARAMS = {
 }
 
 STYLE = {
-    "font_family": "DejaVu Sans",
+    "font_family": "Times New Roman",
     "panel_label_size": 16,
     "axis_label_size": 15,
     "tick_label_size": 14,
     "legend_text_size": 13,
     "title_size": 14,
     "panel_width_cm": 8.5,
-    "panel_height_cm": 7.0,
+    "panel_height_cm": 8,
     "scatter_marker_size": 10,
     "scatter_alpha": 0.65,
     "grid_alpha": 0.25,
 }
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 CM_PER_INCH = 2.54
 WINDOW_EXCLUSIVE = False
@@ -445,6 +458,7 @@ def configure_matplotlib(plt) -> None:
     plt.rcParams.update(
         {
             "font.family": STYLE["font_family"],
+            "mathtext.fontset": "stix",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
             "axes.labelsize": STYLE["axis_label_size"],
@@ -476,7 +490,7 @@ def _apply_scientific_ticks(ax) -> None:
     from matplotlib.ticker import ScalarFormatter
 
     for axis in (ax.xaxis, ax.yaxis):
-        formatter = ScalarFormatter(useMathText=False, useOffset=False)
+        formatter = ScalarFormatter(useMathText=True, useOffset=False)
         formatter.set_scientific(True)
         formatter.set_powerlimits((-6, 2))
         axis.set_major_formatter(formatter)
@@ -582,8 +596,7 @@ def make_temporal_grid(plt, pair_records: pd.DataFrame, variable: str = "SSC"):
                 1.1,
                 "({})".format(chr(97 + panel_idx)),
                 transform=ax.transAxes,
-                fontsize=STYLE["panel_label_size"],
-                fontweight="bold",
+                fontproperties=bold_font(STYLE["panel_label_size"]),
                 va="top",
                 ha="left",
                 clip_on=False,

@@ -75,27 +75,41 @@ MIN_SAMPLES = 5  # Minimum samples for QC2/QC3 fitting
 
 
 # ============================================================
-# ESSD-style Matplotlib settings (DejaVu Sans)
+# ESSD-style Matplotlib settings (Times New Roman)
 # ============================================================
 
-mpl.rcParams["font.family"] = "DejaVu Sans"
+mpl.rcParams["font.family"] = "Times New Roman"
+mpl.rcParams["mathtext.fontset"] = "stix"
 mpl.rcParams["pdf.fonttype"] = 42
 mpl.rcParams["ps.fonttype"] = 42
 mpl.rcParams["svg.fonttype"] = "none"
-mpl.rcParams["font.size"] = 15
-mpl.rcParams["axes.labelsize"] = 16
-mpl.rcParams["axes.titlesize"] = 17
-mpl.rcParams["xtick.labelsize"] = 14
-mpl.rcParams["ytick.labelsize"] = 14
-mpl.rcParams["legend.fontsize"] = 14
+mpl.rcParams["font.size"] = 18
+mpl.rcParams["axes.labelsize"] = 19
+mpl.rcParams["axes.titlesize"] = 20
+mpl.rcParams["xtick.labelsize"] = 17
+mpl.rcParams["ytick.labelsize"] = 17
+mpl.rcParams["legend.fontsize"] = 17
 
 # ============================================================
 # Centralized font size configuration
 # ============================================================
 
-PANEL_LABEL_FONTSIZE = 18
-LEGEND_FONTSIZE = 14
-TITLE_FONTSIZE = 16
+PANEL_LABEL_FONTSIZE = 21
+LEGEND_FONTSIZE = 17
+TITLE_FONTSIZE = 18
+
+
+def bold_font(size=None):
+    from matplotlib import font_manager
+
+    return font_manager.FontProperties(
+        fname=font_manager.findfont(
+            font_manager.FontProperties(family="Times New Roman", weight="bold"),
+            fallback_to_default=True,
+        ),
+        size=size,
+        weight="bold",
+    )
 
 
 # ============================================================
@@ -564,7 +578,7 @@ def write_combined_checklist(
 
 ## Fonts
 
-- Font family: DejaVu Sans
+- Font family: Times New Roman
 - Minimum visible font size: 11 pt
 - Single font family used: yes
 - PDF font embedding setting: pdf.fonttype = 42
@@ -779,7 +793,7 @@ def main():
         values=Q,
         qc2_suspect_mask=q_qc2_suspect,
         variable_label="Q",
-        unit_label="m³ s⁻¹",
+        unit_label="m$^3$ s$^{-1}$",
         lower_bound=Q_qc2_lower,
         upper_bound=Q_qc2_upper,
         show_legend=False,
@@ -789,7 +803,7 @@ def main():
     axes['q'].set_ylim(bottom=0, top=10)
     # set_q_y_ticks(axes['q'], top=10)
     axes['q'].set_yticks([0, 0.2, 0.4, 0.6, 0.8, 1, 2, 4, 6, 8, 10])
-    axes['q'].yaxis.set_major_formatter(plt.ScalarFormatter())
+    axes['q'].yaxis.set_major_formatter(plt.ScalarFormatter(useMathText=True))
     axes['q'].tick_params(which='minor', length=4, width=0.5, color='gray')
 
     # ------------------------------------------------------------------
@@ -801,7 +815,7 @@ def main():
         values=SSC,
         qc2_suspect_mask=ssc_qc2_suspect,
         variable_label="SSC",
-        unit_label="mg L⁻¹",
+        unit_label="mg L$^{-1}$",
         show_legend=False,
         lower_bound=SSC_qc2_lower,
         upper_bound=SSC_qc2_upper,
@@ -811,7 +825,7 @@ def main():
     axes['ssc'].text(
         -0.12, 1.02, "(b)",
         transform=axes['ssc'].transAxes,
-        ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
     # Restrict SSC y-axis to data range +5% margin
     ssc_valid = SSC[np.isfinite(SSC)]
@@ -886,10 +900,10 @@ def main():
 
     ax_c.text(
         -0.10, 1, "(c)",
-        transform=ax_c.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        transform=ax_c.transAxes, ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
-    ax_c.set_xlabel("log10(Q) [m³ s⁻¹]")
-    ax_c.set_ylabel("log10(SSC) [mg L⁻¹]")
+    ax_c.set_xlabel("log10(Q) (m$^3$ s$^{-1}$)")
+    ax_c.set_ylabel("log10(SSC) (mg L$^{-1}$)")
     # ax_c.set_title(f"SSC-Q diagnostic for {station_name} ({station_id})")
 
     # ------------------------------------------------------------------
@@ -934,7 +948,7 @@ def main():
 
     ax_d.text(
         -0.10, 1, "(d)",
-        transform=ax_d.transAxes, ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold"
+        transform=ax_d.transAxes, ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE)
     )
     ax_d.set_ylabel("Residual\n(log SSC)")
     ax_d.set_xlabel("Time")
@@ -946,7 +960,7 @@ def main():
     axes['q'].text(
         -0.12, 1.02, "(a)",
         transform=axes['q'].transAxes,
-        ha="right", va="top", fontsize=PANEL_LABEL_FONTSIZE, fontweight="bold",
+        ha="right", va="top", fontproperties=bold_font(PANEL_LABEL_FONTSIZE),
     )
 
 
@@ -957,12 +971,12 @@ def main():
     fig.text(
         0.36, 1, "QC2: log-IQR",
         ha="center", va="top",
-        fontsize=TITLE_FONTSIZE, fontweight="bold",
+        fontproperties=bold_font(TITLE_FONTSIZE),
     )
     fig.text(
         0.755, 1, "QC3: SSC-Q consistency",
         ha="center", va="top",
-        fontsize=TITLE_FONTSIZE, fontweight="bold",
+        fontproperties=bold_font(TITLE_FONTSIZE),
     )
 
     # ------------------------------------------------------------------
