@@ -1,10 +1,10 @@
 # Sediment Reference Dataset Integration and Assessment Workflow
 
-This repository contains the workflow corresponding to **Sections 3.4–5.4** of the manuscript:
+This repository contains the workflow corresponding mainly to **Sect. 3.2 and Sects. 3.4–5.4** of the manuscript:
 
 > *A harmonized global station-reference dataset of river discharge, suspended sediment concentration, and suspended sediment load*
 
-The repository focuses on the stages after source-level preprocessing: temporal screening, station consolidation, time-series integration, release generation and characterization, structural and cross-product assessment, uncertainty diagnostics, and the model-evaluation demonstration. Source-specific data acquisition, harmonization, georeferencing, and quality-control procedures described earlier in the manuscript are outside the scope of this README.
+The repository focuses on basin/reach matching, temporal screening, station consolidation, time-series integration, release generation and characterization, structural and cross-product assessment, uncertainty diagnostics, and the model-evaluation demonstration. Source-specific data acquisition, variable/unit harmonization, and source-level quality-control procedures are outside the scope of this README.
 
 ## Environment
 
@@ -27,9 +27,9 @@ S4 and S6 can either be submitted to an **LSF** computing environment or run loc
 
 ## Required inputs
 
-The integration pipeline assumes that the source-specific preprocessing described before Sect. 3.4 has already been completed. The principal inputs are:
+The pipeline assumes that source-level harmonization and quality-control files have already been prepared. The principal inputs are:
 
-- **Source-level QC NetCDF files.** These files should contain the harmonized station metadata, time information, Q/SSC/SSL variables, and associated quality-control fields required by the integration scripts. S1 searches the parent workspace for NetCDF files under resolution/source-specific `qc/` directories, for example:
+- **Source-level QC NetCDF files.** These files should contain the harmonized station metadata, time information, Q/SSC/SSL variables, and associated quality-control fields required by the downstream workflow. S1 searches the parent workspace for NetCDF files under resolution/source-specific `qc/` directories, for example:
 
   ```text
   <workspace>/daily/<dataset>/.../qc/*.nc
@@ -40,7 +40,7 @@ The integration pipeline assumes that the source-specific preprocessing describe
 
   The repository is expected to be located inside this workspace so that the existing path logic can discover the source QC files.
 
-- **MERIT Hydro / MERIT-Basins data.** The river-network and basin data are required by the basin-tracing and satellite-linkage stages. Set the local path in `pipeline_config.yaml`:
+- **MERIT Hydro / MERIT-Basins data.** These river-network and basin data are required for the **Sect. 3.2 basin/reach matching**, upstream-basin tracing, and satellite-to-main linkage stages. Set the local path in `pipeline_config.yaml`:
 
   ```yaml
   cli:
@@ -83,7 +83,7 @@ On an LSF system, omit `--local-s4` and `--local-s6` after configuring the corre
 Individual stages or a continuous subset can also be rerun, for example:
 
 ```bash
-python run_s1_s8_basin_pipeline.py --steps s5,s6,s7
+python run_s1_s8_basin_pipeline.py --steps s3,s4,s5
 python run_s1_s8_basin_pipeline.py --start-at s5 --end-at s8
 ```
 
@@ -92,8 +92,8 @@ The runner coordinates the following sequence:
 ```text
 S1  temporal-resolution verification
  -> S2  organization by temporal support
- -> S3  collection of station metadata
- -> S4  basin/reach tracing
+ -> S3  collection of station metadata and reach-matching inputs
+ -> S4  MERIT-Basins reach matching and upstream-basin tracing
  -> S5  station consolidation and satellite-main linkage
  -> S6  time-series integration and NetCDF generation
  -> S7  spatial/catalogue exports
@@ -101,12 +101,13 @@ S1  temporal-resolution verification
  -> S9  final station-facing public schema
 ```
 
-S3–S4 provide basin/reach information required by the later station-consolidation workflow. The manuscript-to-code map below focuses on the scientific workflow from Sect. 3.4 onward.
+For **Sect. 3.2**, S3 extracts the station coordinates, reported upstream-area information, and available reach-geometry hints required for matching. S4 then performs station-to-MERIT reach/basin matching and upstream-basin tracing. `basin_tracer.py` contains the core tracing/matching utilities, while `basin_policy.py` applies the release-level acceptance rules and resolved/unresolved status. `gsed_reach_hint.py` provides geometry-aware reach hints used for reach-scale satellite products such as GSED and RivSed.
 
 ## Manuscript-to-code map
 
 | Manuscript section | Role in the manuscript | Main scripts/modules |
 | --- | --- | --- |
+| **Sect. 3.2** Georeferencing and basin matching | Collect station/reach metadata, match observations to MERIT-Basins river reaches, trace upstream basins, and assign basin-match status; geometry-aware reach hints are used where appropriate | `s3_collect_qc_stations.py`, `s4_basin_trace_watch.py`, `basin_tracer.py`, `basin_policy.py`, `gsed_reach_hint.py` |
 | **Sect. 3.4** Temporal screening, station consolidation, and time-series integration | Classify temporal support, organize records by resolution, consolidate source stations, and integrate overlapping source time series into the main station-reference component | `s1_verify_time_resolution.py`, `time_resolution.py`, `s2_reorganize_qc_by_resolution.py`, `s5_basin_merge.py`, `basin_station_merge.py`, `s6_basin_merge_to_nc.py` |
 | **Sect. 4.1** Dataset structure and products | Generate the daily, monthly, annual, climatology, and satellite-derived products and assemble the public release | `s6_*`, `s7_*`, `s8_publish_reference_dataset.py`, `s8_publish_minimal_release_package.py`, `s9_public_station_names.py` |
 | **Sect. 4.2** Source contributions | Summarize source-level contributions to released stations and records | `stats_release/source_contribution.py`, `stats_release/source_dataset_layers.py`, `figures/scripts/plot_fig5_combined_source_contribution_direct_release.py` |
@@ -121,8 +122,8 @@ S3–S4 provide basin/reach information required by the later station-consolidat
 
 ## Notes on the workflow
 
-The code is organized by function rather than by manuscript section number. Scripts beginning with `s1`–`s9` form the main integration and release workflow, `stats_release/` reproduces the release-level statistics used mainly in Sect. 4, `validate/` contains the structural checks, sensitivity analyses, and comparison workflows used in Sect. 5, and `figures/scripts/` contains the scripts used to generate the corresponding manuscript and supplementary figures.
+The code is organized by function rather than strictly by manuscript section number. S3–S4 correspond primarily to the basin/reach-matching workflow in Sect. 3.2; S1–S2 and S5–S6 cover the temporal screening, station consolidation, and integration workflow in Sect. 3.4. `stats_release/` reproduces release-level statistics used mainly in Sect. 4, `validate/` contains structural checks, sensitivity analyses, and comparison workflows used in Sect. 5, and `figures/scripts/` contains the scripts used to generate the corresponding manuscript and supplementary figures.
 
-Sect. 3.4 is therefore represented by several sequential processing stages rather than a single script. Similarly, Sect. 5.2 draws on multiple diagnostics because the manuscript discusses uncertainty arising from different parts of the workflow. Sect. 5.3 is primarily an interpretation section and consequently has no dedicated standalone program; its statements are supported by the release statistics and validation outputs listed above.
+Sect. 5.2 draws on multiple diagnostics because the manuscript discusses uncertainty arising from different stages of the workflow. Sect. 5.3 is primarily an interpretation section and consequently has no dedicated standalone program; its statements are supported by the release statistics and validation outputs listed above.
 
 Paths and computational settings are machine dependent. Users should review `pipeline_config.yaml` and run the pipeline in `--dry-run` mode before executing a full reproduction run.
