@@ -1,11 +1,11 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below."
-title: "Sediment Reference Dataset Basin Pipeline"
+title: "Sediment Reference Dataset data integration workflow"
 type: software
 authors:
   - name: "Sediment Reference Dataset contributors"
-version: "0.1.0"
-date-released: "2026-08-22"
+version: "1.0.0"
+date-released: "2026-09-11"
 repository-code: "https://github.com/jellywzx/sed_data_integration"
 license: MIT
 keywords:
