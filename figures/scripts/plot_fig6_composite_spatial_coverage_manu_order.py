@@ -599,7 +599,7 @@ def draw_satellite_map(ax, satellite: pd.DataFrame, satellite_area: pd.DataFrame
         legend_ax.text(0.20, y, "{} ({})".format(source, len(group)), fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="center")
         y -= 0.19
 
-    legend_ax.text(0.08, y - 0.01, "Total stations: {:,}".format(len(df)),
+    legend_ax.text(0.08, y - 0.01, "Total stations: {}".format(len(df)),
                    fontsize=FONT_SIZES["legend_text"], transform=legend_ax.transAxes, va="top")
     # hist_ax = add_inset_axes(ax, [0.01, 0.17, 0.20, 0.22])
     # draw_area_hist(hist_ax, satellite_area, OKABE_ITO["reddish_purple"])
