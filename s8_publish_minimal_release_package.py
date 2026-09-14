@@ -964,6 +964,26 @@ def _create_output_variable(dst, name, src_var, compression_level, compressed_va
     return dst.createVariable(name, src_var.dtype, src_var.dimensions, **kwargs)
 
 
+def _resolve_vars_to_copy(src_variables, keep_vars, required_vars, aliases=None, label=""):
+    aliases = aliases or {}
+    missing_required = []
+    vars_to_copy = []
+    for name in required_vars:
+        src_name = name if name in src_variables else aliases.get(name, "")
+        if not src_name or src_name not in src_variables:
+            missing_required.append(name)
+    for name in keep_vars:
+        if name in src_variables:
+            vars_to_copy.append((name, name))
+            continue
+        src_name = aliases.get(name, "")
+        if src_name and src_name in src_variables:
+            vars_to_copy.append((name, src_name))
+        else:
+            print("[warn] {} missing optional variable: {}".format(label, name))
+    return missing_required, vars_to_copy
+
+
 def _copy_variable_data(name, src_var, dst_var, station_chunk_size=128):
     if "n_stations" in src_var.dimensions and len(src_var.dimensions) >= 2:
         if src_var.dtype is str or src_var.dtype == str:
@@ -1337,21 +1357,20 @@ def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_v
         tmp_path.unlink()
 
     with nc4.Dataset(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required, vars_to_copy = _resolve_vars_to_copy(
+            src.variables,
+            keep_vars,
+            required_vars,
+            aliases={"source_name": "source"},
+            label=src_path.name,
+        )
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
-        vars_to_copy = []
-        for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
-            else:
-                print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
-
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1362,17 +1381,17 @@ def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_v
                 dim_size = None if dim.isunlimited() else len(dim)
                 dst.createDimension(dim_name, dim_size)
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for dst_name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 dst_var = _create_output_variable(
                     dst,
-                    name,
+                    dst_name,
                     src_var,
                     compression_level,
                     compressed_vars=COMPRESSED_SATELLITE_VARS,
                 )
                 _copy_variable_attrs(src_var, dst_var)
-                _copy_satellite_variable_data(name, src_var, dst_var)
+                _copy_satellite_variable_data(dst_name, src_var, dst_var)
 
     if dst_path.exists():
         dst_path.unlink()
@@ -1395,21 +1414,20 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
         tmp_path.unlink()
 
     with h5netcdf.File(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required, vars_to_copy = _resolve_vars_to_copy(
+            src.variables,
+            keep_vars,
+            required_vars,
+            aliases={"source_name": "source"},
+            label=src_path.name,
+        )
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
-        vars_to_copy = []
-        for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
-            else:
-                print("[warn] {} missing optional satellite variable: {}".format(src_path.name, name))
-
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1419,16 +1437,16 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
             for dim_name in required_dims:
                 dst.dimensions[dim_name] = len(src.dimensions[dim_name])
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for dst_name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 fill_value = src_var.attrs.get("_FillValue", None)
                 dtype = src_var._h5ds.dtype
                 kwargs = {}
-                if name in COMPRESSED_SATELLITE_VARS:
+                if dst_name in COMPRESSED_SATELLITE_VARS:
                     kwargs["compression"] = "gzip"
                     kwargs["compression_opts"] = compression_level
                 dst_var = dst.create_variable(
-                    name,
+                    dst_name,
                     dimensions=src_var.dimensions,
                     dtype=dtype,
                     fillvalue=fill_value,
@@ -1438,7 +1456,7 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
                     if attr_name == "_FillValue":
                         continue
                     dst_var.attrs[attr_name] = attr_value
-                _copy_h5_satellite_variable_data(name, src_var, dst_var)
+                _copy_h5_satellite_variable_data(dst_name, src_var, dst_var)
 
     if dst_path.exists():
         dst_path.unlink()
@@ -1483,21 +1501,20 @@ def _copy_minimal_climatology_nc_netCDF4(src_path, dst_path, keep_vars, required
         tmp_path.unlink()
 
     with nc4.Dataset(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required, vars_to_copy = _resolve_vars_to_copy(
+            src.variables,
+            keep_vars,
+            required_vars,
+            aliases={"source_name": "source"},
+            label=src_path.name,
+        )
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
-        vars_to_copy = []
-        for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
-            else:
-                print("[warn] {} missing optional climatology variable: {}".format(src_path.name, name))
-
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1508,17 +1525,17 @@ def _copy_minimal_climatology_nc_netCDF4(src_path, dst_path, keep_vars, required
                 dim_size = None if dim.isunlimited() else len(dim)
                 dst.createDimension(dim_name, dim_size)
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for dst_name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 dst_var = _create_output_variable(
                     dst,
-                    name,
+                    dst_name,
                     src_var,
                     compression_level,
                     compressed_vars=CLIMATOLOGY_COMPRESSED_VARS,
                 )
                 _copy_variable_attrs(src_var, dst_var)
-                _copy_climatology_variable_data(name, src_var, dst_var)
+                _copy_climatology_variable_data(dst_name, src_var, dst_var)
 
     if dst_path.exists():
         dst_path.unlink()
@@ -1541,21 +1558,20 @@ def _copy_minimal_climatology_nc_h5netcdf(src_path, dst_path, keep_vars, require
         tmp_path.unlink()
 
     with h5netcdf.File(src_path, "r") as src:
-        missing_required = [name for name in required_vars if name not in src.variables]
+        missing_required, vars_to_copy = _resolve_vars_to_copy(
+            src.variables,
+            keep_vars,
+            required_vars,
+            aliases={"source_name": "source"},
+            label=src_path.name,
+        )
         if missing_required:
             print("[fail] {} missing required variables: {}".format(src_path.name, ", ".join(missing_required)))
             return False
 
-        vars_to_copy = []
-        for name in keep_vars:
-            if name in src.variables:
-                vars_to_copy.append(name)
-            else:
-                print("[warn] {} missing optional climatology variable: {}".format(src_path.name, name))
-
         required_dims = []
-        for name in vars_to_copy:
-            for dim_name in src.variables[name].dimensions:
+        for _, src_name in vars_to_copy:
+            for dim_name in src.variables[src_name].dimensions:
                 if dim_name not in required_dims:
                     required_dims.append(dim_name)
 
@@ -1565,16 +1581,16 @@ def _copy_minimal_climatology_nc_h5netcdf(src_path, dst_path, keep_vars, require
             for dim_name in required_dims:
                 dst.dimensions[dim_name] = len(src.dimensions[dim_name])
 
-            for name in vars_to_copy:
-                src_var = src.variables[name]
+            for dst_name, src_name in vars_to_copy:
+                src_var = src.variables[src_name]
                 fill_value = src_var.attrs.get("_FillValue", None)
                 dtype = src_var._h5ds.dtype
                 kwargs = {}
-                if name in CLIMATOLOGY_COMPRESSED_VARS:
+                if dst_name in CLIMATOLOGY_COMPRESSED_VARS:
                     kwargs["compression"] = "gzip"
                     kwargs["compression_opts"] = compression_level
                 dst_var = dst.create_variable(
-                    name,
+                    dst_name,
                     dimensions=src_var.dimensions,
                     dtype=dtype,
                     fillvalue=fill_value,
@@ -1584,7 +1600,7 @@ def _copy_minimal_climatology_nc_h5netcdf(src_path, dst_path, keep_vars, require
                     if attr_name == "_FillValue":
                         continue
                     dst_var.attrs[attr_name] = attr_value
-                _copy_h5_climatology_variable_data(name, src_var, dst_var)
+                _copy_h5_climatology_variable_data(dst_name, src_var, dst_var)
 
     if dst_path.exists():
         dst_path.unlink()
@@ -2225,6 +2241,14 @@ def _global_attr_value(ds, name, default=None):
     return default
 
 
+def _source_variable_name(ds):
+    if "source_name" in ds.variables:
+        return "source_name"
+    if "source" in ds.variables:
+        return "source"
+    return ""
+
+
 def build_climatology_observation_csv(args):
     if args.skip_climatology:
         print("[skip] climatology query CSV skipped by command-line option")
@@ -2264,15 +2288,23 @@ def build_climatology_observation_csv(args):
         "Q_flag",
         "SSC_flag",
         "SSL_flag",
-        "source",
+        "source_name",
     )
 
     with _open_climatology_query_nc(input_nc) as ds:
+        source_var_name = _source_variable_name(ds)
         resolution_code = _global_attr_value(ds, "resolution", 3)
         station_index_values = _nc_query_variable_values(ds, "station_index")
         station_values = {name: _nc_query_variable_values(ds, name) for name in station_fields}
         station_temporal_values = {name: _nc_query_variable_values(ds, name) for name in station_temporal_fields}
-        record_values = {name: _nc_query_variable_values(ds, name) for name in record_fields}
+        record_values = {
+            name: _nc_query_variable_values(ds, name)
+            for name in record_fields
+            if name != "source_name"
+        }
+        record_values["source_name"] = (
+            _nc_query_variable_values(ds, source_var_name) if source_var_name else []
+        )
 
         time_values = record_values.get("time", [])
         if "time" in ds.variables:
@@ -2286,7 +2318,7 @@ def build_climatology_observation_csv(args):
             for value in time_values
         ]
 
-        source_values = record_values.get("source", [])
+        source_values = record_values.get("source_name", [])
 
     n_records = max(
         [len(station_index_values), len(decoded_time_values)]
@@ -2306,7 +2338,7 @@ def build_climatology_observation_csv(args):
                 "lon": _query_value_at(station_values.get("lon", []), station_idx),
                 "station_name": _query_value_at(station_values.get("station_name", []), station_idx),
                 "river_name": _query_value_at(station_values.get("river_name", []), station_idx),
-                "source_name": _display_source_name(source_name),
+                "source_name": _clean_ms(source_name),
                 "time": _query_value_at(decoded_time_values, record_idx),
                 "time_raw": _query_value_at(time_values, record_idx),
                 "resolution": resolution_code,
@@ -2346,26 +2378,36 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
     with opener(path, **open_kwargs) as ds:
         station_ids = _nc_variable_values(ds, "station_uid")
         geos = _nc_variable_values(ds, "geographic_coverage")
+        station_indices_raw = _nc_variable_values(ds, "station_index")
         # Per-record source variable (minimal NC has no n_sources dimension)
-        source_values_raw = _nc_variable_values(ds, "source")
+        source_var_name = _source_variable_name(ds)
+        source_values_raw = _nc_variable_values(ds, source_var_name) if source_var_name else []
         source_values = [_clean_ms(value) for value in source_values_raw]
 
     rows = []
     for source in sorted({value for value in source_values if value}):
         indices = [idx for idx, value in enumerate(source_values) if value == source]
-        display_name = _display_source_name(source)
-        geo_text = _join_unique_ms((geos[idx] for idx in indices if idx < len(geos)), sep="|")
+        station_indices = []
+        for record_idx in indices:
+            station_idx = _query_index(_query_value_at(station_indices_raw, record_idx))
+            if station_idx is not None:
+                station_indices.append(station_idx)
+        geo_text = _join_unique_ms(
+            (geos[idx] for idx in station_indices if idx < len(geos)),
+            sep="|",
+        )
         reference = _source_registry_value(source, "reference") or ""
         source_url = _source_registry_value(source, "source_url") or ""
-        station_count = len({_clean_ms(station_ids[idx]) for idx in indices if idx < len(station_ids) and _clean_ms(station_ids[idx])})
-        if station_count == 0:
-            station_count = len(indices)
-        station_count = len({_clean_ms(station_ids[idx]) for idx in indices if idx < len(station_ids) and _clean_ms(station_ids[idx])})
+        station_count = len({
+            _clean_ms(station_ids[idx])
+            for idx in station_indices
+            if idx < len(station_ids) and _clean_ms(station_ids[idx])
+        })
         if station_count == 0:
             station_count = len(indices)
         rows.append(
             {
-                "Data Source Name": display_name,
+                "source_name": source,
                 "Type": _catalog_type_for_source(source),
                 "Observation type": "In-situ / literature compilation",
                 "Temporal resolution": "climatological",
@@ -2375,7 +2417,7 @@ def _read_climatology_catalog_rows(release_dir, warnings, access_dates):
                 "Citation": _catalog_citation_for_source(source, reference),
                 "reference": reference,
                 "source_url": source_url,
-                "access_date": _access_date_for_source(access_dates, display_name, source),
+                "access_date": _access_date_for_source(access_dates, source),
                 "n_source_stations": station_count,
                 "n_clusters": "",
                 "n_records": len(indices),
@@ -2391,7 +2433,8 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
         return []
 
     df = _read_catalog_csv(path)
-    if df.empty or "source" not in df.columns:
+    source_col = "source_name" if "source_name" in df.columns else "source" if "source" in df.columns else ""
+    if df.empty or not source_col:
         _warn(warnings, "satellite source catalog skipped; satellite_catalog.csv has no source rows")
         return []
 
@@ -2410,11 +2453,10 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
     df["n_records"] = pd.to_numeric(df["n_records"], errors="coerce").fillna(0).astype("int64")
 
     rows = []
-    for source, group in df.groupby("source", dropna=False, sort=True):
+    for source, group in df.groupby(source_col, dropna=False, sort=True):
         source = _clean_ms(source)
         if not source:
             continue
-        display_name = _display_source_name(source)
         resolutions = _join_unique_ms(sorted(group["resolution"].astype(str).unique()), sep="; ")
         time_start = _min_date_ms(group["time_start"])
         time_end = _max_date_ms(group["time_end"])
@@ -2424,7 +2466,7 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
         source_url = _source_registry_value(source, "source_url")
         rows.append(
             {
-                "Data Source Name": display_name,
+                "source_name": source,
                 "Type": "Satellite-derived",
                 "Observation type": "Satellite-derived",
                 "Temporal resolution": resolutions,
@@ -2434,7 +2476,7 @@ def _read_satellite_catalog_rows(release_dir, warnings, access_dates):
                 "Citation": _catalog_citation_for_source(source),
                 "reference": reference,
                 "source_url": source_url,
-                "access_date": _access_date_for_source(access_dates, display_name, source),
+                "access_date": _access_date_for_source(access_dates, source),
                 "n_source_stations": len({_clean_ms(v) for v in group["satellite_station_uid"] if _clean_ms(v)}),
                 "n_clusters": len({_clean_ms(v) for v in group["cluster_uid"] if _clean_ms(v)}),
                 "n_records": int(group["n_records"].sum()),
@@ -2469,18 +2511,20 @@ def _merge_catalog_rows(rows):
     numeric_sum_columns = {"n_source_stations", "n_records"}
 
     for row in rows:
-        name = _clean_ms(row.get("Data Source Name", ""))
+        name = _clean_ms(row.get("source_name", "")) or _clean_ms(row.get("Data Source Name", ""))
         if not name:
             continue
+        row = dict(row)
+        row["source_name"] = name
         key = _normalize_ms(name)
         if key not in merged:
-            merged[key] = dict(row)
+            merged[key] = row
             order.append(key)
             continue
 
         current = merged[key]
         for column, value in row.items():
-            if column == "Data Source Name":
+            if column in {"Data Source Name", "source_name"}:
                 continue
             if column in numeric_sum_columns:
                 left = _numeric_catalog_value(current.get(column, ""))
@@ -2587,11 +2631,7 @@ def build_manuscript_style_source_dataset_catalog(
     source_station_catalog.csv (filtered to minimal resolutions) for statistics.
     Registry enrichment is done via an internal lookup table, not external files.
 
-    Returns a DataFrame with these columns in order:
-      Data Source Name, Type, Observation type, Temporal resolution,
-      Temporal_span, Variables Provided, Geographic coverage, Citation,
-      reference, source_url, access_date, n_source_stations, n_clusters,
-      n_records
+    Returns a DataFrame with the schema-selected minimal source columns.
     """
     access_dates = _load_source_access_dates(warnings)
 
@@ -2660,10 +2700,6 @@ def build_manuscript_style_source_dataset_catalog(
         if not src_name:
             continue
 
-        # Data Source Name: use manuscript display name if known
-        display_key = _normalize_ms(src_name)
-        dsn = _DISPLAY_NAME_LOOKUP.get(display_key, src_name)
-
         # Type
         cat = _clean_ms(row.get("source_category", ""))
         type_val = _category_display_name(cat)
@@ -2705,7 +2741,7 @@ def build_manuscript_style_source_dataset_catalog(
         url = _clean_ms(row.get("source_url", ""))
 
         # access_date
-        access = _clean_ms(row.get("access_date", "")) or _access_date_for_source(access_dates, dsn, src_name)
+        access = _clean_ms(row.get("access_date", "")) or _access_date_for_source(access_dates, src_name)
 
         # n_source_stations / n_clusters / n_records
         def _safe_int(val, default=0):
@@ -2721,7 +2757,7 @@ def build_manuscript_style_source_dataset_catalog(
         n_recs = _safe_int(row.get("n_records"))
 
         rows.append({
-            "Data Source Name": dsn,
+            "source_name": src_name,
             "Type": type_val,
             "Observation type": obs_type,
             "Temporal resolution": temp_res,
@@ -2743,8 +2779,7 @@ def build_manuscript_style_source_dataset_catalog(
         rows.extend(_read_satellite_catalog_rows(release_dir, warnings, access_dates))
 
     result = pd.DataFrame(_merge_catalog_rows(rows))
-    result = result.sort_values("Data Source Name", kind="mergesort").reset_index(drop=True)
-    result = result.rename(columns={"Data Source Name": "source_name"})
+    result = result.sort_values("source_name", kind="mergesort").reset_index(drop=True)
     result = _ensure_columns(result, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS, warnings, "source_dataset_catalog.csv")
     result = result.loc[:, MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS]
     return result
@@ -2903,6 +2938,8 @@ def slim_source_station_catalog(src, dst, warnings):
 def slim_satellite_catalog(src, dst, warnings, boundary_options=None):
     print("[catalog] slimming satellite_catalog.csv")
     df = _read_catalog_csv(src)
+    if "source_name" not in df.columns and "source" in df.columns:
+        df["source_name"] = df["source"]
     df = _ensure_columns(
         df,
         MINIMAL_SATELLITE_CATALOG_COLUMNS,
@@ -2916,7 +2953,7 @@ def slim_satellite_catalog(src, dst, warnings, boundary_options=None):
     )
     df = df.loc[:, MINIMAL_SATELLITE_CATALOG_COLUMNS]
     df = df.sort_values(
-        ["source", "resolution", "satellite_station_uid"],
+        ["source_name", "resolution", "satellite_station_uid"],
         kind="mergesort",
     ).reset_index(drop=True)
     df.to_csv(dst, index=False)
@@ -3053,7 +3090,11 @@ Generated by `s8_publish_minimal_release_package.py`.
 - `climatology_catalog.csv` is a query-friendly flat table exported from
   `sed_reference_climatology.nc`.
 - `source_dataset_catalog.csv` summarizes in-situ, climatology, and satellite
-  source datasets in the manuscript table format.
+  source datasets using canonical `source_name` keys.
+- Join source provenance with `selected_source_station_uid` ->
+  `source_station_catalog.source_station_uid` -> `source_name` ->
+  `source_dataset_catalog.source_name`; satellite and climatology catalogues
+  also join source metadata through `source_name`.
 - Requested NetCDF compression level: `{compression_level}`
 
 """.format(
@@ -3189,6 +3230,246 @@ def _matrix_global_attr_names(path):
         with h5netcdf.File(path, "r") as ds:
             return list(ds.attrs.keys())
     raise RuntimeError("netCDF4 or h5netcdf is required to inspect NetCDF files")
+
+
+def _minimal_clean_set(values):
+    return {_clean_ms(value) for value in values if _clean_ms(value)}
+
+
+def _sample_values(values, limit=12):
+    values = sorted(_minimal_clean_set(values))
+    return "|".join(values[:limit])
+
+
+def _catalog_column_values(path, column):
+    if not path.is_file():
+        return None, "missing file"
+    try:
+        df = pd.read_csv(path, keep_default_na=False, dtype=str)
+    except Exception as exc:
+        return None, str(exc)
+    if column not in df.columns:
+        return None, "missing column {}".format(column)
+    return df[column].tolist(), ""
+
+
+def _catalog_df(path):
+    if not path.is_file():
+        return pd.DataFrame()
+    return pd.read_csv(path, keep_default_na=False, dtype=str)
+
+
+def _nc_text_values(path, variable_name):
+    if not path.is_file():
+        return None, "missing file"
+    if not HAS_NC and not HAS_H5NETCDF:
+        return None, "netCDF4 or h5netcdf is required"
+    try:
+        if HAS_NC:
+            with nc4.Dataset(path, "r") as ds:
+                if variable_name not in ds.variables:
+                    return None, "missing variable {}".format(variable_name)
+                return _nc_query_variable_values(ds, variable_name), ""
+        with h5netcdf.File(path, "r") as ds:
+            if variable_name not in ds.variables:
+                return None, "missing variable {}".format(variable_name)
+            return _nc_query_variable_values(ds, variable_name), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _sample_row_indices(n_rows, max_rows=256):
+    if n_rows <= max_rows:
+        return list(range(n_rows))
+    return sorted(set(np.linspace(0, n_rows - 1, max_rows, dtype=int).tolist()))
+
+
+def _nc_selected_source_station_uids(path, max_rows=256):
+    if not path.is_file():
+        return None, "missing file"
+    if not HAS_NC and not HAS_H5NETCDF:
+        return None, "netCDF4 or h5netcdf is required"
+    selected = set()
+    try:
+        if HAS_NC:
+            with nc4.Dataset(path, "r") as ds:
+                if "selected_source_station_uid" not in ds.variables:
+                    return None, "missing variable selected_source_station_uid"
+                var = ds.variables["selected_source_station_uid"]
+                n_rows = var.shape[0] if var.shape else 0
+                for row_idx in _sample_row_indices(n_rows, max_rows=max_rows):
+                    selected.update(_minimal_clean_set(_nc_query_values_array(var[row_idx:row_idx + 1, :])))
+            return selected, "sampled_rows={}".format(min(n_rows, max_rows))
+        with h5netcdf.File(path, "r") as ds:
+            if "selected_source_station_uid" not in ds.variables:
+                return None, "missing variable selected_source_station_uid"
+            var = ds.variables["selected_source_station_uid"]
+            n_rows = var.shape[0] if var.shape else 0
+            for row_idx in _sample_row_indices(n_rows, max_rows=max_rows):
+                selected.update(_minimal_clean_set(_nc_query_values_array(var[row_idx:row_idx + 1, :])))
+        return selected, "sampled_rows={}".format(min(n_rows, max_rows))
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _nc_query_values_array(values):
+    values = np.asarray(values)
+    if np.ma.isMaskedArray(values):
+        if values.dtype.kind in {"S", "U", "O"}:
+            values = values.filled(b"")
+        else:
+            values = values.filled(np.nan)
+    if values.shape == ():
+        if values.dtype.kind in {"S", "U", "O"}:
+            return [_decode_nc_text(values.item())]
+        return [values.item()]
+    if values.dtype.kind in {"S", "U", "O"}:
+        if values.ndim >= 2 and values.dtype.kind in {"S", "U"}:
+            rows = values.reshape((-1, values.shape[-1]))
+            return [_decode_nc_text(row) for row in rows]
+        return [_decode_nc_text(item) for item in values.reshape(-1)]
+    return values.reshape(-1).tolist()
+
+
+def build_minimal_key_contract_rows(package_dir):
+    rows = []
+
+    def add(check, status, message, evidence=""):
+        rows.append(
+            {
+                "check": check,
+                "status": status,
+                "message": message,
+                "evidence": evidence,
+            }
+        )
+
+    package_dir = Path(package_dir)
+    source_dataset = _catalog_df(package_dir / "source_dataset_catalog.csv")
+    source_names = _minimal_clean_set(source_dataset.get("source_name", [])) if "source_name" in source_dataset.columns else set()
+    add(
+        "key_contract:source_dataset_catalog.source_name",
+        "pass" if source_names else "fail",
+        "source_dataset_catalog has source_name keys",
+        "count={}".format(len(source_names)),
+    )
+
+    for catalog_name, column in (
+        ("source_station_catalog.csv", "source_name"),
+        ("satellite_catalog.csv", "source_name"),
+        ("climatology_catalog.csv", "source_name"),
+    ):
+        values, error = _catalog_column_values(package_dir / catalog_name, column)
+        if values is None:
+            add(
+                "key_contract:{}:source_dataset_catalog".format(catalog_name),
+                "fail",
+                "{} cannot be inspected for source_name join".format(catalog_name),
+                error,
+            )
+            continue
+        missing = _minimal_clean_set(values).difference(source_names)
+        add(
+            "key_contract:{}:source_dataset_catalog".format(catalog_name),
+            "pass" if not missing else "fail",
+            "{} source_name values join source_dataset_catalog".format(catalog_name),
+            "missing_count={}; sample={}".format(len(missing), _sample_values(missing)),
+        )
+
+    station_catalog = _catalog_df(package_dir / "station_catalog.csv")
+    station_key = "station_uid" if "station_uid" in station_catalog.columns else "cluster_uid"
+    matrix_key = station_key
+    for resolution, file_name in (
+        ("daily", "sed_reference_timeseries_daily.nc"),
+        ("monthly", "sed_reference_timeseries_monthly.nc"),
+        ("annual", "sed_reference_timeseries_annual.nc"),
+    ):
+        matrix_path = package_dir / file_name
+        nc_values, error = _nc_text_values(matrix_path, matrix_key)
+        if nc_values is None and matrix_key == "station_uid":
+            nc_values, error = _nc_text_values(matrix_path, "cluster_uid")
+        if nc_values is None:
+            add(
+                "key_contract:{}:{}_catalog".format(file_name, station_key),
+                "fail",
+                "matrix station key cannot be inspected",
+                error,
+            )
+            continue
+        catalog_subset = station_catalog
+        if "resolution" in catalog_subset.columns:
+            catalog_subset = catalog_subset[catalog_subset["resolution"].astype(str).str.strip().eq(resolution)]
+        catalog_values = _minimal_clean_set(catalog_subset.get(station_key, []))
+        nc_set = _minimal_clean_set(nc_values)
+        diff = nc_set.symmetric_difference(catalog_values)
+        add(
+            "key_contract:{}:{}_catalog".format(file_name, station_key),
+            "pass" if not diff else "fail",
+            "matrix {} values match station_catalog for {}".format(matrix_key, resolution),
+            "diff_count={}; sample={}".format(len(diff), _sample_values(diff)),
+        )
+
+        selected_uids, error = _nc_selected_source_station_uids(matrix_path)
+        source_station = _catalog_df(package_dir / "source_station_catalog.csv")
+        source_subset = source_station
+        if "resolution" in source_subset.columns:
+            source_subset = source_subset[source_subset["resolution"].astype(str).str.strip().eq(resolution)]
+        source_uid_set = _minimal_clean_set(source_subset.get("source_station_uid", []))
+        if selected_uids is None:
+            add(
+                "key_contract:{}:selected_source_station_uid".format(file_name),
+                "fail",
+                "selected_source_station_uid cannot be inspected",
+                error,
+            )
+        else:
+            missing_selected = selected_uids.difference(source_uid_set)
+            add(
+                "key_contract:{}:selected_source_station_uid".format(file_name),
+                "pass" if not missing_selected else "fail",
+                "sampled selected_source_station_uid values join source_station_catalog at same resolution",
+                "{}; missing_count={}; sample={}".format(error, len(missing_selected), _sample_values(missing_selected)),
+            )
+
+    for product, catalog_name, id_name in (
+        ("sed_reference_climatology.nc", "climatology_catalog.csv", "station_uid"),
+        ("sed_reference_satellite.nc", "satellite_catalog.csv", "satellite_station_uid"),
+    ):
+        nc_path = package_dir / product
+        catalog_path = package_dir / catalog_name
+        for variable_name in (id_name, "source_name"):
+            nc_values, nc_error = _nc_text_values(nc_path, variable_name)
+            cat_values, cat_error = _catalog_column_values(catalog_path, variable_name)
+            if nc_values is None or cat_values is None:
+                add(
+                    "key_contract:{}:{}_parity".format(product, variable_name),
+                    "fail",
+                    "{} values can be read from NetCDF and {}".format(variable_name, catalog_name),
+                    nc_error or cat_error,
+                )
+                continue
+            diff = _minimal_clean_set(nc_values).symmetric_difference(_minimal_clean_set(cat_values))
+            add(
+                "key_contract:{}:{}_parity".format(product, variable_name),
+                "pass" if not diff else "fail",
+                "{} values match between NetCDF and {}".format(variable_name, catalog_name),
+                "diff_count={}; sample={}".format(len(diff), _sample_values(diff)),
+            )
+
+    satellite = _catalog_df(package_dir / "satellite_catalog.csv")
+    link_col = "linked_station_uid" if "linked_station_uid" in satellite.columns else "linked_cluster_uid"
+    if link_col in satellite.columns and station_key in station_catalog.columns:
+        linked = _minimal_clean_set(satellite[link_col])
+        station_ids = _minimal_clean_set(station_catalog[station_key])
+        missing_links = linked.difference(station_ids)
+        add(
+            "key_contract:satellite_catalog:{}_station_catalog".format(link_col),
+            "pass" if not missing_links else "fail",
+            "non-empty satellite linked station ids join station_catalog",
+            "missing_count={}; sample={}".format(len(missing_links), _sample_values(missing_links)),
+        )
+
+    return rows
 
 
 def validate_minimal_package(args):
@@ -3625,6 +3906,8 @@ def validate_minimal_package(args):
                 "full and minimal preserve inherited release metadata",
                 row.get("details", ""),
             )
+
+    rows.extend(build_minimal_key_contract_rows(args.minimal_dir))
 
     df = pd.DataFrame(rows)
     df.to_csv(report_path, index=False)

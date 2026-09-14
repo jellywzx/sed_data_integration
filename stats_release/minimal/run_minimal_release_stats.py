@@ -476,15 +476,16 @@ def _record_dimension_name(ds) -> str:
 
 
 def _record_source_values(ds, product: str, key) -> np.ndarray:
-    if product == "satellite" and "satellite_station_index" in ds.variables and "source" in ds.variables:
-        station_sources = np.asarray(read_text_var(ds, "source"), dtype=object)
+    source_var = "source_name" if "source_name" in ds.variables else "source" if "source" in ds.variables else ""
+    if product == "satellite" and "satellite_station_index" in ds.variables and source_var:
+        station_sources = np.asarray(read_text_var(ds, source_var), dtype=object)
         station_idx = np.ma.asarray(ds.variables["satellite_station_index"][key]).filled(-1).astype("int64").reshape(-1)
         out = np.asarray([""] * len(station_idx), dtype=object)
         valid = (station_idx >= 0) & (station_idx < len(station_sources))
         out[valid] = station_sources[station_idx[valid]]
         return out
-    if "source" in ds.variables:
-        return np.asarray(read_text_var(ds, "source"), dtype=object)[key]
+    if source_var:
+        return np.asarray(read_text_var(ds, source_var), dtype=object)[key]
     return np.asarray([""] * (key.stop - key.start), dtype=object)
 
 

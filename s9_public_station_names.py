@@ -6,8 +6,11 @@ import shutil
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from pipeline_paths import get_output_r_root
 from release_public_station_names import convert_release_dir, has_failures, write_report
+from s8_publish_minimal_release_package import build_minimal_key_contract_rows
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -15,6 +18,25 @@ PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_RELEASE_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal_final"
 DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR / "tools" / "example_reference_workflow_minimal.py"
+
+
+def append_key_contract_validation(release_dir, dry_run=False):
+    validation_path = release_dir / "release_validation_report.csv"
+    rows = build_minimal_key_contract_rows(release_dir)
+    if dry_run:
+        print("[dry-run] would append {} key-contract validation rows to {}".format(len(rows), validation_path))
+        return rows
+    if validation_path.is_file():
+        current = pd.read_csv(validation_path, keep_default_na=False)
+    else:
+        current = pd.DataFrame(columns=["check", "status", "message", "evidence"])
+    current = current[
+        ~current["check"].astype(str).str.startswith("key_contract:")
+    ].copy()
+    updated = pd.concat([current, pd.DataFrame(rows)], ignore_index=True)
+    updated.to_csv(validation_path, index=False)
+    print("[write] {}".format(validation_path))
+    return rows
 
 
 def parse_args(argv=None):
@@ -88,11 +110,21 @@ def main(argv=None):
     else:
         print("[write] {}".format(report_path))
 
+    key_rows = append_key_contract_validation(output_dir, dry_run=args.dry_run)
+    key_status_counts = {}
+    for row in key_rows:
+        key_status_counts[row["status"]] = key_status_counts.get(row["status"], 0) + 1
+    print("[validation] key-contract {}".format(key_status_counts))
+    key_failures = key_status_counts.get("fail", 0)
+
     status_counts = {}
     for row in rows:
         status_counts[row.status] = status_counts.get(row.status, 0) + 1
     print("[summary] {}".format(status_counts))
 
+    if key_failures:
+        print("[fail] key-contract validation failed: {} failing check(s)".format(key_failures), file=sys.stderr)
+        return 1
     if args.strict and has_failures(rows):
         print("[fail] residual old public cluster schema naming remains", file=sys.stderr)
         return 1

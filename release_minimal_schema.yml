@@ -40,7 +40,7 @@ satellite_keep_variables:
 - cluster_uid
 - linked_cluster_uid
 - unlinked_reason
-- source
+- source_name
 - station_name
 - river_name
 - station_resolution
@@ -58,7 +58,7 @@ satellite_keep_variables:
 satellite_required_variables:
 - satellite_station_uid
 - cluster_uid
-- source
+- source_name
 - satellite_station_index
 - time
 - Q
@@ -107,10 +107,10 @@ satellite_global_attributes_to_keep:
 satellite_forbidden_variables:
 - date
 - resolution
+- source
 - cluster_id
 - source_station_index
 - source_index
-- source_name
 - source_long_name
 - satellite_station_global_attrs_json
 - geographic_coverage
@@ -189,7 +189,7 @@ minimal_catalog_columns:
   - satellite_station_uid
   - station_name
   - river_name
-  - source
+  - source_name
   - resolution
   - time_start
   - time_end
@@ -219,7 +219,7 @@ climatology_keep_variables:
 - SSC_flag
 - SSL
 - SSL_flag
-- source
+- source_name
 climatology_required_variables:
 - station_uid
 - station_index
@@ -230,7 +230,7 @@ climatology_required_variables:
 - Q_flag
 - SSC_flag
 - SSL_flag
-- source
+- source_name
 climatology_compressed_variables:
 - Q
 - SSC
@@ -247,7 +247,7 @@ climatology_forbidden_variables:
 - SSL_qc1
 - SSL_qc2
 - SSL_qc3
-- source_name
+- source
 - source_long_name
 - institution
 - reference

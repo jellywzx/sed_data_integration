@@ -80,6 +80,13 @@ def load_station_catalog(release_dir):
     return pd.read_csv(path, keep_default_na=False)
 
 
+def load_optional_catalog(release_dir, name):
+    path = Path(release_dir) / name
+    if not path.is_file():
+        return pd.DataFrame()
+    return pd.read_csv(path, keep_default_na=False)
+
+
 def find_nearest_station(station_catalog, lat, lon, resolution):
     work = station_catalog.copy()
     work = work[work["resolution"].astype(str).str.strip() == str(resolution)].copy()
@@ -175,6 +182,37 @@ def extract_reference_series(release_dir, resolution, station_uid, variable):
     raise RuntimeError("netCDF4 or h5netcdf is required to read reference NetCDF files")
 
 
+def describe_first_source(ref_df, source_station_catalog, source_dataset_catalog):
+    if source_station_catalog.empty or source_dataset_catalog.empty:
+        return
+    if "source_station_uid" not in source_station_catalog.columns:
+        return
+    selected = [
+        _clean_text(value)
+        for value in ref_df.get("selected_source_station_uid", [])
+        if _clean_text(value)
+    ]
+    if not selected:
+        return
+    source_uid = selected[0]
+    source_rows = source_station_catalog[
+        source_station_catalog["source_station_uid"].astype(str).eq(source_uid)
+    ]
+    if source_rows.empty:
+        return
+    source_row = source_rows.iloc[0]
+    source_name = _clean_text(source_row.get("source_name", ""))
+    dataset_rows = source_dataset_catalog[
+        source_dataset_catalog.get("source_name", pd.Series(dtype=str)).astype(str).eq(source_name)
+    ]
+    print("First selected_source_station_uid: {}".format(source_uid))
+    print("First source_name: {}".format(source_name))
+    if not dataset_rows.empty:
+        dataset_row = dataset_rows.iloc[0]
+        print("Source reference: {}".format(dataset_row.get("reference", "")))
+        print("Source URL: {}".format(dataset_row.get("source_url", "")))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Example workflow for sed_reference_release_minimal")
     ap.add_argument("--release-dir", required=True, help="Path to sed_reference_release_minimal/")
@@ -207,6 +245,11 @@ def main():
 
     print("Reference points: {}".format(len(ref_df)))
     print("Reference time span: {} -> {}".format(ref_df["time"].min(), ref_df["time"].max()))
+    describe_first_source(
+        ref_df,
+        load_optional_catalog(release_dir, "source_station_catalog.csv"),
+        load_optional_catalog(release_dir, "source_dataset_catalog.csv"),
+    )
 
     if args.out_csv:
         out_path = Path(args.out_csv).resolve()
