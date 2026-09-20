@@ -18,8 +18,12 @@ The script first tries to read the release master NetCDF:
 If that file is not present, it falls back to the s6 master NetCDF:
   scripts_basin_test/output/s6_basin_merged_all.nc
 
-The optional s6 quality-order CSV is used to recover source_type/source_family:
+The optional s6 quality-order CSV is used only to recover source-station
+observation_type metadata for fallback classification:
   scripts_basin_test/output/s6_cluster_quality_order.csv
+
+source_type/source_family labels are always recomputed from the shared
+source_family.py taxonomy; any cached source_family column in the CSV is ignored.
 
 Outputs
 -------
@@ -84,6 +88,7 @@ from pipeline_paths import (
     RELEASE_CLIMATOLOGY_NC,
 )
 from qc_contract import STANDARD_QC_STAGE_NAMES, STANDARD_QC_STAGE_NAME_TO_SPEC
+from source_family import classify_source_family
 
 try:
     import netCDF4 as nc4
@@ -749,13 +754,42 @@ def read_satellite_records(
 # -----------------------------------------------------------------------------
 
 def attach_source_type(records: pd.DataFrame, quality_order_csv: Optional[Path]) -> pd.DataFrame:
-    """Attach source_type/source_family using s6_cluster_quality_order.csv where possible."""
+    """Attach source_type using the current shared source_family taxonomy.
+
+    The cached source_family column in s6_cluster_quality_order.csv is
+    intentionally ignored. This prevents stale or previously misclassified
+    labels in an intermediate CSV from changing downstream QC statistics.
+
+    Classification is recomputed from the canonical source name and temporal
+    resolution. When the quality-order CSV is available, its observation_type
+    is used only as a low-priority fallback for source names that are not
+    recognized by the shared taxonomy.
+    """
     records = records.copy()
-    records["source_type"] = "unknown"
+
+    # Classify directly from fields already carried by the merged product.
+    # Use a small unique-key lookup instead of row-wise apply because the
+    # master product contains millions of records but few source/resolution
+    # combinations.
+    direct_keys = records.loc[:, ["source_dataset", "temporal_resolution"]].drop_duplicates()
+    direct_lookup = {
+        (source, resolution): classify_source_family(
+            source,
+            resolution=resolution,
+        )
+        for source, resolution in direct_keys.itertuples(index=False, name=None)
+    }
+    records["source_type"] = [
+        direct_lookup[(source, resolution)]
+        for source, resolution in records[
+            ["source_dataset", "temporal_resolution"]
+        ].itertuples(index=False, name=None)
+    ]
 
     if quality_order_csv is None or not quality_order_csv.is_file():
         print(
-            "Warning: quality-order CSV not found; source_type will be 'unknown': {}".format(
+            "Warning: quality-order CSV not found; source_type was recomputed "
+            "from source_dataset + temporal_resolution only: {}".format(
                 quality_order_csv
             ),
             file=sys.stderr,
@@ -763,51 +797,88 @@ def attach_source_type(records: pd.DataFrame, quality_order_csv: Optional[Path])
         return records
 
     quality = pd.read_csv(quality_order_csv)
-    required = {"source", "source_station_index", "source_family"}
+    required = {"source", "source_station_index"}
     if not required.issubset(set(quality.columns)):
         print(
-            "Warning: quality-order CSV lacks {}; source_type will be 'unknown': {}".format(
+            "Warning: quality-order CSV lacks {}; source_type was recomputed "
+            "from source_dataset + temporal_resolution only: {}".format(
                 sorted(required - set(quality.columns)), quality_order_csv
             ),
             file=sys.stderr,
         )
         return records
 
-    quality = quality.loc[:, ["source", "source_station_index", "source_family"]].copy()
-    quality["source"] = quality["source"].map(lambda x: _clean_text(x, default="unknown"))
-    quality["source_family"] = quality["source_family"].map(lambda x: _clean_text(x, default="unknown"))
+    # Keep backward compatibility with older quality-order CSVs.
+    if "resolution" not in quality.columns:
+        quality["resolution"] = ""
+    if "observation_type" not in quality.columns:
+        quality["observation_type"] = ""
+
+    quality = quality.loc[
+        :, ["source", "source_station_index", "resolution", "observation_type"]
+    ].copy()
+    quality["source"] = quality["source"].map(
+        lambda x: _clean_text(x, default="unknown")
+    )
+    quality["resolution"] = quality["resolution"].map(_clean_text)
+    quality["observation_type"] = quality["observation_type"].map(_clean_text)
     quality["source_station_index"] = pd.to_numeric(
         quality["source_station_index"], errors="coerce"
     ).fillna(-1).astype(np.int64)
 
+    family_keys = quality[
+        ["source", "resolution", "observation_type"]
+    ].drop_duplicates()
+    family_lookup = {
+        (source, resolution, observation_type): classify_source_family(
+            source,
+            resolution=resolution,
+            observation_type=observation_type,
+        )
+        for source, resolution, observation_type in family_keys.itertuples(
+            index=False, name=None
+        )
+    }
+    quality["_source_type_current"] = [
+        family_lookup[(source, resolution, observation_type)]
+        for source, resolution, observation_type in quality[
+            ["source", "resolution", "observation_type"]
+        ].itertuples(index=False, name=None)
+    ]
+
+    # Prefer the source-station-specific classification because it can use
+    # observation_type for unknown source names. The CSV source_family value
+    # is never read.
     pair_lookup = (
-        quality.groupby(["source_station_index", "source"], dropna=False)["source_family"]
+        quality.groupby(
+            ["source_station_index", "source", "resolution"],
+            dropna=False,
+        )["_source_type_current"]
         .agg(_mode_text)
         .reset_index()
-        .rename(columns={"source_family": "source_type_pair"})
+        .rename(columns={"_source_type_current": "source_type_pair"})
     )
 
     out = records.merge(
         pair_lookup,
         how="left",
-        left_on=["source_station_index", "source_dataset"],
-        right_on=["source_station_index", "source"],
+        left_on=[
+            "source_station_index",
+            "source_dataset",
+            "temporal_resolution",
+        ],
+        right_on=["source_station_index", "source", "resolution"],
     )
-    if "source" in out.columns:
-        out = out.drop(columns=["source"])
 
-    source_lookup = (
-        quality.groupby("source", dropna=False)["source_family"]
-        .agg(_mode_text)
-        .to_dict()
+    out["source_type"] = out["source_type_pair"].fillna(out["source_type"])
+    out["source_type"] = out["source_type"].map(
+        lambda x: _clean_text(x, default="other")
     )
-    source_fallback = out["source_dataset"].map(source_lookup)
-
-    out["source_type"] = out["source_type_pair"].fillna(source_fallback).fillna("unknown")
-    out["source_type"] = out["source_type"].map(lambda x: _clean_text(x, default="unknown"))
-    out = out.drop(columns=["source_type_pair"])
+    out = out.drop(
+        columns=["source", "resolution", "source_type_pair"],
+        errors="ignore",
+    )
     return out
-
 
 # -----------------------------------------------------------------------------
 # Statistics
@@ -1922,7 +1993,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--quality-order-csv",
         default=str(DEFAULT_QUALITY_ORDER_CSV),
-        help="s6 quality-order CSV used to recover source_type/source_family.",
+        help=(
+            "Optional s6 quality-order CSV used to recover observation_type "
+            "for fallback source-family classification. The CSV source_family "
+            "column is ignored; labels are recomputed from source_family.py."
+        ),
     )
     parser.add_argument(
         "--tables-dir",
