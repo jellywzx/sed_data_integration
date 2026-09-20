@@ -123,24 +123,24 @@ MINIMAL_SOURCE_STATION_CATALOG_COLUMNS = ()
 MINIMAL_SOURCE_DATASET_CATALOG_COLUMNS = ()
 MINIMAL_SATELLITE_CATALOG_COLUMNS = ()
 DEFAULT_CLIMATOLOGY_QUERY_COLUMNS = (
-    "station_uid",
-    "time",
-    "time_raw",
-    "time_start",
-    "time_end",
-    "resolution",
-    "Q",
-    "SSC",
-    "SSL",
-    "Q_flag",
-    "SSC_flag",
-    "SSL_flag",
-    "station_name",
-    "river_name",
     "lat",
     "lon",
+    "station_uid",
+    "station_name",
+    "river_name",
     "geographic_coverage",
-    "source_name",
+    "station_index",
+    "time",
+    "time_coverage_start",
+    "time_coverage_end",
+    "resolution",
+    "Q",
+    "Q_flag",
+    "SSC",
+    "SSC_flag",
+    "SSL",
+    "SSL_flag",
+    "source",
 )
 CLIMATOLOGY_QUERY_COLUMNS = DEFAULT_CLIMATOLOGY_QUERY_COLUMNS
 DEFAULT_NATURALEARTH_LOWRES_RELATIVE = Path(
@@ -2291,7 +2291,7 @@ def build_climatology_observation_csv(args):
         "Q_flag",
         "SSC_flag",
         "SSL_flag",
-        "source_name",
+        "source",
     )
 
     with _open_climatology_query_nc(input_nc) as ds:
@@ -2303,9 +2303,9 @@ def build_climatology_observation_csv(args):
         record_values = {
             name: _nc_query_variable_values(ds, name)
             for name in record_fields
-            if name != "source_name"
+            if name != "source"
         }
-        record_values["source_name"] = (
+        record_values["source"] = (
             _nc_query_variable_values(ds, source_var_name) if source_var_name else []
         )
 
@@ -2321,7 +2321,7 @@ def build_climatology_observation_csv(args):
             for value in time_values
         ]
 
-        source_values = record_values.get("source_name", [])
+        source_values = record_values.get("source", [])
 
     n_records = max(
         [len(station_index_values), len(decoded_time_values)]
@@ -2336,24 +2336,30 @@ def build_climatology_observation_csv(args):
 
         rows.append(
             {
-                "station_uid": _query_value_at(station_values.get("station_uid", []), station_idx),
                 "lat": _query_value_at(station_values.get("lat", []), station_idx),
                 "lon": _query_value_at(station_values.get("lon", []), station_idx),
+                "station_uid": _query_value_at(station_values.get("station_uid", []), station_idx),
                 "station_name": _query_value_at(station_values.get("station_name", []), station_idx),
                 "river_name": _query_value_at(station_values.get("river_name", []), station_idx),
-                "source_name": _clean_ms(source_name),
+                "geographic_coverage": _query_value_at(
+                    station_values.get("geographic_coverage", []), station_idx
+                ),
+                "station_index": station_idx,
                 "time": _query_value_at(decoded_time_values, record_idx),
-                "time_raw": _query_value_at(time_values, record_idx),
+                "time_coverage_start": _query_value_at(
+                    station_temporal_values.get("time_coverage_start", []), station_idx
+                ),
+                "time_coverage_end": _query_value_at(
+                    station_temporal_values.get("time_coverage_end", []), station_idx
+                ),
                 "resolution": resolution_code,
                 "Q": _query_value_at(record_values.get("Q", []), record_idx),
-                "SSC": _query_value_at(record_values.get("SSC", []), record_idx),
-                "SSL": _query_value_at(record_values.get("SSL", []), record_idx),
                 "Q_flag": _query_value_at(record_values.get("Q_flag", []), record_idx),
+                "SSC": _query_value_at(record_values.get("SSC", []), record_idx),
                 "SSC_flag": _query_value_at(record_values.get("SSC_flag", []), record_idx),
+                "SSL": _query_value_at(record_values.get("SSL", []), record_idx),
                 "SSL_flag": _query_value_at(record_values.get("SSL_flag", []), record_idx),
-                "geographic_coverage": _query_value_at(station_values.get("geographic_coverage", []), station_idx),
-                "time_start": _query_value_at(station_temporal_values.get("time_coverage_start", []), station_idx),
-                "time_end": _query_value_at(station_temporal_values.get("time_coverage_end", []), station_idx),
+                "source": _clean_ms(source_name),
             }
         )
 
@@ -3360,7 +3366,7 @@ def build_minimal_key_contract_rows(package_dir):
     for catalog_name, column in (
         ("source_station_catalog.csv", "source_name"),
         ("satellite_catalog.csv", "source_name"),
-        ("climatology_catalog.csv", "source_name"),
+        ("climatology_catalog.csv", "source"),
     ):
         values, error = _catalog_column_values(package_dir / catalog_name, column)
         if values is None:
@@ -3434,15 +3440,15 @@ def build_minimal_key_contract_rows(package_dir):
                 "{}; missing_count={}; sample={}".format(error, len(missing_selected), _sample_values(missing_selected)),
             )
 
-    for product, catalog_name, id_name in (
-        ("sed_reference_climatology.nc", "climatology_catalog.csv", "station_uid"),
-        ("sed_reference_satellite.nc", "satellite_catalog.csv", "satellite_station_uid"),
+    for product, catalog_name, id_name, catalog_source_column in (
+        ("sed_reference_climatology.nc", "climatology_catalog.csv", "station_uid", "source"),
+        ("sed_reference_satellite.nc", "satellite_catalog.csv", "satellite_station_uid", "source_name"),
     ):
         nc_path = package_dir / product
         catalog_path = package_dir / catalog_name
         for nc_variable, catalog_column in (
             (id_name, id_name),
-            ("source", "source_name"),
+            ("source", catalog_source_column),
         ):
             nc_values, nc_error = _nc_text_values(nc_path, nc_variable)
             cat_values, cat_error = _catalog_column_values(catalog_path, catalog_column)
