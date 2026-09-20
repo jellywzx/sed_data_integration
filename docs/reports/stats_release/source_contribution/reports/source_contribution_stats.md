@@ -38,7 +38,7 @@
 
 ## Main Source Contribution (In-Situ / Reference / Climatology)
 
-Primary contribution table. This track excludes satellite-derived sources (RiverSed, GSED, Dethier, Shashi_Jianli) which are reported separately below.
+Primary contribution table. This track excludes satellite-derived sources (RiverSed, GSED, and Dethier), which are reported separately below.
 
 | source name | source type | source group | n source stations | n clusters | n records | n Q records | n SSC records | n SSL records | first year | last year | resolutions | percentage of total records |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -264,7 +264,7 @@ _Showing first 15 of 20 rows._
 - Record dominance in the merged table does not necessarily imply the broadest spatial footprint or the most scientifically useful data.
 - Satellite source rows dominate the merged totals by record count, but their Q/SSL coverage is typically zero and SSC is sparse.
 - Source classification is conservative; review `source_classification_template.csv` before using type/group proportions as final manuscript text.
-- Satellite source datasets from Dethier and Shashi_Jianli report Q and SSC counts equal to total records as a best estimate; verify actual coverage in the NetCDF file.
+- When satellite-variable scanning is disabled, source-specific fallback coverage assumptions are used; verify actual variable coverage in the satellite NetCDF before manuscript use.
 
 ## Figures
 
