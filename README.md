@@ -1,8 +1,8 @@
-# Sediment Reference Dataset Basin Pipeline
+# Sediment Reference Dataset Integration and Assessment Workflow
 
-> 当前文档对应 `master` 分支下的 `scripts_basin_test` 主线流程。
+> `master` is the authoritative working/developer branch and intentionally retains server/HPC-specific defaults used for ongoing reproduction.
 >
-> 主线目标：把多来源泥沙观测数据整理成一套以 `cluster_uid + resolution` 为核心连接键的 basin-based sediment reference dataset，并发布到 `scripts_basin_test/output/sed_reference_release/`。
+> The historical runner name is `run_s1_s8_basin_pipeline.py`, but the current dependency-aware workflow supports **S1-S9**. S8 assembles the internal/full and minimal release packages, and S9 applies the final public station-facing schema. The final public package is `scripts_basin_test/output/sed_reference_release_minimal_final/`.
 
 ---
 
@@ -10,25 +10,43 @@
 
 本仓库用于构建一套泥沙观测参考数据集。流程会把多来源、不同时间分辨率的 QC 后 NetCDF 数据统一整理，识别时间分辨率，执行 upstream basin tracing，按 basin 规则合并站点，最后生成可供模型验证、站点匹配和 provenance 回溯使用的发布包。
 
-最终发布包位于：
+工作流同时保留内部完整产物和面向用户的公开产物：
 
 ```text
-scripts_basin_test/output/sed_reference_release/
+scripts_basin_test/output/sed_reference_release/               # S8 internal/full release
+scripts_basin_test/output/sed_reference_release_minimal/       # S8 minimal release
+scripts_basin_test/output/sed_reference_release_minimal_final/ # S9 final public release
 ```
 
-发布层的核心连接键是：
+内部 S1-S8 工作流使用 `cluster_uid + resolution` 作为 cluster-level 连接键；S9 对公开发布层采用 `station_uid + resolution`，并将 satellite linkage 的内部 cluster 命名转换为相应的 public station naming。
 
-```text
-cluster_uid + resolution
-```
+其中，内部 `cluster` 是 basin/reach consolidation 规则下形成的站点组，而不是简单假定多个来源记录天然属于同一个物理测站。一个 cluster 可以包含多个 source stations，并保留到 `source_station_uid` 和原始文件的 provenance。
 
-其中，`cluster` 不是严格意义上的“同一个物理站点”，而是 basin 合并规则下形成的站点合并组。一个 cluster 可以包含多个原始站点，并保留到 source station 与原始文件路径的追溯关系。
+
+## Manuscript-to-code map
+
+| Manuscript section | Role in the manuscript | Main scripts/modules |
+| --- | --- | --- |
+| **Sect. 3.2** Georeferencing and basin matching | Collect station/reach metadata, match observations to MERIT-Basins river reaches, trace upstream basins, and assign basin-match status; geometry-aware reach hints are used where appropriate | `s3_collect_qc_stations.py`, `s4_basin_trace_watch.py`, `basin_tracer.py`, `basin_policy.py`, `gsed_reach_hint.py` |
+| **Sect. 3.4** Temporal screening, station consolidation, and time-series integration | Classify temporal support, organize records by resolution, consolidate source stations, and integrate overlapping source time series into the main station-reference component | `s1_verify_time_resolution.py`, `time_resolution.py`, `s2_reorganize_qc_by_resolution.py`, `s5_basin_merge.py`, `basin_station_merge.py`, `s6_basin_merge_to_nc.py` |
+| **Sect. 4.1** Dataset structure and products | Generate the daily, monthly, annual, climatology, and satellite-derived products and assemble the public release | `s6_*`, `s7_*`, `s8_publish_reference_dataset.py`, `s8_publish_minimal_release_package.py`, `s9_public_station_names.py` |
+| **Sect. 4.2** Source contributions | Summarize source-level contributions to released stations and records | `stats_release/source_contribution.py`, `stats_release/source_dataset_layers.py`, `figures/scripts/plot_fig5_combined_source_contribution_direct_release.py` |
+| **Sect. 4.3** Spatial coverage and basin attributes | Summarize station distribution, basin-assignment status, and spatial coverage of the three release components | `stats_release/spatial.py`, `stats_release/basin_diagnostics.py`, `figures/scripts/plot_fig6_composite_spatial_coverage_manu_order.py`, `figures/scripts/plot_figs1_source_map_insitu_clim_sat.py` |
+| **Sect. 4.4** Temporal coverage and record availability | Summarize active stations, record counts, temporal coverage, and source contributions through time | `stats_release/temporal.py`, `figures/scripts/plot_fig7_active_records_panels.py`, `figures/scripts/plot_figs2_annual_matrix_by_source_by_resolution.py` |
+| **Sect. 4.5** Variable availability, distributions, and quality flags | Summarize Q, SSC, and SSL availability, distributions, and quality-flag composition | `stats_release/variable_summary.py`, `stats_release/qc_flags.py`, `figures/scripts/plot_fig8_variable_distribution.py` |
+| **Sect. 5.1.1** Structural consistency | Assess whether station consolidation and time-series integration conform to the implemented rules and examine source-station overlap within released stations | `validate/s13_validate_hydrological_clustering.py`, `validate/s12_analyze_cluster_quality_order.py` |
+| **Sect. 5.1.2** Main–satellite SSC comparison | Link satellite-derived locations to main-component stations and perform temporal-support-aware SSC comparisons | `s5b_link_satellite_to_main_clusters_v2.py`, `validate/s11_satellite_insitu_validation_from_s5b_master.py`, `validate/satellite_insitu_validation_from_release.py`, `figures/scripts/plot_fig9_new.py`, `figures/scripts/plot_fig9_s5b_4x3_grid.py` |
+| **Sect. 5.2** Sources of uncertainty | Provide sensitivity and diagnostic analyses for basin matching, station consolidation, temporal support, cross-source overlap, and derived sediment variables | `validate/s15_basin_matching_threshold_sensitivity.py`, `validate/s16_merging_threshold_sensivity_release.py`, `validate/s18_validate_cross_resolution_consistency.py`, `validate/s19_cross_source_overlap_intermidiate.py`, `validate/validate_derived_SSL.py` |
+| **Sect. 5.3** Dataset limitations and recommended interpretation | Interpret the released products using the statistics and validation results; this section does not correspond to a single executable script | `stats_release/*`, `validate/*` |
+| **Sect. 5.4** Demonstration of use in the Amazon Basin | Demonstrate extraction of reference observations and evaluation of modelled Q, SSC, and SSL | `validate/validate_model_with_sed_reference.py`, `figures/scripts/plot_fig10_validate_model_with_sed_reference.py` |
 
 ---
 
-## 2. 最终发布内容
+## 2. 发布内容：内部 full release 与最终 public release
 
-发布包主要包含以下文件：
+最终面向用户的 S9 public release 以 minimal package 为基础，使用 public station naming。S8 的 `sed_reference_release/` 则保留更完整的内部 provenance、GIS 和审计产物，便于开发、复现和诊断。
+
+S8 内部完整发布包主要包含以下文件：
 
 | 类型 | 标准文件 |
 |---|---|
@@ -47,7 +65,8 @@ cluster_uid + resolution
 2. `matrix` 层：以 `daily / monthly / annual` 三个矩阵 NetCDF 为基础，适合最近站点匹配、时间序列抽取和模型对比。
 3. `climatology` 层：以 `s6_climatology_only.nc` 为基础，独立发布，不进入 basin 主线 merge。
 4. `satellite` 层：以 satellite source family 为基础，独立发布为 `sed_reference_satellite.nc`，用于 satellite-vs-station validation、空间诊断和下游对比；默认不进入主 station-reference merge。
-5. `release` 层：由 `s8_publish_reference_dataset.py` 整理为标准命名的对外交付数据包。
+5. `release` 层：由 `s8_publish_reference_dataset.py` 生成内部完整 release，并由 `s8_publish_minimal_release_package.py` 生成 minimal release。
+6. `public schema` 层：由 `s9_public_station_names.py` 将 minimal release 转换为最终 station-facing public schema。
 
 > 注意：旧命名 `sed_reference_satellite_validation.nc` 和 `satellite_validation_catalog.csv` 如仍存在，仅作为兼容别名；推荐使用新的发布级文件名 `sed_reference_satellite.nc` 和 `satellite_catalog.csv`。
 > `s8_publish_reference_dataset.py` 默认要求发布级 satellite NetCDF 和 catalog 同时存在；缺任一文件时 release 会失败。
@@ -59,7 +78,7 @@ cluster_uid + resolution
 
 ### 3.1 一键运行主线
 
-推荐使用统一入口运行 `s1 -> s8`：
+推荐使用统一入口运行当前完整 `s1 -> s9` 工作流：
 
 ```bash
 python run_s1_s8_basin_pipeline.py --help
@@ -159,7 +178,7 @@ python run_s1_s8_basin_pipeline.py \
 当前主线为：
 
 ```text
-s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
+s1 -> s2 -> s3 -> s4 -> s5 -> s5b -> s6 -> s7 -> s8 -> s9
 ```
 
 | 阶段 | 入口 | 主要作用 | 关键输出 |
@@ -169,9 +188,11 @@ s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8
 | s3 | `s3_collect_qc_stations.py` | 扫描整理后的 NetCDF，提取 basin 主线使用的站点元数据，并生成稳定内部键 `station_key` | `s3_collected_stations.csv` |
 | s4 | `s4_basin_trace_watch.py` 或 `submit_s4_lsf.sh` | 按 `station_key` 为站点执行 upstream basin tracing，生成 basin 匹配结果和诊断字段 | `s4_upstream_basins.csv`、`s4_upstream_basins.gpkg`、`s4_local_catchments.gpkg`、`s4_reported_area_check.csv` |
 | s5 | `s5_basin_merge.py` | 按 `station_key` 合并 s4 basin 结果并分配 `cluster_id`，生成 cluster 级站点表 | `s5_basin_clustered_stations.csv`、`s5_basin_cluster_report.csv` |
+| s5b | `s5b_link_satellite_to_main_clusters_v2.py` | 将 satellite-derived stations 与 main station clusters 建立空间链接；不把 satellite observations 合并为 gauge-equivalent records | satellite-main linkage products |
 | s6 | `submit_s6_fast.sh` 或 s6 系列脚本 | 生成 master、matrix、climatology 和 satellite NetCDF | `s6_basin_merged_all.nc`、`s6_matrix_by_resolution/*.nc`、`s6_climatology_only.nc`、`s6_satellite_validation_only.nc` |
 | s7 | `s7_export_cluster_shp.py`、`s7_export_source_station_shp.py`、`s7_export_cluster_basin_shp.py` | 导出 cluster/source/basin 空间 sidecar 和 catalog | `s7_cluster_points.gpkg`、`s7_source_stations.gpkg`、`s7_cluster_basins.gpkg`、相关 catalog |
-| s8 | `s8_publish_reference_dataset.py` | 把 s6/s7 产物整理成标准发布包，并执行发布校验 | `sed_reference_release/` |
+| s8 | `s8_publish_reference_dataset.py`、`s8_publish_minimal_release_package.py` | 生成内部 full release 与 minimal release，并执行发布校验 | `sed_reference_release/`、`sed_reference_release_minimal/` |
+| s9 | `s9_public_station_names.py` | 将 minimal release 转换为最终 public station-facing schema，并追加 key-contract validation | `sed_reference_release_minimal_final/` |
 
 ---
 
@@ -771,12 +792,15 @@ s3_collect_qc_stations.py
 submit_s4_lsf.sh
 submit_s4_lsf.py
 s5_basin_merge.py
+s5b_link_satellite_to_main_clusters_v2.py
 submit_s6_fast.sh
 submit_s6_fast.py
 s7_export_cluster_shp.py
 s7_export_source_station_shp.py
 s7_export_cluster_basin_shp.py
 s8_publish_reference_dataset.py
+s8_publish_minimal_release_package.py
+s9_public_station_names.py
 ```
 
 如果是调试或单步运行，可以按底层 Python 脚本顺序执行：
@@ -784,6 +808,7 @@ s8_publish_reference_dataset.py
 ```text
 s4_basin_trace_watch.py
 s5_basin_merge.py
+s5b_link_satellite_to_main_clusters_v2.py
 s6_basin_merge_to_nc.py
 s6_export_daily_matrix_nc.py
 s6_export_monthly_matrix_nc.py
@@ -799,7 +824,7 @@ s8_publish_reference_dataset.py
 更推荐使用统一入口控制阶段：
 
 ```bash
-python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
+python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s9
 ```
 
 ---
@@ -812,10 +837,10 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 | `single_point / quarterly / annual / climatology` 判定逻辑变化 | 从 s2 起 | 会改变进入各分辨率目录的文件 |
 | basin tracing 或 `basin_status` 规则变化 | 从 s4 起 | s4 重新生成 basin 诊断，s5 以后都依赖它 |
 | cluster merge 规则变化 | 从 s5 起 | cluster_id / cluster_uid 可能变化 |
-| s6 输出字段或发布 contract 变化 | 至少重跑 s6 -> s8 | master、matrix、climatology、satellite 和 release 需要保持一致 |
-| climatology 分类规则或 climatology schema 变化 | 至少重跑 s6 -> s8，必要时从 s2 起 | climatology 独立产品依赖 s2 分类目录和 s6 独立导出 |
-| satellite source family 或 satellite schema 变化 | 至少重跑 s6 -> s8 | satellite NetCDF 和 catalog 是强制 release 产物 |
-| 只改发布层命名、link mode、是否输出 GPKG | 通常只需重跑 s8 | s8 负责发布包物化和校验 |
+| s6 输出字段或发布 contract 变化 | 至少重跑 s6 -> s9 | master、matrix、climatology、satellite 和 release 需要保持一致 |
+| climatology 分类规则或 climatology schema 变化 | 至少重跑 s6 -> s9，必要时从 s2 起 | climatology 独立产品依赖 s2 分类目录和 s6 独立导出 |
+| satellite source family 或 satellite schema 变化 | 至少重跑 s6 -> s9 | satellite NetCDF 和 catalog 是强制 release 产物 |
+| 只改发布层命名、link mode、是否输出 GPKG | 通常只需重跑 s8 -> s9 | s8 负责发布包物化和校验，s9 负责最终 public naming 与 key-contract validation |
 
 注意：
 
@@ -830,6 +855,19 @@ python run_s1_s8_basin_pipeline.py --start-at s1 --end-at s8
 ---
 
 ## 16. 依赖说明
+
+推荐优先使用仓库提供的环境文件：
+
+```bash
+conda env create -f environment.yml
+conda activate sed-reference-basin
+```
+
+也可以安装：
+
+```bash
+pip install -r requirements.txt
+```
 
 常见 Python 依赖包括：
 
@@ -857,7 +895,7 @@ matplotlib
 
 | 文件 | 作用 |
 |---|---|
-| `run_s1_s8_basin_pipeline.py` | s1-s8 一键主线入口，支持区间运行、指定阶段运行和 dry-run |
+| `run_s1_s8_basin_pipeline.py` | 历史文件名保留不变；当前为 s1-s9 一键主线入口，支持区间运行、指定阶段运行和 dry-run |
 | `pipeline_paths.py` | 统一维护主线输出路径、发布包路径和日志路径 |
 | `time_resolution.py` | 时间分辨率判定逻辑 |
 | `basin_tracer.py` | upstream basin tracing 和点面几何诊断 |
@@ -894,10 +932,10 @@ s8_merge_qc_csv_to_one_nc.py
 s6_summarize_matrix_ncs.py
 ```
 
-这些脚本不是当前 `s1 -> s8` 主线构建流程的一部分。人工质检与审计脚本也不属于主线发布 contract，如需使用，请参考对应脚本和相关验证文档。
+这些脚本不是当前 `s1 -> s9` 主线构建流程的一部分。人工质检与审计脚本也不属于主线发布 contract，如需使用，请参考对应脚本和相关验证文档。
 
 ---
 
 ## 19. 一句话总结
 
-当前 `master` 分支主线按 `s1 -> s8` 构建 basin-based sediment reference dataset：`daily / monthly / annual` 进入 basin 主线，`climatology` 单独导出为独立发布产品，`satellite` 作为强制的发布级独立 NetCDF 数据集输出；主线与 climatology 发布记录必须至少包含 `SSC` 或 `SSL`，不发布 Q-only 时间步；`s4` 和 `s6` 生产环境优先通过 `submit_s4_lsf.sh` 与 `submit_s6_fast.sh` 运行；发布层以 `cluster_uid + resolution` 为标准连接键，保留 master NetCDF、matrix NetCDF、climatology、satellite、catalog、空间 sidecar 和 overlap provenance，并仅为 `resolved` 结果发布 basin polygon sidecar。
+当前 `master` 是完整的开发与服务器复现主线：source-level QC 结果经 S1-S4 完成时间语义整理和 MERIT-Basins matching，S5 执行 main-station consolidation，S5b 建立 satellite-to-main linkage，S6-S8 生成内部/full、matrix、climatology、satellite 与 minimal release，S9 再转换为最终 public station-facing schema。内部工作流保留 `cluster_uid` 等开发键以及完整审计信息；最终公开包使用 `station_uid` 等 public naming。服务器/HPC 默认路径和 LSF 运行配置可继续保留在 `master`，而发布分支可对这些路径做 portability 清理。
