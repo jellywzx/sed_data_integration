@@ -103,7 +103,7 @@ python3 -m stats_release.spatial --release-dir output/sed_reference_release --al
 **核心函数**:
 - `pct(numerator, denominator)`: 百分比计算
 - `classify_source(source_name, source_family)` → `(source_type, source_group)`: 数据源分类
-  - 卫星: "riversed", "gsed", "dethier", "shashi_jianli"
+  - 卫星: "riversed", "gsed", "dethier"\n  - 原位站点示例: "usgs", "hydat", "bayern", "shashi_jianli"
   - 气候态: "milliman", "vanmaercke", "hma", "ali_de_boer"
   - 国家机构: "usgs", "hydat", "bayern"
   - 区域数据集: "hybam"
