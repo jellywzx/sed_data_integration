@@ -125,9 +125,12 @@ STANDARD_QC_STAGE_SPECS = (
         "name": "SSL_qc3",
         "aliases": ["SSL_qc3", "SSL_qc3_prop", "SSL_flag_qc3_from_ssc_q"],
         "fill_value": 9,
-        "flag_values": np.array([0, 1, 8, 9], dtype=np.int8),
+        "flag_values": np.array([0, 2, 8, 9], dtype=np.int8),
         "flag_meanings": "not_propagated propagated not_checked missing",
         "long_name": "qc stage 3 propagation flag for suspended sediment load",
+        # Older source processors used 1 for propagated; the shared QC now
+        # uses 2. Normalize the legacy value at the integration boundary.
+        "value_map": {1: 2},
     },
 )
 
@@ -392,15 +395,27 @@ def read_flag_array(ds, aliases, size, fill_value=9):
     return result.astype(np.int8, copy=False)
 
 
+def find_missing_qc_stage_variables(ds):
+    """Return canonical stage-QC names that have no recognized source alias."""
+    missing = []
+    for spec in STANDARD_QC_STAGE_SPECS:
+        if get_first_var_name(ds, spec["aliases"]) is None:
+            missing.append(spec["name"])
+    return missing
+
+
 def read_standardized_qc_stage_arrays(ds, size):
     arrays = {}
     for spec in STANDARD_QC_STAGE_SPECS:
-        arrays[spec["name"]] = read_flag_array(
+        values = read_flag_array(
             ds,
             spec["aliases"],
             size=size,
             fill_value=int(spec["fill_value"]),
         )
+        for old_value, new_value in spec.get("value_map", {}).items():
+            values[values == int(old_value)] = np.int8(new_value)
+        arrays[spec["name"]] = values
     return arrays
 
 
