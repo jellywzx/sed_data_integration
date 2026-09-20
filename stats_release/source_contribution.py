@@ -284,7 +284,7 @@ def _satellite_catalog_detail(ctx, chunk_size: int, scan_variables: bool = False
         n_records = int(group["n_records"].sum())
         if not vc:
             lower = source.lower()
-            if lower in {"dethier", "shashi_jianli"}:
+            if lower == "dethier":
                 vc = {"Q": n_records, "SSC": n_records, "SSL": n_records}
             elif lower == "gsed":
                 vc = {"Q": 0, "SSC": n_records, "SSL": 0}
@@ -865,7 +865,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
         columns=["source_name", "source_type", "source_group", "n_source_stations", "n_clusters", "n_records", "n_Q_records", "n_SSC_records", "n_SSL_records", "first_year", "last_year", "resolutions", "percentage_of_total_records"],
         sort_by="n_records",
         max_rows=15,
-        note="Primary contribution table. This track excludes satellite-derived sources (RiverSed, GSED, Dethier, Shashi_Jianli) which are reported separately below.",
+        note="Primary contribution table. This track excludes satellite-derived sources (RiverSed, GSED, and Dethier), which are reported separately below.",
     )
     append_table_section(
         lines,
@@ -989,7 +989,7 @@ def build_detailed_source_report(ctx, stats: dict, tables_dir: Path, figures_dir
             "- Record dominance in the merged table does not necessarily imply the broadest spatial footprint or the most scientifically useful data.",
             "- Satellite source rows dominate the merged totals by record count, but their Q/SSL coverage is typically zero and SSC is sparse.",
             "- Source classification is conservative; review `source_classification_template.csv` before using type/group proportions as final manuscript text.",
-            "- Satellite source datasets from Dethier and Shashi_Jianli report Q and SSC counts equal to total records as a best estimate; verify actual coverage in the NetCDF file.",
+            "- When satellite-variable scanning is disabled, source-specific fallback coverage assumptions are used; verify actual variable coverage in the satellite NetCDF before manuscript use.",
         ]
     )
     append_figure_index(lines, figures_dir, report_dir)
