@@ -18,7 +18,7 @@ Method
    sensitivity-cluster representative, then re-compute per-resolution unique
    cluster sets — exactly the dedup logic that ``station_catalog.csv``
    encodes.
-5. If the 1000 m projection does **not** reproduce 3,762 released clusters,
+5. If the 1000 m projection does **not** reproduce 7,135 released clusters,
    the script aborts immediately (the gate).  Otherwise it reports
    per-threshold × per-resolution sensitivity metrics.
 
@@ -736,7 +736,7 @@ def write_report(
 # ---------------------------------------------------------------------------
 
 def parse_expected_counts(text: str) -> Dict[str, int]:
-    """Parse 'daily:1596,monthly:2117,annual:58,total:3762'."""
+    """Parse 'daily:7087,monthly:17,annual:31,total:7135'."""
     result = {}
     for part in text.split(","):
         part = part.strip()
