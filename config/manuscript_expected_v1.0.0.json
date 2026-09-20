@@ -1,0 +1,23 @@
+{
+  "contract_version": "ESSD-submitted-v1.0.0",
+  "manuscript_date": "2026-09-09",
+  "dataset_doi": "10.5281/zenodo.21896563",
+  "notes": "The daily/monthly/annual/all blocks are consumed by tools/audit_release_for_zenodo.py --expected-stats. Extra metadata fields document provenance and are ignored by that audit.",
+  "daily": {
+    "stations": 7087,
+    "records": 2993390
+  },
+  "monthly": {
+    "stations": 17,
+    "records": 3263
+  },
+  "annual": {
+    "stations": 31,
+    "records": 468
+  },
+  "all": {
+    "unique_stations": 7135,
+    "records": 2997121,
+    "source_datasets": 17
+  }
+}
