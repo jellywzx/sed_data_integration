@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-步骤 s4（流域版）：读取 s3 站点列表，基于流域归属为每个站点分配 cluster_id。
+步骤 s5（流域版）：读取 s3 站点列表与 s4 basin tracer 结果，为每个站点分配 cluster_id。
 
-与原版 s4（空间聚类）不同，本脚本使用 basin tracer 的输出来定义聚类：
+本脚本使用 basin tracer 的输出定义聚类：
   - 仅 basin_status=resolved 且 basin_id 一致的站点允许进入合并候选；
   - observation_type=Satellite 的站点保留为 singleton，不参与合并候选；
-  - 同一 cluster 内任意两站点都必须满足：
-      距离 <= 5 km，且 upstream area 相对误差 <= 10%（默认）；
+  - 同一 cluster 内任意两站点都必须满足 pairwise distance <= 1000 m（默认）；
+  - 生产实现同时保留 upstream-area symmetric relative error <= 0.10 的
+    保守一致性 safeguard。该 safeguard 不应从 release-producing 代码中静默删除；
+    可用 validate/s14_validate_upstream_area_merge_equivalence.py 验证它对指定
+    release 输入是否为 non-binding；
   - 采用 complete-linkage 风格，避免链式跨阈值合并；
   - cluster_id = 该流域中最小的 station_id；
   - 无流域信息的站点以其 station_id 作为独立的 cluster_id（单独成组）。
@@ -19,17 +22,17 @@ s5 不会再按 s3 行号重新创建 station_id。
        station_key 对应 s3 CSV 的稳定内部键；station_id 必须与同 key 的 s3 station_id 一致
 
 输出：
-  1. s4_basin_clustered_stations.csv
+  1. s5_basin_clustered_stations.csv
        在 s3 基础上增加两列：
          station_id  —— s3 当前输出中的整数索引，与同 station_key 的 basin CSV station_id 一致
          cluster_id  —— 流域代表站点的 station_id（同流域取最小值）
-  2. s4_basin_cluster_report.csv
+  2. s5_basin_cluster_report.csv
        每个 cluster 的汇总信息：
          cluster_id, station_count, sources, resolutions, lat_mean, lon_mean
 
 用法：
-  python s4_basin_merge.py
-  python s4_basin_merge.py --s3-csv /path/to/s3.csv --basin-csv /path/to/basins.csv
+  python s5_basin_merge.py
+  python s5_basin_merge.py --s3-csv /path/to/s3.csv --basin-csv /path/to/basins.csv
 """
 
 import argparse
@@ -56,6 +59,10 @@ _DEFAULT_REPORT    = PROJECT_ROOT / S5_BASIN_REPORT_CSV
 _DEFAULT_BASIN_CSV = PROJECT_ROOT / S4_UPSTREAM_CSV
 
 DEFAULT_MAX_STATION_DISTANCE_M = 1000.0
+
+# Retained to preserve the release-producing implementation. For manuscript/code
+# reproducibility, verify whether this extra safeguard changes the station
+# partition with validate/s14_validate_upstream_area_merge_equivalence.py.
 DEFAULT_MAX_UPSTREAM_REL_ERROR = 0.10
 DEFAULT_UPSTREAM_AREA_COL = "uparea_merit"
 
@@ -216,7 +223,7 @@ def main():
     )
 
     ap = argparse.ArgumentParser(
-        description="步骤 s4（流域版）：基于 basin tracer 结果为 s3 站点分配 cluster_id"
+        description="步骤 s5（流域版）：基于 s4 basin tracer 结果为 s3 站点分配 cluster_id"
     )
     ap.add_argument(
         "--s3-csv",
