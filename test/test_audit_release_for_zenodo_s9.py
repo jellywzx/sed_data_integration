@@ -69,6 +69,7 @@ class AuditReleaseForZenodoS9Test(unittest.TestCase):
         self.assertNotIn("sed_reference_master.nc", targets)
         self.assertNotIn("sed_reference_overlap_candidates.csv.gz", targets)
         self.assertIn("public_station_names_report.csv", targets)
+        self.assertIn("satellite_query_catalog.csv.gz", targets)
 
     def test_public_station_names_report_missing_and_fail_rows_fail(self):
         with tempfile.TemporaryDirectory() as tmp:

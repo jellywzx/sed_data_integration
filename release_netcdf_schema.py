@@ -228,8 +228,8 @@ PRODUCT_DESCRIPTIONS = {
             "This auxiliary product provides harmonized satellite-derived river "
             "sediment observations from RivSed, GSED, and Dethier datasets. "
             "Where spatial and temporal matching criteria were satisfied, "
-            "satellite-derived stations were linked to the main station-reference "
-            "clusters. The product supports assessment of broad spatial sediment "
+            "satellite-derived stations were linked to stations in the main station-reference "
+            "component. The product supports assessment of broad spatial sediment "
             "patterns, identification of gauge-coverage gaps, and complementary "
             "comparison with station-reference observations."
         ),

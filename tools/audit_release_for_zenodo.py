@@ -56,6 +56,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from release_public_station_names import contains_old_public_schema_token
+from release_satellite_query_catalog import QUERY_CATALOG_NAME, QUERY_COLUMNS
 
 DEFAULT_RELEASE_DIR = SCRIPT_DIR / "output" / "sed_reference_release_minimal"
 DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "output" / "s9_zenodo_publication_audit"
@@ -76,6 +77,7 @@ INTEGRATED_PUBLIC_EXTENSION_FILES = [
     "climatology_catalog.csv",
     "sed_reference_satellite.nc",
     "satellite_catalog.csv",
+    QUERY_CATALOG_NAME,
 ]
 
 COMMON_REQUIRED_FILES = [
@@ -1662,6 +1664,144 @@ def audit_catalogs(
 
 
 # ---------------------------------------------------------------------
+# Satellite query catalogue audit
+# ---------------------------------------------------------------------
+
+def _netcdf_text_values(var) -> List[str]:
+    data = var[:]
+    if np.ma.isMaskedArray(data):
+        data = data.filled("")
+    arr = np.asarray(data)
+    if arr.dtype.kind in {"S", "U"} and arr.ndim >= 2 and arr.dtype.itemsize == 1:
+        arr = nc4.chartostring(arr)
+    values = []
+    for item in np.asarray(arr).reshape(-1):
+        values.append(clean_text(item))
+    return values
+
+
+def audit_satellite_query_catalog(
+    release_dir: Path,
+    station_catalog: pd.DataFrame,
+    rows: List[Dict[str, Any]],
+) -> None:
+    query_path = release_dir / QUERY_CATALOG_NAME
+    nc_path = release_dir / "sed_reference_satellite.nc"
+
+    if not query_path.is_file() or not nc_path.is_file():
+        add_row(
+            rows,
+            check="satellite_query_catalog_available",
+            status="fail",
+            target=QUERY_CATALOG_NAME,
+            expected="query catalogue and satellite NetCDF present",
+            actual="missing",
+            details="The public satellite query catalogue must be generated from the final satellite NetCDF.",
+        )
+        return
+
+    try:
+        header = list(pd.read_csv(query_path, nrows=0).columns)
+    except Exception as exc:
+        add_row(
+            rows,
+            check="satellite_query_catalog_readable",
+            status="fail",
+            target=QUERY_CATALOG_NAME,
+            expected=list(QUERY_COLUMNS),
+            actual=repr(exc),
+            details="Cannot read satellite query catalogue header.",
+        )
+        return
+
+    add_row(
+        rows,
+        check="satellite_query_catalog_columns",
+        status="pass" if header == list(QUERY_COLUMNS) else "fail",
+        target=QUERY_CATALOG_NAME,
+        expected="|".join(QUERY_COLUMNS),
+        actual="|".join(header),
+        details="Query catalogue columns must match the public satellite NetCDF/SP Table S11 contract.",
+    )
+
+    actual_records = 0
+    try:
+        for chunk in pd.read_csv(
+            query_path,
+            usecols=["satellite_station_index"],
+            chunksize=1000000,
+        ):
+            actual_records += len(chunk)
+    except Exception as exc:
+        add_row(
+            rows,
+            check="satellite_query_catalog_record_count",
+            status="fail",
+            target=QUERY_CATALOG_NAME,
+            expected="readable record rows",
+            actual=repr(exc),
+            details="Failed while streaming the query catalogue.",
+        )
+        return
+
+    with nc4.Dataset(nc_path, "r") as ds:
+        expected_records = len(ds.dimensions["n_satellite_records"])
+        expected_stations = len(ds.dimensions["n_satellite_stations"])
+        sources = set(_netcdf_text_values(ds.variables["source"])) if "source" in ds.variables else set()
+        sources.discard("")
+
+        linked_values = (
+            set(_netcdf_text_values(ds.variables["linked_station_uid"]))
+            if "linked_station_uid" in ds.variables
+            else set()
+        )
+        linked_values.discard("")
+
+    add_row(
+        rows,
+        check="satellite_query_catalog_record_count",
+        status="pass" if actual_records == expected_records else "fail",
+        target=QUERY_CATALOG_NAME,
+        expected=expected_records,
+        actual=actual_records,
+        details="One query-catalogue row is required for every satellite NetCDF observation record.",
+    )
+
+    expected_sources = {"RivSed", "GSED", "Dethier"}
+    add_row(
+        rows,
+        check="satellite_query_catalog_sources",
+        status="pass" if sources == expected_sources else "fail",
+        target="sed_reference_satellite.nc:source",
+        expected="|".join(sorted(expected_sources)),
+        actual="|".join(sorted(sources)),
+        details="Final public satellite source labels must match the manuscript/SP.",
+    )
+
+    station_ids = set()
+    if "station_uid" in station_catalog.columns:
+        station_ids = {
+            clean_text(value)
+            for value in station_catalog["station_uid"].tolist()
+            if clean_text(value)
+        }
+    missing_links = linked_values.difference(station_ids)
+    add_row(
+        rows,
+        check="satellite_query_catalog_linked_station_uid",
+        status="pass" if not missing_links else "fail",
+        target="sed_reference_satellite.nc -> station_catalog.csv",
+        expected="all non-empty linked_station_uid values resolve",
+        actual="missing={}; satellite_stations={}".format(len(missing_links), expected_stations),
+        details=(
+            "missing sample=" + "|".join(sorted(missing_links)[:12])
+            if missing_links
+            else "All linked station identifiers resolve."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------
 # Public S9 schema audit
 # ---------------------------------------------------------------------
 
@@ -1673,7 +1813,10 @@ def audit_public_schema_csv(
         return
 
     try:
-        frame = pd.read_csv(path, keep_default_na=False, dtype=str)
+        if path.name == QUERY_CATALOG_NAME:
+            frame = pd.read_csv(path, keep_default_na=False, dtype=str, nrows=0)
+        else:
+            frame = pd.read_csv(path, keep_default_na=False, dtype=str)
     except Exception as exc:
         add_row(
             rows,
@@ -1693,6 +1836,8 @@ def audit_public_schema_csv(
             failures.append("column:{}".format(column))
 
     for column in frame.columns:
+        if path.name == QUERY_CATALOG_NAME:
+            continue
         if frame.empty:
             continue
         mask = frame[column].map(contains_old_public_schema_token)
@@ -2157,6 +2302,12 @@ def main() -> int:
             source_dataset_catalog,
             rows,
         )
+
+    audit_satellite_query_catalog(
+        release_dir,
+        station_catalog,
+        rows,
+    )
 
     # -------------------------------------------------------------
     # NetCDF metadata / coordinates / science variables

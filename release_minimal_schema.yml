@@ -343,3 +343,24 @@ climatology_query_columns:
 - SSL
 - SSL_flag
 - source
+
+satellite_query_catalog_columns:
+- lat
+- lon
+- time
+- satellite_station_uid
+- source
+- station_name
+- river_name
+- station_resolution
+- station_uid
+- linked_station_uid
+- link_distance_m
+- unlinked_reason
+- satellite_station_index
+- Q
+- SSC
+- SSL
+- Q_flag
+- SSC_flag
+- SSL_flag
