@@ -27,3 +27,8 @@ tmp/
 bak/
 validate/output
 stats_release_to_manu/docs/
+*.py[cod]
+.pytest_cache/
+.claude/
+.DS_Store
+Thumbs.db
