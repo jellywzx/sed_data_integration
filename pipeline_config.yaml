@@ -47,6 +47,7 @@ cli:
   # s3: 收集 basin 主线测站
   s3_workers: 32           # 并行 worker 数，推荐 8-32
   s3_exclude_resolutions: climatology   # 排除的分辨率，可选 daily,monthly,annual,climatology
+  s3_exclude_source: EUSEDcollab         # 最终公开版本不再分发 EUSEDcollab；从 S3 起排除
 
   # s4: 流域追踪
   s4_workers: 24           # S4_N_WORKERS，推荐 8-48

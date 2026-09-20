@@ -105,6 +105,84 @@ class PublicStationNamesTest(unittest.TestCase):
                 np.testing.assert_array_equal(ds.variables["Q"][:], np.arange(6, dtype=np.float32).reshape(2, 3))
             self.assertFalse(public_names.has_failures(rows))
 
+    def test_source_values_are_converted_to_final_sp_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            path = release_dir / "source_dataset_catalog.csv"
+            pd.DataFrame(
+                {
+                    "source_name": [
+                        "USGS",
+                        "Eurasian_River",
+                        "Mekong_Delta",
+                        "Myanmar",
+                        "NERC",
+                        "Shashi_Jianli",
+                        "Milliman & Farnsworth",
+                        "High Mountain Asia (HMA)",
+                        "Ali_De_Boer",
+                        "Vanmaercke et al.",
+                        "RiverSed",
+                    ]
+                }
+            ).to_csv(path, index=False)
+
+            rows = public_names.convert_release_dir(release_dir, audit=True)
+
+            result = pd.read_csv(path, keep_default_na=False, dtype=str)
+            self.assertEqual(
+                result["source_name"].tolist(),
+                [
+                    "USGS NWIS",
+                    "Eurasian River",
+                    "Mekong Delta",
+                    "Myanmar Rivers",
+                    "NERC Avon",
+                    "Shashi–Jianli",
+                    "Milliman",
+                    "HMA",
+                    "Ali and De Boer",
+                    "Vanmaercke",
+                    "RivSed",
+                ],
+            )
+            self.assertFalse(public_names.has_failures(rows))
+
+    def test_netcdf_source_values_are_converted_to_final_sp_labels(self):
+        _require_nc4()
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            path = release_dir / "sed_reference_satellite.nc"
+            with nc4.Dataset(path, "w", format="NETCDF4") as ds:
+                ds.createDimension("n_sources", 3)
+                source = ds.createVariable("source_name", str, ("n_sources",))
+                source[:] = np.asarray(["RiverSed", "USGS", "Ali_De_Boer"], dtype=object)
+
+            rows = public_names.convert_release_dir(release_dir, audit=True)
+
+            with nc4.Dataset(path, "r") as ds:
+                values = [str(value) for value in ds.variables["source_name"][:]]
+                self.assertEqual(values, ["RivSed", "USGS NWIS", "Ali and De Boer"])
+            self.assertFalse(public_names.has_failures(rows))
+
+    def test_eusedcollab_is_rejected_by_public_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            path = release_dir / "source_station_catalog.csv"
+            pd.DataFrame(
+                [{"source_station_uid": "SRC000001", "source_name": "EUSEDcollab"}]
+            ).to_csv(path, index=False)
+
+            rows = public_names.convert_release_dir(release_dir, audit=True)
+
+            self.assertTrue(public_names.has_failures(rows))
+            self.assertTrue(
+                any(
+                    row.action == "audit_excluded_source" and row.status == "fail"
+                    for row in rows
+                )
+            )
+
     def test_residual_old_schema_names_are_reported_as_failures(self):
         _require_nc4()
         with tempfile.TemporaryDirectory() as tmp:

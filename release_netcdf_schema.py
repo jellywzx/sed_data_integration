@@ -226,7 +226,7 @@ PRODUCT_DESCRIPTIONS = {
         "title": "A Harmonized Global Station-Reference Dataset of River Discharge, Suspended Sediment Concentration, and Suspended Sediment Load: Satellite-Derived Auxiliary Product",
         "summary": (
             "This auxiliary product provides harmonized satellite-derived river "
-            "sediment observations from RiverSed, GSED, and Dethier datasets. "
+            "sediment observations from RivSed, GSED, and Dethier datasets. "
             "Where spatial and temporal matching criteria were satisfied, "
             "satellite-derived stations were linked to the main station-reference "
             "clusters. The product supports assessment of broad spatial sediment "

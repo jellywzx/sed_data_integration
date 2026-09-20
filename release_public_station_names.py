@@ -5,6 +5,7 @@ import re
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -30,6 +31,101 @@ FILE_LABEL_RENAMES = {
     "cluster_point": "station_point",
     "cluster_basin": "station_basin",
 }
+
+# Final manuscript/SP Table S1 release-facing source labels. Internal source
+# keys remain unchanged in S1-S8; S9 converts only the public release products.
+PUBLIC_SOURCE_NAME_ALIASES = {
+    "GloRiSe": ("GloRiSe", "GloRiSe v1.1", "glorise_v1_1"),
+    "GFQA_v2": ("GFQA_v2", "GFQA"),
+    "USGS NWIS": ("USGS NWIS", "USGS", "USGS_NWIS", "NWIS"),
+    "HYDAT": ("HYDAT", "Water Survey of Canada", "WSC"),
+    "Bayern": ("Bayern", "GKD Bayern", "Bayern_GKD", "gkd_bayern"),
+    "Eurasian River": ("Eurasian River", "Eurasian Dataset", "Eurasian_River", "Eurasian_Arctic", "Eurasian"),
+    "HYBAM": ("HYBAM",),
+    "Rhine": ("Rhine", "Rhine Basin"),
+    "Mekong Delta": ("Mekong Delta", "Mekong_Delta"),
+    "Myanmar Rivers": ("Myanmar Rivers", "Myanmar_Rivers", "Myanmar", "Irrawaddy Salween"),
+    "Yajiang": ("Yajiang", "Yajiang / Yarlung Tsangpo", "Yajiang_Yarlung_Tsangpo", "Yarlung_Tsangpo"),
+    "Chao Phraya River": ("Chao Phraya River", "Chao_Phraya_River", "Chao_Phraya", "Chao Phraya"),
+    "Robotham": ("Robotham", "Littlestock Brook"),
+    "NERC Avon": ("NERC Avon", "NERC", "NERC-Hampshire Avon", "NERC_Hampshire_Avon", "Hampshire Avon"),
+    "Fukushima": ("Fukushima", "Fukushima/Niida River", "Fukushima_Niida", "Niida River"),
+    "Shashi–Jianli": ("Shashi–Jianli", "Shashi-Jianli", "Shashi_Jianli", "Shashi Jianli"),
+    "Huanghe": ("Huanghe", "Huanghe (Yellow River)", "Yellow River", "Huanghe_Yellow_River"),
+    "Milliman": ("Milliman", "Milliman & Farnsworth", "Milliman_Farnsworth", "Milliman and Farnsworth"),
+    "HMA": ("HMA", "High Mountain Asia", "High Mountain Asia (HMA)"),
+    "Ali and De Boer": (
+        "Ali and De Boer",
+        "Ali & De Boer",
+        "Ali_De_Boer",
+        "ALi_De_Boer",
+        "Ali & De Boer (Upper Indus)",
+        "Ali and De Boer (Upper Indus)",
+        "Upper Indus",
+    ),
+    "Vanmaercke": ("Vanmaercke", "Vanmaercke et al.", "Vanmaercke_Africa"),
+    "GSED": ("GSED",),
+    "Dethier": ("Dethier", "Dethier et al."),
+    "RivSed": ("RivSed", "RiverSed", "RiverSed (USA)", "RiverSed_USA", "river_sed"),
+}
+
+PUBLIC_EXCLUDED_SOURCE_ALIASES = (
+    "EUSEDcollab",
+    "EUSEDcollab.v1",
+    "EUSEDcollab_v1",
+    "EUSED",
+)
+
+SOURCE_VALUE_FIELDS = frozenset(("source_name", "source"))
+
+
+def _normalize_source_name(value):
+    text = "" if value is None else str(value).strip()
+    text = text.replace("–", "-").replace("—", "-").replace("&", " and ")
+    text = re.sub(r"[^0-9a-z]+", "_", text.lower())
+    return re.sub(r"_+", "_", text).strip("_")
+
+
+_PUBLIC_SOURCE_NAME_LOOKUP = {}
+for _display_name, _aliases in PUBLIC_SOURCE_NAME_ALIASES.items():
+    for _alias in _aliases:
+        _PUBLIC_SOURCE_NAME_LOOKUP[_normalize_source_name(_alias)] = _display_name
+
+_PUBLIC_EXCLUDED_SOURCE_KEYS = frozenset(
+    _normalize_source_name(value) for value in PUBLIC_EXCLUDED_SOURCE_ALIASES
+)
+
+
+def public_source_name(value):
+    """Return the final manuscript/SP release-facing source label."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return text
+    return _PUBLIC_SOURCE_NAME_LOOKUP.get(_normalize_source_name(text), text)
+
+
+def is_public_excluded_source(value):
+    """Return True for sources that must not appear in the public release."""
+    return _normalize_source_name(value) in _PUBLIC_EXCLUDED_SOURCE_KEYS
+
+
+def _residual_public_source_aliases(values):
+    residual = set()
+    for value in values:
+        text = "" if value is None else str(value).strip()
+        if text and public_source_name(text) != text:
+            residual.add(text)
+    return sorted(residual)
+
+
+def _excluded_public_source_values(values):
+    return sorted(
+        {
+            str(value).strip()
+            for value in values
+            if str(value).strip() and is_public_excluded_source(value)
+        }
+    )
 
 OLD_PUBLIC_SCHEMA_RE = re.compile(
     r"(^|[^A-Za-z0-9])("
@@ -145,6 +241,8 @@ def process_csv(path, base_dir, rows, dry_run=False):
     if not df.empty:
         for column in original_columns:
             updated = df[column].map(rename_csv_value)
+            if column in SOURCE_VALUE_FIELDS:
+                updated = updated.map(public_source_name)
             changed_values += int((updated != df[column]).sum())
             df[column] = updated
 
@@ -166,6 +264,41 @@ def process_csv(path, base_dir, rows, dry_run=False):
         return
     else:
         _append(rows, base_dir, path, "csv", "scan", "unchanged")
+
+
+def _decode_source_value(value):
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode("utf-8", errors="ignore").strip("\x00").strip()
+    return "" if value is None else str(value).strip()
+
+
+def _source_variable_values(var):
+    data = var[:]
+    if np.ma.isMaskedArray(data):
+        data = data.filled("")
+    array = np.asarray(data)
+    if array.dtype.kind not in {"O", "U", "S"}:
+        return [], array.shape
+    # Current release products use NetCDF variable-length strings for source
+    # fields. Do not rewrite fixed-width S1 character matrices in place.
+    if array.dtype.kind == "S" and array.ndim >= 2 and array.dtype.itemsize == 1:
+        return [], array.shape
+    return [_decode_source_value(value) for value in array.reshape(-1)], array.shape
+
+
+def _rewrite_source_variable_values(var):
+    values, shape = _source_variable_values(var)
+    if not values:
+        return 0
+    mapped = [public_source_name(value) for value in values]
+    changed = sum(old != new for old, new in zip(values, mapped))
+    if not changed:
+        return 0
+    if shape:
+        var[:] = np.asarray(mapped, dtype=object).reshape(shape)
+    else:
+        var[...] = mapped[0]
+    return changed
 
 
 def _rename_nc_attr(container, attr_name, base_dir, path, rows, dry_run):
@@ -224,6 +357,24 @@ def process_netcdf(path, base_dir, rows, dry_run=False):
             var = ds.variables[var_name]
             for attr_name in list(var.ncattrs()):
                 _rename_nc_attr(var, attr_name, base_dir, path, rows, dry_run)
+            if var_name in SOURCE_VALUE_FIELDS:
+                if dry_run:
+                    values, _ = _source_variable_values(var)
+                    changed = sum(public_source_name(value) != value for value in values)
+                else:
+                    changed = _rewrite_source_variable_values(var)
+                if changed:
+                    _append(
+                        rows,
+                        base_dir,
+                        path,
+                        "netcdf",
+                        "rewrite_source_values",
+                        "dry-run" if dry_run else "changed",
+                        old_name=var_name,
+                        new_name=var_name,
+                        details="changed_values={}".format(changed),
+                    )
 
 
 def process_text(path, base_dir, rows, dry_run=False):
@@ -272,6 +423,24 @@ def process_gpkg(path, base_dir, rows, dry_run=False):
             continue
         if new_columns:
             frame = frame.rename(columns=new_columns)
+        for source_column in SOURCE_VALUE_FIELDS:
+            if source_column not in frame.columns:
+                continue
+            updated = frame[source_column].map(public_source_name)
+            changed_values = int((updated != frame[source_column]).sum())
+            if changed_values:
+                _append(
+                    rows,
+                    base_dir,
+                    path,
+                    "gpkg",
+                    "rewrite_source_values",
+                    "changed",
+                    old_name=source_column,
+                    new_name=source_column,
+                    details="layer={}; changed_values={}".format(layer, changed_values),
+                )
+                frame[source_column] = updated
         frame.to_file(temp_path, layer=new_layer, driver="GPKG")
         wrote = True
 
@@ -328,6 +497,35 @@ def audit_release_dir(release_dir, rows):
                 count = int(mask.sum())
                 _append(rows, release_dir, path, "audit", "audit_residual", "fail", column, details="csv values={}".format(count))
 
+        for column in ("source_name", "source"):
+            if column not in df.columns:
+                continue
+            values = df[column].tolist()
+            residual = _residual_public_source_aliases(values)
+            if residual:
+                _append(
+                    rows,
+                    release_dir,
+                    path,
+                    "audit",
+                    "audit_source_name",
+                    "fail",
+                    column,
+                    details="non-public aliases={}".format("|".join(residual[:12])),
+                )
+            excluded = _excluded_public_source_values(values)
+            if excluded:
+                _append(
+                    rows,
+                    release_dir,
+                    path,
+                    "audit",
+                    "audit_excluded_source",
+                    "fail",
+                    column,
+                    details="excluded sources={}".format("|".join(excluded[:12])),
+                )
+
     for path in _text_files(release_dir):
         try:
             text = path.read_text(encoding="utf-8")
@@ -355,6 +553,32 @@ def audit_release_dir(release_dir, rows):
                     value = getattr(var, attr_name)
                     if isinstance(value, str) and contains_old_public_schema_token(value):
                         _append(rows, release_dir, path, "audit", "audit_residual", "fail", "{}:{}".format(var_name, attr_name), details="variable attr value")
+                if var_name in SOURCE_VALUE_FIELDS:
+                    values, _ = _source_variable_values(var)
+                    residual = _residual_public_source_aliases(values)
+                    if residual:
+                        _append(
+                            rows,
+                            release_dir,
+                            path,
+                            "audit",
+                            "audit_source_name",
+                            "fail",
+                            var_name,
+                            details="non-public aliases={}".format("|".join(residual[:12])),
+                        )
+                    excluded = _excluded_public_source_values(values)
+                    if excluded:
+                        _append(
+                            rows,
+                            release_dir,
+                            path,
+                            "audit",
+                            "audit_excluded_source",
+                            "fail",
+                            var_name,
+                            details="excluded sources={}".format("|".join(excluded[:12])),
+                        )
 
 
 def convert_release_dir(

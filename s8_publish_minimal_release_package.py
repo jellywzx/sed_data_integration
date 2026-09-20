@@ -215,9 +215,9 @@ COMMON_GLOBAL_ATTRS = {
 }
 
 _MATRIX_SOURCE = (
-    "Harmonized station-reference observations compiled from 18 global, "
+    "Harmonized station-reference observations compiled from 17 global, "
     "national, regional, and basin-specific source datasets, including "
-    "GloRiSe, GFQA_v2, USGS NWIS, HYDAT, Bayern, EUSEDcollab, Eurasian River, "
+    "GloRiSe, GFQA_v2, USGS NWIS, HYDAT, Bayern, Eurasian River, "
     "HYBAM, Rhine, Mekong Delta, Myanmar Rivers, Yajiang, Chao Phraya River, "
     "Robotham, NERC Avon, Fukushima, Shashi–Jianli, and Huanghe. "
     "Detailed information on source datasets, references, and provenance "
@@ -302,7 +302,7 @@ SATELLITE_GLOBAL_ATTRS_DEFAULTS = {
     "title": "{}: Satellite-Derived Auxiliary Product".format(BASE_TITLE),
     "summary": (
         "This auxiliary product provides harmonized satellite-derived river "
-        "sediment observations from RiverSed, GSED, and Dethier datasets. "
+        "sediment observations from RivSed, GSED, and Dethier datasets. "
         "Where spatial and temporal matching criteria were satisfied, "
         "satellite-derived stations were linked to the main station-reference "
         "clusters. The product supports assessment of broad spatial sediment "
@@ -311,7 +311,7 @@ SATELLITE_GLOBAL_ATTRS_DEFAULTS = {
     ),
     "product_id": "{}.satellite-derived".format(BASE_ID),
     "source": (
-        "RiverSed, GSED, and Dethier. "
+        "RivSed, GSED, and Dethier. "
         "Detailed information on source datasets, references, and provenance "
         "is retained in the source-dataset catalogue."
     ),
