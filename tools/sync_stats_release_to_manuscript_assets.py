@@ -1,4 +1,3 @@
-from __future__ import annotations
 #!/usr/bin/env python3
 """
 Synchronize stats_release outputs to manuscript-facing figure/table assets.
@@ -33,8 +32,15 @@ figures/data/manuscript_stats/
     table_resolved_basin_area_summary.csv
     table_resolved_basin_area_classes.csv
     sync_manifest.json
+
+Legacy S10/S11 validation summaries are intentionally excluded from manuscript
+numbers by default because those directories contain historical/intermediate
+diagnostics that are not the authoritative source for the submitted ESSD
+validation text or Fig. 9. They can be exported only with the explicit
+`--include-legacy-validation-assets` flag for historical comparison.
 """
 
+from __future__ import annotations
 
 import argparse
 import json
@@ -53,6 +59,13 @@ DEFAULT_STATS_ROOT = PROJECT_ROOT / "output_other" / "stats_release"
 DEFAULT_ASSETS_DIR = PROJECT_ROOT / "figures" / "data" / "manuscript_stats"
 DEFAULT_S10_ROOT = PROJECT_ROOT / "output_other" / "s10_final_validation"
 DEFAULT_S11_ROOT = PROJECT_ROOT / "output_other" / "validation_results"
+
+LEGACY_VALIDATION_ASSET_NAMES = (
+    "validation_s10_summary.csv",
+    "validation_s10_narrative.md",
+    "validation_s11_summary.csv",
+    "validation_s11_narrative.md",
+)
 
 RESOLUTION_ORDER = ["daily", "monthly", "annual"]
 VARIABLE_ORDER = ["Q", "SSC", "SSL"]
@@ -635,7 +648,7 @@ def run_stats_if_requested(args: argparse.Namespace) -> None:
 
 
 def build_s10_validation_block(s10_root: Path) -> Dict[str, Any]:
-    """Read s10 final validation outputs and extract manuscript numbers.
+    """Read legacy s10 validation outputs for historical comparison only.
 
     Reads validation_summary_data.json, validation_overlap_by_resolution.csv,
     validation_overlap_source_pairs.csv, validation_overlap_flag_summary.csv,
@@ -931,7 +944,7 @@ def build_s10_validation_block(s10_root: Path) -> Dict[str, Any]:
 
 
 def build_s11_validation_block(s11_root: Path) -> Dict[str, Any]:
-    """Read s11 satellite/insitu validation outputs and extract manuscript numbers.
+    """Read legacy s11 satellite/insitu outputs for historical comparison only.
 
     Reads validation_satellite_insitu_metrics.csv and
     validation_satellite_insitu_pairs.csv.
@@ -1090,9 +1103,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-stats", action="store_true", help="Run stats_release.run_all_release_stats first.")
     parser.add_argument("--skip-stats-figures", action="store_true", help="When --run-stats is used, skip stats figures.")
     parser.add_argument("--s10-validation-root", type=Path, default=DEFAULT_S10_ROOT,
-                        help="Path to s10 final validation output directory.")
+                        help="Path to legacy s10 validation outputs (used only with --include-legacy-validation-assets).")
     parser.add_argument("--s11-validation-root", type=Path, default=DEFAULT_S11_ROOT,
-                        help="Path to s11 satellite/insitu validation output directory.")
+                        help="Path to legacy s11 validation outputs (used only with --include-legacy-validation-assets).")
+    parser.add_argument(
+        "--include-legacy-validation-assets",
+        action="store_true",
+        help=(
+            "Opt in to historical S10/S11 validation summaries. These are not "
+            "authoritative for the submitted manuscript and are excluded by default."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1121,9 +1142,18 @@ def main() -> int:
         stats_root / "variable_summary" / "tables" / "table_variable_summary_statistics.csv"
     )
 
-    # Validation blocks
-    s10_block = build_s10_validation_block(s10_root)
-    s11_block = build_s11_validation_block(s11_root)
+    # Historical/intermediate validation blocks are not promoted into
+    # manuscript-facing constants unless the caller explicitly opts in.
+    if args.include_legacy_validation_assets:
+        s10_block = build_s10_validation_block(s10_root)
+        s11_block = build_s11_validation_block(s11_root)
+    else:
+        s10_block = {"stats": {}, "paragraph": "", "table": pd.DataFrame()}
+        s11_block = {"stats": {}, "paragraph": "", "table": pd.DataFrame()}
+        for name in LEGACY_VALIDATION_ASSET_NAMES:
+            stale = assets_dir / name
+            if stale.is_file():
+                stale.unlink()
 
     constants = build_constants(
         table4=table4,
@@ -1172,13 +1202,19 @@ def main() -> int:
         "release_dir": str(args.release_dir.resolve()),
         "stats_root": str(stats_root),
         "assets_dir": str(assets_dir),
-        "s10_validation_root": str(s10_root),
-        "s11_validation_root": str(s11_root),
+        "legacy_validation_assets_included": bool(args.include_legacy_validation_assets),
+        "s10_validation_root": str(s10_root) if args.include_legacy_validation_assets else None,
+        "s11_validation_root": str(s11_root) if args.include_legacy_validation_assets else None,
         "stats_run_manifest": run_manifest,
         "outputs": sorted(p.name for p in assets_dir.glob("*")),
     }
     write_json(sync_manifest, assets_dir / "sync_manifest.json")
 
+    if not args.include_legacy_validation_assets:
+        print(
+            "Legacy S10/S11 validation assets were not promoted; "
+            "use --include-legacy-validation-assets only for historical comparison."
+        )
     print(f"Wrote manuscript assets to {assets_dir}")
     return 0
 
