@@ -78,7 +78,7 @@ STAGE_FLAG_ALLOWED = {
     "SSC_qc2": {0, 2, 8, 9},
     "SSL_qc2": {0, 2, 8, 9},
     "SSC_qc3": {0, 2, 8, 9},
-    "SSL_qc3": {0, 1, 8, 9},
+    "SSL_qc3": {0, 2, 8, 9},
 }
 
 UPSTREAM_QC_NAMES = {
@@ -1215,6 +1215,14 @@ class Audit:
             if upstream_name in ds.variables and release_name in release_values:
                 expected = to_python(ds.variables[upstream_name][idx])
                 actual = release_values[release_name]
+                # The integration contract normalizes the legacy SSL QC3
+                # propagated code 1 to the current shared-QC code 2.
+                if release_name == "SSL_qc3":
+                    try:
+                        if int(expected) == 1:
+                            expected = 2
+                    except (TypeError, ValueError):
+                        pass
                 if not self.flag_equal(expected, actual):
                     add_row(
                         self.stage_qc_mismatches,
