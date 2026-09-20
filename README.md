@@ -40,6 +40,8 @@ scripts_basin_test/output/sed_reference_release_minimal_final/ # S9 final public
 | **Sect. 5.3** Dataset limitations and recommended interpretation | Interpret the released products using the statistics and validation results; this section does not correspond to a single executable script | `stats_release/*`, `validate/*` |
 | **Sect. 5.4** Demonstration of use in the Amazon Basin | Demonstrate extraction of reference observations and evaluation of modelled Q, SSC, and SSL | `validate/validate_model_with_sed_reference.py`, `figures/scripts/plot_fig10_validate_model_with_sed_reference.py` |
 
+For the submitted ESSD v1.0.0 manuscript, the machine-readable numerical contract is `config/manuscript_expected_v1.0.0.json`. The detailed mapping from manuscript claims to authoritative scripts, outputs, and known scope notes is maintained in `docs/manuscript_code_crosswalk.md`.
+
 ---
 
 ## 2. 发布内容：内部 full release 与最终 public release
