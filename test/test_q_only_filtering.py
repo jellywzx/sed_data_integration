@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 import s6_basin_merge_to_nc as s6
-from qc_contract import read_standardized_qc_stage_arrays
+from qc_contract import find_missing_qc_stage_variables, read_standardized_qc_stage_arrays
 
 
 class _FakeVar:
@@ -44,6 +44,36 @@ def test_bayern_ssc_qc3_consistency_alias_maps_to_standard_qc3():
 
     assert "SSC_qc3" in arrays
     assert arrays["SSC_qc3"].tolist() == [0, 2, 8, 9]
+
+
+def test_ssl_qc3_legacy_propagated_code_normalizes_to_current_code():
+    ds = _FakeDataset(
+        {
+            "SSL_flag_qc3_from_ssc_q": _FakeVar([0, 1, 2, 8, 9]),
+        }
+    )
+
+    arrays = read_standardized_qc_stage_arrays(ds, size=5)
+
+    assert arrays["SSL_qc3"].tolist() == [0, 2, 2, 8, 9]
+
+
+def test_missing_stage_qc_variables_are_reported():
+    ds = _FakeDataset(
+        {
+            "Q_flag_qc1_physical": _FakeVar([0]),
+            "SSC_flag_qc1_physical": _FakeVar([0]),
+        }
+    )
+
+    missing = find_missing_qc_stage_variables(ds)
+
+    assert "Q_qc1" not in missing
+    assert "SSC_qc1" not in missing
+    assert "SSL_qc1" in missing
+    assert "Q_qc2" in missing
+    assert "SSC_qc3" in missing
+    assert "SSL_qc3" in missing
 
 
 def _with_series(frames, func):
@@ -192,6 +222,9 @@ def test_all_q_only_candidates_skip_cluster_resolution():
 
 
 def main():
+    test_bayern_ssc_qc3_consistency_alias_maps_to_standard_qc3()
+    test_ssl_qc3_legacy_propagated_code_normalizes_to_current_code()
+    test_missing_stage_qc_variables_are_reported()
     test_q_only_time_steps_are_omitted()
     test_lower_ranked_sediment_record_replaces_higher_ranked_q_only_date()
     test_all_q_only_candidates_skip_cluster_resolution()
