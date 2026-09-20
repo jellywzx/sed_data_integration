@@ -9,6 +9,9 @@ No release NetCDF file is opened by this module. Direct data lineage:
 
 The purpose is to keep manuscript-facing numbers reproducibly downstream of the
 release statistics suite rather than independently rescanning release products.
+
+Outputs default to `stats_release_to_manu/docs/` and can be redirected with
+`--out-dir`, so the manuscript table build is portable across machines.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ DEFAULT_FLAG01_SUMMARY = (
 DEFAULT_QC_MATRIX_FLAGS = (
     DEFAULT_STATS_ROOT / "qc_flags" / "tables" / "table_qc_matrix_final_flags_by_resolution.csv"
 )
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "docs"
 
 
 TABLE5_RECOMMENDED_USE = {
@@ -299,6 +303,7 @@ def build_report(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Build Manuscript Tables 5–7 from stats_release CSV outputs only.")
     add_common_args(parser, "manuscript_tables_5_7")
+    parser.set_defaults(out_dir=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--spatial-by-resolution", type=Path, default=DEFAULT_SPATIAL_BY_RESOLUTION)
     parser.add_argument("--spatial-summary", type=Path, default=DEFAULT_SPATIAL_SUMMARY)
     parser.add_argument("--temporal-by-resolution", type=Path, default=DEFAULT_TEMPORAL_BY_RESOLUTION)
@@ -350,7 +355,7 @@ def main(argv=None) -> int:
     table6 = build_table6(variable_coverage, flag01_summary)
     table7 = build_table7(qc_stats)
 
-    docs_dir = Path("/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/stats_release_to_manu/docs")
+    docs_dir = ctx.out_dir
     tables_dir = docs_dir / "tables"
     reports_dir = docs_dir / "reports"
     table5_path = tables_dir / "table_manuscript_table5.csv"
