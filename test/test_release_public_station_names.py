@@ -154,14 +154,14 @@ class PublicStationNamesTest(unittest.TestCase):
             release_dir = Path(tmp)
             path = release_dir / "sed_reference_satellite.nc"
             with nc4.Dataset(path, "w", format="NETCDF4") as ds:
-                ds.createDimension("n_sources", 3)
-                source = ds.createVariable("source_name", str, ("n_sources",))
+                ds.createDimension("n_satellite_stations", 3)
+                source = ds.createVariable("source", str, ("n_satellite_stations",))
                 source[:] = np.asarray(["RiverSed", "USGS", "Ali_De_Boer"], dtype=object)
 
             rows = public_names.convert_release_dir(release_dir, audit=True)
 
             with nc4.Dataset(path, "r") as ds:
-                values = [str(value) for value in ds.variables["source_name"][:]]
+                values = [str(value) for value in ds.variables["source"][:]]
                 self.assertEqual(values, ["RivSed", "USGS NWIS", "Ali and De Boer"])
             self.assertFalse(public_names.has_failures(rows))
 

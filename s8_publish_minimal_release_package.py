@@ -1361,7 +1361,7 @@ def _copy_minimal_satellite_nc_netCDF4(src_path, dst_path, keep_vars, required_v
             src.variables,
             keep_vars,
             required_vars,
-            aliases={"source_name": "source"},
+            aliases={"source": "source_name"},
             label=src_path.name,
         )
         if missing_required:
@@ -1418,7 +1418,7 @@ def _copy_minimal_satellite_nc_h5netcdf(src_path, dst_path, keep_vars, required_
             src.variables,
             keep_vars,
             required_vars,
-            aliases={"source_name": "source"},
+            aliases={"source": "source_name"},
             label=src_path.name,
         )
         if missing_required:
@@ -1505,7 +1505,7 @@ def _copy_minimal_climatology_nc_netCDF4(src_path, dst_path, keep_vars, required
             src.variables,
             keep_vars,
             required_vars,
-            aliases={"source_name": "source"},
+            aliases={"source": "source_name"},
             label=src_path.name,
         )
         if missing_required:
@@ -1562,7 +1562,7 @@ def _copy_minimal_climatology_nc_h5netcdf(src_path, dst_path, keep_vars, require
             src.variables,
             keep_vars,
             required_vars,
-            aliases={"source_name": "source"},
+            aliases={"source": "source_name"},
             label=src_path.name,
         )
         if missing_required:
@@ -2242,10 +2242,13 @@ def _global_attr_value(ds, name, default=None):
 
 
 def _source_variable_name(ds):
-    if "source_name" in ds.variables:
-        return "source_name"
+    # Public auxiliary NetCDF schema follows Tables S10-S11: the variable is
+    # named "source". Keep source_name only as a backward-compatible fallback
+    # when reading older/intermediate products.
     if "source" in ds.variables:
         return "source"
+    if "source_name" in ds.variables:
+        return "source_name"
     return ""
 
 
@@ -3437,22 +3440,34 @@ def build_minimal_key_contract_rows(package_dir):
     ):
         nc_path = package_dir / product
         catalog_path = package_dir / catalog_name
-        for variable_name in (id_name, "source_name"):
-            nc_values, nc_error = _nc_text_values(nc_path, variable_name)
-            cat_values, cat_error = _catalog_column_values(catalog_path, variable_name)
+        for nc_variable, catalog_column in (
+            (id_name, id_name),
+            ("source", "source_name"),
+        ):
+            nc_values, nc_error = _nc_text_values(nc_path, nc_variable)
+            cat_values, cat_error = _catalog_column_values(catalog_path, catalog_column)
+            check_name = (
+                nc_variable
+                if nc_variable == catalog_column
+                else "{}_to_{}".format(nc_variable, catalog_column)
+            )
             if nc_values is None or cat_values is None:
                 add(
-                    "key_contract:{}:{}_parity".format(product, variable_name),
+                    "key_contract:{}:{}_parity".format(product, check_name),
                     "fail",
-                    "{} values can be read from NetCDF and {}".format(variable_name, catalog_name),
+                    "{} values can be read from NetCDF and {}.{} can be read".format(
+                        nc_variable,
+                        catalog_name,
+                        catalog_column,
+                    ),
                     nc_error or cat_error,
                 )
                 continue
             diff = _minimal_clean_set(nc_values).symmetric_difference(_minimal_clean_set(cat_values))
             add(
-                "key_contract:{}:{}_parity".format(product, variable_name),
+                "key_contract:{}:{}_parity".format(product, check_name),
                 "pass" if not diff else "fail",
-                "{} values match between NetCDF and {}".format(variable_name, catalog_name),
+                "{} values match {}.{}".format(nc_variable, catalog_name, catalog_column),
                 "diff_count={}; sample={}".format(len(diff), _sample_values(diff)),
             )
 
