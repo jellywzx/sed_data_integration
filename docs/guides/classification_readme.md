@@ -14,6 +14,34 @@
 
 ---
 
+## 1.1 三种不同的分类维度不要混用
+
+当前代码和论文中存在三个彼此独立的分类维度：
+
+| 维度 | 字段 / 代码 | 作用 | 示例 |
+|---|---|---|---|
+| 时间语义 | `resolution` | 决定 daily / monthly / annual / climatology 的时间支持与产品路径 | `daily`, `monthly`, `annual`, `climatology` |
+| 处理族 | `source_family` | 决定主线合并、validation-only 和辅助产品分流 | `in_situ`, `climatology`, `satellite`, `other` |
+| 来源子组 | `source_subgroup` | 对应正文 Table 2 / Table S1 的来源描述，只用于 provenance / manuscript-facing 分类 | `Global and multi-source archives`, `National and agency monitoring networks`, `Regional and basin-specific datasets`, `Climatological and long-term synthesis sources`, `Satellite-derived sources` |
+
+最重要的约束是：
+
+1. `source_family.py` 是**运行逻辑分类**，可以参与 merge policy。
+2. `source_subgroup.py` 是**论文来源描述分类**，不得参与 S3-S8 的 merge eligibility、validation-only 或产品分流。
+3. 不能因为正文 Table 2 把 USGS/HYDAT/Bayern 称为 “National and agency monitoring networks”，就在 `source_family` 中新增 `national_agency` 一类。
+4. 同理，GloRiSe/GFQA_v2 虽然属于 “Global and multi-source archives”，在运行逻辑上仍然属于 `in_situ`。
+5. Huanghe 需要按 release role / resolution 区分：annual 主产品为 `in_situ` + regional/basin-specific；climatology 产品为 `climatology` + climatological/long-term synthesis。
+
+因此推荐记法是：
+
+```text
+source_family   = HOW the pipeline treats the source
+source_subgroup = HOW the manuscript describes the source provenance
+resolution      = WHAT temporal support the records have
+```
+
+---
+
 ## 2. 总体流程图
 
 可以先把整条主线理解成下面这个结构：
