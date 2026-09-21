@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Shared source_family taxonomy for the sediment reference pipeline.
 
-source_family is a coarse, release-facing grouping of contributing datasets:
+source_family is an OPERATIONAL pipeline grouping used for processing,
+branching, validation-only handling, and main-merge eligibility:
   in_situ       gauge / monitoring-network point observations
   climatology   long-term mean / compilation products (Milliman, HMA,
                 Ali & De Boer, Vanmaercke, and Huanghe climatology)
   satellite     remote-sensing derived records (RiverSed, GSED, Dethier)
   other         anything not yet classified
+
+It is intentionally NOT the manuscript Table 2 Source subgroup field.
+Descriptive provenance groups such as Global and multi-source archives,
+National and agency monitoring networks, and Regional and basin-specific
+datasets are defined separately in source_subgroup.py and must not be used
+to control merge policy.
 
 Classification is driven by the canonical SOURCE NAME (the ``source`` column
 from s3/s5, stored in s6_cluster_quality_order.csv), NOT by the upstream
