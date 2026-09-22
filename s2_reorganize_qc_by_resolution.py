@@ -24,7 +24,7 @@
   python scripts/s2_reorganize_qc_by_resolution.py -j 16   # 16 线程并行复制
   python scripts/s2_reorganize_qc_by_resolution.py --csv-only   # 只导出分类 CSV，不复制
   python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe
-  python scripts/s2_reorganize_qc_by_resolution.py --dataset GloRiSe GloRiSe/SS
+  python scripts/s2_reorganize_qc_by_resolution.py --dataset GloRiSe
   python scripts/s2_reorganize_qc_by_resolution.py --dataset Huanghe --clear-all
 
 推荐运行顺序：
@@ -94,7 +94,7 @@ DEFAULT_WORKERS = 16
 LEGACY_RESOLUTION_DIRS = ("annually_climatology", "quarterly", "single_point")
 
 def get_source_from_path(path: str, root_dir: Path) -> str:
-    """从相对路径解析数据源，如 daily/GloRiSe/SS/qc/xxx.nc -> GloRiSe_SS。"""
+    """从 canonical QC 路径解析数据源，如 daily/GloRiSe/qc/xxx.nc -> GloRiSe。"""
     try:
         p = Path(path).resolve()
         root = root_dir.resolve()
@@ -496,7 +496,7 @@ def main():
     ap.add_argument(
         "--dataset",
         nargs="+",
-        help="只处理指定数据集，可传多个；支持 source、顶层目录名、GloRiSe/SS，也支持逗号分隔",
+        help="只处理指定数据集，可传多个；支持 source 或顶层数据集名称（如 GloRiSe、Huanghe），也支持逗号分隔",
     )
     ap.set_defaults(clear_mode="auto")
     ap.add_argument(
@@ -590,7 +590,7 @@ def main():
             available_aliases = sorted(alias for alias in dataset_aliases.explode().dropna().astype(str).unique())
             preview = ", ".join(available_aliases[:20]) if available_aliases else "(无可用数据集)"
             print(
-                "错误：--dataset 未匹配到任何 qc 文件。可尝试传入顶层目录名、source，或类似 GloRiSe/SS 的写法。",
+                "错误：--dataset 未匹配到任何 qc 文件。请传入顶层数据集名称或 source（例如 GloRiSe、Huanghe）。",
                 file=sys.stderr,
             )
             print(f"可用筛选名示例：{preview}", file=sys.stderr)
