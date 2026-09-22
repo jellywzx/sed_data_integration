@@ -168,6 +168,10 @@ def _normalize_dataset_filters(datasets):
 
 
 def _match_dataset_filter(rel_parts, dataset_filters):
+    # Canonical source-level input layout:
+    #   <resolution>/<dataset>/qc/*.nc
+    # Nested layouts such as <resolution>/<dataset>/<subgroup>/qc/*.nc are
+    # intentionally excluded from the integration workflow.
     if len(rel_parts) < 3:
         return False
 
