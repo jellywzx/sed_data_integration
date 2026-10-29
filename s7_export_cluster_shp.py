@@ -69,12 +69,17 @@ def main():
         default=str(_DEFAULT_RESOLUTION_CATALOG),
         help="cluster resolution catalog CSV path",
     )
+    ap.add_argument(
+        "--catalog-only",
+        action="store_true",
+        help="Write catalog CSV files without creating a GPKG.",
+    )
     args = ap.parse_args()
 
     if not HAS_NC:
         print("Error: netCDF4 is required. pip install netCDF4")
         return 1
-    if not HAS_GPD:
+    if not args.catalog_only and not HAS_GPD:
         print("Error: geopandas is required. pip install geopandas")
         return 1
 
@@ -109,9 +114,9 @@ def main():
     station_catalog.to_csv(station_catalog_path, index=False)
     resolution_catalog.to_csv(resolution_catalog_path, index=False)
 
-    gpkg_path = write_cluster_points_gpkg(station_catalog, resolution_catalog, out_gpkg)
-
-    print("Wrote cluster GPKG: {}".format(gpkg_path))
+    if not args.catalog_only:
+        gpkg_path = write_cluster_points_gpkg(station_catalog, resolution_catalog, out_gpkg)
+        print("Wrote cluster GPKG: {}".format(gpkg_path))
     print("Wrote cluster station catalog: {}".format(station_catalog_path))
     print("Wrote cluster resolution catalog: {}".format(resolution_catalog_path))
     print("cluster_summary rows = {}".format(len(station_catalog)))

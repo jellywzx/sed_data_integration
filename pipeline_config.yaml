@@ -3,7 +3,7 @@
 # ============================================================
 #
 # Usage:
-#   cd Output_r/scripts_basin_test
+#   cd Output_r/experiments/sed_data_integration_area_min_error
 #   python3 run_s1_s8_basin_pipeline.py --config-file pipeline_config.yaml
 #   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --dry-run --yes
 #
@@ -16,12 +16,12 @@
 
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
-  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8
-  steps: ""
+  # 可选值: s1, s2, s3, s4, s4_area, s5, s6, s7, s8, s9
+  steps: "s1,s2,s3,s4,s4_area,s5,s6,s7,s8,s9"
 
   # 起始 / 结束阶段（steps 为空时生效）
-  start_at: s4
-  end_at: s8
+  start_at: s1
+  end_at: s9
 
   # 试跑模式：只打印命令，不实际执行
   dry_run: false
@@ -29,8 +29,8 @@ cli:
   "yes": false
 
   # 运行解释器和总日志
-  python: ""   # 留空=自动选择可用的 Python 3
-  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
+  python: "/share/home/dq134/.conda/envs/wzx/bin/python3"
+  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/experiments/sed_data_integration_area_min_error/output/logs/run_s1_to_s8_area_min_error.log"
 
   # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
@@ -55,7 +55,8 @@ cli:
   s4_batch_size: 50        # 每批站点数，推荐 20-100
   s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
   s4_no_resume: true      # 关闭 resume（重新跑所有 shard）
-  s4_no_gpkg: false        # 关闭 GPKG 几何输出
+  s4_no_gpkg: true         # 面积实验不生成 GPKG
+  s4_area_threshold: 0.10
 
   # MERIT Hydro 数据集路径
   merit_dir: "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
@@ -73,9 +74,9 @@ cli:
 
   # s8: 发布
   s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
-  s8_skip_gpkg: false           # 跳过 GPKG 发布
+  s8_skip_gpkg: true            # 跳过 GPKG 发布
   s8_skip_validation: false     # 跳过发布校验
-  s8_include_basin_polygons: true  # 包含流域多边形
+  s8_include_basin_polygons: false # 不包含流域多边形
   s8_force: true                # 强制覆盖已存在的发布文件
 
 # ============================================================
@@ -83,6 +84,9 @@ cli:
 # 修改这里会自动注入到 os.environ
 # ============================================================
 env:
+  OUTPUT_R_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/experiments/sed_data_integration_area_min_error"
+  PIPELINE_INPUT_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r"
+  PIPELINE_SOURCE_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Source"
   # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
   # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
   RUN_ONLY: ""

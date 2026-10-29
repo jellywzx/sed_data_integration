@@ -77,6 +77,10 @@ PUBLIC_EXCLUDED_SOURCE_ALIASES = (
 )
 
 SOURCE_VALUE_FIELDS = frozenset(("source_name", "source"))
+PUBLIC_CATEGORICAL_VALUE_FIELDS = frozenset(("unlinked_reason",))
+PUBLIC_CATEGORICAL_VALUE_RENAMES = {
+    "no_main_cluster_coverage": "no_main_reference_station_coverage",
+}
 
 
 def _normalize_source_name(value):
@@ -102,6 +106,12 @@ def public_source_name(value):
     if not text:
         return text
     return _PUBLIC_SOURCE_NAME_LOOKUP.get(_normalize_source_name(text), text)
+
+
+def public_categorical_value(value):
+    """Return the public release spelling for a categorical metadata value."""
+    text = "" if value is None else str(value).strip()
+    return PUBLIC_CATEGORICAL_VALUE_RENAMES.get(text, text)
 
 
 def is_public_excluded_source(value):
@@ -243,6 +253,8 @@ def process_csv(path, base_dir, rows, dry_run=False):
             updated = df[column].map(rename_csv_value)
             if column in SOURCE_VALUE_FIELDS:
                 updated = updated.map(public_source_name)
+            if column in PUBLIC_CATEGORICAL_VALUE_FIELDS:
+                updated = updated.map(public_categorical_value)
             changed_values += int((updated != df[column]).sum())
             df[column] = updated
 
@@ -291,6 +303,21 @@ def _rewrite_source_variable_values(var):
     if not values:
         return 0
     mapped = [public_source_name(value) for value in values]
+    changed = sum(old != new for old, new in zip(values, mapped))
+    if not changed:
+        return 0
+    if shape:
+        var[:] = np.asarray(mapped, dtype=object).reshape(shape)
+    else:
+        var[...] = mapped[0]
+    return changed
+
+
+def _rewrite_public_categorical_variable_values(var):
+    values, shape = _source_variable_values(var)
+    if not values:
+        return 0
+    mapped = [public_categorical_value(value) for value in values]
     changed = sum(old != new for old, new in zip(values, mapped))
     if not changed:
         return 0
@@ -370,6 +397,24 @@ def process_netcdf(path, base_dir, rows, dry_run=False):
                         path,
                         "netcdf",
                         "rewrite_source_values",
+                        "dry-run" if dry_run else "changed",
+                        old_name=var_name,
+                        new_name=var_name,
+                        details="changed_values={}".format(changed),
+                    )
+            if var_name in PUBLIC_CATEGORICAL_VALUE_FIELDS:
+                if dry_run:
+                    values, _ = _source_variable_values(var)
+                    changed = sum(public_categorical_value(value) != value for value in values)
+                else:
+                    changed = _rewrite_public_categorical_variable_values(var)
+                if changed:
+                    _append(
+                        rows,
+                        base_dir,
+                        path,
+                        "netcdf",
+                        "rewrite_categorical_values",
                         "dry-run" if dry_run else "changed",
                         old_name=var_name,
                         new_name=var_name,

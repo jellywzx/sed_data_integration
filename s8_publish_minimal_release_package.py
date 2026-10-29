@@ -21,7 +21,7 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-
+import os
 import numpy as np
 import pandas as pd
 import yaml
@@ -58,9 +58,9 @@ except ImportError:
 
 PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 DEFAULT_RELEASE_DIR = PROJECT_ROOT / RELEASE_DATASET_DIR
-DEFAULT_MINIMAL_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
-DEFAULT_CLIMATOLOGY_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_climatology"
-DEFAULT_SATELLITE_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_satellite"
+DEFAULT_MINIMAL_DIR = PROJECT_ROOT / "output/sed_reference_release_minimal"
+DEFAULT_CLIMATOLOGY_DIR = PROJECT_ROOT / "output/sed_reference_release_climatology"
+DEFAULT_SATELLITE_DIR = PROJECT_ROOT / "output/sed_reference_release_satellite"
 DEFAULT_SCHEMA_PATH = SCRIPT_DIR / "release_minimal_schema.yml"
 
 MINIMAL_PACKAGE_FILES = ()
@@ -2080,7 +2080,9 @@ def _catalog_citation_for_source(source_name, *values):
 
 def _load_source_access_dates(warnings):
     """Best-effort access/download dates from raw Source folders."""
-    source_root = PROJECT_ROOT.parent / "Source"
+    source_root = Path(os.environ.get(
+        "PIPELINE_SOURCE_ROOT", str(SCRIPT_DIR.parents[2] / "Source")
+    )).expanduser().resolve()
     access_dates = {}
     if not source_root.is_dir():
         _warn(warnings, "Source folder not found for access_date enrichment: {}".format(source_root))
@@ -2944,7 +2946,13 @@ def slim_source_station_catalog(src, dst, warnings):
     print("[write] {}".format(dst))
 
 
-def slim_satellite_catalog(src, dst, warnings, boundary_options=None):
+def slim_satellite_catalog(
+    src,
+    dst,
+    warnings,
+    boundary_options=None,
+    station_catalog_path=None,
+):
     print("[catalog] slimming satellite_catalog.csv")
     df = _read_catalog_csv(src)
     if "source_name" not in df.columns and "source" in df.columns:
@@ -2955,6 +2963,41 @@ def slim_satellite_catalog(src, dst, warnings, boundary_options=None):
         warnings,
         "satellite_catalog.csv",
     )
+    if station_catalog_path is not None:
+        station_catalog_path = Path(station_catalog_path)
+        if not station_catalog_path.is_file():
+            _warn(
+                warnings,
+                "satellite linked station validation skipped; station catalog not found: {}".format(
+                    station_catalog_path
+                ),
+            )
+        else:
+            station_catalog = _read_catalog_csv(station_catalog_path)
+            station_key = "station_uid" if "station_uid" in station_catalog.columns else "cluster_uid"
+            link_col = "linked_station_uid" if "linked_station_uid" in df.columns else "linked_cluster_uid"
+            if station_key not in station_catalog.columns or link_col not in df.columns:
+                _warn(
+                    warnings,
+                    "satellite linked station validation skipped; required key columns are missing",
+                )
+            else:
+                station_ids = _minimal_clean_set(station_catalog[station_key])
+                linked_ids = df[link_col].map(_clean_ms)
+                invalid_mask = linked_ids.ne("") & ~linked_ids.isin(station_ids)
+                if invalid_mask.any():
+                    invalid_ids = _minimal_clean_set(linked_ids[invalid_mask])
+                    df.loc[invalid_mask, link_col] = ""
+                    df.loc[invalid_mask, "unlinked_reason"] = "linked_station_not_in_station_catalog"
+                    if "link_distance_m" in df.columns:
+                        df.loc[invalid_mask, "link_distance_m"] = ""
+                    _warn(
+                        warnings,
+                        "satellite_catalog.csv cleared {} dangling link(s) across {} missing station id(s)".format(
+                            int(invalid_mask.sum()),
+                            len(invalid_ids),
+                        ),
+                    )
     df = _fill_missing_satellite_country_from_boundary(
         df,
         warnings,
@@ -3168,7 +3211,12 @@ def copy_integrated_extension_files(args):
                 if args.dry_run:
                     print("[dry-run] would build satellite catalog CSV: {}".format(dst))
                 else:
-                    slim_satellite_catalog(src, dst, BUILD_WARNINGS)
+                    slim_satellite_catalog(
+                        src,
+                        dst,
+                        BUILD_WARNINGS,
+                        station_catalog_path=args.release_dir / "station_catalog.csv",
+                    )
             elif name in satellite_nc_files(args):
                 if args.dry_run:
                     print("[dry-run] would build satellite NetCDF: {}".format(dst))

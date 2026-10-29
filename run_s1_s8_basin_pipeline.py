@@ -3,7 +3,7 @@
 Run the scripts_basin_test basin mainline in order.
 
 Default stage layout:
-  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8 -> s9
+  s1 -> s2 -> s3 -> s4 -> s4_area -> s5 -> s6 -> s7 -> s8 -> s9
 
 Stage details:
   s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
@@ -57,6 +57,10 @@ from pathlib import Path
 
 from pipeline_paths import (
     OUTPUT_LOG_DIR,
+    PIPELINE_OUTPUT_DIR,
+    S2_ORGANIZED_DIR,
+    S4_STANDARD_UPSTREAM_CSV,
+    S4_UPSTREAM_CSV,
     S5_BASIN_CLUSTERED_CSV,
     S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
     S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
@@ -65,13 +69,16 @@ from pipeline_paths import (
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_R_ROOT = SCRIPT_DIR.parent
-OUTPUT_DIR = OUTPUT_R_ROOT / "scripts_basin_test" / "output"
-ORGANIZED_DIR = (OUTPUT_R_ROOT / "../output_resolution_organized").resolve()
-DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
+OUTPUT_R_ROOT = SCRIPT_DIR
+OUTPUT_DIR = OUTPUT_R_ROOT / PIPELINE_OUTPUT_DIR
+ORGANIZED_DIR = (OUTPUT_R_ROOT / S2_ORGANIZED_DIR).resolve()
+PIPELINE_INPUT_ROOT = Path(os.environ.get(
+    "PIPELINE_INPUT_ROOT", str(SCRIPT_DIR.parent.parent)
+)).expanduser().resolve()
+DEFAULT_MERIT_DIR = PIPELINE_INPUT_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
-STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9")
-EXPLICIT_STAGES = STAGES[:5] + ("s5b",) + STAGES[5:]
+STAGES = ("s1", "s2", "s3", "s4", "s4_area", "s5", "s6", "s7", "s8", "s9")
+EXPLICIT_STAGES = STAGES[:6] + ("s5b",) + STAGES[6:]
 
 # ---- Built-in runtime defaults -------------------------------------------------
 # These constants are the script's everyday defaults.
@@ -93,9 +100,10 @@ BUILTIN_S4_WORKERS = 24
 BUILTIN_S4_BATCH_SIZE = 50
 BUILTIN_S4_MAXTASKSPERCHILD = 10
 BUILTIN_S4_RESUME = False
-BUILTIN_S4_SAVE_GPKG = True
+BUILTIN_S4_SAVE_GPKG = False
 BUILTIN_S4_ARRAY_SIZE = 16
 BUILTIN_MERIT_DIR = DEFAULT_MERIT_DIR
+BUILTIN_S4_AREA_THRESHOLD = 0.10
 
 BUILTIN_S6_WORKERS = 24
 BUILTIN_MATRIX_WORKERS = None
@@ -109,8 +117,8 @@ BUILTIN_SKIP_CLIMATOLOGY_EXPORT = False
 BUILTIN_INCLUDE_LOCAL_BASINS = False
 
 BUILTIN_S8_LINK_MODE = "hardlink"
-BUILTIN_S8_SKIP_GPKG = False
-BUILTIN_S8_INCLUDE_BASIN_POLYGONS = True
+BUILTIN_S8_SKIP_GPKG = True
+BUILTIN_S8_INCLUDE_BASIN_POLYGONS = False
 BUILTIN_S8_SKIP_VALIDATION = False
 BUILTIN_S8_FORCE = True
 BUILTIN_S8_MINIMAL_MATRIX_WORKERS = 3
@@ -278,6 +286,7 @@ def _resolve_selected_stages(args):
 def stage_outputs():
     release_dir = OUTPUT_DIR / "sed_reference_release"
     minimal_dir = OUTPUT_DIR / "sed_reference_release_minimal"
+    final_dir = OUTPUT_DIR / "sed_reference_release_minimal_final"
     return {
         "s1": [
             OUTPUT_DIR / "s1_verify_time_resolution_results.csv",
@@ -287,8 +296,15 @@ def stage_outputs():
         "s2": [ORGANIZED_DIR],
         "s3": [OUTPUT_DIR / "s3_collected_stations.csv"],
         "s4": [
-            OUTPUT_DIR / "s4_upstream_basins.csv",
+            OUTPUT_R_ROOT / S4_STANDARD_UPSTREAM_CSV,
             OUTPUT_DIR / "s4_reported_area_check.csv",
+        ],
+        "s4_area": [
+            OUTPUT_R_ROOT / S4_UPSTREAM_CSV,
+            OUTPUT_DIR / "s4_area_only_upstream_area.csv",
+            OUTPUT_DIR / "s4_area_only_candidate_top10.csv",
+            OUTPUT_DIR / "s4_area_only_summary.csv",
+            OUTPUT_DIR / "s4_area_only_run.json",
         ],
         "s5": [
             OUTPUT_DIR / "s5_basin_clustered_stations.csv",
@@ -312,12 +328,9 @@ def stage_outputs():
             OUTPUT_DIR / "s6_satellite_validation_catalog.csv",
         ],
         "s7": [
-            OUTPUT_DIR / "s7_cluster_points.gpkg",
             OUTPUT_DIR / "s7_cluster_station_catalog.csv",
             OUTPUT_DIR / "s7_cluster_resolution_catalog.csv",
-            OUTPUT_DIR / "s7_source_stations.gpkg",
             OUTPUT_DIR / "s7_source_station_resolution_catalog.csv",
-            OUTPUT_DIR / "s7_cluster_basins.gpkg",
         ],
         "s8": [
             release_dir / "sed_reference_master.nc",
@@ -342,8 +355,8 @@ def stage_outputs():
             minimal_dir / "README.md",
         ],
         "s9": [
-            minimal_dir / "public_station_names_report.csv",
-            minimal_dir / "example_reference_workflow.py",
+            final_dir / "public_station_names_report.csv",
+            final_dir / "example_reference_workflow.py",
         ],
     }
 
@@ -364,6 +377,7 @@ def build_stage_specs(args, python_bin):
         "S4_SAVE_GPKG": _bool_env(not args.s4_no_gpkg),
         "S4_MAXTASKSPERCHILD": str(args.s4_maxtasksperchild),
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
+        "S4_OUT_CSV": str(OUTPUT_R_ROOT / S4_STANDARD_UPSTREAM_CSV),
     }
     s4_cluster_command = {
         "name": "submit_s4_lsf",
@@ -516,25 +530,6 @@ def build_stage_specs(args, python_bin):
         }
     ]
 
-    cluster_basin_cmd = [
-        python_bin,
-        str(SCRIPT_DIR / "s7_export_cluster_basin_shp.py"),
-        "--stations",
-        str(s5_csv),
-        "--cluster-resolution-catalog",
-        str(cluster_catalog),
-        "--basin-gpkg",
-        str(OUTPUT_DIR / "s4_upstream_basins.gpkg"),
-        "--local-basin-gpkg",
-        str(OUTPUT_DIR / "s4_local_catchments.gpkg"),
-        "--out",
-        str(OUTPUT_DIR / "s7_cluster_basins.gpkg"),
-        "--local-out",
-        str(OUTPUT_DIR / "s7_cluster_basins_local.gpkg"),
-    ]
-    if args.include_local_basins:
-        cluster_basin_cmd.append("--include-local-basins")
-
     s7_commands = [
         {
             "name": "s7_export_cluster_shp",
@@ -555,6 +550,7 @@ def build_stage_specs(args, python_bin):
                 str(OUTPUT_DIR / "s7_cluster_station_catalog.csv"),
                 "--out-resolution-catalog",
                 str(cluster_catalog),
+                "--catalog-only",
             ],
         },
         {
@@ -568,13 +564,33 @@ def build_stage_specs(args, python_bin):
                 str(OUTPUT_DIR / "s7_source_stations.gpkg"),
                 "--out-catalog",
                 str(OUTPUT_DIR / "s7_source_station_resolution_catalog.csv"),
+                "--catalog-only",
             ],
         },
-        {
-            "name": "s7_export_cluster_basin_shp",
-            "cmd": cluster_basin_cmd,
-        },
     ]
+
+    s4_area_command = {
+        "name": "s4_area_only_upstream_area",
+        "cmd": [
+            python_bin,
+            str(SCRIPT_DIR / "s4_area_only_upstream_area.py"),
+            "--s3-csv",
+            str(OUTPUT_DIR / "s3_collected_stations.csv"),
+            "--fallback-s4-csv",
+            str(OUTPUT_R_ROOT / S4_STANDARD_UPSTREAM_CSV),
+            "--pipeline-s4-out",
+            str(OUTPUT_R_ROOT / S4_UPSTREAM_CSV),
+            "--merit-dir",
+            str(Path(args.merit_dir).expanduser().resolve()),
+            "--manual-areas",
+            str(SCRIPT_DIR / "config" / "amazon_area_evidence.csv"),
+            "--out-dir",
+            str(OUTPUT_DIR),
+            "--area-threshold",
+            str(args.s4_area_threshold),
+            "--overwrite",
+        ],
+    }
 
     s8_cmd = [
         python_bin,
@@ -621,6 +637,8 @@ def build_stage_specs(args, python_bin):
         str(SCRIPT_DIR / "s9_public_station_names.py"),
         "--release-dir",
         str(OUTPUT_DIR / "sed_reference_release_minimal"),
+        "--output-dir",
+        str(OUTPUT_DIR / "sed_reference_release_minimal_final"),
     ]
     if args.s9_strict:
         s9_cmd.append("--strict")
@@ -637,6 +655,7 @@ def build_stage_specs(args, python_bin):
                     "name": "s1_verify_time_resolution",
                     "cmd": [python_bin, str(SCRIPT_DIR / "s1_verify_time_resolution.py")],
                     "allow_nonzero_if_outputs_exist": True,
+                    "env": {"PIPELINE_INPUT_ROOT": str(PIPELINE_INPUT_ROOT)},
                 }
             ],
         },
@@ -667,7 +686,7 @@ def build_stage_specs(args, python_bin):
                         "--root",
                         str(OUTPUT_R_ROOT),
                         "--out",
-                        "scripts_basin_test/output/s3_collected_stations.csv",
+                        "output/s3_collected_stations.csv",
                         "-j",
                         str(args.s3_workers),
                         "--exclude-resolutions",
@@ -680,6 +699,10 @@ def build_stage_specs(args, python_bin):
         "s4": {
             "label": "trace upstream basins",
             "commands": [s4_local_command] if args.local_s4 else [s4_cluster_command],
+        },
+        "s4_area": {
+            "label": "apply area-only S4 matching with standard-S4 fallback",
+            "commands": [s4_area_command],
         },
         "s5": {
             "label": "merge stations by basin cluster",
@@ -711,7 +734,7 @@ def build_stage_specs(args, python_bin):
             "commands": s6_commands if args.local_s6 else s6_cluster_commands,
         },
         "s7": {
-            "label": "export GIS sidecars",
+            "label": "export release catalogs (no GIS geometry)",
             "commands": s7_commands,
         },
         "s8": {
@@ -732,13 +755,13 @@ def build_stage_specs(args, python_bin):
 
 def parse_args(defaults=None):
     parser = argparse.ArgumentParser(
-        description="Run the scripts_basin_test s1-s9 basin mainline in order."
+        description="Run the area-min-error s1-s9 basin mainline in order."
     )
     parser.add_argument("--python", help="Python 3 interpreter used to launch each step.")
     parser.add_argument(
         "--log-file",
         default=str(DEFAULT_LOG_FILE),
-        help="Combined pipeline log file path. Default: scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log",
+        help="Combined pipeline log file path. Default: output/logs/run_s1_to_s8_basin_pipeline.log",
     )
     parser.add_argument("--start-at", choices=STAGES, default=BUILTIN_START_AT, help="First logical stage to run.")
     parser.add_argument("--end-at", choices=STAGES, default=BUILTIN_END_AT, help="Last logical stage to run.")
@@ -852,6 +875,12 @@ def parse_args(defaults=None):
         "--merit-dir",
         default=str(BUILTIN_MERIT_DIR),
         help="MERIT Hydro directory passed to s4 via MERIT_DIR.",
+    )
+    parser.add_argument(
+        "--s4-area-threshold",
+        type=float,
+        default=BUILTIN_S4_AREA_THRESHOLD,
+        help="Maximum relative upstream-area error accepted as resolved.",
     )
     parser.add_argument("--s6-workers", type=int, default=BUILTIN_S6_WORKERS, help="Worker count for s6_basin_merge_to_nc.py.")
     parser.add_argument(
@@ -1063,6 +1092,7 @@ def _confirm_config(args, stages, python_bin):
         ("S4_BATCH_SIZE", s4_env["S4_BATCH_SIZE"]),
         ("S4_RESUME", s4_env["S4_RESUME"]),
         ("S4_SAVE_GPKG", s4_env["S4_SAVE_GPKG"]),
+        ("S4 area threshold", str(args.s4_area_threshold)),
         ("S4_MAXTASKSPERCHILD", s4_env["S4_MAXTASKSPERCHILD"]),
         ("S4_ARRAY_SIZE", s4_env.get("S4_ARRAY_SIZE", "16 (default)")),
         ("S4 mode", "local" if args.local_s4 else "cluster (LSF array)"),
@@ -1118,7 +1148,7 @@ def _confirm_config(args, stages, python_bin):
     ]
 
     hints = [
-        ("Stages", "--steps s1,s2,s3,s5,s6  or  --start-at s4 --end-at s9"),
+        ("Stages", "--steps s1,s2,s3,s4,s4_area,s5,s6,s7,s8,s9"),
         ("MERIT_DIR", "--merit-dir /path/to/MERIT_Hydro"),
         ("S4_N_WORKERS", "--s4-workers N"),
         ("S4_BATCH_SIZE", "--s4-batch-size N"),
@@ -1222,6 +1252,7 @@ _CONFIG_FIELDS = [
     ("s4_maxtasksperchild", "--s4-maxtasksperchild"),
     ("s4_no_resume", "--s4-no-resume"),
     ("s4_no_gpkg", "--s4-no-gpkg"),
+    ("s4_area_threshold", "--s4-area-threshold"),
     ("merit_dir", "--merit-dir"),
     ("s6_workers", "--s6-workers"),
     ("s5b_workers", "--s5b-workers"),
@@ -1258,7 +1289,7 @@ def _write_config_template():
 # ============================================================
 #
 # Usage:
-#   cd Output_r/scripts_basin_test
+#   cd Output_r/experiments/sed_data_integration_area_min_error
 #   python3 run_s1_s8_basin_pipeline.py --config-file pipeline_config.yaml
 #   python3 run_s1_s8_basin_pipeline.py -c pipeline_config.yaml --dry-run --yes
 #
@@ -1271,7 +1302,7 @@ def _write_config_template():
 
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
-  # 可选值: s1, s2, s3, s4, s5, s6, s7, s8, s9
+  # 可选值: s1, s2, s3, s4, s4_area, s5, s6, s7, s8, s9
   steps: ""
 
   # 起始 / 结束阶段（steps 为空时生效）
@@ -1285,7 +1316,7 @@ cli:
 
   # 运行解释器和总日志
   python: ""   # 留空=自动选择可用的 Python 3
-  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/scripts_basin_test/output/logs/run_s1_to_s8_basin_pipeline.log"
+  log_file: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/experiments/sed_data_integration_area_min_error/output/logs/run_s1_to_s8_area_min_error.log"
 
   # s4 / s6 在本地运行（不提交 LSF）
   local_s4: false
@@ -1310,7 +1341,8 @@ cli:
   s4_batch_size: 50        # 每批站点数，推荐 20-100
   s4_maxtasksperchild: 10  # worker 最大子任务数，推荐 8-20
   s4_no_resume: false      # 关闭 resume（重新跑所有 shard）
-  s4_no_gpkg: false        # 关闭 GPKG 几何输出
+  s4_no_gpkg: true         # 面积实验不生成 GPKG
+  s4_area_threshold: 0.10
 
   # MERIT Hydro 数据集路径
   merit_dir: "/share/home/dq134/wzx/sed_data/MERIT_Hydro_v07_Basins_v01_bugfix1"
@@ -1331,9 +1363,9 @@ cli:
 
   # s8: 发布
   s8_link_mode: hardlink        # 可选 hardlink, copy, symlink
-  s8_skip_gpkg: false           # 跳过 GPKG 发布
+  s8_skip_gpkg: true            # 跳过 GPKG 发布
   s8_skip_validation: false     # 跳过发布校验
-  s8_include_basin_polygons: true  # 包含流域多边形
+  s8_include_basin_polygons: false # 不包含流域多边形
   s8_force: true                # 强制覆盖已存在的发布文件
   s8_minimal_matrix_workers: 3        # Parallel workers for minimal matrix NetCDF copies
   s8_minimal_compression: 4           # NetCDF compression level (0-9)
@@ -1350,6 +1382,9 @@ cli:
 # 修改这里会自动注入到 os.environ
 # ============================================================
 env:
+  OUTPUT_R_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r/experiments/sed_data_integration_area_min_error"
+  PIPELINE_INPUT_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Output_r"
+  PIPELINE_SOURCE_ROOT: "/share/home/dq134/wzx/sed_data/sediment_wzx_1111/Source"
   # s6 仅运行指定的子步骤，逗号分隔。留空=全部运行
   # 可选: merge, matrix_daily, matrix_monthly, matrix_annual, climatology, satellite
   RUN_ONLY: ""
@@ -1458,8 +1493,8 @@ def main():
     with open(log_path, "w", encoding="utf-8") as log_fp:
         _write_log(log_fp, "===== Run started {} =====".format(_now_text()))
         _write_log(log_fp, "Command line: {}".format(_quote(sys.argv)))
-        _print_and_log(log_fp, "scripts_basin_test root: {}".format(SCRIPT_DIR))
-        _print_and_log(log_fp, "Output_r root:           {}".format(OUTPUT_R_ROOT))
+        _print_and_log(log_fp, "Experiment root:         {}".format(SCRIPT_DIR))
+        _print_and_log(log_fp, "Pipeline output root:    {}".format(OUTPUT_R_ROOT))
         _print_and_log(log_fp, "Python:                  {}".format(python_bin))
         _print_and_log(log_fp, "MERIT dir:               {}".format(merit_dir))
         _print_and_log(log_fp, "Stages:                  {}".format(" -> ".join(stages)))

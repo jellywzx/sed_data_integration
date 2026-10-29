@@ -27,7 +27,13 @@ from shapely.geometry import Point
 from shapely.ops import transform
 
 from basin_tracer import UpstreamBasinTracer
-from pipeline_paths import S5_BASIN_CLUSTERED_CSV, get_output_r_root
+from pipeline_paths import (
+    S5_BASIN_CLUSTERED_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV,
+    S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV,
+    get_output_r_root,
+)
 
 try:
     from source_family import classify_source_family
@@ -44,9 +50,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
 
 DEFAULT_INPUT = PROJECT_ROOT / S5_BASIN_CLUSTERED_CSV
-DEFAULT_OUTPUT_LINKS = PROJECT_ROOT / "scripts_basin_test/output/s5b_satellite_main_cluster_links_v2.csv"
-DEFAULT_OUTPUT_CANDIDATES = PROJECT_ROOT / "scripts_basin_test/output/s5b_satellite_main_cluster_candidates_v2.csv"
-DEFAULT_OUTPUT_REPORT = PROJECT_ROOT / "scripts_basin_test/output/s5b_satellite_main_cluster_report_v2.csv"
+DEFAULT_OUTPUT_LINKS = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
+DEFAULT_OUTPUT_CANDIDATES = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV
+DEFAULT_OUTPUT_REPORT = PROJECT_ROOT / S5B_SATELLITE_MAIN_CLUSTER_REPORT_CSV
 DEFAULT_MERIT_DIR = PROJECT_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 
 SUPPORTED_RESOLUTIONS = ("daily", "monthly", "annual")
