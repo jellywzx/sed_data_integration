@@ -148,6 +148,23 @@ class PublicStationNamesTest(unittest.TestCase):
             )
             self.assertFalse(public_names.has_failures(rows))
 
+    def test_unlinked_reason_is_converted_to_public_station_wording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            path = release_dir / "satellite_catalog.csv"
+            pd.DataFrame(
+                [{"satellite_station_uid": "SAT000001", "unlinked_reason": "no_main_cluster_coverage"}]
+            ).to_csv(path, index=False)
+
+            rows = public_names.convert_release_dir(release_dir, audit=True)
+
+            result = pd.read_csv(path, keep_default_na=False, dtype=str)
+            self.assertEqual(
+                result.loc[0, "unlinked_reason"],
+                "no_main_reference_station_coverage",
+            )
+            self.assertFalse(public_names.has_failures(rows))
+
     def test_netcdf_source_values_are_converted_to_final_sp_labels(self):
         _require_nc4()
         with tempfile.TemporaryDirectory() as tmp:
@@ -163,6 +180,29 @@ class PublicStationNamesTest(unittest.TestCase):
             with nc4.Dataset(path, "r") as ds:
                 values = [str(value) for value in ds.variables["source"][:]]
                 self.assertEqual(values, ["RivSed", "USGS NWIS", "Ali and De Boer"])
+            self.assertFalse(public_names.has_failures(rows))
+
+    def test_netcdf_unlinked_reason_is_converted_to_public_station_wording(self):
+        _require_nc4()
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp)
+            path = release_dir / "sed_reference_satellite.nc"
+            with nc4.Dataset(path, "w", format="NETCDF4") as ds:
+                ds.createDimension("n_satellite_stations", 2)
+                reason = ds.createVariable("unlinked_reason", str, ("n_satellite_stations",))
+                reason[:] = np.asarray(
+                    ["no_main_cluster_coverage", "distance_mismatch"],
+                    dtype=object,
+                )
+
+            rows = public_names.convert_release_dir(release_dir, audit=True)
+
+            with nc4.Dataset(path, "r") as ds:
+                values = [str(value) for value in ds.variables["unlinked_reason"][:]]
+                self.assertEqual(
+                    values,
+                    ["no_main_reference_station_coverage", "distance_mismatch"],
+                )
             self.assertFalse(public_names.has_failures(rows))
 
     def test_eusedcollab_is_rejected_by_public_audit(self):

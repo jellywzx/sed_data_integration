@@ -30,26 +30,27 @@
 推荐运行顺序：
   1) 先运行 python scripts/s1_verify_time_resolution.py。
   2) 如果 s1 提示存在人工审核队列，编辑
-     scripts_basin_test/output/s1_resolution_review_overrides.csv，填入
+     output/s1_resolution_review_overrides.csv，填入
      rel_path,resolved_semantics,review_note。
   3) 重新运行 s1，直到
-     scripts_basin_test/output/s1_resolution_review_queue.csv 为空。
+     output/s1_resolution_review_queue.csv 为空。
   4) 再运行本脚本；若 review queue 仍非空，本脚本会阻断并退出。
 
 输入（默认）：
-  - scripts_basin_test/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV）
+  - output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV）
   - Output_r 下原始 qc 目录中的 .nc
 输出（默认）：
-  - ../output_resolution_organized/（步骤 s2 输出目录，来自 pipeline_paths.S2_ORGANIZED_DIR，供 s3 默认扫描）
-  - scripts_basin_test/output/s2_resolution_classification_details.csv（全量最终分类明细，来自 pipeline_paths.S2_CLASSIFICATION_DETAILS_CSV）
-  - scripts_basin_test/output/s2_other_resolution_summary.csv（other 分类汇总，来自 pipeline_paths.S2_OTHER_SUMMARY_CSV）
-  - scripts_basin_test/output/s2_other_resolution_details.csv（other 分类明细，来自 pipeline_paths.S2_OTHER_DETAILS_CSV）
+  - output/output_resolution_organized/（步骤 s2 输出目录，来自 pipeline_paths.S2_ORGANIZED_DIR，供 s3 默认扫描）
+  - output/s2_resolution_classification_details.csv（全量最终分类明细，来自 pipeline_paths.S2_CLASSIFICATION_DETAILS_CSV）
+  - output/s2_other_resolution_summary.csv（other 分类汇总，来自 pipeline_paths.S2_OTHER_SUMMARY_CSV）
+  - output/s2_other_resolution_details.csv（other 分类明细，来自 pipeline_paths.S2_OTHER_DETAILS_CSV）
 
 说明：
   - 步骤 s2 的主要结果是按分辨率整理后的目录，同时输出全量最终分类明细 CSV 便于查询。
 """
 
 import re
+import os
 import shutil
 import sys
 import argparse
@@ -66,6 +67,7 @@ from pipeline_paths import (
     S2_OTHER_SUMMARY_CSV,
     S2_OTHER_DETAILS_CSV,
     RESOLUTION_DIRS,
+    get_output_r_root,
     get_log_path,
 )
 from qc_contract import ensure_stage1_alias_parity
@@ -76,9 +78,11 @@ from time_resolution import (
     sync_temporal_resolution_attrs,
 )
 
-# 项目根默认直接使用脚本上一级 Output_r
 SCRIPT_DIR = Path(__file__).resolve().parent
-ROOT_DIR = SCRIPT_DIR.parent
+ROOT_DIR = get_output_r_root(SCRIPT_DIR)
+INPUT_ROOT = Path(os.environ.get(
+    "PIPELINE_INPUT_ROOT", str(SCRIPT_DIR.parent.parent)
+)).expanduser().resolve()
 # 校验结果 CSV（相对 ROOT_DIR）；步骤 s1 输出
 VERIFY_CSV = S1_VERIFY_CSV
 REVIEW_QUEUE_CSV = S1_REVIEW_QUEUE_CSV
@@ -571,7 +575,7 @@ def main():
         return "qc" in parts
 
     df = df[df["path"].apply(is_qc_path)].copy()
-    df["source"] = df["path"].apply(lambda p: get_source_from_path(p, root_dir))
+    df["source"] = df["path"].apply(lambda p: get_source_from_path(p, INPUT_ROOT))
 
     if args.dataset:
         keep = split_dataset_selectors(args.dataset)
@@ -579,7 +583,7 @@ def main():
             print("错误：--dataset 未解析出有效的数据集名称。", file=sys.stderr)
             sys.exit(1)
 
-        dataset_aliases = df["path"].apply(lambda p: get_dataset_filter_aliases(p, root_dir))
+        dataset_aliases = df["path"].apply(lambda p: get_dataset_filter_aliases(p, INPUT_ROOT))
         mask = dataset_aliases.apply(lambda aliases: bool(aliases & keep))
         df = df[mask].copy()
 

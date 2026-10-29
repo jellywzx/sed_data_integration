@@ -16,8 +16,8 @@ from s8_publish_minimal_release_package import build_minimal_key_contract_rows
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
-DEFAULT_RELEASE_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "scripts_basin_test/output/sed_reference_release_minimal_final"
+DEFAULT_RELEASE_DIR = PROJECT_ROOT / "output/sed_reference_release_minimal"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output/sed_reference_release_minimal_final"
 DEFAULT_EXAMPLE_SCRIPT = SCRIPT_DIR / "tools" / "example_reference_workflow_minimal.py"
 DEFAULT_SATELLITE_QUERY_CHUNK_SIZE = 250000
 
@@ -78,12 +78,12 @@ def parse_args(argv=None):
     ap.add_argument(
         "--release-dir",
         default=str(DEFAULT_RELEASE_DIR),
-        help="Path to input release directory (default: scripts_basin_test/output/sed_reference_release_minimal).",
+        help="Path to input release directory (default: output/sed_reference_release_minimal).",
     )
     ap.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Output directory for converted files (default: scripts_basin_test/output/sed_reference_release_minimal_final).",
+        help="Output directory for converted files (default: output/sed_reference_release_minimal_final).",
     )
     ap.add_argument(
         "--report",

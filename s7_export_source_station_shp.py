@@ -58,12 +58,17 @@ def main():
         default=str(_DEFAULT_CATALOG),
         help="output source-station resolution catalog CSV path",
     )
+    ap.add_argument(
+        "--catalog-only",
+        action="store_true",
+        help="Write the catalog CSV without creating a GPKG.",
+    )
     args = ap.parse_args()
 
     if not HAS_NC:
         print("Error: netCDF4 is required. pip install netCDF4")
         return 1
-    if not HAS_GPD:
+    if not args.catalog_only and not HAS_GPD:
         print("Error: geopandas is required. pip install geopandas")
         return 1
 
@@ -74,16 +79,16 @@ def main():
     if not master_nc.is_file():
         print("Error: master NC not found: {}".format(master_nc))
         return 1
-    if out_gpkg.suffix.lower() != ".gpkg":
+    if not args.catalog_only and out_gpkg.suffix.lower() != ".gpkg":
         print("Error: --out must be a .gpkg path for multi-layer source output")
         return 1
 
     source_catalog = build_source_station_resolution_catalog(master_nc)
     out_catalog.parent.mkdir(parents=True, exist_ok=True)
     source_catalog.to_csv(out_catalog, index=False)
-    gpkg_path = write_source_stations_gpkg(source_catalog, out_gpkg)
-
-    print("Wrote source-station GPKG: {}".format(gpkg_path))
+    if not args.catalog_only:
+        gpkg_path = write_source_stations_gpkg(source_catalog, out_gpkg)
+        print("Wrote source-station GPKG: {}".format(gpkg_path))
     print("Wrote source-station resolution catalog: {}".format(out_catalog))
     print("source_station_resolution rows = {}".format(len(source_catalog)))
     for resolution in CLUSTER_RESOLUTIONS:

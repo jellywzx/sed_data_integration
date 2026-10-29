@@ -11,11 +11,11 @@ s4：站点流域匹配脚本（并行版）
   4. 汇总结果，输出 basin CSV 和可选 GPKG，供 s5_basin_merge.py 使用
 
 输入：
-  scripts_basin_test/output/s3_collected_stations.csv（s3 输出）
+  output/s3_collected_stations.csv（s3 输出）
 
 输出：
-  scripts_basin_test/output/s4_upstream_basins.csv   ← s5_basin_merge 的默认输入
-  scripts_basin_test/output/s4_upstream_basins.gpkg  ← 可选几何文件
+  output/s4_standard_upstream_basins.csv             ← 面积匹配步骤的回退输入
+  output/s4_upstream_basins.gpkg                     ← 可选几何文件
 
 环境变量：
   OUTPUT_R_ROOT  — 覆盖 Output_r 根目录（跨机器迁移时使用）
@@ -78,7 +78,9 @@ MERIT_DIR  = Path(os.environ.get(
 ))
 S3_CSV     = OUTPUT_R_ROOT / S3_COLLECTED_CSV
 OUT_DIR    = (OUTPUT_R_ROOT / S4_UPSTREAM_CSV).parent
-OUT_CSV    = OUTPUT_R_ROOT / S4_UPSTREAM_CSV
+OUT_CSV    = Path(os.environ.get(
+    "S4_OUT_CSV", str(OUTPUT_R_ROOT / S4_UPSTREAM_CSV)
+)).expanduser().resolve()
 OUT_GPKG   = OUTPUT_R_ROOT / S4_UPSTREAM_GPKG
 OUT_REPORTED_AREA_CSV = OUTPUT_R_ROOT / S4_REPORTED_AREA_CHECK_CSV
 OUT_LOCAL_GPKG = OUTPUT_R_ROOT / S4_LOCAL_GPKG 

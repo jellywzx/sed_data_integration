@@ -23,6 +23,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUT_DIR = SCRIPT_DIR / "output"
 LOG_DIR = OUT_DIR / "logs" / "s4_lsf"
 SHARD_DIR = OUT_DIR / "s4_shards"
+S4_OUT_CSV = Path(os.environ.get(
+    "S4_OUT_CSV", str(OUT_DIR / "s4_upstream_basins.csv")
+)).expanduser().resolve()
 
 
 def shell_join(parts):
@@ -216,8 +219,8 @@ def write_summary(summary_log, array_job_id, finalize_job_id, array_size, s4_res
     submitted_at = float(submitted_at)
     resume_enabled = bool_token(s4_resume, default=True)
     rows = []
-    csv_path = OUT_DIR / "s4_upstream_basins.csv"
-    partial_csv_path = OUT_DIR / "s4_upstream_basins.partial.csv"
+    csv_path = S4_OUT_CSV
+    partial_csv_path = S4_OUT_CSV.with_suffix(".partial.csv")
     reported_area_csv = OUT_DIR / "s4_reported_area_check.csv"
     gpkg_path = OUT_DIR / "s4_upstream_basins.gpkg"
     local_gpkg_path = OUT_DIR / "s4_local_catchments.gpkg"
@@ -345,7 +348,7 @@ def validate_summary(summary_log):
     if "RESULT: S4_COMPLETED" not in text:
         print("Error: S4 summary did not report completion: {}".format(summary_log), file=sys.stderr)
         return 1
-    required = [OUT_DIR / "s4_upstream_basins.csv", OUT_DIR / "s4_reported_area_check.csv"]
+    required = [S4_OUT_CSV, OUT_DIR / "s4_reported_area_check.csv"]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         print("Error: S4 outputs missing after cluster run:", file=sys.stderr)
@@ -355,7 +358,7 @@ def validate_summary(summary_log):
     return 0
 
 
-def build_trace_script(python_bin, array_size, exclude_satellite, s4_resume):
+def build_trace_script(python_bin, array_size, exclude_satellite, s4_resume="1"):
     live_log = "output/logs/s4_lsf/s4_trace.${JOB_INDEX}.live.log"
     lines = [
         "#!/usr/bin/env bash",
@@ -371,6 +374,7 @@ def build_trace_script(python_bin, array_size, exclude_satellite, s4_resume):
         "export S4_FINALIZE_ONLY=0",
         "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
+        "export S4_OUT_CSV={}".format(shell_join([S4_OUT_CSV])),
         'echo "[$(date \'+%F %T\')] live log: ${LIVE_LOG}"',
         'echo "[$(date \'+%F %T\')] start shard job: index=${S4_SHARD_INDEX}/${S4_SHARD_COUNT}"',
         'echo "[$(date \'+%F %T\')] host: $(hostname)"',
@@ -383,7 +387,7 @@ def build_trace_script(python_bin, array_size, exclude_satellite, s4_resume):
     return "\n".join(lines)
 
 
-def build_finalize_script(python_bin, array_size, exclude_satellite, s4_resume):
+def build_finalize_script(python_bin, array_size, exclude_satellite, s4_resume="1"):
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -397,6 +401,7 @@ def build_finalize_script(python_bin, array_size, exclude_satellite, s4_resume):
         "export S4_FINALIZE_ONLY=1",
         "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
+        "export S4_OUT_CSV={}".format(shell_join([S4_OUT_CSV])),
         'echo "[$(date \'+%F %T\')] live log: ${LIVE_LOG}"',
         'echo "[$(date \'+%F %T\')] start finalize: shard_count=${S4_SHARD_COUNT}"',
         'echo "[$(date \'+%F %T\')] host: $(hostname)"',
@@ -442,6 +447,7 @@ def build_summary_script(
         "cd {}".format(shell_join([SCRIPT_DIR])),
         "export S4_RESUME={}".format(shell_join([s4_resume])),
         "export S4_GPKG_EXCLUDE_SATELLITE={}".format(shell_join([exclude_satellite])),
+        "export S4_OUT_CSV={}".format(shell_join([S4_OUT_CSV])),
         shell_join(cmd),
     ]
     return "\n".join(lines)
@@ -501,6 +507,7 @@ def submit_s4(args):
             "PYTHON_BIN": python_bin,
             "S4_RESUME": str(s4_resume),
             "S4_GPKG_EXCLUDE_SATELLITE": str(exclude_satellite),
+            "S4_OUT_CSV": str(S4_OUT_CSV),
         }
     )
 

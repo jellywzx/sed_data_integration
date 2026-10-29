@@ -438,10 +438,13 @@ def append_stage_qc_variables(nc, dimensions, chunksizes=None, zlib=True, comple
 
 
 def load_stage1_attr_priority_map():
-    project_root = Path(__file__).resolve().parents[2]
-    script_root = project_root / "Script"
-    if not script_root.is_dir():
-        raise RuntimeError("Stage-1 Script directory not found: {}".format(script_root))
+    script_root = next(
+        (parent / "Script" for parent in Path(__file__).resolve().parents
+         if (parent / "Script").is_dir()),
+        None,
+    )
+    if script_root is None:
+        raise RuntimeError("Stage-1 Script directory not found above {}".format(__file__))
     if str(script_root) not in sys.path:
         sys.path.insert(0, str(script_root))
     from code.global_attrs import ATTR_PRIORITY_MAP

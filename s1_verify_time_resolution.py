@@ -24,7 +24,7 @@
 输入（默认）：
   - Output_r 下原始 .nc 数据（脚本会递归扫描）
 输出（默认）：
-  - scripts/output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV，供 s2 使用）
+  - output/s1_verify_time_resolution_results.csv（步骤 s1 输出，来自 pipeline_paths.S1_VERIFY_CSV，供 s2 使用）
 
 ---
 判断过程说明
@@ -112,6 +112,7 @@ from pipeline_paths import (
     S1_REVIEW_OVERRIDES_CSV,
     S1_REVIEW_QUEUE_CSV,
     S1_VERIFY_CSV,
+    get_output_r_root,
     get_log_path,
 )
 import time
@@ -129,7 +130,6 @@ from qc_contract import (
     normalize_declared_temporal_resolution,
 )
 
-# 根目录固定为脚本所在目录的上一级（即 Output_r）
 SCRIPT_DIR = Path(__file__).resolve().parent
 # 结果 CSV 路径（相对 ROOT_DIR）；列说明见本文件顶部 docstring；步骤 s1 对应输出
 OUT_CSV = S1_VERIFY_CSV
@@ -139,7 +139,10 @@ WORKERS = 48
 
 from time_resolution import classify_frequency
 
-ROOT_DIR = SCRIPT_DIR.parent
+PROJECT_ROOT = get_output_r_root(SCRIPT_DIR)
+ROOT_DIR = Path(os.environ.get(
+    "PIPELINE_INPUT_ROOT", str(SCRIPT_DIR.parent.parent)
+)).expanduser().resolve()
 
 def _parse_args():
     parser = argparse.ArgumentParser(
@@ -858,8 +861,8 @@ def main():
         sys.exit(1)
 
     ensure_stage1_alias_parity()
-    overrides_path = root_dir / REVIEW_OVERRIDES_CSV
-    review_queue_path = root_dir / REVIEW_QUEUE_CSV
+    overrides_path = PROJECT_ROOT / REVIEW_OVERRIDES_CSV
+    review_queue_path = PROJECT_ROOT / REVIEW_QUEUE_CSV
     overrides = _load_manual_overrides(overrides_path)
 
     nc_files = []
@@ -921,7 +924,7 @@ def main():
 
     df = pd.DataFrame(results).sort_values(["rel_path", "path"]).reset_index(drop=True)
 
-    out_path = root_dir / OUT_CSV
+    out_path = PROJECT_ROOT / OUT_CSV
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
     print(f"\n判断结果已写入: {out_path}")

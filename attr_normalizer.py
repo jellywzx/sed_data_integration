@@ -5,7 +5,13 @@ import sys
 from pathlib import Path
 
 
-SCRIPT_ROOT = Path(__file__).resolve().parents[2] / "Script"
+SCRIPT_ROOT = next(
+    (parent / "Script" for parent in Path(__file__).resolve().parents
+     if (parent / "Script").is_dir()),
+    None,
+)
+if SCRIPT_ROOT is None:
+    raise RuntimeError("Stage-1 Script directory not found above {}".format(__file__))
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 

@@ -18,17 +18,17 @@ from datetime import datetime
 from pathlib import Path
 
 from pipeline_paths import (
+    S2_ORGANIZED_DIR,
     S5_BASIN_CLUSTERED_CSV,
+    get_output_r_root,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-OUTPUT_R_ROOT = SCRIPT_DIR.parent
+OUTPUT_R_ROOT = get_output_r_root(SCRIPT_DIR)
 OUT_DIR = SCRIPT_DIR / "output"
 LOG_DIR = OUT_DIR / "logs" / "s6_lsf_parallel"
 MATRIX_DIR = OUT_DIR / "s6_matrix_by_resolution"
-CLIM_INPUT_DIR = (
-    SCRIPT_DIR.parent.parent / "output_resolution_organized" / "climatology"
-).resolve()
+CLIM_INPUT_DIR = (OUTPUT_R_ROOT / S2_ORGANIZED_DIR / "climatology").resolve()
 DEFAULT_MERIT_DIR = OUTPUT_R_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 
 
