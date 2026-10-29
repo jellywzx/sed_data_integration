@@ -3,7 +3,10 @@
 Run the scripts_basin_test basin mainline in order.
 
 Default stage layout:
-  s1 -> s2 -> s3 -> s4 -> s4_area -> s5 -> s6 -> s7 -> s8 -> s9
+  s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s8 -> s9
+
+Optional ``s4_area`` is selected explicitly with ``--steps`` and is intended
+only for evaluating coarse-resolution simulations such as 0.25-degree models.
 
 Stage details:
   s6 = master NC + matrix NC exports + climatology NC export + satellite validation NC export
@@ -77,8 +80,8 @@ PIPELINE_INPUT_ROOT = Path(os.environ.get(
 )).expanduser().resolve()
 DEFAULT_MERIT_DIR = PIPELINE_INPUT_ROOT.parent.parent / "MERIT_Hydro_v07_Basins_v01_bugfix1"
 DEFAULT_LOG_FILE = OUTPUT_R_ROOT / OUTPUT_LOG_DIR / "run_s1_to_s8_basin_pipeline.log"
-STAGES = ("s1", "s2", "s3", "s4", "s4_area", "s5", "s6", "s7", "s8", "s9")
-EXPLICIT_STAGES = STAGES[:6] + ("s5b",) + STAGES[6:]
+STAGES = ("s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9")
+EXPLICIT_STAGES = STAGES[:4] + ("s4_area",) + STAGES[4:5] + ("s5b",) + STAGES[5:]
 
 # ---- Built-in runtime defaults -------------------------------------------------
 # These constants are the script's everyday defaults.
@@ -283,7 +286,7 @@ def _resolve_selected_stages(args):
     return _validate_stage_range(args.start_at, args.end_at)
 
 
-def stage_outputs():
+def stage_outputs(selected_stages):
     release_dir = OUTPUT_DIR / "sed_reference_release"
     minimal_dir = OUTPUT_DIR / "sed_reference_release_minimal"
     final_dir = OUTPUT_DIR / "sed_reference_release_minimal_final"
@@ -296,7 +299,9 @@ def stage_outputs():
         "s2": [ORGANIZED_DIR],
         "s3": [OUTPUT_DIR / "s3_collected_stations.csv"],
         "s4": [
-            OUTPUT_R_ROOT / S4_STANDARD_UPSTREAM_CSV,
+            OUTPUT_R_ROOT / (
+                S4_STANDARD_UPSTREAM_CSV if "s4_area" in selected_stages else S4_UPSTREAM_CSV
+            ),
             OUTPUT_DIR / "s4_reported_area_check.csv",
         ],
         "s4_area": [
@@ -361,7 +366,7 @@ def stage_outputs():
     }
 
 
-def build_stage_specs(args, python_bin):
+def build_stage_specs(args, python_bin, selected_stages):
     s5_csv = OUTPUT_R_ROOT / S5_BASIN_CLUSTERED_CSV
     s5b_links_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_LINKS_CSV
     s5b_candidates_csv = OUTPUT_R_ROOT / S5B_SATELLITE_MAIN_CLUSTER_CANDIDATES_CSV
@@ -377,7 +382,9 @@ def build_stage_specs(args, python_bin):
         "S4_SAVE_GPKG": _bool_env(not args.s4_no_gpkg),
         "S4_MAXTASKSPERCHILD": str(args.s4_maxtasksperchild),
         "MERIT_DIR": str(Path(args.merit_dir).expanduser().resolve()),
-        "S4_OUT_CSV": str(OUTPUT_R_ROOT / S4_STANDARD_UPSTREAM_CSV),
+        "S4_OUT_CSV": str(OUTPUT_R_ROOT / (
+            S4_STANDARD_UPSTREAM_CSV if "s4_area" in selected_stages else S4_UPSTREAM_CSV
+        )),
     }
     s4_cluster_command = {
         "name": "submit_s4_lsf",
@@ -1148,7 +1155,7 @@ def _confirm_config(args, stages, python_bin):
     ]
 
     hints = [
-        ("Stages", "--steps s1,s2,s3,s4,s4_area,s5,s6,s7,s8,s9"),
+        ("Stages", "default: s1,s2,s3,s4,s5,s6,s7,s8,s9; optional: add s4_area with --steps"),
         ("MERIT_DIR", "--merit-dir /path/to/MERIT_Hydro"),
         ("S4_N_WORKERS", "--s4-workers N"),
         ("S4_BATCH_SIZE", "--s4-batch-size N"),
@@ -1303,6 +1310,7 @@ def _write_config_template():
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
   # 可选值: s1, s2, s3, s4, s4_area, s5, s6, s7, s8, s9
+  # s4_area 为可选实验步骤，仅用于评估 0.25° 等粗分辨率模拟结果；默认不运行。
   steps: ""
 
   # 起始 / 结束阶段（steps 为空时生效）
@@ -1480,8 +1488,8 @@ def main():
         args = parse_args()
     python_bin = resolve_python(args.python)
     stages = _resolve_selected_stages(args)
-    outputs = stage_outputs()
-    specs = build_stage_specs(args, python_bin)
+    outputs = stage_outputs(stages)
+    specs = build_stage_specs(args, python_bin, stages)
 
     if not _confirm_config(args, stages, python_bin):
         return 1

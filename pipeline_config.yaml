@@ -17,7 +17,8 @@
 cli:
   # 要运行的阶段列表（逗号分隔），留空则使用 start_at/end_at
   # 可选值: s1, s2, s3, s4, s4_area, s5, s6, s7, s8, s9
-  steps: "s1,s2,s3,s4,s4_area,s5,s6,s7,s8,s9"
+  # s4_area 为可选实验步骤，仅用于评估 0.25° 等粗分辨率模拟结果；默认不运行。
+  steps: "s1,s2,s3,s4,s5,s6,s7,s8,s9"
 
   # 起始 / 结束阶段（steps 为空时生效）
   start_at: s1

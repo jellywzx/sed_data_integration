@@ -2,6 +2,8 @@
 
 This package **adds** `s4_area_only_upstream_area.py` and `test/test_s4_area_only_upstream_area.py` to the *existing* Git worktree `experiment/s4-area-min-error-20261023`. It does **not** replace any production S4/S5 file, and does not overwrite the earlier S20/E experiments.
 
+> **适用范围：** `s4_area` 只用于评估 0.25° 等粗分辨率模拟结果。它不是常规站点流域匹配步骤，也不在 `run_s1_s8_basin_pipeline.py` 的默认阶段中。需要运行时必须通过 `--steps` 显式选择，例如 `--steps s4,s4_area,s5`。
+
 ## Definition
 
 For each eligible S3 station with valid, independently supplied `reported_area` in km²:

@@ -1,5 +1,7 @@
 # Experimental S4: upstream-area minimum relative error
 
+> **适用范围：** `s4_area` 只适用于评估 0.25° 等粗分辨率模拟结果，不属于常规 S1–S9 主线，默认不会由 `run_s1_s8_basin_pipeline.py` 执行。若确需运行，必须通过 `--steps` 显式加入，例如 `--steps s4,s4_area,s5`。
+
 Repository: `jellywzx/sed_data_integration`
 Branch: `experiment/s4-area-min-error-20261023` (based on the 2026-10-23 master snapshot `027b74ef0b2bf337a01f9e8b8788d0d0d00c5ab0`).
 
